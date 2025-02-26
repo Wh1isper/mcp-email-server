@@ -17,6 +17,8 @@ class EmailHandler(abc.ABC):
         subject: str | None = None,
         body: str | None = None,
         text: str | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
     ) -> "EmailPageResponse":
         """
         Get emails

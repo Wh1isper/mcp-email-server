@@ -43,6 +43,8 @@ async def page_email(
     subject: str | None = None,
     body: str | None = None,
     text: str | None = None,
+    from_address: str | None = None,
+    to_address: str | None = None,
 ) -> EmailPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -54,6 +56,8 @@ async def page_email(
         subject=subject,
         body=body,
         text=text,
+        from_address=from_address,
+        to_address=to_address,
     )
 
 

@@ -92,6 +92,8 @@ class EmailClient:
         subject: str | None = None,
         body: str | None = None,
         text: str | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -103,7 +105,7 @@ class EmailClient:
             await imap.login(self.email_server.user_name, self.email_server.password)
             await imap.select("INBOX")
 
-            search_criteria = self._build_search_criteria(before, since, subject, body, text)
+            search_criteria = self._build_search_criteria(before, since, subject, body, text, from_address, to_address)
             # Search for messages
             _, messages = await imap.search(*search_criteria)
             logger.info(f"Get: Search criteria: {search_criteria}")
@@ -164,6 +166,8 @@ class EmailClient:
         subject: str | None = None,
         body: str | None = None,
         text: str | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
     ):
         search_criteria = []
         if before:
@@ -176,6 +180,10 @@ class EmailClient:
             search_criteria.extend(["BODY", body])
         if text:
             search_criteria.extend(["TEXT", text])
+        if from_address:
+            search_criteria.extend(["FROM", from_address])
+        if to_address:
+            search_criteria.extend(["TO", to_address])
 
         # If no specific criteria, search for ALL
         if not search_criteria:
@@ -190,6 +198,8 @@ class EmailClient:
         subject: str | None = None,
         body: str | None = None,
         text: str | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
     ) -> int:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -200,7 +210,7 @@ class EmailClient:
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await imap.select("INBOX")
-            search_criteria = self._build_search_criteria(before, since, subject, body, text)
+            search_criteria = self._build_search_criteria(before, since, subject, body, text, from_address, to_address)
             logger.info(f"Count: Search criteria: {search_criteria}")
             # Search for messages and count them
             _, messages = await imap.search(*search_criteria)
@@ -246,13 +256,15 @@ class ClassicEmailHandler(EmailHandler):
         subject: str | None = None,
         body: str | None = None,
         text: str | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
     ) -> EmailPageResponse:
         emails = []
         async for email_data in self.incoming_client.get_emails_stream(
-            page, page_size, before, since, subject, body, text
+            page, page_size, before, since, subject, body, text, from_address, to_address
         ):
             emails.append(EmailData.from_email(email_data))
-        total = await self.incoming_client.get_email_count(before, since, subject, body, text)
+        total = await self.incoming_client.get_email_count(before, since, subject, body, text, from_address, to_address)
         return EmailPageResponse(
             page=page,
             page_size=page_size,
