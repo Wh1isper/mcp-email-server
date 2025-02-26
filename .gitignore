@@ -140,3 +140,4 @@ cython_debug/
 #.idea/
 
 tests/config.toml
+local/

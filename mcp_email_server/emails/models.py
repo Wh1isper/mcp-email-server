@@ -26,7 +26,9 @@ class EmailPageResponse(BaseModel):
     page: int
     page_size: int
     before: datetime | None
-    after: datetime | None
-    include: str | None
+    since: datetime | None
+    subject: str | None
+    body: str | None
+    text: str | None
     emails: list[EmailData]
     total: int

@@ -12,6 +12,7 @@ import aiosmtplib
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import EmailData, EmailPageResponse
+from mcp_email_server.log import logger
 
 
 class EmailClient:
@@ -82,13 +83,15 @@ class EmailClient:
             "attachments": attachments,
         }
 
-    async def get_emails_stream(  # noqa: C901
+    async def get_emails_stream(
         self,
         page: int = 1,
         page_size: int = 10,
         before: datetime | None = None,
-        after: datetime | None = None,
-        include: str | None = None,
+        since: datetime | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        text: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -100,22 +103,13 @@ class EmailClient:
             await imap.login(self.email_server.user_name, self.email_server.password)
             await imap.select("INBOX")
 
-            # Build search criteria
-            search_criteria = []
-            if before:
-                search_criteria.extend(["BEFORE", before.isoformat()])
-            if after:
-                search_criteria.extend(["AFTER", after.isoformat()])
-            if include:
-                search_criteria.extend(["TEXT", include])
-
-            # If no specific criteria, search for ALL
-            if not search_criteria:
-                search_criteria = ["ALL"]
-
+            search_criteria = self._build_search_criteria(before, since, subject, body, text)
             # Search for messages
             _, messages = await imap.search(*search_criteria)
+            logger.info(f"Get: Search criteria: {search_criteria}")
+            logger.debug(f"Raw messages: {messages}")
             message_ids = messages[0].split()
+            logger.debug(f"Message IDs: {message_ids}")
             start = (page - 1) * page_size
             end = start + page_size
 
@@ -151,23 +145,51 @@ class EmailClient:
                             yield parsed_email
                         except Exception as e:
                             # Log error but continue with other emails
-                            print(f"Error parsing email: {e!s}")
+                            logger.error(f"Error parsing email: {e!s}")
                     else:
-                        print(f"Could not find email data in response for message ID: {message_id_str}")
+                        logger.error(f"Could not find email data in response for message ID: {message_id_str}")
                 except Exception as e:
-                    print(f"Error fetching message {message_id}: {e!s}")
+                    logger.error(f"Error fetching message {message_id}: {e!s}")
         finally:
             # Ensure we logout properly
             try:
                 await imap.logout()
             except Exception as e:
-                print(f"Error during logout: {e}")
+                logger.info(f"Error during logout: {e}")
+
+    @staticmethod
+    def _build_search_criteria(
+        before: datetime | None = None,
+        since: datetime | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        text: str | None = None,
+    ):
+        search_criteria = []
+        if before:
+            search_criteria.extend(["BEFORE", before.strftime("%d-%b-%Y").upper()])
+        if since:
+            search_criteria.extend(["SINCE", since.strftime("%d-%b-%Y").upper()])
+        if subject:
+            search_criteria.extend(["SUBJECT", subject])
+        if body:
+            search_criteria.extend(["BODY", body])
+        if text:
+            search_criteria.extend(["TEXT", text])
+
+        # If no specific criteria, search for ALL
+        if not search_criteria:
+            search_criteria = ["ALL"]
+
+        return search_criteria
 
     async def get_email_count(
         self,
         before: datetime | None = None,
-        after: datetime | None = None,
-        include: str | None = None,
+        since: datetime | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        text: str | None = None,
     ) -> int:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -178,20 +200,8 @@ class EmailClient:
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await imap.select("INBOX")
-
-            # Build search criteria
-            search_criteria = []
-            if before:
-                search_criteria.extend(["BEFORE", before.isoformat()])
-            if after:
-                search_criteria.extend(["AFTER", after.isoformat()])
-            if include:
-                search_criteria.extend(["TEXT", include])
-
-            # If no specific criteria, search for ALL
-            if not search_criteria:
-                search_criteria = ["ALL"]
-
+            search_criteria = self._build_search_criteria(before, since, subject, body, text)
+            logger.info(f"Count: Search criteria: {search_criteria}")
             # Search for messages and count them
             _, messages = await imap.search(*search_criteria)
             return len(messages[0].split())
@@ -200,7 +210,7 @@ class EmailClient:
             try:
                 await imap.logout()
             except Exception as e:
-                print(f"Error during logout: {e}")
+                logger.info(f"Error during logout: {e}")
 
     async def send_email(self, recipient: str, subject: str, body: str):
         msg = MIMEText(body)
@@ -232,19 +242,25 @@ class ClassicEmailHandler(EmailHandler):
         page: int = 1,
         page_size: int = 10,
         before: datetime | None = None,
-        after: datetime | None = None,
-        include: str | None = None,
+        since: datetime | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        text: str | None = None,
     ) -> EmailPageResponse:
         emails = []
-        async for email_data in self.incoming_client.get_emails_stream(page, page_size, before, after, include):
+        async for email_data in self.incoming_client.get_emails_stream(
+            page, page_size, before, since, subject, body, text
+        ):
             emails.append(EmailData.from_email(email_data))
-        total = await self.incoming_client.get_email_count(before, after, include)
+        total = await self.incoming_client.get_email_count(before, since, subject, body, text)
         return EmailPageResponse(
             page=page,
             page_size=page_size,
             before=before,
-            after=after,
-            include=include,
+            since=since,
+            subject=subject,
+            body=body,
+            text=text,
             emails=emails,
             total=total,
         )

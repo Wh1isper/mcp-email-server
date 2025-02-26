@@ -14,7 +14,9 @@ class EmailHandler(abc.ABC):
         page_size: int = 10,
         before: datetime | None = None,
         after: datetime | None = None,
-        include: str | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        text: str | None = None,
     ) -> "EmailPageResponse":
         """
         Get emails

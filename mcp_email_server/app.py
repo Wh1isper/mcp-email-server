@@ -33,18 +33,28 @@ async def add_email_account(email: EmailSettings) -> None:
     settings.store()
 
 
-@mcp.tool()
+@mcp.tool(description="Paginate emails, page start at 1, before and since as UTC datetime.")
 async def page_email(
     account_name: str,
     page: int = 1,
     page_size: int = 10,
     before: datetime | None = None,
-    after: datetime | None = None,
-    include: str | None = None,
+    since: datetime | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+    text: str | None = None,
 ) -> EmailPageResponse:
     handler = dispatch_handler(account_name)
 
-    return await handler.get_emails(page=page, page_size=page_size, before=before, after=after, include=include)
+    return await handler.get_emails(
+        page=page,
+        page_size=page_size,
+        before=before,
+        since=since,
+        subject=subject,
+        body=body,
+        text=text,
+    )
 
 
 @mcp.tool()
