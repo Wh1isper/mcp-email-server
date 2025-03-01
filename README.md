@@ -23,6 +23,7 @@ npx -y @smithery/cli install @ai-zerolab/mcp-email-server --client claude
 ```
 
 ### Manual Installation
+
 We recommend using [uv](https://github.com/ai-zerolab/uv) to manage your environment.
 
 Try `uvx mcp-email-server ui` to config, and use following configuration for mcp client:
