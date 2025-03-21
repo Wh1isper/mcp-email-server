@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 
@@ -35,16 +36,16 @@ async def add_email_account(email: EmailSettings) -> None:
 
 @mcp.tool(description="Paginate emails, page start at 1, before and since as UTC datetime.")
 async def page_email(
-    account_name: str,
-    page: int = 1,
-    page_size: int = 10,
-    before: datetime | None = None,
-    since: datetime | None = None,
-    subject: str | None = None,
-    body: str | None = None,
-    text: str | None = None,
-    from_address: str | None = None,
-    to_address: str | None = None,
+    account_name: Annotated[str, "The name of the email account."],
+    page: Annotated[int, "The page number to retrieve (starting from 1)."] = 1,
+    page_size: Annotated[int, "The number of emails to retrieve per page."] = 10,
+    before: Annotated[datetime | None, "Retrieve emails before this datetime (UTC)."] = None,
+    since: Annotated[datetime | None, "Retrieve emails since this datetime (UTC)."] = None,
+    subject: Annotated[str | None, "Filter emails by subject."] = None,
+    body: Annotated[str | None, "Filter emails by body."] = None,
+    text: Annotated[str | None, "Filter emails by text."] = None,
+    from_address: Annotated[str | None, "Filter emails by sender address."] = None,
+    to_address: Annotated[str | None, "Filter emails by recipient address."] = None,
 ) -> EmailPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -65,28 +66,13 @@ async def page_email(
     description="Send an email using the specified account. Recipient should be a list of email addresses.",
 )
 async def send_email(
-    account_name: str,
-    recipients: list[str],
-    subject: str,
-    body: str,
-    cc: list[str] | None = None,
-    bcc: list[str] | None = None,
+    account_name: Annotated[str, "The name of the email account to send from."],
+    recipients: Annotated[list[str], "A list of recipient email addresses."],
+    subject: Annotated[str, "The subject of the email."],
+    body: Annotated[str, "The body of the email."],
+    cc: Annotated[list[str] | None, "A list of CC email addresses."] = None,
+    bcc: Annotated[list[str] | None, "A list of BCC email addresses."] = None,
 ) -> None:
     handler = dispatch_handler(account_name)
     await handler.send_email(recipients, subject, body, cc, bcc)
     return
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(
-        send_email(**{
-            "account_name": "jizhongsheng957@gmail.com",
-            "recipients": ["jizhongsheng957@gmail.com"],
-            "subject": "问候",
-            "body": "你好",
-            "cc": ["9573586@qq.com"],
-            "bcc": ["jzs9573586@qq.com"],
-        })
-    )
