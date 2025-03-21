@@ -61,8 +61,32 @@ async def page_email(
     )
 
 
-@mcp.tool()
-async def send_email(account_name: str, recipient: str, subject: str, body: str) -> None:
+@mcp.tool(
+    description="Send an email using the specified account. Recipient should be a list of email addresses.",
+)
+async def send_email(
+    account_name: str,
+    recipients: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+) -> None:
     handler = dispatch_handler(account_name)
-    await handler.send_email(recipient, subject, body)
+    await handler.send_email(recipients, subject, body, cc, bcc)
     return
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(
+        send_email(**{
+            "account_name": "jizhongsheng957@gmail.com",
+            "recipients": ["jizhongsheng957@gmail.com"],
+            "subject": "问候",
+            "body": "你好",
+            "cc": ["9573586@qq.com"],
+            "bcc": ["jzs9573586@qq.com"],
+        })
+    )

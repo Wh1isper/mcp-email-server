@@ -222,11 +222,20 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
-    async def send_email(self, recipient: str, subject: str, body: str):
+    async def send_email(
+        self, recipients: list[str], subject: str, body: str, cc: list[str] | None = None, bcc: list[str] | None = None
+    ):
         msg = MIMEText(body)
         msg["Subject"] = subject
         msg["From"] = self.sender
-        msg["To"] = recipient
+        msg["To"] = ", ".join(recipients)
+
+        # Add CC header if provided (visible to recipients)
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+
+        # Note: BCC recipients are not added to headers (they remain hidden)
+        # but will be included in the actual recipients for SMTP delivery
 
         async with aiosmtplib.SMTP(
             hostname=self.email_server.host,
@@ -235,7 +244,15 @@ class EmailClient:
             use_tls=self.smtp_use_tls,
         ) as smtp:
             await smtp.login(self.email_server.user_name, self.email_server.password)
-            await smtp.send_message(msg)
+
+            # Create a combined list of all recipients for delivery
+            all_recipients = recipients.copy()
+            if cc:
+                all_recipients.extend(cc)
+            if bcc:
+                all_recipients.extend(bcc)
+
+            await smtp.send_message(msg, recipients=all_recipients)
 
 
 class ClassicEmailHandler(EmailHandler):
@@ -277,5 +294,7 @@ class ClassicEmailHandler(EmailHandler):
             total=total,
         )
 
-    async def send_email(self, recipient: str, subject: str, body: str) -> None:
-        await self.outgoing_client.send_email(recipient, subject, body)
+    async def send_email(
+        self, recipients: list[str], subject: str, body: str, cc: list[str] | None = None, bcc: list[str] | None = None
+    ) -> None:
+        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc)
