@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from mcp_email_server.config import (
     AccountAttributes,
@@ -36,16 +36,16 @@ async def add_email_account(email: EmailSettings) -> None:
 
 @mcp.tool(description="Paginate emails, page start at 1, before and since as UTC datetime.")
 async def page_email(
-    account_name: Annotated[str, "The name of the email account."],
-    page: Annotated[int, "The page number to retrieve (starting from 1)."] = 1,
-    page_size: Annotated[int, "The number of emails to retrieve per page."] = 10,
-    before: Annotated[datetime | None, "Retrieve emails before this datetime (UTC)."] = None,
-    since: Annotated[datetime | None, "Retrieve emails since this datetime (UTC)."] = None,
-    subject: Annotated[str | None, "Filter emails by subject."] = None,
-    body: Annotated[str | None, "Filter emails by body."] = None,
-    text: Annotated[str | None, "Filter emails by text."] = None,
-    from_address: Annotated[str | None, "Filter emails by sender address."] = None,
-    to_address: Annotated[str | None, "Filter emails by recipient address."] = None,
+    account_name: str = Field(description="The name of the email account."),
+    page: int = Field(default=1, description="The page number to retrieve (starting from 1)."),
+    page_size: int = Field(default=10, description="The number of emails to retrieve per page."),
+    before: datetime | None = Field(default=None, description="Retrieve emails before this datetime (UTC)."),
+    since: datetime | None = Field(default=None, description="Retrieve emails since this datetime (UTC)."),
+    subject: str | None = Field(default=None, description="Filter emails by subject."),
+    body: str | None = Field(default=None, description="Filter emails by body."),
+    text: str | None = Field(default=None, description="Filter emails by text."),
+    from_address: str | None = Field(default=None, description="Filter emails by sender address."),
+    to_address: str | None = Field(default=None, description="Filter emails by recipient address."),
 ) -> EmailPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -66,12 +66,12 @@ async def page_email(
     description="Send an email using the specified account. Recipient should be a list of email addresses.",
 )
 async def send_email(
-    account_name: Annotated[str, "The name of the email account to send from."],
-    recipients: Annotated[list[str], "A list of recipient email addresses."],
-    subject: Annotated[str, "The subject of the email."],
-    body: Annotated[str, "The body of the email."],
-    cc: Annotated[list[str] | None, "A list of CC email addresses."] = None,
-    bcc: Annotated[list[str] | None, "A list of BCC email addresses."] = None,
+    account_name: str = Field(description="The name of the email account to send from."),
+    recipients: list[str] = Field(description="A list of recipient email addresses."),
+    subject: str = Field(description="The subject of the email."),
+    body: str = Field(description="The body of the email."),
+    cc: list[str] | None = Field(default=None, description="A list of CC email addresses."),
+    bcc: list[str] | None = Field(default=None, description="A list of BCC email addresses."),
 ) -> None:
     handler = dispatch_handler(account_name)
     await handler.send_email(recipients, subject, body, cc, bcc)

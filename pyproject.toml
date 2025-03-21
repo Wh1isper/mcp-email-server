@@ -109,10 +109,12 @@ ignore = [
     "TRY003",
     # try-consider-else
     "TRY300",
+
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S106", "SIM117"]
+"mcp_email_server/app.py" = ["B008"]
 
 [tool.ruff.format]
 preview = true
