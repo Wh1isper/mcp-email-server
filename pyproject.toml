@@ -40,6 +40,7 @@ Documentation = "https://ai-zerolab.github.io/mcp-email-server/"
 [dependency-groups]
 dev = [
     "pytest>=7.2.0",
+    "pytest-asyncio>=0.25.3",
     "pre-commit>=2.20.0",
     "tox-uv>=1.11.3",
     "deptry>=0.22.0",
@@ -111,7 +112,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]
+"tests/*" = ["S101", "S106", "SIM117"]
 
 [tool.ruff.format]
 preview = true

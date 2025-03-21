@@ -20,14 +20,14 @@ def test_config():
             email_address="1oBbE@example.com",
             incoming=EmailServer(
                 user_name="test",
-                password="test",  # noqa: S106
+                password="test",
                 host="imap.gmail.com",
                 port=993,
                 ssl=True,
             ),
             outgoing=EmailServer(
                 user_name="test",
-                password="test",  # noqa: S106
+                password="test",
                 host="smtp.gmail.com",
                 port=587,
                 ssl=True,
@@ -47,14 +47,14 @@ def test_config():
                 email_address="1oBbE@example.com",
                 incoming=EmailServer(
                     user_name="test",
-                    password="test",  # noqa: S106
+                    password="test",
                     host="imap.gmail.com",
                     port=993,
                     ssl=True,
                 ),
                 outgoing=EmailServer(
                     user_name="test",
-                    password="test",  # noqa: S106
+                    password="test",
                     host="smtp.gmail.com",
                     port=587,
                     ssl=True,
