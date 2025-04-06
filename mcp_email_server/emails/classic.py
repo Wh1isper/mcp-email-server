@@ -83,7 +83,7 @@ class EmailClient:
             "attachments": attachments,
         }
 
-    async def get_emails_stream(
+    async def get_emails_stream(  # noqa: C901
         self,
         page: int = 1,
         page_size: int = 10,
