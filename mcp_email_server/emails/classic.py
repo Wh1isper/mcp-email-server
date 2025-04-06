@@ -103,6 +103,7 @@ class EmailClient:
 
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
+            await imap.id(name="mcp-email-server", version="1.0.0")
             await imap.select("INBOX")
 
             search_criteria = self._build_search_criteria(before, since, subject, body, text, from_address, to_address)
