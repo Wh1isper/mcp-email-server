@@ -159,6 +159,7 @@ class TestMcpTools:
                 text=None,
                 from_address="sender@example.com",
                 to_address=None,
+                order="desc",
             )
 
     @pytest.mark.asyncio
