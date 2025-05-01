@@ -94,6 +94,7 @@ class EmailClient:
         text: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
+        order: str = "desc",
     ) -> AsyncGenerator[dict[str, Any], None]:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -118,6 +119,9 @@ class EmailClient:
             logger.debug(f"Message IDs: {message_ids}")
             start = (page - 1) * page_size
             end = start + page_size
+
+            if order == "desc":
+                message_ids.reverse()
 
             # Fetch each message
             for _, message_id in enumerate(message_ids[start:end]):
@@ -279,10 +283,11 @@ class ClassicEmailHandler(EmailHandler):
         text: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
+        order: str = "desc",
     ) -> EmailPageResponse:
         emails = []
         async for email_data in self.incoming_client.get_emails_stream(
-            page, page_size, before, since, subject, body, text, from_address, to_address
+            page, page_size, before, since, subject, body, text, from_address, to_address, order
         ):
             emails.append(EmailData.from_email(email_data))
         total = await self.incoming_client.get_email_count(before, since, subject, body, text, from_address, to_address)

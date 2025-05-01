@@ -19,6 +19,7 @@ class EmailHandler(abc.ABC):
         text: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
+        order: str = "desc",
     ) -> "EmailPageResponse":
         """
         Get emails

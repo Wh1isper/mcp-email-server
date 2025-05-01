@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -38,19 +38,31 @@ async def add_email_account(email: EmailSettings) -> None:
 @mcp.tool(description="Paginate emails, page start at 1, before and since as UTC datetime.")
 async def page_email(
     account_name: Annotated[str, Field(description="The name of the email account.")],
-    page: Annotated[int, Field(default=1, description="The page number to retrieve (starting from 1).")] = 1,
+    page: Annotated[
+        int,
+        Field(default=1, description="The page number to retrieve (starting from 1)."),
+    ] = 1,
     page_size: Annotated[int, Field(default=10, description="The number of emails to retrieve per page.")] = 10,
     before: Annotated[
-        datetime | None, Field(default=None, description="Retrieve emails before this datetime (UTC).")
+        datetime | None,
+        Field(default=None, description="Retrieve emails before this datetime (UTC)."),
     ] = None,
     since: Annotated[
-        datetime | None, Field(default=None, description="Retrieve emails since this datetime (UTC).")
+        datetime | None,
+        Field(default=None, description="Retrieve emails since this datetime (UTC)."),
     ] = None,
     subject: Annotated[str | None, Field(default=None, description="Filter emails by subject.")] = None,
     body: Annotated[str | None, Field(default=None, description="Filter emails by body.")] = None,
     text: Annotated[str | None, Field(default=None, description="Filter emails by text.")] = None,
     from_address: Annotated[str | None, Field(default=None, description="Filter emails by sender address.")] = None,
-    to_address: Annotated[str | None, Field(default=None, description="Filter emails by recipient address.")] = None,
+    to_address: Annotated[
+        str | None,
+        Field(default=None, description="Filter emails by recipient address."),
+    ] = None,
+    order: Annotated[
+        Literal["asc", "desc"],
+        Field(default=None, description="Order emails by field."),
+    ] = "desc",
 ) -> EmailPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -64,6 +76,7 @@ async def page_email(
         text=text,
         from_address=from_address,
         to_address=to_address,
+        order=order,
     )
 
 
