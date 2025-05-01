@@ -61,7 +61,7 @@ async def page_email(
     ] = None,
     order: Annotated[
         Literal["asc", "desc"],
-        Field(default=None, description="Order emails by field."),
+        Field(default=None, description="Order emails by field. `asc` or `desc`."),
     ] = "desc",
 ) -> EmailPageResponse:
     handler = dispatch_handler(account_name)
