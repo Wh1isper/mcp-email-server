@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ai-zerolab-mcp-email-server-badge.png)](https://mseep.ai/app/ai-zerolab-mcp-email-server)
+
 # mcp-email-server
 
 [![Release](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)
