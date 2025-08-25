@@ -22,13 +22,13 @@ async def get_account(account_name: str) -> EmailSettings | ProviderSettings | N
     return settings.get_account(account_name, masked=True)
 
 
-@mcp.tool()
+@mcp.tool(description="List all configured email accounts with masked credentials.")
 async def list_available_accounts() -> list[AccountAttributes]:
     settings = get_settings()
     return [account.masked() for account in settings.get_accounts()]
 
 
-@mcp.tool()
+@mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> None:
     settings = get_settings()
     settings.add_email(email)
