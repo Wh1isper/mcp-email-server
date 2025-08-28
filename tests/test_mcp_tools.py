@@ -89,7 +89,10 @@ class TestMcpTools:
 
         with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
             # Call the function
-            await add_email_account(email_settings)
+            result = await add_email_account(email_settings)
+
+            # Verify the return value
+            assert result == "Successfully added email account 'test_account'"
 
             # Verify add_email and store were called correctly
             mock_settings.add_email.assert_called_once_with(email_settings)
@@ -170,7 +173,7 @@ class TestMcpTools:
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             # Call the function
-            await send_email(
+            result = await send_email(
                 account_name="test_account",
                 recipients=["recipient@example.com"],
                 subject="Test Subject",
@@ -178,6 +181,9 @@ class TestMcpTools:
                 cc=["cc@example.com"],
                 bcc=["bcc@example.com"],
             )
+
+            # Verify the return value
+            assert result == "Email sent successfully to recipient@example.com"
 
             # Verify send_email was called correctly
             mock_handler.send_email.assert_called_once_with(

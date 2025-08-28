@@ -29,10 +29,11 @@ async def list_available_accounts() -> list[AccountAttributes]:
 
 
 @mcp.tool(description="Add a new email account configuration to the settings.")
-async def add_email_account(email: EmailSettings) -> None:
+async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()
     settings.add_email(email)
     settings.store()
+    return f"Successfully added email account '{email.account_name}'"
 
 
 @mcp.tool(description="Paginate emails, page start at 1, before and since as UTC datetime.")
@@ -96,7 +97,8 @@ async def send_email(
         list[str] | None,
         Field(default=None, description="A list of BCC email addresses."),
     ] = None,
-) -> None:
+) -> str:
     handler = dispatch_handler(account_name)
     await handler.send_email(recipients, subject, body, cc, bcc)
-    return
+    recipient_str = ", ".join(recipients)
+    return f"Email sent successfully to {recipient_str}"
