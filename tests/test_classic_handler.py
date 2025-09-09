@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
@@ -5,7 +6,7 @@ import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
-from mcp_email_server.emails.models import EmailData, EmailPageResponse
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, EmailBodyResponse
 
 
 @pytest.fixture
@@ -56,9 +57,10 @@ class TestClassicEmailHandler:
         # Create test data
         now = datetime.now()
         email_data = {
+            "email_id": "123",
             "subject": "Test Subject",
             "from": "sender@example.com",
-            "body": "Test Body",
+            "to": ["recipient@example.com"],
             "date": now,
             "attachments": [],
         }
@@ -71,44 +73,39 @@ class TestClassicEmailHandler:
         mock_count = AsyncMock(return_value=1)
 
         # Apply the mocks
-        with patch.object(classic_handler.incoming_client, "get_emails_stream", return_value=mock_stream):
+        with patch.object(classic_handler.incoming_client, "get_emails_metadata_stream", return_value=mock_stream):
             with patch.object(classic_handler.incoming_client, "get_email_count", mock_count):
                 # Call the method
-                result = await classic_handler.get_emails(
+                result = await classic_handler.get_emails_metadata(
                     page=1,
                     page_size=10,
                     before=now,
                     since=None,
                     subject="Test",
-                    body=None,
-                    text=None,
                     from_address="sender@example.com",
                     to_address=None,
                 )
 
                 # Verify the result
-                assert isinstance(result, EmailPageResponse)
+                assert isinstance(result, EmailMetadataPageResponse)
                 assert result.page == 1
                 assert result.page_size == 10
                 assert result.before == now
                 assert result.since is None
                 assert result.subject == "Test"
-                assert result.body is None
-                assert result.text is None
                 assert len(result.emails) == 1
-                assert isinstance(result.emails[0], EmailData)
+                assert isinstance(result.emails[0], EmailMetadata)
                 assert result.emails[0].subject == "Test Subject"
                 assert result.emails[0].sender == "sender@example.com"
-                assert result.emails[0].body == "Test Body"
                 assert result.emails[0].date == now
                 assert result.emails[0].attachments == []
                 assert result.total == 1
 
                 # Verify the client methods were called correctly
-                classic_handler.incoming_client.get_emails_stream.assert_called_once_with(
-                    1, 10, now, None, "Test", None, None, "sender@example.com", None, "desc"
+                classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
+                    1, 10, now, None, "Test", "sender@example.com", None, "desc"
                 )
-                mock_count.assert_called_once_with(now, None, "Test", None, None, "sender@example.com", None)
+                mock_count.assert_called_once_with(now, None, "Test", from_address="sender@example.com", to_address=None)
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):

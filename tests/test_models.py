@@ -1,22 +1,23 @@
 from datetime import datetime
 
-from mcp_email_server.emails.models import EmailData, EmailPageResponse
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, EmailBodyResponse
 
 
-class TestEmailData:
+class TestEmailMetadata:
     def test_init(self):
         """Test initialization with valid data."""
-        email_data = EmailData(
+        email_data = EmailMetadata(
+            email_id="123",
             subject="Test Subject",
             sender="test@example.com",
-            body="Test Body",
+            recipients=["recipient@example.com"],
             date=datetime.now(),
             attachments=["file1.txt", "file2.pdf"],
         )
 
         assert email_data.subject == "Test Subject"
         assert email_data.sender == "test@example.com"
-        assert email_data.body == "Test Body"
+        assert email_data.recipients == ["recipient@example.com"]
         assert isinstance(email_data.date, datetime)
         assert email_data.attachments == ["file1.txt", "file2.pdf"]
 
@@ -24,42 +25,42 @@ class TestEmailData:
         """Test from_email class method."""
         now = datetime.now()
         email_dict = {
+            "email_id": "123",
             "subject": "Test Subject",
             "from": "test@example.com",
-            "body": "Test Body",
+            "to": ["recipient@example.com"],
             "date": now,
             "attachments": ["file1.txt", "file2.pdf"],
         }
 
-        email_data = EmailData.from_email(email_dict)
+        email_data = EmailMetadata.from_email(email_dict)
 
         assert email_data.subject == "Test Subject"
         assert email_data.sender == "test@example.com"
-        assert email_data.body == "Test Body"
+        assert email_data.recipients == ["recipient@example.com"]
         assert email_data.date == now
         assert email_data.attachments == ["file1.txt", "file2.pdf"]
 
 
-class TestEmailPageResponse:
+class TestEmailMetadataPageResponse:
     def test_init(self):
         """Test initialization with valid data."""
         now = datetime.now()
-        email_data = EmailData(
+        email_data = EmailMetadata(
+            email_id="123",
             subject="Test Subject",
             sender="test@example.com",
-            body="Test Body",
+            recipients=["recipient@example.com"],
             date=now,
             attachments=[],
         )
 
-        response = EmailPageResponse(
+        response = EmailMetadataPageResponse(
             page=1,
             page_size=10,
             before=now,
             since=None,
             subject="Test",
-            body=None,
-            text=None,
             emails=[email_data],
             total=1,
         )
@@ -69,22 +70,18 @@ class TestEmailPageResponse:
         assert response.before == now
         assert response.since is None
         assert response.subject == "Test"
-        assert response.body is None
-        assert response.text is None
         assert len(response.emails) == 1
         assert response.emails[0] == email_data
         assert response.total == 1
 
     def test_empty_emails(self):
         """Test with empty email list."""
-        response = EmailPageResponse(
+        response = EmailMetadataPageResponse(
             page=1,
             page_size=10,
             before=None,
             since=None,
             subject=None,
-            body=None,
-            text=None,
             emails=[],
             total=0,
         )

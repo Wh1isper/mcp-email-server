@@ -177,7 +177,7 @@ This is the email body."""
                 }
 
                 emails = []
-                async for email_data in email_client.get_emails_stream(page=1, page_size=10):
+                async for email_data in email_client.get_emails_metadata_stream(page=1, page_size=10):
                     emails.append(email_data)
 
                 # We should get 3 emails (from the mocked search result "1 2 3")

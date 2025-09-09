@@ -12,7 +12,7 @@ import aiosmtplib
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
-from mcp_email_server.emails.models import EmailData, EmailPageResponse
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, EmailBodyResponse, EmailContentBatchResponse
 from mcp_email_server.log import logger
 
 
@@ -26,7 +26,7 @@ class EmailClient:
         self.smtp_use_tls = self.email_server.use_ssl
         self.smtp_start_tls = self.email_server.start_ssl
 
-    def _parse_email_data(self, raw_email: bytes) -> dict[str, Any]:  # noqa: C901
+    def _parse_email_data(self, raw_email: bytes, email_id: str | None = None) -> dict[str, Any]:  # noqa: C901
         """Parse raw email data into a structured dictionary."""
         parser = BytesParser(policy=default)
         email_message = parser.parsebytes(raw_email)
@@ -35,6 +35,18 @@ class EmailClient:
         subject = email_message.get("Subject", "")
         sender = email_message.get("From", "")
         date_str = email_message.get("Date", "")
+        
+        # Extract recipients
+        to_addresses = []
+        to_header = email_message.get("To", "")
+        if to_header:
+            # Simple parsing - split by comma and strip whitespace
+            to_addresses = [addr.strip() for addr in to_header.split(",")]
+        
+        # Also check CC recipients
+        cc_header = email_message.get("Cc", "")
+        if cc_header:
+            to_addresses.extend([addr.strip() for addr in cc_header.split(",")])
 
         # Parse date
         try:
@@ -77,137 +89,15 @@ class EmailClient:
                     body = payload.decode("utf-8", errors="replace")
 
         return {
+            "email_id": email_id or "",
             "subject": subject,
             "from": sender,
+            "to": to_addresses,
             "body": body,
             "date": date,
             "attachments": attachments,
         }
 
-    async def get_emails_stream(  # noqa: C901
-        self,
-        page: int = 1,
-        page_size: int = 10,
-        before: datetime | None = None,
-        since: datetime | None = None,
-        subject: str | None = None,
-        body: str | None = None,
-        text: str | None = None,
-        from_address: str | None = None,
-        to_address: str | None = None,
-        order: str = "desc",
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        imap = self.imap_class(self.email_server.host, self.email_server.port)
-        try:
-            # Wait for the connection to be established
-            await imap._client_task
-            await imap.wait_hello_from_server()
-
-            # Login and select inbox
-            await imap.login(self.email_server.user_name, self.email_server.password)
-            try:
-                await imap.id(name="mcp-email-server", version="1.0.0")
-            except Exception as e:
-                logger.warning(f"IMAP ID command failed: {e!s}")
-            await imap.select("INBOX")
-
-            search_criteria = self._build_search_criteria(before, since, subject, body, text, from_address, to_address)
-            logger.info(f"Get: Search criteria: {search_criteria}")
-
-            # Search for messages - use UID SEARCH for better compatibility
-            _, messages = await imap.uid_search(*search_criteria)
-
-            # Handle empty or None responses
-            if not messages or not messages[0]:
-                logger.warning("No messages returned from search")
-                message_ids = []
-            else:
-                message_ids = messages[0].split()
-                logger.info(f"Found {len(message_ids)} message IDs")
-            start = (page - 1) * page_size
-            end = start + page_size
-
-            if order == "desc":
-                message_ids.reverse()
-
-            # Fetch each message
-            for _, message_id in enumerate(message_ids[start:end]):
-                try:
-                    # Convert message_id from bytes to string
-                    message_id_str = message_id.decode("utf-8")
-
-                    # Fetch the email using UID - try different formats for compatibility
-                    data = None
-                    fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
-
-                    for fetch_format in fetch_formats:
-                        try:
-                            _, data = await imap.uid("fetch", message_id_str, fetch_format)
-
-                            if data and len(data) > 0:
-                                # Check if we got actual email content or just metadata
-                                has_content = False
-                                for item in data:
-                                    if (
-                                        isinstance(item, bytes)
-                                        and b"FETCH (" in item
-                                        and b"RFC822" not in item
-                                        and b"BODY" not in item
-                                    ):
-                                        # This is just metadata (like 'FETCH (UID 71998)'), not actual content
-                                        continue
-                                    elif isinstance(item, bytes | bytearray) and len(item) > 100:
-                                        # This looks like email content
-                                        has_content = True
-                                        break
-
-                                if has_content:
-                                    break
-                                else:
-                                    data = None  # Try next format
-
-                        except Exception as e:
-                            logger.debug(f"Fetch format {fetch_format} failed: {e}")
-                            data = None
-
-                    if not data:
-                        logger.error(f"Failed to fetch UID {message_id_str} with any format")
-                        continue
-
-                    # Find the email data in the response
-                    raw_email = None
-
-                    # The email content is typically at index 1 as a bytearray
-                    if len(data) > 1 and isinstance(data[1], bytearray):
-                        raw_email = bytes(data[1])
-                    else:
-                        # Search through all items for email content
-                        for item in data:
-                            if isinstance(item, bytes | bytearray) and len(item) > 100:
-                                # Skip IMAP protocol responses
-                                if isinstance(item, bytes) and b"FETCH" in item:
-                                    continue
-                                # This is likely the email content
-                                raw_email = bytes(item) if isinstance(item, bytearray) else item
-                                break
-
-                    if raw_email:
-                        try:
-                            parsed_email = self._parse_email_data(raw_email)
-                            yield parsed_email
-                        except Exception as e:
-                            # Log error but continue with other emails
-                            logger.error(f"Error parsing email: {e!s}")
-                    else:
-                        logger.error(f"Could not find email data in response for message ID: {message_id_str}")
-                except Exception as e:
-                    logger.error(f"Error fetching message {message_id}: {e!s}")
-        finally:
-            # Ensure we logout properly
-            try:
-                await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
 
     @staticmethod
     def _build_search_criteria(
@@ -260,11 +150,223 @@ class EmailClient:
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await imap.select("INBOX")
-            search_criteria = self._build_search_criteria(before, since, subject, body, text, from_address, to_address)
+            search_criteria = self._build_search_criteria(before, since, subject, from_address=from_address, to_address=to_address)
             logger.info(f"Count: Search criteria: {search_criteria}")
             # Search for messages and count them - use UID SEARCH for consistency
             _, messages = await imap.uid_search(*search_criteria)
             return len(messages[0].split())
+        finally:
+            # Ensure we logout properly
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def get_emails_metadata_stream(  # noqa: C901
+        self,
+        page: int = 1,
+        page_size: int = 10,
+        before: datetime | None = None,
+        since: datetime | None = None,
+        subject: str | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
+        order: str = "desc",
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        try:
+            # Wait for the connection to be established
+            await imap._client_task
+            await imap.wait_hello_from_server()
+
+            # Login and select inbox
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            try:
+                await imap.id(name="mcp-email-server", version="1.0.0")
+            except Exception as e:
+                logger.warning(f"IMAP ID command failed: {e!s}")
+            await imap.select("INBOX")
+
+            search_criteria = self._build_search_criteria(before, since, subject, from_address=from_address, to_address=to_address)
+            logger.info(f"Get metadata: Search criteria: {search_criteria}")
+
+            # Search for messages - use UID SEARCH for better compatibility
+            _, messages = await imap.uid_search(*search_criteria)
+
+            # Handle empty or None responses
+            if not messages or not messages[0]:
+                logger.warning("No messages returned from search")
+                email_ids = []
+            else:
+                email_ids = messages[0].split()
+                logger.info(f"Found {len(email_ids)} email IDs")
+            start = (page - 1) * page_size
+            end = start + page_size
+
+            if order == "desc":
+                email_ids.reverse()
+
+            # Fetch each message's metadata only
+            for _, email_id in enumerate(email_ids[start:end]):
+                try:
+                    # Convert email_id from bytes to string
+                    email_id_str = email_id.decode("utf-8")
+
+                    # Fetch only headers to get metadata without body
+                    _, data = await imap.uid("fetch", email_id_str, "BODY.PEEK[HEADER]")
+
+                    if not data:
+                        logger.error(f"Failed to fetch headers for UID {email_id_str}")
+                        continue
+
+                    # Find the email headers in the response
+                    raw_headers = None
+                    if len(data) > 1 and isinstance(data[1], bytearray):
+                        raw_headers = bytes(data[1])
+                    else:
+                        # Search through all items for header content
+                        for item in data:
+                            if isinstance(item, bytes | bytearray) and len(item) > 10:
+                                # Skip IMAP protocol responses
+                                if isinstance(item, bytes) and b"FETCH" in item:
+                                    continue
+                                # This is likely the header content
+                                raw_headers = bytes(item) if isinstance(item, bytearray) else item
+                                break
+
+                    if raw_headers:
+                        try:
+                            # Parse headers only
+                            parser = BytesParser(policy=default)
+                            email_message = parser.parsebytes(raw_headers)
+
+                            # Extract metadata
+                            subject = email_message.get("Subject", "")
+                            sender = email_message.get("From", "")
+                            date_str = email_message.get("Date", "")
+                            
+                            # Extract recipients
+                            to_addresses = []
+                            to_header = email_message.get("To", "")
+                            if to_header:
+                                to_addresses = [addr.strip() for addr in to_header.split(",")]
+                            
+                            cc_header = email_message.get("Cc", "")
+                            if cc_header:
+                                to_addresses.extend([addr.strip() for addr in cc_header.split(",")])
+
+                            # Parse date
+                            try:
+                                date_tuple = email.utils.parsedate_tz(date_str)
+                                date = datetime.fromtimestamp(email.utils.mktime_tz(date_tuple)) if date_tuple else datetime.now()
+                            except Exception:
+                                date = datetime.now()
+
+                            # For metadata, we don't fetch attachments to save bandwidth
+                            # We'll mark it as unknown for now
+                            metadata = {
+                                "email_id": email_id_str,
+                                "subject": subject,
+                                "from": sender,
+                                "to": to_addresses,
+                                "date": date,
+                                "attachments": [],  # We don't fetch attachment info for metadata
+                            }
+                            yield metadata
+                        except Exception as e:
+                            # Log error but continue with other emails
+                            logger.error(f"Error parsing email metadata: {e!s}")
+                    else:
+                        logger.error(f"Could not find header data in response for email ID: {email_id_str}")
+                except Exception as e:
+                    logger.error(f"Error fetching email metadata {email_id}: {e!s}")
+        finally:
+            # Ensure we logout properly
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def get_email_body_by_id(self, email_id: str) -> dict[str, Any] | None:
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        try:
+            # Wait for the connection to be established
+            await imap._client_task
+            await imap.wait_hello_from_server()
+
+            # Login and select inbox
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            try:
+                await imap.id(name="mcp-email-server", version="1.0.0")
+            except Exception as e:
+                logger.warning(f"IMAP ID command failed: {e!s}")
+            await imap.select("INBOX")
+
+            # Fetch the specific email by UID
+            data = None
+            fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
+
+            for fetch_format in fetch_formats:
+                try:
+                    _, data = await imap.uid("fetch", email_id, fetch_format)
+
+                    if data and len(data) > 0:
+                        # Check if we got actual email content or just metadata
+                        has_content = False
+                        for item in data:
+                            if (
+                                isinstance(item, bytes)
+                                and b"FETCH (" in item
+                                and b"RFC822" not in item
+                                and b"BODY" not in item
+                            ):
+                                # This is just metadata, not actual content
+                                continue
+                            elif isinstance(item, bytes | bytearray) and len(item) > 100:
+                                # This looks like email content
+                                has_content = True
+                                break
+
+                        if has_content:
+                            break
+                        else:
+                            data = None  # Try next format
+
+                except Exception as e:
+                    logger.debug(f"Fetch format {fetch_format} failed: {e}")
+                    data = None
+
+            if not data:
+                logger.error(f"Failed to fetch UID {email_id} with any format")
+                return None
+
+            # Find the email data in the response
+            raw_email = None
+
+            # The email content is typically at index 1 as a bytearray
+            if len(data) > 1 and isinstance(data[1], bytearray):
+                raw_email = bytes(data[1])
+            else:
+                # Search through all items for email content
+                for item in data:
+                    if isinstance(item, bytes | bytearray) and len(item) > 100:
+                        # Skip IMAP protocol responses
+                        if isinstance(item, bytes) and b"FETCH" in item:
+                            continue
+                        # This is likely the email content
+                        raw_email = bytes(item) if isinstance(item, bytearray) else item
+                        break
+
+            if raw_email:
+                try:
+                    return self._parse_email_data(raw_email, email_id)
+                except Exception as e:
+                    logger.error(f"Error parsing email: {e!s}")
+                    return None
+            else:
+                logger.error(f"Could not find email data in response for email ID: {email_id}")
+                return None
+
         finally:
             # Ensure we logout properly
             try:
@@ -326,35 +428,63 @@ class ClassicEmailHandler(EmailHandler):
             sender=f"{email_settings.full_name} <{email_settings.email_address}>",
         )
 
-    async def get_emails(
+
+    async def get_emails_metadata(
         self,
         page: int = 1,
         page_size: int = 10,
         before: datetime | None = None,
         since: datetime | None = None,
         subject: str | None = None,
-        body: str | None = None,
-        text: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
         order: str = "desc",
-    ) -> EmailPageResponse:
+    ) -> EmailMetadataPageResponse:
         emails = []
-        async for email_data in self.incoming_client.get_emails_stream(
-            page, page_size, before, since, subject, body, text, from_address, to_address, order
+        async for email_data in self.incoming_client.get_emails_metadata_stream(
+            page, page_size, before, since, subject, from_address, to_address, order
         ):
-            emails.append(EmailData.from_email(email_data))
-        total = await self.incoming_client.get_email_count(before, since, subject, body, text, from_address, to_address)
-        return EmailPageResponse(
+            emails.append(EmailMetadata.from_email(email_data))
+        total = await self.incoming_client.get_email_count(before, since, subject, from_address=from_address, to_address=to_address)
+        return EmailMetadataPageResponse(
             page=page,
             page_size=page_size,
             before=before,
             since=since,
             subject=subject,
-            body=body,
-            text=text,
             emails=emails,
             total=total,
+        )
+
+    async def get_emails_content(self, email_ids: list[str]) -> EmailContentBatchResponse:
+        """批量获取邮件正文内容"""
+        emails = []
+        failed_ids = []
+        
+        for email_id in email_ids:
+            try:
+                email_data = await self.incoming_client.get_email_body_by_id(email_id)
+                if email_data:
+                    emails.append(EmailBodyResponse(
+                        email_id=email_data["email_id"],
+                        subject=email_data["subject"],
+                        sender=email_data["from"],
+                        recipients=email_data["to"],
+                        date=email_data["date"],
+                        body=email_data["body"],
+                        attachments=email_data["attachments"],
+                    ))
+                else:
+                    failed_ids.append(email_id)
+            except Exception as e:
+                logger.error(f"Failed to retrieve email {email_id}: {e}")
+                failed_ids.append(email_id)
+        
+        return EmailContentBatchResponse(
+            emails=emails,
+            requested_count=len(email_ids),
+            retrieved_count=len(emails),
+            failed_ids=failed_ids,
         )
 
     async def send_email(

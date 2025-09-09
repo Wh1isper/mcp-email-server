@@ -5,12 +5,18 @@ import pytest
 
 from mcp_email_server.app import (
     add_email_account,
+    get_emails_content,
     list_available_accounts,
-    page_email,
+    list_emails_metadata,
     send_email,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
-from mcp_email_server.emails.models import EmailData, EmailPageResponse
+from mcp_email_server.emails.models import (
+    EmailBodyResponse,
+    EmailContentBatchResponse,
+    EmailMetadata,
+    EmailMetadataPageResponse,
+)
 
 
 class TestMcpTools:
@@ -98,72 +104,170 @@ class TestMcpTools:
             mock_settings.add_email.assert_called_once_with(email_settings)
             mock_settings.store.assert_called_once()
 
+
     @pytest.mark.asyncio
-    async def test_page_email(self):
-        """Test page_email MCP tool."""
+    async def test_list_emails_metadata(self):
+        """Test list_emails_metadata MCP tool."""
         # Create test data
         now = datetime.now()
-        email_data = EmailData(
+        email_metadata = EmailMetadata(
+            email_id="12345",
             subject="Test Subject",
             sender="sender@example.com",
-            body="Test Body",
+            recipients=["recipient@example.com"],
             date=now,
             attachments=[],
         )
 
-        email_page = EmailPageResponse(
+        email_metadata_page = EmailMetadataPageResponse(
             page=1,
             page_size=10,
             before=now,
             since=None,
             subject="Test",
-            body=None,
-            text=None,
-            emails=[email_data],
+            emails=[email_metadata],
             total=1,
         )
 
         # Mock the dispatch_handler function
         mock_handler = AsyncMock()
-        mock_handler.get_emails.return_value = email_page
+        mock_handler.get_emails_metadata.return_value = email_metadata_page
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             # Call the function
-            result = await page_email(
+            result = await list_emails_metadata(
                 account_name="test_account",
                 page=1,
                 page_size=10,
                 before=now,
                 since=None,
                 subject="Test",
-                body=None,
-                text=None,
                 from_address="sender@example.com",
                 to_address=None,
             )
 
             # Verify the result
-            assert result == email_page
+            assert result == email_metadata_page
             assert result.page == 1
             assert result.page_size == 10
             assert result.before == now
             assert result.subject == "Test"
             assert len(result.emails) == 1
             assert result.emails[0].subject == "Test Subject"
+            assert result.emails[0].email_id == "12345"
 
-            # Verify dispatch_handler and get_emails were called correctly
-            mock_handler.get_emails.assert_called_once_with(
+            # Verify dispatch_handler and get_emails_metadata were called correctly
+            mock_handler.get_emails_metadata.assert_called_once_with(
                 page=1,
                 page_size=10,
                 before=now,
                 since=None,
                 subject="Test",
-                body=None,
-                text=None,
                 from_address="sender@example.com",
                 to_address=None,
                 order="desc",
             )
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_single(self):
+        """Test get_emails_content MCP tool with single email."""
+        # Create test data
+        now = datetime.now()
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="Test Subject",
+            sender="sender@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="This is the test email body content.",
+            attachments=["attachment1.pdf"],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        # Mock the dispatch_handler function
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            # Call the function
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+            )
+
+            # Verify the result
+            assert result == batch_response
+            assert result.requested_count == 1
+            assert result.retrieved_count == 1
+            assert len(result.failed_ids) == 0
+            assert len(result.emails) == 1
+            assert result.emails[0].email_id == "12345"
+            assert result.emails[0].subject == "Test Subject"
+
+            # Verify dispatch_handler and get_emails_content were called correctly
+            mock_handler.get_emails_content.assert_called_once_with(["12345"])
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_batch(self):
+        """Test get_emails_content MCP tool with multiple emails."""
+        # Create test data
+        now = datetime.now()
+        email1 = EmailBodyResponse(
+            email_id="12345",
+            subject="Test Subject 1",
+            sender="sender1@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="This is the first test email body content.",
+            attachments=[],
+        )
+        
+        email2 = EmailBodyResponse(
+            email_id="12346",
+            subject="Test Subject 2",
+            sender="sender2@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="This is the second test email body content.",
+            attachments=["attachment1.pdf"],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email1, email2],
+            requested_count=3,
+            retrieved_count=2,
+            failed_ids=["12347"],
+        )
+
+        # Mock the dispatch_handler function
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            # Call the function
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345", "12346", "12347"],
+            )
+
+            # Verify the result
+            assert result == batch_response
+            assert result.requested_count == 3
+            assert result.retrieved_count == 2
+            assert len(result.failed_ids) == 1
+            assert result.failed_ids[0] == "12347"
+            assert len(result.emails) == 2
+            assert result.emails[0].email_id == "12345"
+            assert result.emails[1].email_id == "12346"
+
+            # Verify dispatch_handler and get_emails_content were called correctly
+            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"])
 
     @pytest.mark.asyncio
     async def test_send_email(self):

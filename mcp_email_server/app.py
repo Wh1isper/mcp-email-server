@@ -11,7 +11,7 @@ from mcp_email_server.config import (
     get_settings,
 )
 from mcp_email_server.emails.dispatcher import dispatch_handler
-from mcp_email_server.emails.models import EmailPageResponse
+from mcp_email_server.emails.models import EmailMetadataPageResponse, EmailContentBatchResponse
 
 mcp = FastMCP("email")
 
@@ -36,8 +36,8 @@ async def add_email_account(email: EmailSettings) -> str:
     return f"Successfully added email account '{email.account_name}'"
 
 
-@mcp.tool(description="Paginate emails, page start at 1, before and since as UTC datetime.")
-async def page_email(
+@mcp.tool(description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.")
+async def list_emails_metadata(
     account_name: Annotated[str, Field(description="The name of the email account.")],
     page: Annotated[
         int,
@@ -53,8 +53,6 @@ async def page_email(
         Field(default=None, description="Retrieve emails since this datetime (UTC)."),
     ] = None,
     subject: Annotated[str | None, Field(default=None, description="Filter emails by subject.")] = None,
-    body: Annotated[str | None, Field(default=None, description="Filter emails by body.")] = None,
-    text: Annotated[str | None, Field(default=None, description="Filter emails by text.")] = None,
     from_address: Annotated[str | None, Field(default=None, description="Filter emails by sender address.")] = None,
     to_address: Annotated[
         str | None,
@@ -64,22 +62,28 @@ async def page_email(
         Literal["asc", "desc"],
         Field(default=None, description="Order emails by field. `asc` or `desc`."),
     ] = "desc",
-) -> EmailPageResponse:
+) -> EmailMetadataPageResponse:
     handler = dispatch_handler(account_name)
 
-    return await handler.get_emails(
+    return await handler.get_emails_metadata(
         page=page,
         page_size=page_size,
         before=before,
         since=since,
         subject=subject,
-        body=body,
-        text=text,
         from_address=from_address,
         to_address=to_address,
         order=order,
     )
 
+
+@mcp.tool(description="Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first to get the email_id.")
+async def get_emails_content(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[list[str], Field(description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids.")],
+) -> EmailContentBatchResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.get_emails_content(email_ids)
 
 @mcp.tool(
     description="Send an email using the specified account. Recipient should be a list of email addresses.",
