@@ -104,7 +104,6 @@ class TestMcpTools:
             mock_settings.add_email.assert_called_once_with(email_settings)
             mock_settings.store.assert_called_once()
 
-
     @pytest.mark.asyncio
     async def test_list_emails_metadata(self):
         """Test list_emails_metadata MCP tool."""
@@ -227,7 +226,7 @@ class TestMcpTools:
             body="This is the first test email body content.",
             attachments=[],
         )
-        
+
         email2 = EmailBodyResponse(
             email_id="12346",
             subject="Test Subject 2",

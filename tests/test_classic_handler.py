@@ -1,4 +1,3 @@
-
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
@@ -6,7 +5,7 @@ import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
-from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, EmailBodyResponse
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse
 
 
 @pytest.fixture
@@ -105,7 +104,9 @@ class TestClassicEmailHandler:
                 classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
                     1, 10, now, None, "Test", "sender@example.com", None, "desc"
                 )
-                mock_count.assert_called_once_with(now, None, "Test", from_address="sender@example.com", to_address=None)
+                mock_count.assert_called_once_with(
+                    now, None, "Test", from_address="sender@example.com", to_address=None
+                )
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):

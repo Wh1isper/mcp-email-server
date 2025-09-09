@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, EmailBodyResponse
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse
 
 
 class TestEmailMetadata:

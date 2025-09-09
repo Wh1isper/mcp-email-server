@@ -6,7 +6,8 @@ from pydantic import BaseModel
 
 class EmailMetadata(BaseModel):
     """Email metadata"""
-    email_id: str  
+
+    email_id: str
     subject: str
     sender: str
     recipients: list[str]  # Recipient list
@@ -27,6 +28,7 @@ class EmailMetadata(BaseModel):
 
 class EmailMetadataPageResponse(BaseModel):
     """Paged email metadata response"""
+
     page: int
     page_size: int
     before: datetime | None
@@ -38,6 +40,7 @@ class EmailMetadataPageResponse(BaseModel):
 
 class EmailBodyResponse(BaseModel):
     """Single email body response"""
+
     email_id: str  # IMAP UID of this email
     subject: str
     sender: str
@@ -49,7 +52,8 @@ class EmailBodyResponse(BaseModel):
 
 class EmailContentBatchResponse(BaseModel):
     """Batch email content response for multiple emails"""
+
     emails: list[EmailBodyResponse]
     requested_count: int
     retrieved_count: int
-    failed_ids: list[str]  
+    failed_ids: list[str]

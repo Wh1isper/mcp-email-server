@@ -12,7 +12,12 @@ import aiosmtplib
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
-from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, EmailBodyResponse, EmailContentBatchResponse
+from mcp_email_server.emails.models import (
+    EmailBodyResponse,
+    EmailContentBatchResponse,
+    EmailMetadata,
+    EmailMetadataPageResponse,
+)
 from mcp_email_server.log import logger
 
 
@@ -35,14 +40,14 @@ class EmailClient:
         subject = email_message.get("Subject", "")
         sender = email_message.get("From", "")
         date_str = email_message.get("Date", "")
-        
+
         # Extract recipients
         to_addresses = []
         to_header = email_message.get("To", "")
         if to_header:
             # Simple parsing - split by comma and strip whitespace
             to_addresses = [addr.strip() for addr in to_header.split(",")]
-        
+
         # Also check CC recipients
         cc_header = email_message.get("Cc", "")
         if cc_header:
@@ -98,7 +103,6 @@ class EmailClient:
             "attachments": attachments,
         }
 
-
     @staticmethod
     def _build_search_criteria(
         before: datetime | None = None,
@@ -150,7 +154,9 @@ class EmailClient:
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await imap.select("INBOX")
-            search_criteria = self._build_search_criteria(before, since, subject, from_address=from_address, to_address=to_address)
+            search_criteria = self._build_search_criteria(
+                before, since, subject, from_address=from_address, to_address=to_address
+            )
             logger.info(f"Count: Search criteria: {search_criteria}")
             # Search for messages and count them - use UID SEARCH for consistency
             _, messages = await imap.uid_search(*search_criteria)
@@ -187,7 +193,9 @@ class EmailClient:
                 logger.warning(f"IMAP ID command failed: {e!s}")
             await imap.select("INBOX")
 
-            search_criteria = self._build_search_criteria(before, since, subject, from_address=from_address, to_address=to_address)
+            search_criteria = self._build_search_criteria(
+                before, since, subject, from_address=from_address, to_address=to_address
+            )
             logger.info(f"Get metadata: Search criteria: {search_criteria}")
 
             # Search for messages - use UID SEARCH for better compatibility
@@ -244,13 +252,13 @@ class EmailClient:
                             subject = email_message.get("Subject", "")
                             sender = email_message.get("From", "")
                             date_str = email_message.get("Date", "")
-                            
+
                             # Extract recipients
                             to_addresses = []
                             to_header = email_message.get("To", "")
                             if to_header:
                                 to_addresses = [addr.strip() for addr in to_header.split(",")]
-                            
+
                             cc_header = email_message.get("Cc", "")
                             if cc_header:
                                 to_addresses.extend([addr.strip() for addr in cc_header.split(",")])
@@ -258,7 +266,11 @@ class EmailClient:
                             # Parse date
                             try:
                                 date_tuple = email.utils.parsedate_tz(date_str)
-                                date = datetime.fromtimestamp(email.utils.mktime_tz(date_tuple)) if date_tuple else datetime.now()
+                                date = (
+                                    datetime.fromtimestamp(email.utils.mktime_tz(date_tuple))
+                                    if date_tuple
+                                    else datetime.now()
+                                )
                             except Exception:
                                 date = datetime.now()
 
@@ -428,7 +440,6 @@ class ClassicEmailHandler(EmailHandler):
             sender=f"{email_settings.full_name} <{email_settings.email_address}>",
         )
 
-
     async def get_emails_metadata(
         self,
         page: int = 1,
@@ -445,7 +456,9 @@ class ClassicEmailHandler(EmailHandler):
             page, page_size, before, since, subject, from_address, to_address, order
         ):
             emails.append(EmailMetadata.from_email(email_data))
-        total = await self.incoming_client.get_email_count(before, since, subject, from_address=from_address, to_address=to_address)
+        total = await self.incoming_client.get_email_count(
+            before, since, subject, from_address=from_address, to_address=to_address
+        )
         return EmailMetadataPageResponse(
             page=page,
             page_size=page_size,
@@ -460,26 +473,28 @@ class ClassicEmailHandler(EmailHandler):
         """批量获取邮件正文内容"""
         emails = []
         failed_ids = []
-        
+
         for email_id in email_ids:
             try:
                 email_data = await self.incoming_client.get_email_body_by_id(email_id)
                 if email_data:
-                    emails.append(EmailBodyResponse(
-                        email_id=email_data["email_id"],
-                        subject=email_data["subject"],
-                        sender=email_data["from"],
-                        recipients=email_data["to"],
-                        date=email_data["date"],
-                        body=email_data["body"],
-                        attachments=email_data["attachments"],
-                    ))
+                    emails.append(
+                        EmailBodyResponse(
+                            email_id=email_data["email_id"],
+                            subject=email_data["subject"],
+                            sender=email_data["from"],
+                            recipients=email_data["to"],
+                            date=email_data["date"],
+                            body=email_data["body"],
+                            attachments=email_data["attachments"],
+                        )
+                    )
                 else:
                     failed_ids.append(email_id)
             except Exception as e:
                 logger.error(f"Failed to retrieve email {email_id}: {e}")
                 failed_ids.append(email_id)
-        
+
         return EmailContentBatchResponse(
             emails=emails,
             requested_count=len(email_ids),

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcp_email_server.emails.models import EmailMetadataPageResponse, EmailContentBatchResponse
+    from mcp_email_server.emails.models import EmailContentBatchResponse, EmailMetadataPageResponse
 
 
 class EmailHandler(abc.ABC):
