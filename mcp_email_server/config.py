@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -34,6 +34,7 @@ class EmailServer(BaseModel):
 
 
 class AccountAttributes(BaseModel):
+    model_config = ConfigDict(json_encoders={datetime.datetime: lambda v: v.isoformat()})
     account_name: str
     description: str = ""
     created_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
@@ -59,6 +60,10 @@ class AccountAttributes(BaseModel):
         return self.model_dump(exclude={"created_at", "updated_at"}) == other.model_dump(
             exclude={"created_at", "updated_at"}
         )
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_datetime(self, v: datetime.datetime) -> str:
+        return v.isoformat()
 
     def masked(self) -> AccountAttributes:
         return self.model_copy()
