@@ -92,7 +92,9 @@ class EmailClient:
                     body = payload.decode(charset)
                 except UnicodeDecodeError:
                     body = payload.decode("utf-8", errors="replace")
-
+        # TODO: Allow retrieving full email body
+        if body and len(body) > 20000:
+            body = body[:20000] + "...[TRUNCATED]"
         return {
             "email_id": email_id or "",
             "subject": subject,
@@ -140,8 +142,6 @@ class EmailClient:
         before: datetime | None = None,
         since: datetime | None = None,
         subject: str | None = None,
-        body: str | None = None,
-        text: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
     ) -> int:
@@ -467,7 +467,7 @@ class ClassicEmailHandler(EmailHandler):
         )
 
     async def get_emails_content(self, email_ids: list[str]) -> EmailContentBatchResponse:
-        """批量获取邮件正文内容"""
+        """Batch retrieve email body content"""
         emails = []
         failed_ids = []
 
