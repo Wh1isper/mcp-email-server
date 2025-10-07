@@ -384,10 +384,17 @@ class EmailClient:
                 logger.info(f"Error during logout: {e}")
 
     async def send_email(
-        self, recipients: list[str], subject: str, body: str, cc: list[str] | None = None, bcc: list[str] | None = None
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
     ):
         # Create message with UTF-8 encoding to support special characters
-        msg = MIMEText(body, "plain", "utf-8")
+        content_type = "html" if html else "plain"
+        msg = MIMEText(body, content_type, "utf-8")
 
         # Handle subject with special characters
         if any(ord(c) > 127 for c in subject):
@@ -500,6 +507,12 @@ class ClassicEmailHandler(EmailHandler):
         )
 
     async def send_email(
-        self, recipients: list[str], subject: str, body: str, cc: list[str] | None = None, bcc: list[str] | None = None
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
     ) -> None:
-        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc)
+        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html)

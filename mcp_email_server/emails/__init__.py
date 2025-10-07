@@ -31,7 +31,13 @@ class EmailHandler(abc.ABC):
 
     @abc.abstractmethod
     async def send_email(
-        self, recipients: list[str], subject: str, body: str, cc: list[str] | None = None, bcc: list[str] | None = None
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
     ) -> None:
         """
         Send email

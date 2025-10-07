@@ -111,8 +111,12 @@ async def send_email(
         list[str] | None,
         Field(default=None, description="A list of BCC email addresses."),
     ] = None,
+    html: Annotated[
+        bool,
+        Field(default=False, description="Whether to send the email as HTML (True) or plain text (False)."),
+    ] = False,
 ) -> str:
     handler = dispatch_handler(account_name)
-    await handler.send_email(recipients, subject, body, cc, bcc)
+    await handler.send_email(recipients, subject, body, cc, bcc, html)
     recipient_str = ", ".join(recipients)
     return f"Email sent successfully to {recipient_str}"
