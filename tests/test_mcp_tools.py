@@ -295,4 +295,5 @@ class TestMcpTools:
                 "Test Body",
                 ["cc@example.com"],
                 ["bcc@example.com"],
+                False,
             )
