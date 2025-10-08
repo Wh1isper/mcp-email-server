@@ -26,5 +26,5 @@ runs:
         cache-suffix: ${{ matrix.python-version }}
 
     - name: Install Python dependencies
-      run: uv sync --frozen --python={% raw %}${{ matrix.python-version }}{% endraw %}
+      run: uv sync --frozen --python=${{ matrix.python-version }}
       shell: bash
