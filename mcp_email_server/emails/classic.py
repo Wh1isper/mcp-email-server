@@ -56,7 +56,11 @@ class EmailClient:
         # Parse date
         try:
             date_tuple = email.utils.parsedate_tz(date_str)
-            date = datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=timezone.utc) if date_tuple else datetime.now(timezone.utc)
+            date = (
+                datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=timezone.utc)
+                if date_tuple
+                else datetime.now(timezone.utc)
+            )
         except Exception:
             date = datetime.now(timezone.utc)
 
