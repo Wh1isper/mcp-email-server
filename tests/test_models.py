@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse
 
@@ -11,7 +11,7 @@ class TestEmailMetadata:
             subject="Test Subject",
             sender="test@example.com",
             recipients=["recipient@example.com"],
-            date=datetime.now(),
+            date=datetime.now(timezone.utc),
             attachments=["file1.txt", "file2.pdf"],
         )
 
@@ -23,7 +23,7 @@ class TestEmailMetadata:
 
     def test_from_email(self):
         """Test from_email class method."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         email_dict = {
             "email_id": "123",
             "subject": "Test Subject",
@@ -45,7 +45,7 @@ class TestEmailMetadata:
 class TestEmailMetadataPageResponse:
     def test_init(self):
         """Test initialization with valid data."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         email_data = EmailMetadata(
             email_id="123",
             subject="Test Subject",

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -54,7 +54,7 @@ class TestClassicEmailHandler:
     async def test_get_emails(self, classic_handler):
         """Test get_emails method."""
         # Create test data
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         email_data = {
             "email_id": "123",
             "subject": "Test Subject",

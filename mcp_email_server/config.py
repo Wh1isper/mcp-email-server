@@ -4,6 +4,7 @@ import datetime
 import os
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
@@ -37,8 +38,8 @@ class AccountAttributes(BaseModel):
     model_config = ConfigDict(json_encoders={datetime.datetime: lambda v: v.isoformat()})
     account_name: str
     description: str = ""
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
-    updated_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(ZoneInfo("UTC")))
+    updated_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(ZoneInfo("UTC")))
 
     @model_validator(mode="after")
     @classmethod
@@ -48,7 +49,7 @@ class AccountAttributes(BaseModel):
         obj.model_config["validate_assignment"] = False
 
         # update updated_at field
-        obj.updated_at = datetime.datetime.now()
+        obj.updated_at = datetime.datetime.now(ZoneInfo("UTC"))
 
         # enable validation again
         obj.model_config["validate_assignment"] = True

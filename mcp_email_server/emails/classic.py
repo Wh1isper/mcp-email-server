@@ -1,6 +1,6 @@
 import email.utils
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timezone
 from email.header import Header
 from email.mime.text import MIMEText
 from email.parser import BytesParser
@@ -56,9 +56,9 @@ class EmailClient:
         # Parse date
         try:
             date_tuple = email.utils.parsedate_tz(date_str)
-            date = datetime.fromtimestamp(email.utils.mktime_tz(date_tuple)) if date_tuple else datetime.now()
+            date = datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=timezone.utc) if date_tuple else datetime.now(timezone.utc)
         except Exception:
-            date = datetime.now()
+            date = datetime.now(timezone.utc)
 
         # Get body content
         body = ""
@@ -267,12 +267,12 @@ class EmailClient:
                             try:
                                 date_tuple = email.utils.parsedate_tz(date_str)
                                 date = (
-                                    datetime.fromtimestamp(email.utils.mktime_tz(date_tuple))
+                                    datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=timezone.utc)
                                     if date_tuple
-                                    else datetime.now()
+                                    else datetime.now(timezone.utc)
                                 )
                             except Exception:
-                                date = datetime.now()
+                                date = datetime.now(timezone.utc)
 
                             # For metadata, we don't fetch attachments to save bandwidth
                             # We'll mark it as unknown for now

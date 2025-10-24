@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -108,7 +108,7 @@ class TestMcpTools:
     async def test_list_emails_metadata(self):
         """Test list_emails_metadata MCP tool."""
         # Create test data
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         email_metadata = EmailMetadata(
             email_id="12345",
             subject="Test Subject",
@@ -171,7 +171,7 @@ class TestMcpTools:
     async def test_get_emails_content_single(self):
         """Test get_emails_content MCP tool with single email."""
         # Create test data
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         email_body = EmailBodyResponse(
             email_id="12345",
             subject="Test Subject",
@@ -216,7 +216,7 @@ class TestMcpTools:
     async def test_get_emails_content_batch(self):
         """Test get_emails_content MCP tool with multiple emails."""
         # Create test data
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         email1 = EmailBodyResponse(
             email_id="12345",
             subject="Test Subject 1",

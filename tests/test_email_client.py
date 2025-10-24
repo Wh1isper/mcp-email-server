@@ -1,6 +1,6 @@
 import asyncio
 import email
-from datetime import datetime
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -104,12 +104,12 @@ class TestEmailClient:
         assert criteria == ["ALL"]
 
         # Test with before date
-        before_date = datetime(2023, 1, 1)
+        before_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
         criteria = EmailClient._build_search_criteria(before=before_date)
         assert criteria == ["BEFORE", "01-JAN-2023"]
 
         # Test with since date
-        since_date = datetime(2023, 1, 1)
+        since_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
         criteria = EmailClient._build_search_criteria(since=since_date)
         assert criteria == ["SINCE", "01-JAN-2023"]
 
@@ -135,7 +135,7 @@ class TestEmailClient:
 
         # Test with multiple criteria
         criteria = EmailClient._build_search_criteria(
-            subject="Test", from_address="test@example.com", since=datetime(2023, 1, 1)
+            subject="Test", from_address="test@example.com", since=datetime(2023, 1, 1, tzinfo=timezone.utc)
         )
         assert criteria == ["SINCE", "01-JAN-2023", "SUBJECT", "Test", "FROM", "test@example.com"]
 
@@ -172,7 +172,7 @@ This is the email body."""
                     "subject": "Test Subject",
                     "from": "sender@example.com",
                     "body": "Test Body",
-                    "date": datetime.now(),
+                    "date": datetime.now(timezone.utc),
                     "attachments": [],
                 }
 
