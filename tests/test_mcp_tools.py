@@ -296,4 +296,5 @@ class TestMcpTools:
                 ["cc@example.com"],
                 ["bcc@example.com"],
                 False,
+                None,
             )
