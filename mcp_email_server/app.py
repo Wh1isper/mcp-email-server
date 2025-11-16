@@ -96,7 +96,7 @@ async def get_emails_content(
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Recipient should be a list of email addresses.",
+    description="Send an email using the specified account. Recipient should be a list of email addresses. Optionally attach files by providing their absolute paths.",
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -115,8 +115,16 @@ async def send_email(
         bool,
         Field(default=False, description="Whether to send the email as HTML (True) or plain text (False)."),
     ] = False,
+    attachments: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="A list of absolute file paths to attach to the email. Supports common file types (documents, images, archives, etc.).",
+        ),
+    ] = None,
 ) -> str:
     handler = dispatch_handler(account_name)
-    await handler.send_email(recipients, subject, body, cc, bcc, html)
+    await handler.send_email(recipients, subject, body, cc, bcc, html, attachments)
     recipient_str = ", ".join(recipients)
-    return f"Email sent successfully to {recipient_str}"
+    attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
+    return f"Email sent successfully to {recipient_str}{attachment_info}"

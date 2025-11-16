@@ -133,4 +133,36 @@ class TestClassicEmailHandler:
                 ["cc@example.com"],
                 ["bcc@example.com"],
                 False,
+                None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_send_email_with_attachments(self, classic_handler, tmp_path):
+        """Test send_email method with attachments."""
+        # Create a temporary test file
+        test_file = tmp_path / "test_attachment.txt"
+        test_file.write_text("This is a test attachment")
+
+        # Mock the outgoing_client.send_email method
+        mock_send = AsyncMock()
+
+        # Apply the mock
+        with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
+            # Call the method with attachments
+            await classic_handler.send_email(
+                recipients=["recipient@example.com"],
+                subject="Test Subject",
+                body="Test Body with attachment",
+                attachments=[str(test_file)],
+            )
+
+            # Verify the client method was called correctly with attachments
+            mock_send.assert_called_once_with(
+                ["recipient@example.com"],
+                "Test Subject",
+                "Test Body with attachment",
+                None,
+                None,
+                False,
+                [str(test_file)],
             )

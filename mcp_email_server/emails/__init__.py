@@ -38,6 +38,7 @@ class EmailHandler(abc.ABC):
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         html: bool = False,
+        attachments: list[str] | None = None,
     ) -> None:
         """
         Send email

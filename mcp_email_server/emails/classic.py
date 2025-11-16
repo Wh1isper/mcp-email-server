@@ -1,10 +1,14 @@
 import email.utils
+import mimetypes
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from email.header import Header
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
 from email.policy import default
+from pathlib import Path
 from typing import Any
 
 import aioimaplib
@@ -387,6 +391,57 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
+    def _validate_attachment(self, file_path: str) -> Path:
+        """Validate attachment file path."""
+        path = Path(file_path)
+        if not path.exists():
+            msg = f"Attachment file not found: {file_path}"
+            logger.error(msg)
+            raise FileNotFoundError(msg)
+
+        if not path.is_file():
+            msg = f"Attachment path is not a file: {file_path}"
+            logger.error(msg)
+            raise ValueError(msg)
+
+        return path
+
+    def _create_attachment_part(self, path: Path) -> MIMEApplication:
+        """Create MIME attachment part from file."""
+        with open(path, "rb") as f:
+            file_data = f.read()
+
+        mime_type, _ = mimetypes.guess_type(str(path))
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+
+        attachment_part = MIMEApplication(file_data, _subtype=mime_type.split("/")[1])
+        attachment_part.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=path.name,
+        )
+        logger.info(f"Attached file: {path.name} ({mime_type})")
+        return attachment_part
+
+    def _create_message_with_attachments(self, body: str, html: bool, attachments: list[str]) -> MIMEMultipart:
+        """Create multipart message with attachments."""
+        msg = MIMEMultipart()
+        content_type = "html" if html else "plain"
+        text_part = MIMEText(body, content_type, "utf-8")
+        msg.attach(text_part)
+
+        for file_path in attachments:
+            try:
+                path = self._validate_attachment(file_path)
+                attachment_part = self._create_attachment_part(path)
+                msg.attach(attachment_part)
+            except Exception as e:
+                logger.error(f"Failed to attach file {file_path}: {e}")
+                raise
+
+        return msg
+
     async def send_email(
         self,
         recipients: list[str],
@@ -395,10 +450,14 @@ class EmailClient:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         html: bool = False,
+        attachments: list[str] | None = None,
     ):
-        # Create message with UTF-8 encoding to support special characters
-        content_type = "html" if html else "plain"
-        msg = MIMEText(body, content_type, "utf-8")
+        # Create message with or without attachments
+        if attachments:
+            msg = self._create_message_with_attachments(body, html, attachments)
+        else:
+            content_type = "html" if html else "plain"
+            msg = MIMEText(body, content_type, "utf-8")
 
         # Handle subject with special characters
         if any(ord(c) > 127 for c in subject):
@@ -518,5 +577,6 @@ class ClassicEmailHandler(EmailHandler):
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         html: bool = False,
+        attachments: list[str] | None = None,
     ) -> None:
-        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html)
+        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html, attachments)
