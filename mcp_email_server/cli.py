@@ -1,4 +1,5 @@
 import typer
+import os
 
 from mcp_email_server.app import mcp
 from mcp_email_server.config import delete_settings
@@ -19,6 +20,16 @@ def sse(
     mcp.settings.host = host
     mcp.settings.port = port
     mcp.run(transport="sse")
+
+
+@app.command()
+def streamable_http(
+    host: str = os.environ.get("MCP_HOST", "localhost"),
+    port: int = os.environ.get("MCP_PORT", 9557),
+):
+    mcp.settings.host = host
+    mcp.settings.port = port
+    mcp.run(transport="streamable-http")
 
 
 @app.command()
