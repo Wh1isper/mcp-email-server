@@ -1,5 +1,6 @@
-import typer
 import os
+
+import typer
 
 from mcp_email_server.app import mcp
 from mcp_email_server.config import delete_settings
