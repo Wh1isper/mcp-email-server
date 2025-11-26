@@ -43,3 +43,9 @@ class EmailHandler(abc.ABC):
         """
         Send email
         """
+
+    @abc.abstractmethod
+    async def delete_emails(self, email_ids: list[str]) -> tuple[list[str], list[str]]:
+        """
+        Delete emails by their IDs. Returns (deleted_ids, failed_ids)
+        """

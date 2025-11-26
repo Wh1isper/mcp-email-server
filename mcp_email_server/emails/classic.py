@@ -497,6 +497,35 @@ class EmailClient:
 
             await smtp.send_message(msg, recipients=all_recipients)
 
+    async def delete_emails(self, email_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        deleted_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await imap.select("INBOX")
+
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    deleted_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to delete email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            await imap.expunge()
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return deleted_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -580,3 +609,7 @@ class ClassicEmailHandler(EmailHandler):
         attachments: list[str] | None = None,
     ) -> None:
         await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html, attachments)
+
+    async def delete_emails(self, email_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
+        return await self.incoming_client.delete_emails(email_ids)

@@ -128,3 +128,22 @@ async def send_email(
     recipient_str = ", ".join(recipients)
     attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
     return f"Email sent successfully to {recipient_str}{attachment_info}"
+
+
+@mcp.tool(
+    description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
+)
+async def delete_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to delete (obtained from list_emails_metadata)."),
+    ],
+) -> str:
+    handler = dispatch_handler(account_name)
+    deleted_ids, failed_ids = await handler.delete_emails(email_ids)
+    
+    result = f"Successfully deleted {len(deleted_ids)} email(s)"
+    if failed_ids:
+        result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
