@@ -152,6 +152,7 @@ class EmailClient:
         subject: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
+        mailbox: str = "INBOX",
     ) -> int:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -161,7 +162,7 @@ class EmailClient:
 
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
-            await imap.select("INBOX")
+            await imap.select(mailbox)
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
             )
@@ -186,6 +187,7 @@ class EmailClient:
         from_address: str | None = None,
         to_address: str | None = None,
         order: str = "desc",
+        mailbox: str = "INBOX",
     ) -> AsyncGenerator[dict[str, Any], None]:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
@@ -199,7 +201,7 @@ class EmailClient:
                 await imap.id(name="mcp-email-server", version="1.0.0")
             except Exception as e:
                 logger.warning(f"IMAP ID command failed: {e!s}")
-            await imap.select("INBOX")
+            await imap.select(mailbox)
 
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
@@ -350,7 +352,7 @@ class EmailClient:
 
         return None
 
-    async def get_email_body_by_id(self, email_id: str) -> dict[str, Any] | None:
+    async def get_email_body_by_id(self, email_id: str, mailbox: str = "INBOX") -> dict[str, Any] | None:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
             # Wait for the connection to be established
@@ -363,7 +365,7 @@ class EmailClient:
                 await imap.id(name="mcp-email-server", version="1.0.0")
             except Exception as e:
                 logger.warning(f"IMAP ID command failed: {e!s}")
-            await imap.select("INBOX")
+            await imap.select(mailbox)
 
             # Fetch the specific email by UID
             data = await self._fetch_email_with_formats(imap, email_id)
@@ -497,7 +499,7 @@ class EmailClient:
 
             await smtp.send_message(msg, recipients=all_recipients)
 
-    async def delete_emails(self, email_ids: list[str]) -> tuple[list[str], list[str]]:
+    async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         deleted_ids = []
@@ -507,7 +509,7 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
             await imap.login(self.email_server.user_name, self.email_server.password)
-            await imap.select("INBOX")
+            await imap.select(mailbox)
 
             for email_id in email_ids:
                 try:
@@ -546,14 +548,15 @@ class ClassicEmailHandler(EmailHandler):
         from_address: str | None = None,
         to_address: str | None = None,
         order: str = "desc",
+        mailbox: str = "INBOX",
     ) -> EmailMetadataPageResponse:
         emails = []
         async for email_data in self.incoming_client.get_emails_metadata_stream(
-            page, page_size, before, since, subject, from_address, to_address, order
+            page, page_size, before, since, subject, from_address, to_address, order, mailbox
         ):
             emails.append(EmailMetadata.from_email(email_data))
         total = await self.incoming_client.get_email_count(
-            before, since, subject, from_address=from_address, to_address=to_address
+            before, since, subject, from_address=from_address, to_address=to_address, mailbox=mailbox
         )
         return EmailMetadataPageResponse(
             page=page,
@@ -565,14 +568,14 @@ class ClassicEmailHandler(EmailHandler):
             total=total,
         )
 
-    async def get_emails_content(self, email_ids: list[str]) -> EmailContentBatchResponse:
+    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> EmailContentBatchResponse:
         """Batch retrieve email body content"""
         emails = []
         failed_ids = []
 
         for email_id in email_ids:
             try:
-                email_data = await self.incoming_client.get_email_body_by_id(email_id)
+                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
                 if email_data:
                     emails.append(
                         EmailBodyResponse(
@@ -610,6 +613,6 @@ class ClassicEmailHandler(EmailHandler):
     ) -> None:
         await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html, attachments)
 
-    async def delete_emails(self, email_ids: list[str]) -> tuple[list[str], list[str]]:
+    async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        return await self.incoming_client.delete_emails(email_ids)
+        return await self.incoming_client.delete_emails(email_ids, mailbox)

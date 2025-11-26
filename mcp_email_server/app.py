@@ -64,6 +64,7 @@ async def list_emails_metadata(
         Literal["asc", "desc"],
         Field(default=None, description="Order emails by field. `asc` or `desc`."),
     ] = "desc",
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
 ) -> EmailMetadataPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -76,6 +77,7 @@ async def list_emails_metadata(
         from_address=from_address,
         to_address=to_address,
         order=order,
+        mailbox=mailbox,
     )
 
 
@@ -90,9 +92,10 @@ async def get_emails_content(
             description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids."
         ),
     ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids)
+    return await handler.get_emails_content(email_ids, mailbox)
 
 
 @mcp.tool(
@@ -139,9 +142,10 @@ async def delete_emails(
         list[str],
         Field(description="List of email_id to delete (obtained from list_emails_metadata)."),
     ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to delete emails from.")] = "INBOX",
 ) -> str:
     handler = dispatch_handler(account_name)
-    deleted_ids, failed_ids = await handler.delete_emails(email_ids)
+    deleted_ids, failed_ids = await handler.delete_emails(email_ids, mailbox)
     
     result = f"Successfully deleted {len(deleted_ids)} email(s)"
     if failed_ids:
