@@ -146,7 +146,7 @@ async def delete_emails(
 ) -> str:
     handler = dispatch_handler(account_name)
     deleted_ids, failed_ids = await handler.delete_emails(email_ids, mailbox)
-    
+
     result = f"Successfully deleted {len(deleted_ids)} email(s)"
     if failed_ids:
         result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
