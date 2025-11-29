@@ -102,11 +102,45 @@ class TestClassicEmailHandler:
 
                 # Verify the client methods were called correctly
                 classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
-                    1, 10, now, None, "Test", "sender@example.com", None, "desc"
+                    1, 10, now, None, "Test", "sender@example.com", None, "desc", "INBOX"
                 )
                 mock_count.assert_called_once_with(
-                    now, None, "Test", from_address="sender@example.com", to_address=None
+                    now, None, "Test", from_address="sender@example.com", to_address=None, mailbox="INBOX"
                 )
+
+    @pytest.mark.asyncio
+    async def test_get_emails_with_mailbox(self, classic_handler):
+        """Test get_emails method with custom mailbox."""
+        now = datetime.now(timezone.utc)
+        email_data = {
+            "email_id": "456",
+            "subject": "Sent Mail Subject",
+            "from": "me@example.com",
+            "to": ["recipient@example.com"],
+            "date": now,
+            "attachments": [],
+        }
+
+        mock_stream = AsyncMock()
+        mock_stream.__aiter__.return_value = [email_data]
+        mock_count = AsyncMock(return_value=1)
+
+        with patch.object(classic_handler.incoming_client, "get_emails_metadata_stream", return_value=mock_stream):
+            with patch.object(classic_handler.incoming_client, "get_email_count", mock_count):
+                result = await classic_handler.get_emails_metadata(
+                    page=1,
+                    page_size=10,
+                    mailbox="Sent",
+                )
+
+                assert isinstance(result, EmailMetadataPageResponse)
+                assert len(result.emails) == 1
+
+                # Verify mailbox parameter was passed correctly
+                classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
+                    1, 10, None, None, None, None, None, "desc", "Sent"
+                )
+                mock_count.assert_called_once_with(None, None, None, from_address=None, to_address=None, mailbox="Sent")
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):
@@ -166,3 +200,48 @@ class TestClassicEmailHandler:
                 False,
                 [str(test_file)],
             )
+
+    @pytest.mark.asyncio
+    async def test_delete_emails(self, classic_handler):
+        """Test delete_emails method."""
+        mock_delete = AsyncMock(return_value=(["123", "456"], []))
+
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+            deleted_ids, failed_ids = await classic_handler.delete_emails(
+                email_ids=["123", "456"],
+                mailbox="INBOX",
+            )
+
+            assert deleted_ids == ["123", "456"]
+            assert failed_ids == []
+            mock_delete.assert_called_once_with(["123", "456"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_with_failures(self, classic_handler):
+        """Test delete_emails method with some failures."""
+        mock_delete = AsyncMock(return_value=(["123"], ["456"]))
+
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+            deleted_ids, failed_ids = await classic_handler.delete_emails(
+                email_ids=["123", "456"],
+                mailbox="Trash",
+            )
+
+            assert deleted_ids == ["123"]
+            assert failed_ids == ["456"]
+            mock_delete.assert_called_once_with(["123", "456"], "Trash")
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_custom_mailbox(self, classic_handler):
+        """Test delete_emails method with custom mailbox."""
+        mock_delete = AsyncMock(return_value=(["789"], []))
+
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+            deleted_ids, failed_ids = await classic_handler.delete_emails(
+                email_ids=["789"],
+                mailbox="Archive",
+            )
+
+            assert deleted_ids == ["789"]
+            assert failed_ids == []
+            mock_delete.assert_called_once_with(["789"], "Archive")

@@ -5,6 +5,7 @@ import pytest
 
 from mcp_email_server.app import (
     add_email_account,
+    delete_emails,
     get_emails_content,
     list_available_accounts,
     list_emails_metadata,
@@ -165,6 +166,52 @@ class TestMcpTools:
                 from_address="sender@example.com",
                 to_address=None,
                 order="desc",
+                mailbox="INBOX",
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_emails_metadata_with_mailbox(self):
+        """Test list_emails_metadata MCP tool with custom mailbox."""
+        now = datetime.now(timezone.utc)
+        email_metadata = EmailMetadata(
+            email_id="12345",
+            subject="Sent Subject",
+            sender="me@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            attachments=[],
+        )
+
+        email_metadata_page = EmailMetadataPageResponse(
+            page=1,
+            page_size=10,
+            before=None,
+            since=None,
+            subject=None,
+            emails=[email_metadata],
+            total=1,
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_metadata.return_value = email_metadata_page
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await list_emails_metadata(
+                account_name="test_account",
+                mailbox="Sent",
+            )
+
+            assert result == email_metadata_page
+            mock_handler.get_emails_metadata.assert_called_once_with(
+                page=1,
+                page_size=10,
+                before=None,
+                since=None,
+                subject=None,
+                from_address=None,
+                to_address=None,
+                order="desc",
+                mailbox="Sent",
             )
 
     @pytest.mark.asyncio
@@ -210,7 +257,7 @@ class TestMcpTools:
             assert result.emails[0].subject == "Test Subject"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345"])
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX")
 
     @pytest.mark.asyncio
     async def test_get_emails_content_batch(self):
@@ -266,7 +313,41 @@ class TestMcpTools:
             assert result.emails[1].email_id == "12346"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"])
+            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_with_mailbox(self):
+        """Test get_emails_content MCP tool with custom mailbox."""
+        now = datetime.now(timezone.utc)
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="Sent Subject",
+            sender="me@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="This is a sent email.",
+            attachments=[],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+                mailbox="Sent",
+            )
+
+            assert result == batch_response
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent")
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -298,3 +379,49 @@ class TestMcpTools:
                 False,
                 None,
             )
+
+    @pytest.mark.asyncio
+    async def test_delete_emails(self):
+        """Test delete_emails MCP tool."""
+        mock_handler = AsyncMock()
+        mock_handler.delete_emails.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await delete_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert result == "Successfully deleted 2 email(s)"
+            mock_handler.delete_emails.assert_called_once_with(["12345", "12346"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_with_failures(self):
+        """Test delete_emails MCP tool with some failures."""
+        mock_handler = AsyncMock()
+        mock_handler.delete_emails.return_value = (["12345"], ["12346", "12347"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await delete_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346", "12347"],
+            )
+
+            assert result == "Successfully deleted 1 email(s), failed to delete 2 email(s): 12346, 12347"
+            mock_handler.delete_emails.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_with_mailbox(self):
+        """Test delete_emails MCP tool with custom mailbox."""
+        mock_handler = AsyncMock()
+        mock_handler.delete_emails.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await delete_emails(
+                account_name="test_account",
+                email_ids=["12345"],
+                mailbox="Trash",
+            )
+
+            assert result == "Successfully deleted 1 email(s)"
+            mock_handler.delete_emails.assert_called_once_with(["12345"], "Trash")
