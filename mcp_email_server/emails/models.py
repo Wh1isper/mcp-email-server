@@ -57,3 +57,13 @@ class EmailContentBatchResponse(BaseModel):
     requested_count: int
     retrieved_count: int
     failed_ids: list[str]
+
+
+class AttachmentDownloadResponse(BaseModel):
+    """Attachment download response"""
+
+    email_id: str
+    attachment_name: str
+    mime_type: str
+    size: int
+    saved_path: str

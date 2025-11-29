@@ -11,7 +11,11 @@ from mcp_email_server.config import (
     get_settings,
 )
 from mcp_email_server.emails.dispatcher import dispatch_handler
-from mcp_email_server.emails.models import EmailContentBatchResponse, EmailMetadataPageResponse
+from mcp_email_server.emails.models import (
+    AttachmentDownloadResponse,
+    EmailContentBatchResponse,
+    EmailMetadataPageResponse,
+)
 
 mcp = FastMCP("email")
 
@@ -151,3 +155,27 @@ async def delete_emails(
     if failed_ids:
         result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
     return result
+
+
+@mcp.tool(
+    description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+)
+async def download_attachment(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_id: Annotated[
+        str, Field(description="The email ID (obtained from list_emails_metadata or get_emails_content).")
+    ],
+    attachment_name: Annotated[
+        str, Field(description="The name of the attachment to download (as shown in the attachments list).")
+    ],
+    save_path: Annotated[str, Field(description="The absolute path where the attachment should be saved.")],
+) -> AttachmentDownloadResponse:
+    settings = get_settings()
+    if not settings.enable_attachment_download:
+        msg = (
+            "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
+        )
+        raise PermissionError(msg)
+
+    handler = dispatch_handler(account_name)
+    return await handler.download_attachment(email_id, attachment_name, save_path)

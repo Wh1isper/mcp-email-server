@@ -3,7 +3,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcp_email_server.emails.models import EmailContentBatchResponse, EmailMetadataPageResponse
+    from mcp_email_server.emails.models import (
+        AttachmentDownloadResponse,
+        EmailContentBatchResponse,
+        EmailMetadataPageResponse,
+    )
 
 
 class EmailHandler(abc.ABC):
@@ -49,4 +53,15 @@ class EmailHandler(abc.ABC):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)
+        """
+
+    @abc.abstractmethod
+    async def download_attachment(
+        self,
+        email_id: str,
+        attachment_name: str,
+        save_path: str,
+    ) -> "AttachmentDownloadResponse":
+        """
+        Download an email attachment and save it to the specified path
         """

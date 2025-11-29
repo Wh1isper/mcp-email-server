@@ -309,3 +309,52 @@ def test_email_settings_masked(monkeypatch):
     assert masked.incoming.password == "********"  # noqa: S105
     assert masked.outgoing.password == "********"  # noqa: S105
     assert masked.email_address == "test@example.com"
+
+
+def test_enable_attachment_download_from_env_true(monkeypatch, tmp_path):
+    """Test enable_attachment_download can be set via environment variable."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    # Clear any email env vars
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD", "true")
+
+    settings = Settings()
+    assert settings.enable_attachment_download is True
+
+
+def test_enable_attachment_download_from_env_false(monkeypatch, tmp_path):
+    """Test enable_attachment_download=false via environment variable."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD", "false")
+
+    settings = Settings()
+    assert settings.enable_attachment_download is False
+
+
+def test_enable_attachment_download_env_overrides_toml(monkeypatch, tmp_path):
+    """Test environment variable overrides TOML config for enable_attachment_download."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("enable_attachment_download = false\n")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD", "1")
+
+    settings = Settings()
+    assert settings.enable_attachment_download is True

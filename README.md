@@ -63,20 +63,54 @@ You can also configure the email server using environment variables, which is pa
 
 #### Available Environment Variables
 
-| Variable                          | Description        | Default       | Required |
-| --------------------------------- | ------------------ | ------------- | -------- |
-| `MCP_EMAIL_SERVER_ACCOUNT_NAME`   | Account identifier | `"default"`   | No       |
-| `MCP_EMAIL_SERVER_FULL_NAME`      | Display name       | Email prefix  | No       |
-| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`  | Email address      | -             | Yes      |
-| `MCP_EMAIL_SERVER_USER_NAME`      | Login username     | Same as email | No       |
-| `MCP_EMAIL_SERVER_PASSWORD`       | Email password     | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_HOST`      | IMAP server host   | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_PORT`      | IMAP server port   | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`       | Enable IMAP SSL    | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`      | SMTP server host   | -             | Yes      |
-| `MCP_EMAIL_SERVER_SMTP_PORT`      | SMTP server port   | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`       | Enable SMTP SSL    | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL` | Enable STARTTLS    | `false`       | No       |
+| Variable                                      | Description                | Default       | Required |
+| --------------------------------------------- | -------------------------- | ------------- | -------- |
+| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier         | `"default"`   | No       |
+| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name               | Email prefix  | No       |
+| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address              | -             | Yes      |
+| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username             | Same as email | No       |
+| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password             | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host           | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port           | `993`         | No       |
+| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL            | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host           | -             | Yes      |
+| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port           | `465`         | No       |
+| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL            | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS            | `false`       | No       |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download | `false`       | No       |
+
+### Enabling Attachment Downloads
+
+By default, downloading email attachments is disabled for security reasons. To enable this feature, you can either:
+
+**Option 1: Environment Variable**
+
+```json
+{
+  "mcpServers": {
+    "zerolib-email": {
+      "command": "uvx",
+      "args": ["mcp-email-server@latest", "stdio"],
+      "env": {
+        "MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD": "true"
+      }
+    }
+  }
+}
+```
+
+**Option 2: TOML Configuration**
+
+Add `enable_attachment_download = true` to your TOML configuration file (`~/.config/zerolib/mcp_email_server/config.toml`):
+
+```toml
+enable_attachment_download = true
+
+[[emails]]
+# ... your email configuration
+```
+
+Once enabled, you can use the `download_attachment` tool to save email attachments to a specified path.
 
 For separate IMAP/SMTP credentials, you can also use:
 

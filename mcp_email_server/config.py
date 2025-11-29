@@ -201,16 +201,30 @@ class ProviderSettings(AccountAttributes):
         return self.model_copy(update={"api_key": "********"})
 
 
+def _parse_bool_env(value: str | None, default: bool = False) -> bool:
+    """Parse boolean value from environment variable."""
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
 class Settings(BaseSettings):
     emails: list[EmailSettings] = []
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
+    enable_attachment_download: bool = False
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
     def __init__(self, **data: Any) -> None:
         """Initialize Settings with support for environment variables."""
         super().__init__(**data)
+
+        # Check for enable_attachment_download from environment variable
+        env_enable_attachment = os.getenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD")
+        if env_enable_attachment is not None:
+            self.enable_attachment_download = _parse_bool_env(env_enable_attachment, False)
+            logger.info(f"Set enable_attachment_download={self.enable_attachment_download} from environment variable")
 
         # Check for email configuration from environment variables
         env_email = EmailSettings.from_env()

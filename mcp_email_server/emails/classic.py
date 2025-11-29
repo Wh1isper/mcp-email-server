@@ -17,6 +17,7 @@ import aiosmtplib
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
+    AttachmentDownloadResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
     EmailMetadata,
@@ -393,6 +394,80 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
+    async def download_attachment(
+        self,
+        email_id: str,
+        attachment_name: str,
+        save_path: str,
+    ) -> dict[str, Any]:
+        """Download a specific attachment from an email and save it to disk."""
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            try:
+                await imap.id(name="mcp-email-server", version="1.0.0")
+            except Exception as e:
+                logger.warning(f"IMAP ID command failed: {e!s}")
+            await imap.select("INBOX")
+
+            data = await self._fetch_email_with_formats(imap, email_id)
+            if not data:
+                msg = f"Failed to fetch email with UID {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+            raw_email = self._extract_raw_email(data)
+            if not raw_email:
+                msg = f"Could not find email data for email ID: {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+            parser = BytesParser(policy=default)
+            email_message = parser.parsebytes(raw_email)
+
+            # Find the attachment
+            attachment_data = None
+            mime_type = None
+
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    content_disposition = str(part.get("Content-Disposition", ""))
+                    if "attachment" in content_disposition:
+                        filename = part.get_filename()
+                        if filename == attachment_name:
+                            attachment_data = part.get_payload(decode=True)
+                            mime_type = part.get_content_type()
+                            break
+
+            if attachment_data is None:
+                msg = f"Attachment '{attachment_name}' not found in email {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+            # Save to disk
+            save_file = Path(save_path)
+            save_file.parent.mkdir(parents=True, exist_ok=True)
+            save_file.write_bytes(attachment_data)
+
+            logger.info(f"Attachment '{attachment_name}' saved to {save_path}")
+
+            return {
+                "email_id": email_id,
+                "attachment_name": attachment_name,
+                "mime_type": mime_type or "application/octet-stream",
+                "size": len(attachment_data),
+                "saved_path": str(save_file.resolve()),
+            }
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
     def _validate_attachment(self, file_path: str) -> Path:
         """Validate attachment file path."""
         path = Path(file_path)
@@ -616,3 +691,19 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def download_attachment(
+        self,
+        email_id: str,
+        attachment_name: str,
+        save_path: str,
+    ) -> AttachmentDownloadResponse:
+        """Download an email attachment and save it to the specified path."""
+        result = await self.incoming_client.download_attachment(email_id, attachment_name, save_path)
+        return AttachmentDownloadResponse(
+            email_id=result["email_id"],
+            attachment_name=result["attachment_name"],
+            mime_type=result["mime_type"],
+            size=result["size"],
+            saved_path=result["saved_path"],
+        )

@@ -5,7 +5,7 @@ import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
-from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse
+from mcp_email_server.emails.models import AttachmentDownloadResponse, EmailMetadata, EmailMetadataPageResponse
 
 
 @pytest.fixture
@@ -245,3 +245,34 @@ class TestClassicEmailHandler:
             assert deleted_ids == ["789"]
             assert failed_ids == []
             mock_delete.assert_called_once_with(["789"], "Archive")
+
+    @pytest.mark.asyncio
+    async def test_download_attachment(self, classic_handler, tmp_path):
+        """Test download_attachment method."""
+        save_path = str(tmp_path / "downloaded_attachment.pdf")
+
+        mock_result = {
+            "email_id": "123",
+            "attachment_name": "document.pdf",
+            "mime_type": "application/pdf",
+            "size": 1024,
+            "saved_path": save_path,
+        }
+
+        mock_download = AsyncMock(return_value=mock_result)
+
+        with patch.object(classic_handler.incoming_client, "download_attachment", mock_download):
+            result = await classic_handler.download_attachment(
+                email_id="123",
+                attachment_name="document.pdf",
+                save_path=save_path,
+            )
+
+            assert isinstance(result, AttachmentDownloadResponse)
+            assert result.email_id == "123"
+            assert result.attachment_name == "document.pdf"
+            assert result.mime_type == "application/pdf"
+            assert result.size == 1024
+            assert result.saved_path == save_path
+
+            mock_download.assert_called_once_with("123", "document.pdf", save_path)

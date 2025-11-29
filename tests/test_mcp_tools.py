@@ -6,6 +6,7 @@ import pytest
 from mcp_email_server.app import (
     add_email_account,
     delete_emails,
+    download_attachment,
     get_emails_content,
     list_available_accounts,
     list_emails_metadata,
@@ -13,6 +14,7 @@ from mcp_email_server.app import (
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
 from mcp_email_server.emails.models import (
+    AttachmentDownloadResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
     EmailMetadata,
@@ -425,3 +427,56 @@ class TestMcpTools:
 
             assert result == "Successfully deleted 1 email(s)"
             mock_handler.delete_emails.assert_called_once_with(["12345"], "Trash")
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_disabled(self):
+        """Test download_attachment MCP tool when feature is disabled."""
+        mock_settings = MagicMock()
+        mock_settings.enable_attachment_download = False
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with pytest.raises(PermissionError) as exc_info:
+                await download_attachment(
+                    account_name="test_account",
+                    email_id="12345",
+                    attachment_name="document.pdf",
+                    save_path="/var/downloads/document.pdf",
+                )
+
+            assert "Attachment download is disabled" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_download_attachment_enabled(self):
+        """Test download_attachment MCP tool when feature is enabled."""
+        attachment_response = AttachmentDownloadResponse(
+            email_id="12345",
+            attachment_name="document.pdf",
+            mime_type="application/pdf",
+            size=1024,
+            saved_path="/var/downloads/document.pdf",
+        )
+
+        mock_settings = MagicMock()
+        mock_settings.enable_attachment_download = True
+
+        mock_handler = AsyncMock()
+        mock_handler.download_attachment.return_value = attachment_response
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await download_attachment(
+                    account_name="test_account",
+                    email_id="12345",
+                    attachment_name="document.pdf",
+                    save_path="/var/downloads/document.pdf",
+                )
+
+                assert result == attachment_response
+                assert result.email_id == "12345"
+                assert result.attachment_name == "document.pdf"
+                assert result.mime_type == "application/pdf"
+                assert result.size == 1024
+
+                mock_handler.download_attachment.assert_called_once_with(
+                    "12345", "document.pdf", "/var/downloads/document.pdf"
+                )
