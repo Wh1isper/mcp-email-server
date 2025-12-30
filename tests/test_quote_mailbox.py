@@ -14,11 +14,6 @@ class TestQuoteMailbox:
         """Test that mailbox names with spaces are quoted."""
         assert _quote_mailbox("All Mail") == '"All Mail"'
 
-    def test_does_not_double_quote(self):
-        """Test that already-quoted names are not double-quoted."""
-        assert _quote_mailbox('"INBOX"') == '"INBOX"'
-        assert _quote_mailbox('"All Mail"') == '"All Mail"'
-
     def test_quotes_special_folders(self):
         """Test quoting of various folder names."""
         assert _quote_mailbox("Sent") == '"Sent"'
@@ -28,3 +23,23 @@ class TestQuoteMailbox:
     def test_quotes_empty_string(self):
         """Test handling of empty string."""
         assert _quote_mailbox("") == '""'
+
+    def test_escapes_quotes_in_mailbox_name(self):
+        """Test that double-quote characters are escaped per RFC 3501."""
+        assert _quote_mailbox('My"Folder') == r'"My\"Folder"'
+        assert _quote_mailbox('Test"Quote"Name') == r'"Test\"Quote\"Name"'
+
+    def test_escapes_backslashes_in_mailbox_name(self):
+        """Test that backslash characters are escaped per RFC 3501."""
+        assert _quote_mailbox("My\\Folder") == r'"My\\Folder"'
+        assert _quote_mailbox("Path\\To\\Folder") == r'"Path\\To\\Folder"'
+
+    def test_escapes_both_quotes_and_backslashes(self):
+        """Test escaping of both quotes and backslashes together."""
+        assert _quote_mailbox('My\\"Folder') == r'"My\\\"Folder"'
+
+    def test_already_quoted_gets_escaped(self):
+        """Test that already-quoted names are properly escaped and re-quoted."""
+        # Per RFC 3501, we should always escape and quote
+        # '"INBOX"' should become '"\\"INBOX\\""' (quotes escaped)
+        assert _quote_mailbox('"INBOX"') == r'"\"INBOX\""'

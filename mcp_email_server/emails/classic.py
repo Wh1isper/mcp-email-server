@@ -32,11 +32,16 @@ def _quote_mailbox(mailbox: str) -> str:
     Some IMAP servers (notably Proton Mail Bridge) require mailbox names
     to be quoted. This is valid per RFC 3501 and works with all IMAP servers.
 
+    Per RFC 3501 Section 9 (Formal Syntax), quoted strings must escape
+    backslashes and double-quote characters with a preceding backslash.
+
     See: https://github.com/ai-zerolab/mcp-email-server/issues/87
+    See: https://www.rfc-editor.org/rfc/rfc3501#section-9
     """
-    if mailbox.startswith('"') and mailbox.endswith('"'):
-        return mailbox  # Already quoted
-    return f'"{mailbox}"'
+    # Per RFC 3501, literal double-quote characters in a quoted string must
+    # be escaped with a backslash. Backslashes themselves must also be escaped.
+    escaped = mailbox.replace("\\", "\\\\").replace('"', r"\"")
+    return f'"{escaped}"'
 
 
 async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
