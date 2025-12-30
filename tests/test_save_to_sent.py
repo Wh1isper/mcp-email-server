@@ -289,7 +289,7 @@ class TestEmailClientAppendToSent:
             result = await email_client.append_to_sent(msg, incoming_server, "INBOX.Sent")
 
             assert result is True
-            mock_imap_for_append.select.assert_called_with("INBOX.Sent")
+            mock_imap_for_append.select.assert_called_with('"INBOX.Sent"')
             mock_imap_for_append.append.assert_called_once()
 
     @pytest.mark.asyncio

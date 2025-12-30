@@ -26,6 +26,19 @@ from mcp_email_server.emails.models import (
 from mcp_email_server.log import logger
 
 
+def _quote_mailbox(mailbox: str) -> str:
+    """Quote mailbox name for IMAP compatibility.
+
+    Some IMAP servers (notably Proton Mail Bridge) require mailbox names
+    to be quoted. This is valid per RFC 3501 and works with all IMAP servers.
+
+    See: https://github.com/ai-zerolab/mcp-email-server/issues/87
+    """
+    if mailbox.startswith('"') and mailbox.endswith('"'):
+        return mailbox  # Already quoted
+    return f'"{mailbox}"'
+
+
 async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
     """Send IMAP ID command with fallback for strict servers like 163.com.
 
@@ -195,7 +208,7 @@ class EmailClient:
 
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
-            await imap.select(mailbox)
+            await imap.select(_quote_mailbox(mailbox))
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
             )
@@ -231,7 +244,7 @@ class EmailClient:
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await _send_imap_id(imap)
-            await imap.select(mailbox)
+            await imap.select(_quote_mailbox(mailbox))
 
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
@@ -392,7 +405,7 @@ class EmailClient:
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await _send_imap_id(imap)
-            await imap.select(mailbox)
+            await imap.select(_quote_mailbox(mailbox))
 
             # Fetch the specific email by UID
             data = await self._fetch_email_with_formats(imap, email_id)
@@ -434,7 +447,7 @@ class EmailClient:
 
             await imap.login(self.email_server.user_name, self.email_server.password)
             await _send_imap_id(imap)
-            await imap.select("INBOX")
+            await imap.select(_quote_mailbox("INBOX"))
 
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
@@ -650,7 +663,7 @@ class EmailClient:
                 try:
                     logger.debug(f"Trying Sent folder: '{folder}'")
                     # Try to select the folder to verify it exists
-                    result = await imap.select(folder)
+                    result = await imap.select(_quote_mailbox(folder))
                     logger.debug(f"Select result for '{folder}': {result}")
 
                     # aioimaplib returns (status, data) where status is a string like 'OK' or 'NO'
@@ -700,7 +713,7 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
             await imap.login(self.email_server.user_name, self.email_server.password)
-            await imap.select(mailbox)
+            await imap.select(_quote_mailbox(mailbox))
 
             for email_id in email_ids:
                 try:
