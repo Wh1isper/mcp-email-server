@@ -26,6 +26,34 @@ from mcp_email_server.emails.models import (
 from mcp_email_server.log import logger
 
 
+async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
+    """Send IMAP ID command with fallback for strict servers like 163.com.
+
+    aioimaplib's id() method sends ID command with spaces between parentheses
+    and content (e.g., 'ID ( "name" "value" )'), which some strict IMAP servers
+    like 163.com reject with 'BAD Parse command error'.
+
+    This function first tries the standard id() method, and if it fails,
+    falls back to sending a raw command with correct format.
+
+    See: https://github.com/ai-zerolab/mcp-email-server/issues/85
+    """
+    try:
+        response = await imap.id(name="mcp-email-server", version="1.0.0")
+        if response.result != "OK":
+            # Fallback for strict servers (e.g., 163.com)
+            # Send raw command with correct parenthesis format
+            await imap.protocol.execute(
+                aioimaplib.Command(
+                    "ID",
+                    imap.protocol.new_tag(),
+                    '("name" "mcp-email-server" "version" "1.0.0")',
+                )
+            )
+    except Exception as e:
+        logger.warning(f"IMAP ID command failed: {e!s}")
+
+
 class EmailClient:
     def __init__(self, email_server: EmailServer, sender: str | None = None):
         self.email_server = email_server
@@ -202,10 +230,7 @@ class EmailClient:
 
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
-            try:
-                await imap.id(name="mcp-email-server", version="1.0.0")
-            except Exception as e:
-                logger.warning(f"IMAP ID command failed: {e!s}")
+            await _send_imap_id(imap)
             await imap.select(mailbox)
 
             search_criteria = self._build_search_criteria(
@@ -366,10 +391,7 @@ class EmailClient:
 
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
-            try:
-                await imap.id(name="mcp-email-server", version="1.0.0")
-            except Exception as e:
-                logger.warning(f"IMAP ID command failed: {e!s}")
+            await _send_imap_id(imap)
             await imap.select(mailbox)
 
             # Fetch the specific email by UID
@@ -411,10 +433,7 @@ class EmailClient:
             await imap.wait_hello_from_server()
 
             await imap.login(self.email_server.user_name, self.email_server.password)
-            try:
-                await imap.id(name="mcp-email-server", version="1.0.0")
-            except Exception as e:
-                logger.warning(f"IMAP ID command failed: {e!s}")
+            await _send_imap_id(imap)
             await imap.select("INBOX")
 
             data = await self._fetch_email_with_formats(imap, email_id)
