@@ -443,8 +443,19 @@ class EmailClient:
         email_id: str,
         attachment_name: str,
         save_path: str,
+        mailbox: str = "INBOX",
     ) -> dict[str, Any]:
-        """Download a specific attachment from an email and save it to disk."""
+        """Download a specific attachment from an email and save it to disk.
+
+        Args:
+            email_id: The UID of the email containing the attachment.
+            attachment_name: The filename of the attachment to download.
+            save_path: The local path where the attachment will be saved.
+            mailbox: The mailbox to search in (default: "INBOX").
+
+        Returns:
+            A dictionary with download result information.
+        """
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
             await imap._client_task
@@ -452,7 +463,7 @@ class EmailClient:
 
             await imap.login(self.email_server.user_name, self.email_server.password)
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox("INBOX"))
+            await imap.select(_quote_mailbox(mailbox))
 
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
@@ -846,9 +857,20 @@ class ClassicEmailHandler(EmailHandler):
         email_id: str,
         attachment_name: str,
         save_path: str,
+        mailbox: str = "INBOX",
     ) -> AttachmentDownloadResponse:
-        """Download an email attachment and save it to the specified path."""
-        result = await self.incoming_client.download_attachment(email_id, attachment_name, save_path)
+        """Download an email attachment and save it to the specified path.
+
+        Args:
+            email_id: The UID of the email containing the attachment.
+            attachment_name: The filename of the attachment to download.
+            save_path: The local path where the attachment will be saved.
+            mailbox: The mailbox to search in (default: "INBOX").
+
+        Returns:
+            AttachmentDownloadResponse with download result information.
+        """
+        result = await self.incoming_client.download_attachment(email_id, attachment_name, save_path, mailbox)
         return AttachmentDownloadResponse(
             email_id=result["email_id"],
             attachment_name=result["attachment_name"],

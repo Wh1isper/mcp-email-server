@@ -480,7 +480,7 @@ class TestMcpTools:
                 assert result.size == 1024
 
                 mock_handler.download_attachment.assert_called_once_with(
-                    "12345", "document.pdf", "/var/downloads/document.pdf"
+                    "12345", "document.pdf", "/var/downloads/document.pdf", "INBOX"
                 )
 
     @pytest.mark.asyncio

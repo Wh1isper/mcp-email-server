@@ -193,6 +193,7 @@ async def download_attachment(
         str, Field(description="The name of the attachment to download (as shown in the attachments list).")
     ],
     save_path: Annotated[str, Field(description="The absolute path where the attachment should be saved.")],
+    mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
 ) -> AttachmentDownloadResponse:
     settings = get_settings()
     if not settings.enable_attachment_download:
@@ -202,4 +203,4 @@ async def download_attachment(
         raise PermissionError(msg)
 
     handler = dispatch_handler(account_name)
-    return await handler.download_attachment(email_id, attachment_name, save_path)
+    return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
