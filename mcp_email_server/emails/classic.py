@@ -213,6 +213,7 @@ class EmailClient:
 
             # Login and select inbox
             await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
