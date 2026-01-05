@@ -673,6 +673,7 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
             await imap.login(incoming_server.user_name, incoming_server.password)
+            await _send_imap_id(imap)
 
             # Try to find and use the Sent folder
             for folder in sent_folder_candidates:
@@ -729,6 +730,7 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
             await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
 
             for email_id in email_ids:
