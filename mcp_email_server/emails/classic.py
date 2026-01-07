@@ -638,6 +638,37 @@ class EmailClient:
         # Return the message for potential saving to Sent folder
         return msg
 
+    async def _find_sent_folder_by_flag(self, imap) -> str | None:
+        """Find the Sent folder by searching for the \\Sent IMAP flag.
+
+        Args:
+            imap: Connected IMAP client
+
+        Returns:
+            The folder name with the \\Sent flag, or None if not found
+        """
+        try:
+            # List all folders - aioimaplib requires reference_name and mailbox_pattern
+            _, folders = await imap.list('""', "*")
+
+            # Search for folder with \Sent flag
+            for folder in folders:
+                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
+                # IMAP LIST response format: (flags) "delimiter" "name"
+                # Example: (\Sent \HasNoChildren) "/" "Gesendete Objekte"
+                if r"\Sent" in folder_str or "\\Sent" in folder_str:
+                    # Extract folder name from the response
+                    # Split by quotes and get the last quoted part
+                    parts = folder_str.split('"')
+                    if len(parts) >= 3:
+                        folder_name = parts[-2]  # The folder name is the second-to-last quoted part
+                        logger.info(f"Found Sent folder by \\Sent flag: '{folder_name}'")
+                        return folder_name
+        except Exception as e:
+            logger.debug(f"Error finding Sent folder by flag: {e}")
+
+        return None
+
     async def append_to_sent(
         self,
         msg: MIMEText | MIMEMultipart,
@@ -676,6 +707,12 @@ class EmailClient:
             await imap.login(incoming_server.user_name, incoming_server.password)
             await _send_imap_id(imap)
 
+            # Try to find Sent folder by IMAP \Sent flag first
+            flag_folder = await self._find_sent_folder_by_flag(imap)
+            if flag_folder and flag_folder not in sent_folder_candidates:
+                # Add it at the beginning (high priority)
+                sent_folder_candidates.insert(0, flag_folder)
+
             # Try to find and use the Sent folder
             for folder in sent_folder_candidates:
                 try:
@@ -693,7 +730,7 @@ class EmailClient:
                         # aioimaplib.append signature: (message_bytes, mailbox, flags, date)
                         append_result = await imap.append(
                             msg_bytes,
-                            mailbox=folder,
+                            mailbox=_quote_mailbox(folder),
                             flags=r"(\Seen)",
                         )
                         logger.debug(f"Append result: {append_result}")
@@ -845,11 +882,14 @@ class ClassicEmailHandler(EmailHandler):
 
         # Save to Sent folder if enabled
         if self.save_to_sent and msg:
-            await self.outgoing_client.append_to_sent(
-                msg,
-                self.email_settings.incoming,
-                self.sent_folder_name,
-            )
+            try:
+                await self.outgoing_client.append_to_sent(
+                    msg,
+                    self.email_settings.incoming,
+                    self.sent_folder_name,
+                )
+            except Exception as e:
+                logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
