@@ -414,3 +414,256 @@ class TestEmailClientSendEmailReturnsMessage:
             assert result is not None
             assert result["Subject"] == "Test Subject"
             assert "recipient@example.com" in result["To"]
+
+
+class TestFindSentFolderByFlag:
+    """Tests for _find_sent_folder_by_flag method."""
+
+    @pytest.fixture
+    def email_client(self):
+        """Create an EmailClient for testing."""
+        server = EmailServer(
+            user_name="test_user",
+            password="test_password",
+            host="smtp.example.com",
+            port=465,
+            use_ssl=True,
+        )
+        return EmailClient(server)
+
+    @pytest.fixture
+    def mock_imap_with_sent_flag(self):
+        """Create a mock IMAP client with Sent folder."""
+        mock = AsyncMock()
+        # Simulate IMAP LIST response with \Sent flag
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasNoChildren) "/" "INBOX"',
+                    b'(\\Sent \\HasNoChildren) "/" "Gesendete Objekte"',
+                    b'(\\Drafts \\HasNoChildren) "/" "Entwuerfe"',
+                ],
+            )
+        )
+        return mock
+
+    @pytest.fixture
+    def mock_imap_without_sent_flag(self):
+        """Create a mock IMAP client without Sent folder."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasNoChildren) "/" "INBOX"',
+                    b'(\\Drafts \\HasNoChildren) "/" "Drafts"',
+                ],
+            )
+        )
+        return mock
+
+    @pytest.fixture
+    def mock_imap_list_error(self):
+        """Create a mock IMAP client that raises error on list."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(side_effect=Exception("IMAP list failed"))
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_success(self, email_client, mock_imap_with_sent_flag):
+        """Test successful detection of Sent folder via IMAP flag."""
+        result = await email_client._find_sent_folder_by_flag(mock_imap_with_sent_flag)
+
+        assert result == "Gesendete Objekte"
+        mock_imap_with_sent_flag.list.assert_called_once_with('""', "*")
+
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_with_spaces(self, email_client):
+        """Test detection with folder name containing spaces (IONOS case)."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                [b'(\\Sent \\HasNoChildren) "/" "Gesendete Objekte"'],
+            )
+        )
+
+        result = await email_client._find_sent_folder_by_flag(mock)
+        assert result == "Gesendete Objekte"
+
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_gmail_style(self, email_client):
+        """Test detection with Gmail-style folder structure."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                [b'(\\Sent \\HasNoChildren) "/" "[Gmail]/Gesendet"'],
+            )
+        )
+
+        result = await email_client._find_sent_folder_by_flag(mock)
+        assert result == "[Gmail]/Gesendet"
+
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_not_found(self, email_client, mock_imap_without_sent_flag):
+        """Test when no folder with \\Sent flag exists."""
+        result = await email_client._find_sent_folder_by_flag(mock_imap_without_sent_flag)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_handles_error(self, email_client, mock_imap_list_error):
+        """Test error handling when IMAP list fails."""
+        result = await email_client._find_sent_folder_by_flag(mock_imap_list_error)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_with_string_response(self, email_client):
+        """Test handling of string (non-bytes) folder responses."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                ['(\\Sent \\HasNoChildren) "/" "Sent Items"'],
+            )
+        )
+
+        result = await email_client._find_sent_folder_by_flag(mock)
+        assert result == "Sent Items"
+
+
+class TestAppendToSentWithFlagDetection:
+    """Tests for append_to_sent integration with flag detection."""
+
+    @pytest.fixture
+    def email_client(self):
+        """Create an EmailClient for testing."""
+        server = EmailServer(
+            user_name="test_user",
+            password="test_password",
+            host="smtp.example.com",
+            port=465,
+            use_ssl=True,
+        )
+        return EmailClient(server)
+
+    @pytest.fixture
+    def incoming_server(self):
+        """Create an incoming EmailServer for testing."""
+        return EmailServer(
+            user_name="test_user",
+            password="test_password",
+            host="imap.example.com",
+            port=993,
+            use_ssl=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_append_uses_flag_detected_folder(self, email_client, incoming_server):
+        """Test that append_to_sent uses flag-detected folder when auto-detecting."""
+        msg = MIMEText("Test body")
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(
+            return_value=(
+                "OK",
+                [b'(\\Sent \\HasNoChildren) "/" "Gesendete Objekte"'],
+            )
+        )
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.append = AsyncMock(return_value=("OK", []))
+        mock_imap.logout = AsyncMock()
+
+        with patch("mcp_email_server.emails.classic.aioimaplib") as mock_aioimaplib:
+            mock_aioimaplib.IMAP4_SSL.return_value = mock_imap
+
+            result = await email_client.append_to_sent(msg, incoming_server, None)
+
+            assert result is True
+            # Verify it used the flag-detected folder with proper quoting
+            mock_imap.select.assert_called_with('"Gesendete Objekte"')
+
+    @pytest.mark.asyncio
+    async def test_append_prefers_flag_over_explicit(self, email_client, incoming_server):
+        """Test that IMAP flag detection has highest priority, even with explicit folder."""
+        msg = MIMEText("Test body")
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(
+            return_value=(
+                "OK",
+                [b'(\\Sent \\HasNoChildren) "/" "Flag Detected"'],
+            )
+        )
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.append = AsyncMock(return_value=("OK", []))
+        mock_imap.logout = AsyncMock()
+
+        with patch("mcp_email_server.emails.classic.aioimaplib") as mock_aioimaplib:
+            mock_aioimaplib.IMAP4_SSL.return_value = mock_imap
+
+            # Even with explicit folder, flag-detected should be preferred (most reliable)
+            result = await email_client.append_to_sent(msg, incoming_server, "INBOX.Sent")
+
+            assert result is True
+            # Should use flag-detected folder (highest priority)
+            mock_imap.select.assert_called_with('"Flag Detected"')
+
+
+class TestHandlerErrorHandling:
+    """Tests for error handling in ClassicEmailHandler.send_email."""
+
+    @pytest.mark.asyncio
+    async def test_send_email_continues_on_append_error(self):
+        """Test that send_email continues even if append_to_sent fails."""
+        settings = EmailSettings(
+            account_name="test",
+            full_name="Test User",
+            email_address="test@example.com",
+            incoming=EmailServer(
+                user_name="test_user",
+                password="test_password",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+            outgoing=EmailServer(
+                user_name="test_user",
+                password="test_password",
+                host="smtp.example.com",
+                port=465,
+                use_ssl=True,
+            ),
+            save_to_sent=True,
+            sent_folder_name="Sent",
+        )
+        handler = ClassicEmailHandler(settings)
+
+        mock_msg = MIMEText("Test body")
+        mock_send = AsyncMock(return_value=mock_msg)
+        mock_append = AsyncMock(side_effect=Exception("IMAP connection failed"))
+
+        with patch.object(handler.outgoing_client, "send_email", mock_send):
+            with patch.object(handler.outgoing_client, "append_to_sent", mock_append):
+                # Should not raise exception even though append fails
+                await handler.send_email(
+                    recipients=["recipient@example.com"],
+                    subject="Test",
+                    body="Test body",
+                )
+
+                # Email should still be sent
+                mock_send.assert_called_once()
+                # Append was attempted
+                mock_append.assert_called_once()
