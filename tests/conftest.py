@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import asyncio
-import os
-from datetime import datetime
 from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+
+import os
+
+os.environ["MCP_EMAIL_SERVER_CONFIG_PATH"] = (_HERE / "config.toml").as_posix()
+os.environ["MCP_EMAIL_SERVER_LOG_LEVEL"] = "DEBUG"
+
+import asyncio
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings, delete_settings
-
-_HERE = Path(__file__).resolve().parent
-
-os.environ["MCP_EMAIL_SERVER_CONFIG_PATH"] = (_HERE / "config.toml").as_posix()
-os.environ["MCP_EMAIL_SERVER_LOG_LEVEL"] = "DEBUG"
 
 
 @pytest.fixture(autouse=True)

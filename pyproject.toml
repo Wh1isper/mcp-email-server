@@ -114,6 +114,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S106", "SIM117"]
+"tests/conftest.py" = ["E402"]
 
 [tool.ruff.format]
 preview = true
