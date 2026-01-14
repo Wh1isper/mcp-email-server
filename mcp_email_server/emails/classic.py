@@ -267,14 +267,12 @@ class EmailClient:
             else:
                 email_ids = messages[0].split()
                 logger.info(f"Found {len(email_ids)} email IDs")
-            start = (page - 1) * page_size
-            end = start + page_size
-
-            if order == "desc":
-                email_ids.reverse()
+            # Fetch metadata for all emails first, then sort by date
+            # (UID order doesn't guarantee chronological order on all IMAP servers)
+            all_metadata: list[dict[str, Any]] = []
 
             # Fetch each message's metadata only
-            for _, email_id in enumerate(email_ids[start:end]):
+            for _, email_id in enumerate(email_ids):
                 try:
                     # Convert email_id from bytes to string
                     email_id_str = email_id.decode("utf-8")
@@ -343,7 +341,7 @@ class EmailClient:
                                 "date": date,
                                 "attachments": [],  # We don't fetch attachment info for metadata
                             }
-                            yield metadata
+                            all_metadata.append(metadata)
                         except Exception as e:
                             # Log error but continue with other emails
                             logger.error(f"Error parsing email metadata: {e!s}")
@@ -351,6 +349,15 @@ class EmailClient:
                         logger.error(f"Could not find header data in response for email ID: {email_id_str}")
                 except Exception as e:
                     logger.error(f"Error fetching email metadata {email_id}: {e!s}")
+
+            # Sort by date (desc = newest first, asc = oldest first)
+            all_metadata.sort(key=lambda x: x["date"], reverse=(order == "desc"))
+
+            # Apply pagination after sorting
+            start = (page - 1) * page_size
+            end = start + page_size
+            for metadata in all_metadata[start:end]:
+                yield metadata
         finally:
             # Ensure we logout properly
             try:
