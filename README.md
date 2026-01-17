@@ -217,6 +217,21 @@ await send_email(
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
 
+### Archiving Emails
+
+To move emails to your Archive folder:
+
+```python
+result = await archive_emails(
+    account_name="work",
+    email_ids=["123", "456"],
+)
+print(f"Archived: {result.archived_ids}")
+print(f"Archive folder: {result.archive_folder}")
+```
+
+The server auto-detects common Archive folder names: `Archive`, `INBOX.Archive`, `Archives`, `[Gmail]/All Mail`. It also checks for the IMAP `\Archive` flag to find the correct folder.
+
 ## Development
 
 This project is managed using [uv](https://github.com/ai-zerolab/uv).
