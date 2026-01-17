@@ -827,9 +827,7 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
-    async def move_to_archive(
-        self, email_ids: list[str], mailbox: str = "INBOX"
-    ) -> tuple[list[str], list[str], str]:
+    async def move_to_archive(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str], str]:
         """Move emails to the Archive folder.
 
         Args:
