@@ -461,3 +461,233 @@ class TestClassicEmailHandler:
                 )
 
                 assert result.subject == "Fwd: Already Forwarded"  # Should not add another Fwd:
+
+    @pytest.mark.asyncio
+    async def test_forward_html_email(self, classic_handler):
+        """Test forward_email method with HTML-only email content."""
+        original_email = {
+            "email_id": "html123",
+            "subject": "HTML Newsletter",
+            "from": "newsletter@example.com",
+            "to": "subscriber@example.com",
+            "cc": "",
+            "date": "Thu, 4 Jan 2024 10:00:00 +0000",
+            "body": "",  # No plain text body
+            "html_body": "<html><body><h1>Welcome!</h1><p>This is <b>HTML</b> content.</p></body></html>",
+            "is_html": True,
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="html123",
+                    recipients=["forward@example.com"],
+                    additional_message="Check this out!",
+                )
+
+                assert isinstance(result, ForwardEmailResponse)
+                assert result.success is True
+                assert result.subject == "Fwd: HTML Newsletter"
+
+                # Verify send_message was called with HTML content
+                mock_smtp.send_message.assert_called_once()
+                sent_msg = mock_smtp.send_message.call_args[0][0]
+                # The message should be HTML type
+                assert sent_msg.get_content_type() == "text/html"
+                # Should contain the original HTML body (decode=True handles base64)
+                payload = sent_msg.get_payload(decode=True).decode("utf-8")
+                assert "<h1>Welcome!</h1>" in payload
+                assert "Forwarded message" in payload
+
+    @pytest.mark.asyncio
+    async def test_forward_plain_text_email(self, classic_handler):
+        """Test forward_email method with plain text only email."""
+        original_email = {
+            "email_id": "plain123",
+            "subject": "Plain Text Message",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "cc": "",
+            "date": "Thu, 4 Jan 2024 10:00:00 +0000",
+            "body": "This is a plain text message.\n\nNo HTML here.",
+            "html_body": "",  # No HTML body
+            "is_html": False,
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="plain123",
+                    recipients=["forward@example.com"],
+                )
+
+                assert isinstance(result, ForwardEmailResponse)
+                assert result.success is True
+
+                # Verify send_message was called with plain text content
+                mock_smtp.send_message.assert_called_once()
+                sent_msg = mock_smtp.send_message.call_args[0][0]
+                # The message should be plain text type
+                assert sent_msg.get_content_type() == "text/plain"
+                payload = sent_msg.get_payload(decode=True).decode("utf-8")
+                assert "This is a plain text message." in payload
+                assert "Forwarded message" in payload
+
+    @pytest.mark.asyncio
+    async def test_forward_multipart_email_uses_clean_text(self, classic_handler):
+        """Test forward_email with multipart email (both HTML and plain text).
+
+        When an email has both HTML and plain text parts, we should forward as
+        plain text but use the HTML converted to clean text to avoid raw HTML tags.
+        """
+        original_email = {
+            "email_id": "multi123",
+            "subject": "Multipart Message",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "cc": "",
+            "date": "Thu, 4 Jan 2024 10:00:00 +0000",
+            "body": "Plain text version with some content",  # Has plain text
+            "html_body": "<div>HTML version</div><p>with <b>formatting</b></p>",  # Also has HTML
+            "is_html": False,  # Not HTML-only since plain text exists
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="multi123",
+                    recipients=["forward@example.com"],
+                )
+
+                assert isinstance(result, ForwardEmailResponse)
+                assert result.success is True
+
+                # Verify send_message was called with plain text content
+                mock_smtp.send_message.assert_called_once()
+                sent_msg = mock_smtp.send_message.call_args[0][0]
+                assert sent_msg.get_content_type() == "text/plain"
+                payload = sent_msg.get_payload(decode=True).decode("utf-8")
+
+                # Should NOT contain raw HTML tags
+                assert "<div>" not in payload
+                assert "<p>" not in payload
+                assert "<b>" not in payload
+
+                # Should contain clean text extracted from HTML
+                assert "HTML version" in payload
+                assert "formatting" in payload
+                assert "Forwarded message" in payload
+
+    @pytest.mark.asyncio
+    async def test_forward_multipart_email_no_html_contamination(self, classic_handler):
+        """Test that multipart email forwarding doesn't include raw HTML tags.
+
+        This specifically tests the case where a poorly formatted email has
+        HTML tags in its plain text part - we should use the HTML body converted
+        to clean text instead.
+        """
+        original_email = {
+            "email_id": "contaminated123",
+            "subject": "Contaminated Plain Text",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "cc": "",
+            "date": "Thu, 4 Jan 2024 10:00:00 +0000",
+            # Plain text that contains HTML tags (badly formatted email)
+            "body": "<div>This should not appear as raw HTML</div>",
+            "html_body": "<div>Clean HTML content here</div>",
+            "is_html": False,
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="contaminated123",
+                    recipients=["forward@example.com"],
+                )
+
+                assert isinstance(result, ForwardEmailResponse)
+                assert result.success is True
+
+                mock_smtp.send_message.assert_called_once()
+                sent_msg = mock_smtp.send_message.call_args[0][0]
+                assert sent_msg.get_content_type() == "text/plain"
+                payload = sent_msg.get_payload(decode=True).decode("utf-8")
+
+                # Should NOT contain raw HTML tags
+                assert "<div>" not in payload
+
+                # Should contain the clean text from the HTML body
+                assert "Clean HTML content here" in payload
+
+    @pytest.mark.asyncio
+    async def test_forward_email_includes_date_header(self, classic_handler):
+        """Test that forwarded emails include a Date header (RFC 5322 requirement)."""
+        original_email = {
+            "email_id": "date123",
+            "subject": "Test Date Header",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "cc": "",
+            "date": "Thu, 4 Jan 2024 10:00:00 +0000",
+            "body": "Test body",
+            "html_body": "",
+            "is_html": False,
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="date123",
+                    recipients=["forward@example.com"],
+                )
+
+                assert result.success is True
+
+                mock_smtp.send_message.assert_called_once()
+                sent_msg = mock_smtp.send_message.call_args[0][0]
+
+                # Must have a Date header (RFC 5322 requirement)
+                assert sent_msg["Date"] is not None
+                # Date should be in RFC 2822 format (e.g., "Fri, 17 Jan 2026 09:01:00 +0000")
+                assert "," in sent_msg["Date"]  # Day, DD Mon YYYY format

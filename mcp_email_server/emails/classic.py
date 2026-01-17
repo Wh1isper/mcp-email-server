@@ -9,11 +9,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
 from email.policy import default
+from html import escape
 from pathlib import Path
 from typing import Any
 
 import aioimaplib
 import aiosmtplib
+import justhtml
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
@@ -856,8 +858,9 @@ class EmailClient:
             to_header = email_message.get("To", "")
             cc_header = email_message.get("Cc", "")
 
-            # Extract body and attachments
+            # Extract body (plain text and HTML) and attachments
             body = ""
+            html_body = ""
             attachment_parts: list[MIMEApplication] = []
 
             if email_message.is_multipart():
@@ -888,14 +891,31 @@ class EmailClient:
                                 body += body_part.decode(charset)
                             except UnicodeDecodeError:
                                 body += body_part.decode("utf-8", errors="replace")
+                    elif content_type == "text/html":
+                        html_part = part.get_payload(decode=True)
+                        if html_part:
+                            charset = part.get_content_charset("utf-8")
+                            try:
+                                html_body += html_part.decode(charset)
+                            except UnicodeDecodeError:
+                                html_body += html_part.decode("utf-8", errors="replace")
             else:
                 payload = email_message.get_payload(decode=True)
                 if payload:
                     charset = email_message.get_content_charset("utf-8")
+                    content_type = email_message.get_content_type()
                     try:
-                        body = payload.decode(charset)
+                        decoded = payload.decode(charset)
                     except UnicodeDecodeError:
-                        body = payload.decode("utf-8", errors="replace")
+                        decoded = payload.decode("utf-8", errors="replace")
+
+                    if content_type == "text/html":
+                        html_body = decoded
+                    else:
+                        body = decoded
+
+            # Use HTML only when there's no plain text alternative
+            is_html = bool(html_body and not body)
 
             return {
                 "email_id": email_id,
@@ -905,6 +925,8 @@ class EmailClient:
                 "cc": cc_header,
                 "date": date_str,
                 "body": body,
+                "html_body": html_body,
+                "is_html": is_html,
                 "attachment_parts": attachment_parts,
             }
 
@@ -1092,38 +1114,75 @@ class ClassicEmailHandler(EmailHandler):
         else:
             forward_subject = original_subject
 
-        # Build the quoted original message
-        quoted_body = "\n\n---------- Forwarded message ----------\n"
-        quoted_body += f"From: {original['from']}\n"
-        quoted_body += f"Date: {original['date']}\n"
-        quoted_body += f"Subject: {original['subject']}\n"
-        if original["to"]:
-            quoted_body += f"To: {original['to']}\n"
-        if original["cc"]:
-            quoted_body += f"Cc: {original['cc']}\n"
-        quoted_body += "\n"
-        quoted_body += original["body"]
+        # Determine if original is HTML
+        is_html = original.get("is_html", False)
+        html_body = original.get("html_body", "")
+        plain_body = original.get("body", "")
 
-        # Combine with additional message if provided
-        if additional_message:
-            forward_body = additional_message + quoted_body
-        else:
-            forward_body = quoted_body
+        # For plain text forwarding, prefer converting HTML to clean text
+        # This avoids issues where plain_body contains embedded HTML tags
+        if not is_html and html_body:
+            plain_body = justhtml.JustHTML(html_body).to_text()
+        elif is_html and not plain_body and html_body:
+            # HTML-only email, need plain text fallback
+            plain_body = justhtml.JustHTML(html_body).to_text()
 
         # Build attachment file paths (we need to temporarily save them for send_email)
         # For simplicity, we'll send without file attachments and include the attachment parts directly
         attachment_parts = original.get("attachment_parts", []) if include_attachments else []
 
         try:
-            # Build the message manually with attachments
-            if attachment_parts:
-                msg = MIMEMultipart()
-                text_part = MIMEText(forward_body, "plain", "utf-8")
-                msg.attach(text_part)
-                for attachment in attachment_parts:
-                    msg.attach(attachment)
+            if is_html and html_body:
+                # Build HTML forward
+                quoted_html = "<br><br>---------- Forwarded message ----------<br>"
+                quoted_html += f"From: {escape(original['from'])}<br>"
+                quoted_html += f"Date: {escape(original['date'])}<br>"
+                quoted_html += f"Subject: {escape(original['subject'])}<br>"
+                if original["to"]:
+                    quoted_html += f"To: {escape(original['to'])}<br>"
+                if original["cc"]:
+                    quoted_html += f"Cc: {escape(original['cc'])}<br>"
+                quoted_html += f"<br>{html_body}"
+
+                if additional_message:
+                    forward_html = f"<p>{escape(additional_message)}</p>{quoted_html}"
+                else:
+                    forward_html = quoted_html
+
+                if attachment_parts:
+                    msg = MIMEMultipart()
+                    html_part = MIMEText(forward_html, "html", "utf-8")
+                    msg.attach(html_part)
+                    for attachment in attachment_parts:
+                        msg.attach(attachment)
+                else:
+                    msg = MIMEText(forward_html, "html", "utf-8")
             else:
-                msg = MIMEText(forward_body, "plain", "utf-8")
+                # Build plain text forward
+                quoted_body = "\n\n---------- Forwarded message ----------\n"
+                quoted_body += f"From: {original['from']}\n"
+                quoted_body += f"Date: {original['date']}\n"
+                quoted_body += f"Subject: {original['subject']}\n"
+                if original["to"]:
+                    quoted_body += f"To: {original['to']}\n"
+                if original["cc"]:
+                    quoted_body += f"Cc: {original['cc']}\n"
+                quoted_body += "\n"
+                quoted_body += plain_body
+
+                if additional_message:
+                    forward_body = additional_message + quoted_body
+                else:
+                    forward_body = quoted_body
+
+                if attachment_parts:
+                    msg = MIMEMultipart()
+                    text_part = MIMEText(forward_body, "plain", "utf-8")
+                    msg.attach(text_part)
+                    for attachment in attachment_parts:
+                        msg.attach(attachment)
+                else:
+                    msg = MIMEText(forward_body, "plain", "utf-8")
 
             # Set headers
             if any(ord(c) > 127 for c in forward_subject):
@@ -1137,6 +1196,7 @@ class ClassicEmailHandler(EmailHandler):
                 msg["From"] = sender
 
             msg["To"] = ", ".join(recipients)
+            msg["Date"] = email.utils.formatdate(localtime=True)
 
             # Send via SMTP using outgoing server
             async with aiosmtplib.SMTP(
