@@ -242,6 +242,18 @@ Available formats:
 - `text`: Strips all HTML tags and returns clean plain text
 - `markdown`: Converts HTML to markdown, preserving links and basic formatting
 
+To set a default format for all email content retrieval, configure `default_content_format` in your config file:
+
+```toml
+default_content_format = "markdown"
+```
+
+Or via environment variable:
+
+```bash
+export MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT=markdown
+```
+
 ## Development
 
 This project is managed using [uv](https://github.com/ai-zerolab/uv).

@@ -218,11 +218,15 @@ def _parse_bool_env(value: str | None, default: bool = False) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
+VALID_CONTENT_FORMATS = {"raw", "html", "text", "markdown"}
+
+
 class Settings(BaseSettings):
     emails: list[EmailSettings] = []
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
+    default_content_format: str = "raw"
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
@@ -235,6 +239,18 @@ class Settings(BaseSettings):
         if env_enable_attachment is not None:
             self.enable_attachment_download = _parse_bool_env(env_enable_attachment, False)
             logger.info(f"Set enable_attachment_download={self.enable_attachment_download} from environment variable")
+
+        # Check for default_content_format from environment variable
+        env_content_format = os.getenv("MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT")
+        if env_content_format is not None:
+            if env_content_format in VALID_CONTENT_FORMATS:
+                self.default_content_format = env_content_format
+                logger.info(f"Set default_content_format={self.default_content_format} from environment variable")
+            else:
+                logger.warning(
+                    f"Invalid MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT '{env_content_format}', "
+                    f"must be one of {VALID_CONTENT_FORMATS}. Using default 'raw'."
+                )
 
         # Check for email configuration from environment variables
         env_email = EmailSettings.from_env()

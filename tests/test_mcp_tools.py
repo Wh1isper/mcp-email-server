@@ -454,6 +454,95 @@ class TestMcpTools:
             mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "markdown")
 
     @pytest.mark.asyncio
+    async def test_get_emails_content_uses_default_content_format_setting(self):
+        """Test get_emails_content uses default_content_format from settings when content_format not specified."""
+        from mcp_email_server.config import Settings
+
+        now = datetime.now(timezone.utc)
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="Test Email",
+            sender="sender@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="Markdown converted content",
+            attachments=[],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        # Create a mock settings object with default_content_format set to "markdown"
+        mock_settings = MagicMock(spec=Settings)
+        mock_settings.default_content_format = "markdown"
+
+        with (
+            patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler),
+            patch("mcp_email_server.app.get_settings", return_value=mock_settings),
+        ):
+            # Call without specifying content_format
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+            )
+
+            assert result == batch_response
+            # Should use "markdown" from settings, not "raw"
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "markdown")
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_explicit_format_overrides_setting(self):
+        """Test explicit content_format overrides default_content_format setting."""
+        from mcp_email_server.config import Settings
+
+        now = datetime.now(timezone.utc)
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="Test Email",
+            sender="sender@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="<html>HTML content</html>",
+            attachments=[],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        # Settings has "markdown" as default
+        mock_settings = MagicMock(spec=Settings)
+        mock_settings.default_content_format = "markdown"
+
+        with (
+            patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler),
+            patch("mcp_email_server.app.get_settings", return_value=mock_settings),
+        ):
+            # Explicitly request "html" format
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+                content_format="html",
+            )
+
+            assert result == batch_response
+            # Should use explicit "html", not "markdown" from settings
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "html")
+
+    @pytest.mark.asyncio
     async def test_send_email(self):
         """Test send_email MCP tool."""
         # Mock the dispatch_handler function

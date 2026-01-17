@@ -98,21 +98,24 @@ async def get_emails_content(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
     content_format: Annotated[
-        str,
+        str | None,
         Field(
-            default="raw",
+            default=None,
             description=(
                 "How to format the email body content: "
-                "'raw' (default) returns text/plain if available or HTML otherwise; "
+                "'raw' returns text/plain if available or HTML otherwise; "
                 "'html' returns HTML content; "
                 "'text' strips HTML tags to return clean plain text; "
-                "'markdown' converts HTML to markdown format."
+                "'markdown' converts HTML to markdown format. "
+                "Defaults to the server's default_content_format setting (usually 'raw')."
             ),
         ),
-    ] = "raw",
+    ] = None,
 ) -> EmailContentBatchResponse:
+    settings = get_settings()
+    effective_format = content_format if content_format is not None else settings.default_content_format
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids, mailbox, content_format)
+    return await handler.get_emails_content(email_ids, mailbox, effective_format)
 
 
 @mcp.tool(

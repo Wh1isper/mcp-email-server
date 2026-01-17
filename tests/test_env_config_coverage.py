@@ -358,3 +358,81 @@ def test_enable_attachment_download_env_overrides_toml(monkeypatch, tmp_path):
 
     settings = Settings()
     assert settings.enable_attachment_download is True
+
+
+def test_default_content_format_defaults_to_raw(monkeypatch, tmp_path):
+    """Test default_content_format defaults to 'raw'."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    settings = Settings()
+    assert settings.default_content_format == "raw"
+
+
+def test_default_content_format_from_env_markdown(monkeypatch, tmp_path):
+    """Test default_content_format can be set to 'markdown' via env var."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT", "markdown")
+
+    settings = Settings()
+    assert settings.default_content_format == "markdown"
+
+
+def test_default_content_format_from_env_text(monkeypatch, tmp_path):
+    """Test default_content_format can be set to 'text' via env var."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT", "text")
+
+    settings = Settings()
+    assert settings.default_content_format == "text"
+
+
+def test_default_content_format_invalid_value_keeps_raw(monkeypatch, tmp_path):
+    """Test invalid default_content_format value logs warning and keeps 'raw'."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT", "invalid_format")
+
+    settings = Settings()
+    assert settings.default_content_format == "raw"
+
+
+def test_default_content_format_html(monkeypatch, tmp_path):
+    """Test default_content_format can be set to 'html' via env var."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    for key in list(os.environ.keys()):
+        if key.startswith("MCP_EMAIL_SERVER_") and "CONFIG_PATH" not in key:
+            monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_DEFAULT_CONTENT_FORMAT", "html")
+
+    settings = Settings()
+    assert settings.default_content_format == "html"
