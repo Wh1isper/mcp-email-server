@@ -29,9 +29,23 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> "EmailContentBatchResponse":
+    async def get_emails_content(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        content_format: str = "raw",
+    ) -> "EmailContentBatchResponse":
         """
         Get full content (including body) of multiple emails by their email IDs (IMAP UIDs)
+
+        Args:
+            email_ids: List of email UIDs to retrieve.
+            mailbox: The mailbox to search in (default: "INBOX").
+            content_format: How to format the body content:
+                - "raw": Return original content (text/plain preferred, falls back to HTML)
+                - "html": Return HTML content as-is
+                - "text": Strip HTML tags and return clean plain text
+                - "markdown": Convert HTML to markdown format
         """
 
     @abc.abstractmethod

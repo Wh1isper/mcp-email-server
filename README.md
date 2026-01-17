@@ -217,6 +217,30 @@ await send_email(
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
 
+### Extracting Clean Text from HTML Emails
+
+When fetching email content, you can control how the body is formatted using the `content_format` parameter:
+
+```python
+# Get raw content (default) - returns text/plain if available, otherwise HTML
+emails = await get_emails_content(account_name="work", email_ids=["123"])
+
+# Get HTML content as-is
+emails = await get_emails_content(account_name="work", email_ids=["123"], content_format="html")
+
+# Strip HTML tags and get clean plain text
+emails = await get_emails_content(account_name="work", email_ids=["123"], content_format="text")
+
+# Convert HTML to markdown format
+emails = await get_emails_content(account_name="work", email_ids=["123"], content_format="markdown")
+```
+
+Available formats:
+- `raw` (default): Returns text/plain content if available, falls back to HTML
+- `html`: Returns HTML content as-is
+- `text`: Strips all HTML tags and returns clean plain text
+- `markdown`: Converts HTML to markdown, preserving links and basic formatting
+
 ## Development
 
 This project is managed using [uv](https://github.com/ai-zerolab/uv).

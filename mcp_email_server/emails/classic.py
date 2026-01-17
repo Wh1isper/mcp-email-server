@@ -13,6 +13,7 @@ from typing import Any
 
 import aioimaplib
 import aiosmtplib
+import justhtml
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
@@ -72,6 +73,42 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
         logger.warning(f"IMAP ID command failed: {e!s}")
 
 
+def _format_body_content(body: str, html_body: str, content_format: str) -> str:
+    """Format email body content based on the requested format.
+
+    Args:
+        body: Plain text body content.
+        html_body: HTML body content.
+        content_format: One of "raw", "html", "text", "markdown".
+
+    Returns:
+        Formatted body content.
+    """
+    if content_format == "raw":
+        # Return plain text if available, else HTML
+        return body if body else html_body
+
+    if content_format == "html":
+        # Return HTML content, fall back to plain text if no HTML
+        return html_body if html_body else body
+
+    if content_format == "text":
+        # Convert HTML to clean text, or return plain text
+        if html_body:
+            return justhtml.JustHTML(html_body).to_text()
+        return body
+
+    if content_format == "markdown":
+        # Convert HTML to markdown
+        if html_body:
+            return justhtml.JustHTML(html_body).to_markdown()
+        return body
+
+    # Unknown format, return raw
+    logger.warning(f"Unknown content_format: {content_format}, returning raw content")
+    return body if body else html_body
+
+
 class EmailClient:
     def __init__(self, email_server: EmailServer, sender: str | None = None):
         self.email_server = email_server
@@ -118,8 +155,9 @@ class EmailClient:
         except Exception:
             date = datetime.now(timezone.utc)
 
-        # Get body content
+        # Get body content - extract both plain text and HTML
         body = ""
+        html_body = ""
         attachments = []
 
         if email_message.is_multipart():
@@ -141,18 +179,36 @@ class EmailClient:
                             body += body_part.decode(charset)
                         except UnicodeDecodeError:
                             body += body_part.decode("utf-8", errors="replace")
+                elif content_type == "text/html":
+                    html_part = part.get_payload(decode=True)
+                    if html_part:
+                        charset = part.get_content_charset("utf-8")
+                        try:
+                            html_body += html_part.decode(charset)
+                        except UnicodeDecodeError:
+                            html_body += html_part.decode("utf-8", errors="replace")
         else:
-            # Handle plain text emails
+            # Handle single-part emails
             payload = email_message.get_payload(decode=True)
             if payload:
                 charset = email_message.get_content_charset("utf-8")
+                content_type = email_message.get_content_type()
                 try:
-                    body = payload.decode(charset)
+                    decoded = payload.decode(charset)
                 except UnicodeDecodeError:
-                    body = payload.decode("utf-8", errors="replace")
-        # TODO: Allow retrieving full email body
+                    decoded = payload.decode("utf-8", errors="replace")
+
+                if content_type == "text/html":
+                    html_body = decoded
+                else:
+                    body = decoded
+
+        # Truncate if too long
         if body and len(body) > 20000:
             body = body[:20000] + "...[TRUNCATED]"
+        if html_body and len(html_body) > 20000:
+            html_body = html_body[:20000] + "...[TRUNCATED]"
+
         return {
             "email_id": email_id or "",
             "message_id": message_id,
@@ -160,6 +216,7 @@ class EmailClient:
             "from": sender,
             "to": to_addresses,
             "body": body,
+            "html_body": html_body,
             "date": date,
             "attachments": attachments,
         }
@@ -837,8 +894,23 @@ class ClassicEmailHandler(EmailHandler):
             total=total,
         )
 
-    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> EmailContentBatchResponse:
-        """Batch retrieve email body content"""
+    async def get_emails_content(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        content_format: str = "raw",
+    ) -> EmailContentBatchResponse:
+        """Batch retrieve email body content.
+
+        Args:
+            email_ids: List of email UIDs to retrieve.
+            mailbox: The mailbox to search in (default: "INBOX").
+            content_format: How to format the body content:
+                - "raw": Return original content (text/plain preferred, falls back to HTML)
+                - "html": Return HTML content as-is
+                - "text": Strip HTML tags and return clean plain text
+                - "markdown": Convert HTML to markdown format
+        """
         emails = []
         failed_ids = []
 
@@ -846,6 +918,12 @@ class ClassicEmailHandler(EmailHandler):
             try:
                 email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
                 if email_data:
+                    # Apply content format conversion
+                    formatted_body = _format_body_content(
+                        email_data.get("body", ""),
+                        email_data.get("html_body", ""),
+                        content_format,
+                    )
                     emails.append(
                         EmailBodyResponse(
                             email_id=email_data["email_id"],
@@ -854,7 +932,7 @@ class ClassicEmailHandler(EmailHandler):
                             sender=email_data["from"],
                             recipients=email_data["to"],
                             date=email_data["date"],
-                            body=email_data["body"],
+                            body=formatted_body,
                             attachments=email_data["attachments"],
                         )
                     )

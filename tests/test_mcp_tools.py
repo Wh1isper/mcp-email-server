@@ -259,7 +259,7 @@ class TestMcpTools:
             assert result.emails[0].subject == "Test Subject"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX")
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "raw")
 
     @pytest.mark.asyncio
     async def test_get_emails_content_batch(self):
@@ -315,7 +315,7 @@ class TestMcpTools:
             assert result.emails[1].email_id == "12346"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX", "raw")
 
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
@@ -349,7 +349,109 @@ class TestMcpTools:
             )
 
             assert result == batch_response
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent")
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent", "raw")
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_with_content_format_text(self):
+        """Test get_emails_content MCP tool with content_format='text'."""
+        now = datetime.now(timezone.utc)
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="HTML Email",
+            sender="sender@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="Clean text extracted from HTML",
+            attachments=[],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+                content_format="text",
+            )
+
+            assert result == batch_response
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "text")
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_with_content_format_html(self):
+        """Test get_emails_content MCP tool with content_format='html'."""
+        now = datetime.now(timezone.utc)
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="HTML Email",
+            sender="sender@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="<html><body>HTML content</body></html>",
+            attachments=[],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+                content_format="html",
+            )
+
+            assert result == batch_response
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "html")
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_with_content_format_markdown(self):
+        """Test get_emails_content MCP tool with content_format='markdown'."""
+        now = datetime.now(timezone.utc)
+        email_body = EmailBodyResponse(
+            email_id="12345",
+            subject="HTML Email",
+            sender="sender@example.com",
+            recipients=["recipient@example.com"],
+            date=now,
+            body="# Header\n\nParagraph with [link](http://example.com)",
+            attachments=[],
+        )
+
+        batch_response = EmailContentBatchResponse(
+            emails=[email_body],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch_response
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await get_emails_content(
+                account_name="test_account",
+                email_ids=["12345"],
+                content_format="markdown",
+            )
+
+            assert result == batch_response
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", "markdown")
 
     @pytest.mark.asyncio
     async def test_send_email(self):

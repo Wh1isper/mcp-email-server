@@ -767,6 +767,15 @@ wheels = [
 ]
 
 [[package]]
+name = "justhtml"
+version = "0.35.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8f/8c/f075596d1e14c62b49af21752e933f521cfca64d1efb471fe1af166649c0/justhtml-0.35.0.tar.gz", hash = "sha256:14658260ebb40e73e73e8442c12f112a1b750695b332e7882ea3d668174126a7", size = 296744, upload-time = "2026-01-11T13:34:21.363Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b5/6d/c97778ab7c97045fa0a4547c0c1f0c6a9e0117704c01a02d1f8c6f1e9d2b/justhtml-0.35.0-py3-none-any.whl", hash = "sha256:219e96f0810f188dbdc9e93ea7e52530897ab77721b49c28d9d42e9829f7e7c9", size = 107110, upload-time = "2026-01-11T13:34:19.997Z" },
+]
+
+[[package]]
 name = "loguru"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
@@ -922,6 +931,7 @@ dependencies = [
     { name = "aiosmtplib" },
     { name = "gradio" },
     { name = "jinja2" },
+    { name = "justhtml" },
     { name = "loguru" },
     { name = "mcp", extra = ["cli"] },
     { name = "pydantic" },
@@ -950,6 +960,7 @@ requires-dist = [
     { name = "aiosmtplib", specifier = ">=4.0.0" },
     { name = "gradio", specifier = ">=6.0.1" },
     { name = "jinja2", specifier = ">=3.1.5" },
+    { name = "justhtml", specifier = ">=0.35.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.3.0" },
     { name = "pydantic", specifier = ">=2.11.0" },

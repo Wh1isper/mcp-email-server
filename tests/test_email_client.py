@@ -354,3 +354,135 @@ class TestSendEmailReplyHeaders:
             msg = call_args[0][0]
             assert "In-Reply-To" not in msg
             assert "References" not in msg
+
+
+class TestFormatBodyContent:
+    """Tests for the _format_body_content helper function."""
+
+    def test_format_raw_returns_plain_text_if_available(self):
+        """Test raw format returns plain text when available."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("plain text", "<html>html</html>", "raw")
+        assert result == "plain text"
+
+    def test_format_raw_falls_back_to_html(self):
+        """Test raw format falls back to HTML when no plain text."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("", "<html>html</html>", "raw")
+        assert result == "<html>html</html>"
+
+    def test_format_html_returns_html_if_available(self):
+        """Test html format returns HTML when available."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("plain text", "<html>html content</html>", "html")
+        assert result == "<html>html content</html>"
+
+    def test_format_html_falls_back_to_plain_text(self):
+        """Test html format falls back to plain text when no HTML."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("plain text only", "", "html")
+        assert result == "plain text only"
+
+    def test_format_text_strips_html_tags(self):
+        """Test text format strips HTML tags."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("", "<div>Hello <b>World</b></div>", "text")
+        assert "Hello" in result
+        assert "World" in result
+        assert "<div>" not in result
+        assert "<b>" not in result
+
+    def test_format_text_returns_plain_text_directly(self):
+        """Test text format returns plain text directly if no HTML."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("plain text", "", "text")
+        assert result == "plain text"
+
+    def test_format_markdown_converts_html(self):
+        """Test markdown format converts HTML to markdown."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("", "<p>Paragraph</p><a href='http://example.com'>link</a>", "markdown")
+        # Should contain text without HTML tags
+        assert "Paragraph" in result
+        assert "link" in result
+        assert "<p>" not in result
+        assert "<a>" not in result
+
+    def test_format_markdown_returns_plain_text_if_no_html(self):
+        """Test markdown format returns plain text directly if no HTML."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("plain text", "", "markdown")
+        assert result == "plain text"
+
+    def test_format_unknown_returns_raw(self):
+        """Test unknown format returns raw content."""
+        from mcp_email_server.emails.classic import _format_body_content
+
+        result = _format_body_content("plain", "<html>html</html>", "unknown")
+        assert result == "plain"
+
+
+class TestParseEmailDataHtml:
+    """Tests for _parse_email_data extracting HTML content."""
+
+    def test_parse_multipart_extracts_html_body(self, email_client):
+        """Test that multipart emails have HTML body extracted."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Test Email
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset="utf-8"
+
+This is plain text
+
+--boundary123
+Content-Type: text/html; charset="utf-8"
+
+<html><body><p>This is HTML</p></body></html>
+
+--boundary123--
+"""
+        result = email_client._parse_email_data(raw_email, "test123")
+
+        assert result["body"] == "This is plain text\n"
+        assert "<html>" in result["html_body"]
+        assert "<p>This is HTML</p>" in result["html_body"]
+
+    def test_parse_html_only_email(self, email_client):
+        """Test parsing email with only HTML body."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: HTML Only
+Content-Type: text/html; charset="utf-8"
+
+<html><body><h1>Hello!</h1></body></html>
+"""
+        result = email_client._parse_email_data(raw_email, "test123")
+
+        assert result["body"] == ""
+        assert "<h1>Hello!</h1>" in result["html_body"]
+
+    def test_parse_plain_only_email(self, email_client):
+        """Test parsing email with only plain text body."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Plain Only
+Content-Type: text/plain; charset="utf-8"
+
+Just plain text here
+"""
+        result = email_client._parse_email_data(raw_email, "test123")
+
+        assert "Just plain text here" in result["body"]
+        assert result["html_body"] == ""
