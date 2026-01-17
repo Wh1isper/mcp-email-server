@@ -236,6 +236,7 @@ emails = await get_emails_content(account_name="work", email_ids=["123"], conten
 ```
 
 Available formats:
+
 - `raw` (default): Returns text/plain content if available, falls back to HTML
 - `html`: Returns HTML content as-is
 - `text`: Strips all HTML tags and returns clean plain text
