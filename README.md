@@ -247,6 +247,22 @@ await send_email(
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
 
+### Forwarding Emails
+
+To forward an email to new recipients:
+
+```python
+result = await forward_email(
+    account_name="work",
+    email_id="123",
+    recipients=["colleague@example.com"],
+    additional_message="FYI - please see below.",
+)
+print(f"Forwarded to: {result.forwarded_to}")
+```
+
+The forward preserves the original email's formatting (HTML or plain text) and includes attachments by default. Use `include_attachments=False` to forward without attachments.
+
 ## Development
 
 This project is managed using [uv](https://github.com/ai-zerolab/uv).
