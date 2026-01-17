@@ -819,6 +819,64 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    def _decode_part_content(self, part) -> str:
+        """Decode a MIME part's payload with charset handling."""
+        payload = part.get_payload(decode=True)
+        if not payload:
+            return ""
+        charset = part.get_content_charset("utf-8")
+        try:
+            return payload.decode(charset)
+        except UnicodeDecodeError:
+            return payload.decode("utf-8", errors="replace")
+
+    def _extract_attachment_part(self, part) -> MIMEApplication | None:
+        """Extract an attachment from a MIME part."""
+        filename = part.get_filename()
+        if not filename:
+            return None
+        payload = part.get_payload(decode=True)
+        if not payload:
+            return None
+        mime_type = part.get_content_type()
+        subtype = mime_type.split("/")[1] if "/" in mime_type else "octet-stream"
+        attachment = MIMEApplication(payload, _subtype=subtype)
+        attachment.add_header("Content-Disposition", "attachment", filename=filename)
+        return attachment
+
+    def _extract_forward_parts(self, email_message) -> tuple[str, str, list[MIMEApplication]]:
+        """Extract body, html_body, and attachments from an email message.
+
+        Returns:
+            Tuple of (body, html_body, attachment_parts)
+        """
+        body = ""
+        html_body = ""
+        attachment_parts: list[MIMEApplication] = []
+
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition", ""))
+
+                if "attachment" in content_disposition:
+                    attachment = self._extract_attachment_part(part)
+                    if attachment:
+                        attachment_parts.append(attachment)
+                elif content_type == "text/plain":
+                    body += self._decode_part_content(part)
+                elif content_type == "text/html":
+                    html_body += self._decode_part_content(part)
+        else:
+            content_type = email_message.get_content_type()
+            decoded = self._decode_part_content(email_message)
+            if content_type == "text/html":
+                html_body = decoded
+            else:
+                body = decoded
+
+        return body, html_body, attachment_parts
+
     async def get_email_for_forward(self, email_id: str, mailbox: str = "INBOX") -> dict[str, Any] | None:
         """Fetch email content and MIME parts needed for forwarding.
 
@@ -859,60 +917,7 @@ class EmailClient:
             cc_header = email_message.get("Cc", "")
 
             # Extract body (plain text and HTML) and attachments
-            body = ""
-            html_body = ""
-            attachment_parts: list[MIMEApplication] = []
-
-            if email_message.is_multipart():
-                for part in email_message.walk():
-                    content_type = part.get_content_type()
-                    content_disposition = str(part.get("Content-Disposition", ""))
-
-                    if "attachment" in content_disposition:
-                        # Extract attachment as MIME part
-                        filename = part.get_filename()
-                        if filename:
-                            payload = part.get_payload(decode=True)
-                            if payload:
-                                mime_type = part.get_content_type()
-                                subtype = mime_type.split("/")[1] if "/" in mime_type else "octet-stream"
-                                attachment = MIMEApplication(payload, _subtype=subtype)
-                                attachment.add_header(
-                                    "Content-Disposition",
-                                    "attachment",
-                                    filename=filename,
-                                )
-                                attachment_parts.append(attachment)
-                    elif content_type == "text/plain":
-                        body_part = part.get_payload(decode=True)
-                        if body_part:
-                            charset = part.get_content_charset("utf-8")
-                            try:
-                                body += body_part.decode(charset)
-                            except UnicodeDecodeError:
-                                body += body_part.decode("utf-8", errors="replace")
-                    elif content_type == "text/html":
-                        html_part = part.get_payload(decode=True)
-                        if html_part:
-                            charset = part.get_content_charset("utf-8")
-                            try:
-                                html_body += html_part.decode(charset)
-                            except UnicodeDecodeError:
-                                html_body += html_part.decode("utf-8", errors="replace")
-            else:
-                payload = email_message.get_payload(decode=True)
-                if payload:
-                    charset = email_message.get_content_charset("utf-8")
-                    content_type = email_message.get_content_type()
-                    try:
-                        decoded = payload.decode(charset)
-                    except UnicodeDecodeError:
-                        decoded = payload.decode("utf-8", errors="replace")
-
-                    if content_type == "text/html":
-                        html_body = decoded
-                    else:
-                        body = decoded
+            body, html_body, attachment_parts = self._extract_forward_parts(email_message)
 
             # Use HTML only when there's no plain text alternative
             is_html = bool(html_body and not body)
@@ -1070,6 +1075,61 @@ class ClassicEmailHandler(EmailHandler):
             saved_path=result["saved_path"],
         )
 
+    def _build_html_forward_content(
+        self, original: dict[str, Any], html_body: str, additional_message: str | None
+    ) -> str:
+        """Build HTML content for forwarded email."""
+        quoted_html = "<br><br>---------- Forwarded message ----------<br>"
+        quoted_html += f"From: {escape(original['from'])}<br>"
+        quoted_html += f"Date: {escape(original['date'])}<br>"
+        quoted_html += f"Subject: {escape(original['subject'])}<br>"
+        if original["to"]:
+            quoted_html += f"To: {escape(original['to'])}<br>"
+        if original["cc"]:
+            quoted_html += f"Cc: {escape(original['cc'])}<br>"
+        quoted_html += f"<br>{html_body}"
+
+        if additional_message:
+            return f"<p>{escape(additional_message)}</p>{quoted_html}"
+        return quoted_html
+
+    def _build_plain_forward_content(
+        self, original: dict[str, Any], plain_body: str, additional_message: str | None
+    ) -> str:
+        """Build plain text content for forwarded email."""
+        quoted_body = "\n\n---------- Forwarded message ----------\n"
+        quoted_body += f"From: {original['from']}\n"
+        quoted_body += f"Date: {original['date']}\n"
+        quoted_body += f"Subject: {original['subject']}\n"
+        if original["to"]:
+            quoted_body += f"To: {original['to']}\n"
+        if original["cc"]:
+            quoted_body += f"Cc: {original['cc']}\n"
+        quoted_body += "\n"
+        quoted_body += plain_body
+
+        return additional_message + quoted_body if additional_message else quoted_body
+
+    def _create_forward_message(
+        self, content: str, content_type: str, attachment_parts: list
+    ) -> MIMEText | MIMEMultipart:
+        """Create MIME message for forward with optional attachments."""
+        if attachment_parts:
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(content, content_type, "utf-8"))
+            for attachment in attachment_parts:
+                msg.attach(attachment)
+            return msg
+        return MIMEText(content, content_type, "utf-8")
+
+    @staticmethod
+    def _set_header_with_encoding(msg: MIMEText | MIMEMultipart, header: str, value: str) -> None:
+        """Set a header with UTF-8 encoding if needed."""
+        if any(ord(c) > 127 for c in value):
+            msg[header] = Header(value, "utf-8")
+        else:
+            msg[header] = value
+
     async def forward_email(
         self,
         email_id: str,
@@ -1133,68 +1193,15 @@ class ClassicEmailHandler(EmailHandler):
 
         try:
             if is_html and html_body:
-                # Build HTML forward
-                quoted_html = "<br><br>---------- Forwarded message ----------<br>"
-                quoted_html += f"From: {escape(original['from'])}<br>"
-                quoted_html += f"Date: {escape(original['date'])}<br>"
-                quoted_html += f"Subject: {escape(original['subject'])}<br>"
-                if original["to"]:
-                    quoted_html += f"To: {escape(original['to'])}<br>"
-                if original["cc"]:
-                    quoted_html += f"Cc: {escape(original['cc'])}<br>"
-                quoted_html += f"<br>{html_body}"
-
-                if additional_message:
-                    forward_html = f"<p>{escape(additional_message)}</p>{quoted_html}"
-                else:
-                    forward_html = quoted_html
-
-                if attachment_parts:
-                    msg = MIMEMultipart()
-                    html_part = MIMEText(forward_html, "html", "utf-8")
-                    msg.attach(html_part)
-                    for attachment in attachment_parts:
-                        msg.attach(attachment)
-                else:
-                    msg = MIMEText(forward_html, "html", "utf-8")
+                forward_content = self._build_html_forward_content(original, html_body, additional_message)
+                msg = self._create_forward_message(forward_content, "html", attachment_parts)
             else:
-                # Build plain text forward
-                quoted_body = "\n\n---------- Forwarded message ----------\n"
-                quoted_body += f"From: {original['from']}\n"
-                quoted_body += f"Date: {original['date']}\n"
-                quoted_body += f"Subject: {original['subject']}\n"
-                if original["to"]:
-                    quoted_body += f"To: {original['to']}\n"
-                if original["cc"]:
-                    quoted_body += f"Cc: {original['cc']}\n"
-                quoted_body += "\n"
-                quoted_body += plain_body
-
-                if additional_message:
-                    forward_body = additional_message + quoted_body
-                else:
-                    forward_body = quoted_body
-
-                if attachment_parts:
-                    msg = MIMEMultipart()
-                    text_part = MIMEText(forward_body, "plain", "utf-8")
-                    msg.attach(text_part)
-                    for attachment in attachment_parts:
-                        msg.attach(attachment)
-                else:
-                    msg = MIMEText(forward_body, "plain", "utf-8")
+                forward_content = self._build_plain_forward_content(original, plain_body, additional_message)
+                msg = self._create_forward_message(forward_content, "plain", attachment_parts)
 
             # Set headers
-            if any(ord(c) > 127 for c in forward_subject):
-                msg["Subject"] = Header(forward_subject, "utf-8")
-            else:
-                msg["Subject"] = forward_subject
-
-            if any(ord(c) > 127 for c in sender):
-                msg["From"] = Header(sender, "utf-8")
-            else:
-                msg["From"] = sender
-
+            self._set_header_with_encoding(msg, "Subject", forward_subject)
+            self._set_header_with_encoding(msg, "From", sender)
             msg["To"] = ", ".join(recipients)
             msg["Date"] = email.utils.formatdate(localtime=True)
 
