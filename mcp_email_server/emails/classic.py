@@ -17,6 +17,7 @@ import aiosmtplib
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
+    ArchiveEmailResponse,
     AttachmentDownloadResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
@@ -676,6 +677,37 @@ class EmailClient:
 
         return None
 
+    async def _find_archive_folder_by_flag(self, imap) -> str | None:
+        """Find the Archive folder by searching for the \\Archive IMAP flag.
+
+        Args:
+            imap: Connected IMAP client
+
+        Returns:
+            The folder name with the \\Archive flag, or None if not found
+        """
+        try:
+            # List all folders - aioimaplib requires reference_name and mailbox_pattern
+            _, folders = await imap.list('""', "*")
+
+            # Search for folder with \Archive flag
+            for folder in folders:
+                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
+                # IMAP LIST response format: (flags) "delimiter" "name"
+                # Example: (\Archive \HasNoChildren) "/" "Archive"
+                if r"\Archive" in folder_str or "\\Archive" in folder_str:
+                    # Extract folder name from the response
+                    # Split by quotes and get the last quoted part
+                    parts = folder_str.split('"')
+                    if len(parts) >= 3:
+                        folder_name = parts[-2]  # The folder name is the second-to-last quoted part
+                        logger.info(f"Found Archive folder by \\Archive flag: '{folder_name}'")
+                        return folder_name
+        except Exception as e:
+            logger.debug(f"Error finding Archive folder by flag: {e}")
+
+        return None
+
     async def append_to_sent(
         self,
         msg: MIMEText | MIMEMultipart,
@@ -794,6 +826,93 @@ class EmailClient:
                 logger.info(f"Error during logout: {e}")
 
         return deleted_ids, failed_ids
+
+    async def move_to_archive(
+        self, email_ids: list[str], mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str], str]:
+        """Move emails to the Archive folder.
+
+        Args:
+            email_ids: List of email UIDs to archive.
+            mailbox: The source mailbox (default: "INBOX").
+
+        Returns:
+            Tuple of (archived_ids, failed_ids, archive_folder_name)
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        archived_ids = []
+        failed_ids = []
+        archive_folder = ""
+
+        # Common Archive folder names across different providers
+        archive_folder_candidates = [
+            "Archive",
+            "INBOX.Archive",
+            "Archives",
+            "[Gmail]/All Mail",
+        ]
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            # Try to find Archive folder by IMAP \Archive flag first
+            flag_folder = await self._find_archive_folder_by_flag(imap)
+            if flag_folder and flag_folder not in archive_folder_candidates:
+                # Add it at the beginning (high priority)
+                archive_folder_candidates.insert(0, flag_folder)
+
+            # Find a valid archive folder
+            for folder in archive_folder_candidates:
+                try:
+                    logger.debug(f"Trying Archive folder: '{folder}'")
+                    result = await imap.select(_quote_mailbox(folder))
+                    status = result[0] if isinstance(result, tuple) else result
+                    if str(status).upper() == "OK":
+                        archive_folder = folder
+                        logger.info(f"Found Archive folder: '{folder}'")
+                        break
+                except Exception as e:
+                    logger.debug(f"Archive folder '{folder}' not available: {e}")
+                    continue
+
+            if not archive_folder:
+                logger.error("Could not find a valid Archive folder")
+                return [], email_ids, ""
+
+            # Select the source mailbox
+            await imap.select(_quote_mailbox(mailbox))
+
+            # Move each email: COPY to archive, then mark as deleted
+            for email_id in email_ids:
+                try:
+                    # Copy to archive folder
+                    copy_result = await imap.uid("copy", email_id, _quote_mailbox(archive_folder))
+                    copy_status = copy_result[0] if isinstance(copy_result, tuple) else copy_result
+                    if str(copy_status).upper() != "OK":
+                        logger.error(f"Failed to copy email {email_id} to archive: {copy_status}")
+                        failed_ids.append(email_id)
+                        continue
+
+                    # Mark as deleted in source mailbox
+                    await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    archived_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to archive email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            # Expunge to remove deleted messages from source
+            await imap.expunge()
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return archived_ids, failed_ids, archive_folder
 
 
 class ClassicEmailHandler(EmailHandler):
@@ -927,4 +1046,25 @@ class ClassicEmailHandler(EmailHandler):
             mime_type=result["mime_type"],
             size=result["size"],
             saved_path=result["saved_path"],
+        )
+
+    async def archive_emails(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+    ) -> ArchiveEmailResponse:
+        """Archive emails by moving them to the Archive folder.
+
+        Args:
+            email_ids: List of email UIDs to archive.
+            mailbox: The source mailbox (default: "INBOX").
+
+        Returns:
+            ArchiveEmailResponse with archive result information.
+        """
+        archived_ids, failed_ids, archive_folder = await self.incoming_client.move_to_archive(email_ids, mailbox)
+        return ArchiveEmailResponse(
+            archived_ids=archived_ids,
+            failed_ids=failed_ids,
+            archive_folder=archive_folder,
         )

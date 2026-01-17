@@ -5,6 +5,7 @@ import pytest
 
 from mcp_email_server.app import (
     add_email_account,
+    archive_emails,
     delete_emails,
     download_attachment,
     get_emails_content,
@@ -14,6 +15,7 @@ from mcp_email_server.app import (
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
 from mcp_email_server.emails.models import (
+    ArchiveEmailResponse,
     AttachmentDownloadResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
@@ -538,3 +540,68 @@ class TestMcpTools:
             )
 
             assert result.emails[0].message_id == "<test@example.com>"
+
+    @pytest.mark.asyncio
+    async def test_archive_emails(self):
+        """Test archive_emails MCP tool."""
+        mock_handler = AsyncMock()
+        mock_handler.archive_emails.return_value = ArchiveEmailResponse(
+            archived_ids=["12345", "12346"],
+            failed_ids=[],
+            archive_folder="Archive",
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await archive_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert isinstance(result, ArchiveEmailResponse)
+            assert result.archived_ids == ["12345", "12346"]
+            assert result.failed_ids == []
+            assert result.archive_folder == "Archive"
+            mock_handler.archive_emails.assert_called_once_with(["12345", "12346"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_with_failures(self):
+        """Test archive_emails MCP tool with some failures."""
+        mock_handler = AsyncMock()
+        mock_handler.archive_emails.return_value = ArchiveEmailResponse(
+            archived_ids=["12345"],
+            failed_ids=["12346", "12347"],
+            archive_folder="Archive",
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await archive_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346", "12347"],
+            )
+
+            assert isinstance(result, ArchiveEmailResponse)
+            assert result.archived_ids == ["12345"]
+            assert result.failed_ids == ["12346", "12347"]
+            assert result.archive_folder == "Archive"
+            mock_handler.archive_emails.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_with_mailbox(self):
+        """Test archive_emails MCP tool with custom mailbox."""
+        mock_handler = AsyncMock()
+        mock_handler.archive_emails.return_value = ArchiveEmailResponse(
+            archived_ids=["12345"],
+            failed_ids=[],
+            archive_folder="Archive",
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await archive_emails(
+                account_name="test_account",
+                email_ids=["12345"],
+                mailbox="Sent",
+            )
+
+            assert isinstance(result, ArchiveEmailResponse)
+            assert result.archived_ids == ["12345"]
+            mock_handler.archive_emails.assert_called_once_with(["12345"], "Sent")

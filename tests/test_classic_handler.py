@@ -6,6 +6,7 @@ import pytest
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
 from mcp_email_server.emails.models import (
+    ArchiveEmailResponse,
     AttachmentDownloadResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
@@ -346,3 +347,53 @@ class TestClassicEmailHandler:
 
             # Verify the client method was called correctly
             mock_get_body.assert_called_once_with("123", "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails(self, classic_handler):
+        """Test archive_emails method."""
+        mock_archive = AsyncMock(return_value=(["123", "456"], [], "Archive"))
+
+        with patch.object(classic_handler.incoming_client, "move_to_archive", mock_archive):
+            result = await classic_handler.archive_emails(
+                email_ids=["123", "456"],
+                mailbox="INBOX",
+            )
+
+            assert isinstance(result, ArchiveEmailResponse)
+            assert result.archived_ids == ["123", "456"]
+            assert result.failed_ids == []
+            assert result.archive_folder == "Archive"
+            mock_archive.assert_called_once_with(["123", "456"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_with_failures(self, classic_handler):
+        """Test archive_emails method with some failures."""
+        mock_archive = AsyncMock(return_value=(["123"], ["456"], "Archive"))
+
+        with patch.object(classic_handler.incoming_client, "move_to_archive", mock_archive):
+            result = await classic_handler.archive_emails(
+                email_ids=["123", "456"],
+                mailbox="INBOX",
+            )
+
+            assert isinstance(result, ArchiveEmailResponse)
+            assert result.archived_ids == ["123"]
+            assert result.failed_ids == ["456"]
+            assert result.archive_folder == "Archive"
+            mock_archive.assert_called_once_with(["123", "456"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_custom_mailbox(self, classic_handler):
+        """Test archive_emails method with custom mailbox."""
+        mock_archive = AsyncMock(return_value=(["789"], [], "Archive"))
+
+        with patch.object(classic_handler.incoming_client, "move_to_archive", mock_archive):
+            result = await classic_handler.archive_emails(
+                email_ids=["789"],
+                mailbox="Sent",
+            )
+
+            assert isinstance(result, ArchiveEmailResponse)
+            assert result.archived_ids == ["789"]
+            assert result.failed_ids == []
+            mock_archive.assert_called_once_with(["789"], "Sent")

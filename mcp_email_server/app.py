@@ -12,6 +12,7 @@ from mcp_email_server.config import (
 )
 from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
+    ArchiveEmailResponse,
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
@@ -204,3 +205,18 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+
+
+@mcp.tool(
+    description="Archive emails by moving them to the Archive folder. Use list_emails_metadata first to get the email_id."
+)
+async def archive_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to archive (obtained from list_emails_metadata)."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox to archive emails from.")] = "INBOX",
+) -> ArchiveEmailResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.archive_emails(email_ids, mailbox)

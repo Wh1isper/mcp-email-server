@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mcp_email_server.emails.models import (
+        ArchiveEmailResponse,
         AttachmentDownloadResponse,
         EmailContentBatchResponse,
         EmailMetadataPageResponse,
@@ -74,4 +75,21 @@ class EmailHandler(abc.ABC):
 
         Returns:
             AttachmentDownloadResponse with download result information.
+        """
+
+    @abc.abstractmethod
+    async def archive_emails(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+    ) -> "ArchiveEmailResponse":
+        """
+        Archive emails by moving them to the Archive folder.
+
+        Args:
+            email_ids: List of email UIDs to archive.
+            mailbox: The source mailbox (default: "INBOX").
+
+        Returns:
+            ArchiveEmailResponse with archive result information.
         """
