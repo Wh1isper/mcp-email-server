@@ -437,3 +437,196 @@ class TestSmtpSslContext:
             assert ctx is not None
             assert ctx.check_hostname is False
             assert ctx.verify_mode == ssl.CERT_NONE
+
+
+class TestGetEmailForForward:
+    """Tests for EmailClient.get_email_for_forward() method."""
+
+    @pytest.fixture
+    def email_client(self, email_server):
+        return EmailClient(email_server)
+
+    def _create_mock_imap(self):
+        """Create a mock IMAP client with common setup."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.logout = AsyncMock()
+        return mock_imap
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_plain_text(self, email_client):
+        """Test get_email_for_forward with plain text email."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Cc: cc@example.com
+Subject: Test Plain Text
+Date: Mon, 1 Jan 2024 12:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+This is a plain text email body.
+"""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=[(b"RFC822", raw_email)]):
+                with patch.object(email_client, "_extract_raw_email", return_value=raw_email):
+                    result = await email_client.get_email_for_forward("123")
+
+                    assert result is not None
+                    assert result["email_id"] == "123"
+                    assert result["subject"] == "Test Plain Text"
+                    assert result["from"] == "sender@example.com"
+                    assert result["to"] == "recipient@example.com"
+                    assert result["cc"] == "cc@example.com"
+                    assert "plain text email body" in result["body"]
+                    assert result["html_body"] == ""
+                    assert result["is_html"] is False
+                    assert result["attachment_parts"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_html_only(self, email_client):
+        """Test get_email_for_forward with HTML-only email."""
+        raw_email = b"""From: newsletter@example.com
+To: subscriber@example.com
+Subject: HTML Newsletter
+Date: Tue, 2 Jan 2024 14:00:00 +0000
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>Welcome!</h1><p>This is HTML content.</p></body></html>
+"""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=[(b"RFC822", raw_email)]):
+                with patch.object(email_client, "_extract_raw_email", return_value=raw_email):
+                    result = await email_client.get_email_for_forward("456")
+
+                    assert result is not None
+                    assert result["email_id"] == "456"
+                    assert result["subject"] == "HTML Newsletter"
+                    assert result["body"] == ""  # No plain text
+                    assert "<h1>Welcome!</h1>" in result["html_body"]
+                    assert result["is_html"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_multipart(self, email_client):
+        """Test get_email_for_forward with multipart email (both plain and HTML)."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Multipart Email
+Date: Wed, 3 Jan 2024 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset=utf-8
+
+Plain text version of the email.
+
+--boundary123
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>HTML version of the email.</p></body></html>
+
+--boundary123--
+"""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=[(b"RFC822", raw_email)]):
+                with patch.object(email_client, "_extract_raw_email", return_value=raw_email):
+                    result = await email_client.get_email_for_forward("789")
+
+                    assert result is not None
+                    assert result["email_id"] == "789"
+                    assert "Plain text version" in result["body"]
+                    assert "<p>HTML version" in result["html_body"]
+                    # is_html should be False because plain text is available
+                    assert result["is_html"] is False
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_with_attachment(self, email_client):
+        """Test get_email_for_forward with attachment."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Email with Attachment
+Date: Thu, 4 Jan 2024 16:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundary456"
+
+--boundary456
+Content-Type: text/plain; charset=utf-8
+
+Email body with attachment.
+
+--boundary456
+Content-Type: application/pdf; name="document.pdf"
+Content-Disposition: attachment; filename="document.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJeLjz9MKCg==
+
+--boundary456--
+"""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=[(b"RFC822", raw_email)]):
+                with patch.object(email_client, "_extract_raw_email", return_value=raw_email):
+                    result = await email_client.get_email_for_forward("attach123")
+
+                    assert result is not None
+                    assert result["email_id"] == "attach123"
+                    assert "Email body with attachment" in result["body"]
+                    assert len(result["attachment_parts"]) == 1
+                    attachment = result["attachment_parts"][0]
+                    assert attachment.get_filename() == "document.pdf"
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_not_found(self, email_client):
+        """Test get_email_for_forward when email is not found."""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=None):
+                result = await email_client.get_email_for_forward("notfound")
+
+                assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_no_raw_email(self, email_client):
+        """Test get_email_for_forward when raw email extraction fails."""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=[(b"RFC822", b"data")]):
+                with patch.object(email_client, "_extract_raw_email", return_value=None):
+                    result = await email_client.get_email_for_forward("noraw")
+
+                    assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_email_for_forward_custom_mailbox(self, email_client):
+        """Test get_email_for_forward with custom mailbox."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Sent Email
+Date: Fri, 5 Jan 2024 09:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+Email from Sent folder.
+"""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_fetch_email_with_formats", return_value=[(b"RFC822", raw_email)]):
+                with patch.object(email_client, "_extract_raw_email", return_value=raw_email):
+                    result = await email_client.get_email_for_forward("sent123", mailbox="Sent")
+
+                    assert result is not None
+                    assert result["subject"] == "Sent Email"
+                    mock_imap.select.assert_called_once_with('"Sent"')
