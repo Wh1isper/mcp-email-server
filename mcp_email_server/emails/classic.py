@@ -1211,6 +1211,7 @@ class ClassicEmailHandler(EmailHandler):
                 port=self.email_settings.outgoing.port,
                 start_tls=self.email_settings.outgoing.start_ssl,
                 use_tls=self.email_settings.outgoing.use_ssl,
+                tls_context=self.outgoing_client._get_smtp_ssl_context(),
             ) as smtp:
                 await smtp.login(
                     self.email_settings.outgoing.user_name,
