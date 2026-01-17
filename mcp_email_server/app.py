@@ -15,6 +15,7 @@ from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
+    ForwardEmailResponse,
 )
 
 mcp = FastMCP("email")
@@ -204,3 +205,41 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+
+
+@mcp.tool(description="Forward an email to new recipients with original body and attachments.")
+async def forward_email(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_id: Annotated[
+        str,
+        Field(description="The email_id to forward (obtained from list_emails_metadata)."),
+    ],
+    recipients: Annotated[list[str], Field(description="List of recipient email addresses to forward to.")],
+    from_address: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Override the sender address. If not specified, uses the account's default email address.",
+        ),
+    ] = None,
+    additional_message: Annotated[
+        str | None,
+        Field(default=None, description="Optional message to include before the forwarded content."),
+    ] = None,
+    include_attachments: Annotated[
+        bool,
+        Field(default=True, description="Whether to include the original attachments in the forwarded email."),
+    ] = True,
+    mailbox: Annotated[
+        str, Field(default="INBOX", description="The mailbox containing the email to forward.")
+    ] = "INBOX",
+) -> ForwardEmailResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.forward_email(
+        email_id=email_id,
+        recipients=recipients,
+        from_address=from_address,
+        additional_message=additional_message,
+        include_attachments=include_attachments,
+        mailbox=mailbox,
+    )

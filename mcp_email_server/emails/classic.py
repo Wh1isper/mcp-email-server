@@ -23,6 +23,7 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    ForwardEmailResponse,
 )
 from mcp_email_server.log import logger
 
@@ -816,6 +817,105 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def get_email_for_forward(
+        self, email_id: str, mailbox: str = "INBOX"
+    ) -> dict[str, Any] | None:
+        """Fetch email content and MIME parts needed for forwarding.
+
+        Args:
+            email_id: The UID of the email to forward.
+            mailbox: The mailbox containing the email.
+
+        Returns:
+            Dictionary with email metadata, body, and attachment MIME parts.
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            data = await self._fetch_email_with_formats(imap, email_id)
+            if not data:
+                logger.error(f"Failed to fetch UID {email_id} for forwarding")
+                return None
+
+            raw_email = self._extract_raw_email(data)
+            if not raw_email:
+                logger.error(f"Could not find email data for forward, email ID: {email_id}")
+                return None
+
+            # Parse the email
+            parser = BytesParser(policy=default)
+            email_message = parser.parsebytes(raw_email)
+
+            # Extract basic metadata
+            subject = email_message.get("Subject", "")
+            sender = email_message.get("From", "")
+            date_str = email_message.get("Date", "")
+            to_header = email_message.get("To", "")
+            cc_header = email_message.get("Cc", "")
+
+            # Extract body and attachments
+            body = ""
+            attachment_parts: list[MIMEApplication] = []
+
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    content_type = part.get_content_type()
+                    content_disposition = str(part.get("Content-Disposition", ""))
+
+                    if "attachment" in content_disposition:
+                        # Extract attachment as MIME part
+                        filename = part.get_filename()
+                        if filename:
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                mime_type = part.get_content_type()
+                                subtype = mime_type.split("/")[1] if "/" in mime_type else "octet-stream"
+                                attachment = MIMEApplication(payload, _subtype=subtype)
+                                attachment.add_header(
+                                    "Content-Disposition",
+                                    "attachment",
+                                    filename=filename,
+                                )
+                                attachment_parts.append(attachment)
+                    elif content_type == "text/plain":
+                        body_part = part.get_payload(decode=True)
+                        if body_part:
+                            charset = part.get_content_charset("utf-8")
+                            try:
+                                body += body_part.decode(charset)
+                            except UnicodeDecodeError:
+                                body += body_part.decode("utf-8", errors="replace")
+            else:
+                payload = email_message.get_payload(decode=True)
+                if payload:
+                    charset = email_message.get_content_charset("utf-8")
+                    try:
+                        body = payload.decode(charset)
+                    except UnicodeDecodeError:
+                        body = payload.decode("utf-8", errors="replace")
+
+            return {
+                "email_id": email_id,
+                "subject": subject,
+                "from": sender,
+                "to": to_header,
+                "cc": cc_header,
+                "date": date_str,
+                "body": body,
+                "attachment_parts": attachment_parts,
+            }
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -949,3 +1049,137 @@ class ClassicEmailHandler(EmailHandler):
             size=result["size"],
             saved_path=result["saved_path"],
         )
+
+    async def forward_email(
+        self,
+        email_id: str,
+        recipients: list[str],
+        from_address: str | None = None,
+        additional_message: str | None = None,
+        include_attachments: bool = True,
+        mailbox: str = "INBOX",
+    ) -> ForwardEmailResponse:
+        """Forward an email to new recipients.
+
+        Args:
+            email_id: The UID of the email to forward.
+            recipients: List of recipient email addresses.
+            from_address: Override sender address (uses account default if None).
+            additional_message: Optional message to prepend to the forwarded email.
+            include_attachments: Whether to include original attachments.
+            mailbox: The mailbox containing the email.
+
+        Returns:
+            ForwardEmailResponse with forward result information.
+        """
+        # Determine sender address
+        sender = from_address or f"{self.email_settings.full_name} <{self.email_settings.email_address}>"
+
+        # Get the original email from incoming server (IMAP)
+        original = await self.incoming_client.get_email_for_forward(email_id, mailbox)
+        if not original:
+            return ForwardEmailResponse(
+                original_email_id=email_id,
+                forwarded_to=recipients,
+                from_address=sender,
+                subject="",
+                success=False,
+                message=f"Could not retrieve email {email_id} for forwarding",
+            )
+
+        # Build the forward subject
+        original_subject = original["subject"]
+        if not original_subject.lower().startswith("fwd:"):
+            forward_subject = f"Fwd: {original_subject}"
+        else:
+            forward_subject = original_subject
+
+        # Build the quoted original message
+        quoted_body = "\n\n---------- Forwarded message ----------\n"
+        quoted_body += f"From: {original['from']}\n"
+        quoted_body += f"Date: {original['date']}\n"
+        quoted_body += f"Subject: {original['subject']}\n"
+        if original["to"]:
+            quoted_body += f"To: {original['to']}\n"
+        if original["cc"]:
+            quoted_body += f"Cc: {original['cc']}\n"
+        quoted_body += "\n"
+        quoted_body += original["body"]
+
+        # Combine with additional message if provided
+        if additional_message:
+            forward_body = additional_message + quoted_body
+        else:
+            forward_body = quoted_body
+
+        # Build attachment file paths (we need to temporarily save them for send_email)
+        # For simplicity, we'll send without file attachments and include the attachment parts directly
+        attachment_parts = original.get("attachment_parts", []) if include_attachments else []
+
+        try:
+            # Build the message manually with attachments
+            if attachment_parts:
+                msg = MIMEMultipart()
+                text_part = MIMEText(forward_body, "plain", "utf-8")
+                msg.attach(text_part)
+                for attachment in attachment_parts:
+                    msg.attach(attachment)
+            else:
+                msg = MIMEText(forward_body, "plain", "utf-8")
+
+            # Set headers
+            if any(ord(c) > 127 for c in forward_subject):
+                msg["Subject"] = Header(forward_subject, "utf-8")
+            else:
+                msg["Subject"] = forward_subject
+
+            if any(ord(c) > 127 for c in sender):
+                msg["From"] = Header(sender, "utf-8")
+            else:
+                msg["From"] = sender
+
+            msg["To"] = ", ".join(recipients)
+
+            # Send via SMTP using outgoing server
+            async with aiosmtplib.SMTP(
+                hostname=self.email_settings.outgoing.host,
+                port=self.email_settings.outgoing.port,
+                start_tls=self.email_settings.outgoing.start_ssl,
+                use_tls=self.email_settings.outgoing.use_ssl,
+            ) as smtp:
+                await smtp.login(
+                    self.email_settings.outgoing.user_name,
+                    self.email_settings.outgoing.password,
+                )
+                await smtp.send_message(msg, recipients=recipients)
+
+            # Save to Sent folder if enabled
+            if self.save_to_sent:
+                try:
+                    await self.outgoing_client.append_to_sent(
+                        msg,
+                        self.email_settings.incoming,
+                        self.sent_folder_name,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save forwarded email to Sent folder: {e}", exc_info=True)
+
+            return ForwardEmailResponse(
+                original_email_id=email_id,
+                forwarded_to=recipients,
+                from_address=sender,
+                subject=forward_subject,
+                success=True,
+                message=f"Email forwarded successfully to {', '.join(recipients)}",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to forward email {email_id}: {e}", exc_info=True)
+            return ForwardEmailResponse(
+                original_email_id=email_id,
+                forwarded_to=recipients,
+                from_address=sender,
+                subject=forward_subject if "forward_subject" in dir() else "",
+                success=False,
+                message=f"Failed to forward email: {e!s}",
+            )

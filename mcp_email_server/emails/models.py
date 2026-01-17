@@ -70,3 +70,14 @@ class AttachmentDownloadResponse(BaseModel):
     mime_type: str
     size: int
     saved_path: str
+
+
+class ForwardEmailResponse(BaseModel):
+    """Forward email response"""
+
+    original_email_id: str
+    forwarded_to: list[str]
+    from_address: str
+    subject: str
+    success: bool
+    message: str

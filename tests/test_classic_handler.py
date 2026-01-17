@@ -11,6 +11,7 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    ForwardEmailResponse,
 )
 
 
@@ -346,3 +347,117 @@ class TestClassicEmailHandler:
 
             # Verify the client method was called correctly
             mock_get_body.assert_called_once_with("123", "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_forward_email(self, classic_handler):
+        """Test forward_email method."""
+        original_email = {
+            "email_id": "123",
+            "subject": "Test Subject",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "cc": "",
+            "date": "Mon, 1 Jan 2024 12:00:00 +0000",
+            "body": "Original email body",
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="123",
+                    recipients=["forward@example.com"],
+                    additional_message="FYI",
+                )
+
+                assert isinstance(result, ForwardEmailResponse)
+                assert result.original_email_id == "123"
+                assert result.forwarded_to == ["forward@example.com"]
+                assert result.subject == "Fwd: Test Subject"
+                assert result.success is True
+                mock_get_forward.assert_called_once_with("123", "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_forward_email_with_custom_sender(self, classic_handler):
+        """Test forward_email method with custom sender address."""
+        original_email = {
+            "email_id": "456",
+            "subject": "Important Message",
+            "from": "original@example.com",
+            "to": "me@example.com",
+            "cc": "",
+            "date": "Tue, 2 Jan 2024 14:00:00 +0000",
+            "body": "Important content",
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="456",
+                    recipients=["forward@example.com"],
+                    from_address="Custom Sender <custom@example.com>",
+                )
+
+                assert isinstance(result, ForwardEmailResponse)
+                assert result.from_address == "Custom Sender <custom@example.com>"
+                assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_forward_email_not_found(self, classic_handler):
+        """Test forward_email method when email is not found."""
+        mock_get_forward = AsyncMock(return_value=None)
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            result = await classic_handler.forward_email(
+                email_id="999",
+                recipients=["forward@example.com"],
+            )
+
+            assert isinstance(result, ForwardEmailResponse)
+            assert result.success is False
+            assert "Could not retrieve email" in result.message
+
+    @pytest.mark.asyncio
+    async def test_forward_email_already_fwd_subject(self, classic_handler):
+        """Test forward_email preserves Fwd: prefix if already present."""
+        original_email = {
+            "email_id": "789",
+            "subject": "Fwd: Already Forwarded",
+            "from": "sender@example.com",
+            "to": "recipient@example.com",
+            "cc": "",
+            "date": "Wed, 3 Jan 2024 16:00:00 +0000",
+            "body": "Already forwarded content",
+            "attachment_parts": [],
+        }
+
+        mock_get_forward = AsyncMock(return_value=original_email)
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch.object(classic_handler.incoming_client, "get_email_for_forward", mock_get_forward):
+            with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+                result = await classic_handler.forward_email(
+                    email_id="789",
+                    recipients=["forward@example.com"],
+                )
+
+                assert result.subject == "Fwd: Already Forwarded"  # Should not add another Fwd:
