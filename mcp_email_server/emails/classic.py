@@ -817,9 +817,7 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
-    async def get_email_for_forward(
-        self, email_id: str, mailbox: str = "INBOX"
-    ) -> dict[str, Any] | None:
+    async def get_email_for_forward(self, email_id: str, mailbox: str = "INBOX") -> dict[str, Any] | None:
         """Fetch email content and MIME parts needed for forwarding.
 
         Args:
