@@ -354,3 +354,185 @@ class TestSendEmailReplyHeaders:
             msg = call_args[0][0]
             assert "In-Reply-To" not in msg
             assert "References" not in msg
+
+
+class TestFindArchiveFolderByFlag:
+    """Tests for EmailClient._find_archive_folder_by_flag() method."""
+
+    @pytest.fixture
+    def email_client(self, email_server):
+        return EmailClient(email_server)
+
+    @pytest.mark.asyncio
+    async def test_find_archive_folder_by_flag_success(self, email_client):
+        """Test finding Archive folder by \\Archive flag."""
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\Archive \\HasNoChildren) "/" "Archive"']))
+
+        result = await email_client._find_archive_folder_by_flag(mock_imap)
+        assert result == "Archive"
+
+    @pytest.mark.asyncio
+    async def test_find_archive_folder_by_flag_with_spaces(self, email_client):
+        """Test finding Archive folder with spaces in name."""
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\Archive \\HasNoChildren) "/" "All Archive"']))
+
+        result = await email_client._find_archive_folder_by_flag(mock_imap)
+        assert result == "All Archive"
+
+    @pytest.mark.asyncio
+    async def test_find_archive_folder_by_flag_gmail_style(self, email_client):
+        """Test finding Archive folder with Gmail-style path."""
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\Archive \\HasChildren) "/" "[Gmail]/All Mail"']))
+
+        result = await email_client._find_archive_folder_by_flag(mock_imap)
+        assert result == "[Gmail]/All Mail"
+
+    @pytest.mark.asyncio
+    async def test_find_archive_folder_by_flag_not_found(self, email_client):
+        """Test when no Archive folder flag exists."""
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasNoChildren) "/" "INBOX"',
+                    b'(\\Sent \\HasNoChildren) "/" "Sent"',
+                ],
+            )
+        )
+
+        result = await email_client._find_archive_folder_by_flag(mock_imap)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_archive_folder_by_flag_handles_error(self, email_client):
+        """Test graceful handling of IMAP errors."""
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(side_effect=Exception("IMAP error"))
+
+        result = await email_client._find_archive_folder_by_flag(mock_imap)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_archive_folder_by_flag_string_response(self, email_client):
+        """Test handling string response from IMAP LIST."""
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", ['(\\Archive \\HasNoChildren) "/" "Archives"']))
+
+        result = await email_client._find_archive_folder_by_flag(mock_imap)
+        assert result == "Archives"
+
+
+class TestMoveToArchive:
+    """Tests for EmailClient.move_to_archive() method."""
+
+    @pytest.fixture
+    def email_client(self, email_server):
+        return EmailClient(email_server)
+
+    def _create_mock_imap(self):
+        """Create a mock IMAP client with common setup."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid = AsyncMock(return_value=("OK", []))
+        mock_imap.expunge = AsyncMock()
+        mock_imap.logout = AsyncMock()
+        return mock_imap
+
+    @pytest.mark.asyncio
+    async def test_move_to_archive_success(self, email_client):
+        """Test successfully moving emails to archive."""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_find_archive_folder_by_flag", return_value="Archive"):
+                archived, failed, folder = await email_client.move_to_archive(["123", "456"])
+
+                assert archived == ["123", "456"]
+                assert failed == []
+                assert folder == "Archive"
+                mock_imap.expunge.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_move_to_archive_with_failures(self, email_client):
+        """Test move_to_archive when some emails fail."""
+        mock_imap = self._create_mock_imap()
+        # First email succeeds, second fails
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("OK", []),  # copy 123
+                ("OK", []),  # store 123
+                ("NO", []),  # copy 456 fails
+            ]
+        )
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_find_archive_folder_by_flag", return_value="Archive"):
+                archived, failed, folder = await email_client.move_to_archive(["123", "456"])
+
+                assert archived == ["123"]
+                assert failed == ["456"]
+                assert folder == "Archive"
+
+    @pytest.mark.asyncio
+    async def test_move_to_archive_no_folder_found(self, email_client):
+        """Test move_to_archive when no archive folder exists."""
+        mock_imap = self._create_mock_imap()
+        mock_imap.select = AsyncMock(return_value=("NO", []))  # All folders fail
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_find_archive_folder_by_flag", return_value=None):
+                archived, failed, folder = await email_client.move_to_archive(["123"])
+
+                assert archived == []
+                assert failed == ["123"]
+                assert folder == ""
+
+    @pytest.mark.asyncio
+    async def test_move_to_archive_uses_flag_folder(self, email_client):
+        """Test that move_to_archive prefers flag-detected folder."""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_find_archive_folder_by_flag", return_value="My Archive"):
+                _archived, _failed, folder = await email_client.move_to_archive(["123"])
+
+                assert folder == "My Archive"
+                # Verify the flag-detected folder was tried
+                calls = mock_imap.select.call_args_list
+                assert any('"My Archive"' in str(call) for call in calls)
+
+    @pytest.mark.asyncio
+    async def test_move_to_archive_custom_mailbox(self, email_client):
+        """Test move_to_archive with custom source mailbox."""
+        mock_imap = self._create_mock_imap()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_find_archive_folder_by_flag", return_value="Archive"):
+                archived, _failed, _folder = await email_client.move_to_archive(["123"], mailbox="Sent")
+
+                assert archived == ["123"]
+                # Verify source mailbox was selected
+                calls = mock_imap.select.call_args_list
+                assert any('"Sent"' in str(call) for call in calls)
+
+    @pytest.mark.asyncio
+    async def test_move_to_archive_exception_handling(self, email_client):
+        """Test move_to_archive handles exceptions during move."""
+        mock_imap = self._create_mock_imap()
+        mock_imap.uid = AsyncMock(side_effect=Exception("IMAP error"))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_find_archive_folder_by_flag", return_value="Archive"):
+                archived, failed, folder = await email_client.move_to_archive(["123"])
+
+                assert archived == []
+                assert failed == ["123"]
+                assert folder == "Archive"
