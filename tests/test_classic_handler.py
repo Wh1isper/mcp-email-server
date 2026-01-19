@@ -364,3 +364,111 @@ class TestClassicEmailHandler:
 
             # Verify the client method was called correctly
             mock_get_body.assert_called_once_with("123", "INBOX")
+
+
+class TestEmailClientBatchMethods:
+    """Test batch fetch methods for performance optimization."""
+
+    @pytest.fixture
+    def email_client(self, email_settings):
+        return EmailClient(email_settings.incoming)
+
+    def test_parse_headers(self, email_client):
+        """Test _parse_headers method parses email headers correctly."""
+        raw_headers = b"""From: sender@example.com
+To: recipient@example.com
+Cc: cc@example.com
+Subject: Test Subject
+Date: Mon, 20 Jan 2025 10:30:00 +0000
+
+"""
+        result = email_client._parse_headers("123", raw_headers)
+
+        assert result is not None
+        assert result["email_id"] == "123"
+        assert result["subject"] == "Test Subject"
+        assert result["from"] == "sender@example.com"
+        assert "recipient@example.com" in result["to"]
+        assert "cc@example.com" in result["to"]
+        assert result["attachments"] == []
+
+    def test_parse_headers_with_invalid_data(self, email_client):
+        """Test _parse_headers handles malformed headers gracefully."""
+        # Completely broken data that can't be parsed
+        raw_headers = b"\xff\xfe\x00\x00"
+        result = email_client._parse_headers("123", raw_headers)
+
+        # Should return None or a valid dict with fallback values
+        # The implementation catches exceptions and returns None
+        assert result is None or isinstance(result, dict)
+
+    def test_parse_headers_missing_date(self, email_client):
+        """Test _parse_headers handles missing date with fallback."""
+        raw_headers = b"""From: sender@example.com
+To: recipient@example.com
+Subject: No Date Email
+
+"""
+        result = email_client._parse_headers("123", raw_headers)
+
+        assert result is not None
+        assert result["email_id"] == "123"
+        assert result["date"] is not None  # Should have fallback to now()
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_dates_empty_list(self, email_client):
+        """Test _batch_fetch_dates with empty list returns empty dict."""
+        mock_imap = AsyncMock()
+        result = await email_client._batch_fetch_dates(mock_imap, [])
+
+        assert result == {}
+        mock_imap.uid.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_headers_empty_list(self, email_client):
+        """Test _batch_fetch_headers with empty list returns empty dict."""
+        mock_imap = AsyncMock()
+        result = await email_client._batch_fetch_headers(mock_imap, [])
+
+        assert result == {}
+        mock_imap.uid.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_dates_parses_response(self, email_client):
+        """Test _batch_fetch_dates correctly parses IMAP INTERNALDATE response."""
+        mock_imap = AsyncMock()
+        # Simulate IMAP response format for INTERNALDATE
+        mock_imap.uid.return_value = (
+            "OK",
+            [
+                b'1 FETCH (UID 100 INTERNALDATE "20-Jan-2025 10:30:00 +0000")',
+                b'2 FETCH (UID 101 INTERNALDATE "21-Jan-2025 11:00:00 +0000")',
+            ],
+        )
+
+        result = await email_client._batch_fetch_dates(mock_imap, [b"100", b"101"])
+
+        assert "100" in result
+        assert "101" in result
+        assert result["100"].day == 20
+        assert result["101"].day == 21
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_headers_parses_response(self, email_client):
+        """Test _batch_fetch_headers correctly parses IMAP BODY[HEADER] response."""
+        mock_imap = AsyncMock()
+        # Simulate IMAP response format for BODY[HEADER]
+        mock_imap.uid.return_value = (
+            "OK",
+            [
+                b"1 FETCH (UID 100 BODY[HEADER] {100}",
+                bytearray(b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test\r\n\r\n"),
+                b")",
+            ],
+        )
+
+        result = await email_client._batch_fetch_headers(mock_imap, ["100"])
+
+        assert "100" in result
+        assert result["100"]["subject"] == "Test"
+        assert result["100"]["from"] == "sender@example.com"

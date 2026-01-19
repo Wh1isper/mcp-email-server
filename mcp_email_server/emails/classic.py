@@ -1,3 +1,4 @@
+import asyncio
 import email.utils
 import mimetypes
 import re
@@ -268,52 +269,74 @@ class EmailClient:
             logger.error(f"Error parsing email headers: {e!s}")
             return None
 
+    async def _fetch_dates_chunk(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        chunk: list[bytes],
+        chunk_num: int,
+        total_chunks: int,
+    ) -> dict[str, datetime]:
+        """Fetch INTERNALDATE for a single chunk of UIDs."""
+        uid_list = ",".join(uid.decode() for uid in chunk)
+        chunk_start = time.perf_counter()
+        _, data = await imap.uid("fetch", uid_list, "(INTERNALDATE)")
+        chunk_elapsed = time.perf_counter() - chunk_start
+
+        chunk_dates: dict[str, datetime] = {}
+        for item in data:
+            if not isinstance(item, bytes) or b"INTERNALDATE" not in item:
+                continue
+            uid_match = re.search(rb"UID (\d+)", item)
+            date_match = re.search(rb'INTERNALDATE "([^"]+)"', item)
+            if uid_match and date_match:
+                uid = uid_match.group(1).decode()
+                date_str = date_match.group(1).decode().strip()
+                chunk_dates[uid] = datetime.strptime(date_str, "%d-%b-%Y %H:%M:%S %z")
+
+        if total_chunks > 1:
+            logger.info(f"Fetched dates chunk {chunk_num}/{total_chunks}: {len(chunk)} UIDs in {chunk_elapsed:.2f}s")
+
+        return chunk_dates
+
     async def _batch_fetch_dates(
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         email_ids: list[bytes],
         chunk_size: int = 5000,
     ) -> dict[str, datetime]:
-        """Batch fetch INTERNALDATE for all UIDs in chunks."""
+        """Batch fetch INTERNALDATE for all UIDs in parallel chunks."""
         if not email_ids:
             return {}
 
+        # Split into chunks
+        chunks = [email_ids[i : i + chunk_size] for i in range(0, len(email_ids), chunk_size)]
+        total_chunks = len(chunks)
+
+        # Fetch all chunks in parallel
+        tasks = [
+            self._fetch_dates_chunk(imap, chunk, chunk_num, total_chunks) for chunk_num, chunk in enumerate(chunks, 1)
+        ]
+        results = await asyncio.gather(*tasks)
+
+        # Merge results
         uid_dates: dict[str, datetime] = {}
-        total_chunks = (len(email_ids) + chunk_size - 1) // chunk_size
-        for chunk_num, i in enumerate(range(0, len(email_ids), chunk_size), 1):
-            chunk = email_ids[i : i + chunk_size]
-            uid_list = ",".join(uid.decode() for uid in chunk)
-            chunk_start = time.perf_counter()
-            _, data = await imap.uid("fetch", uid_list, "(INTERNALDATE)")
-            chunk_elapsed = time.perf_counter() - chunk_start
-
-            for item in data:
-                if not isinstance(item, bytes) or b"INTERNALDATE" not in item:
-                    continue
-                uid_match = re.search(rb"UID (\d+)", item)
-                date_match = re.search(rb'INTERNALDATE "([^"]+)"', item)
-                if uid_match and date_match:
-                    uid = uid_match.group(1).decode()
-                    date_str = date_match.group(1).decode().strip()
-                    uid_dates[uid] = datetime.strptime(date_str, "%d-%b-%Y %H:%M:%S %z")
-
-            if total_chunks > 1:
-                logger.info(
-                    f"Fetched dates chunk {chunk_num}/{total_chunks}: {len(chunk)} UIDs in {chunk_elapsed:.2f}s"
-                )
+        for chunk_dates in results:
+            uid_dates.update(chunk_dates)
 
         return uid_dates
 
     async def _batch_fetch_headers(
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
-        email_ids: list[str],
+        email_ids: list[bytes] | list[str],
     ) -> dict[str, dict[str, Any]]:
         """Batch fetch headers for a list of UIDs."""
         if not email_ids:
             return {}
 
-        uid_list = ",".join(email_ids)
+        # Normalize to list of strings
+        str_ids = [uid.decode() if isinstance(uid, bytes) else uid for uid in email_ids]
+        uid_list = ",".join(str_ids)
         _, data = await imap.uid("fetch", uid_list, "BODY.PEEK[HEADER]")
 
         results: dict[str, dict[str, Any]] = {}
@@ -390,8 +413,11 @@ class EmailClient:
     ) -> AsyncGenerator[dict[str, Any], None]:
         imap = self.imap_class(self.email_server.host, self.email_server.port)
         try:
+            # Wait for the connection to be established
             await imap._client_task
             await imap.wait_hello_from_server()
+
+            # Login and select mailbox
             await imap.login(self.email_server.user_name, self.email_server.password)
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
@@ -408,8 +434,10 @@ class EmailClient:
             )
             logger.info(f"Get metadata: Search criteria: {search_criteria}")
 
+            # Search for messages - use UID SEARCH for better compatibility
             _, messages = await imap.uid_search(*search_criteria)
 
+            # Handle empty or None responses
             if not messages or not messages[0]:
                 logger.warning("No messages returned from search")
                 return
@@ -417,10 +445,10 @@ class EmailClient:
             email_ids = messages[0].split()
             logger.info(f"Found {len(email_ids)} email IDs")
 
-            # Phase 1: Batch fetch INTERNALDATE for sorting
-            t0 = time.perf_counter()
+            # Phase 1: Batch fetch INTERNALDATE for sorting (parallel chunks)
+            fetch_dates_start = time.perf_counter()
             uid_dates = await self._batch_fetch_dates(imap, email_ids)
-            t1 = time.perf_counter()
+            fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
 
             # Sort by INTERNALDATE
             sorted_uids = sorted(uid_dates.items(), key=lambda x: x[1], reverse=(order == "desc"))
@@ -430,16 +458,17 @@ class EmailClient:
             page_uids = [uid for uid, _ in sorted_uids[start : start + page_size]]
 
             if not page_uids:
-                logger.info(f"Phase 1 (dates): {len(uid_dates)} UIDs in {t1 - t0:.2f}s, page {page} empty")
+                logger.info(f"Phase 1 (dates): {len(uid_dates)} UIDs in {fetch_dates_elapsed:.2f}s, page {page} empty")
                 return
 
             # Phase 2: Batch fetch headers for requested page only
+            fetch_headers_start = time.perf_counter()
             metadata_by_uid = await self._batch_fetch_headers(imap, page_uids)
-            t2 = time.perf_counter()
+            fetch_headers_elapsed = time.perf_counter() - fetch_headers_start
 
             logger.info(
-                f"Fetched page {page}: {t1 - t0:.2f}s dates ({len(uid_dates)} UIDs), "
-                f"{t2 - t1:.2f}s headers ({len(page_uids)} UIDs)"
+                f"Fetched page {page}: {fetch_dates_elapsed:.2f}s dates ({len(uid_dates)} UIDs), "
+                f"{fetch_headers_elapsed:.2f}s headers ({len(page_uids)} UIDs)"
             )
 
             # Yield in sorted order
