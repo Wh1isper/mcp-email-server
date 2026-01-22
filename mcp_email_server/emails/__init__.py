@@ -92,3 +92,40 @@ class EmailHandler(abc.ABC):
         Returns:
             AttachmentDownloadResponse with download result information.
         """
+
+    @abc.abstractmethod
+    async def list_mailboxes(self) -> list[str]:
+        """
+        List all available mailboxes/folders.
+
+        Returns:
+            List of mailbox names.
+        """
+
+    @abc.abstractmethod
+    async def move_emails(
+        self, email_ids: list[str], target_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """
+        Move emails to another mailbox.
+
+        Args:
+            email_ids: List of email UIDs to move.
+            target_mailbox: Target mailbox name.
+            source_mailbox: Source mailbox name (default: "INBOX").
+
+        Returns:
+            Tuple of (moved_ids, failed_ids).
+        """
+
+    @abc.abstractmethod
+    async def create_mailbox(self, mailbox_name: str) -> bool:
+        """
+        Create a new mailbox/folder.
+
+        Args:
+            mailbox_name: The name of the mailbox to create.
+
+        Returns:
+            True if successfully created, False otherwise.
+        """

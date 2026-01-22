@@ -912,6 +912,124 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def list_mailboxes(self) -> list[str]:
+        """List all available mailboxes/folders."""
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        mailboxes = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            # List all folders
+            _, folders = await imap.list('""', "*")
+
+            for folder in folders:
+                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
+                # IMAP LIST response format: (flags) "delimiter" "name"
+                # Example: (\HasNoChildren) "/" "INBOX"
+                parts = folder_str.split('"')
+                if len(parts) >= 3:
+                    folder_name = parts[-2]  # The folder name is the second-to-last quoted part
+                    mailboxes.append(folder_name)
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return mailboxes
+
+    async def create_mailbox(self, mailbox_name: str) -> bool:
+        """Create a new mailbox/folder.
+
+        Args:
+            mailbox_name: The name of the mailbox to create.
+
+        Returns:
+            True if successfully created, False otherwise.
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            # Create the mailbox
+            result = await imap.create(_quote_mailbox(mailbox_name))
+            status = result[0] if isinstance(result, tuple) else result
+
+            if str(status).upper() == "OK":
+                logger.info(f"Created mailbox: '{mailbox_name}'")
+                return True
+            else:
+                logger.error(f"Failed to create mailbox '{mailbox_name}': {result}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error creating mailbox '{mailbox_name}': {e}")
+            return False
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def move_emails(
+        self, email_ids: list[str], target_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to another mailbox. Returns (moved_ids, failed_ids).
+
+        IMAP doesn't have a native MOVE command in older versions, so we use:
+        1. COPY to target mailbox
+        2. STORE \\Deleted flag
+        3. EXPUNGE
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        moved_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            for email_id in email_ids:
+                try:
+                    # Copy to target mailbox
+                    result = await imap.uid("copy", email_id, _quote_mailbox(target_mailbox))
+                    status = result[0] if isinstance(result, tuple) else result
+                    if str(status).upper() != "OK":
+                        logger.error(f"Failed to copy email {email_id} to {target_mailbox}: {result}")
+                        failed_ids.append(email_id)
+                        continue
+
+                    # Mark as deleted in source
+                    await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    moved_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            # Expunge deleted messages
+            if moved_ids:
+                await imap.expunge()
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1067,3 +1185,17 @@ class ClassicEmailHandler(EmailHandler):
             size=result["size"],
             saved_path=result["saved_path"],
         )
+
+    async def list_mailboxes(self) -> list[str]:
+        """List all available mailboxes/folders."""
+        return await self.incoming_client.list_mailboxes()
+
+    async def move_emails(
+        self, email_ids: list[str], target_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to another mailbox. Returns (moved_ids, failed_ids)."""
+        return await self.incoming_client.move_emails(email_ids, target_mailbox, source_mailbox)
+
+    async def create_mailbox(self, mailbox_name: str) -> bool:
+        """Create a new mailbox/folder."""
+        return await self.incoming_client.create_mailbox(mailbox_name)

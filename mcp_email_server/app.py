@@ -219,3 +219,48 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+
+
+@mcp.tool(description="List all available mailboxes/folders for an email account.")
+async def list_mailboxes(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+) -> list[str]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_mailboxes()
+
+
+@mcp.tool(
+    description="Move one or more emails to another mailbox/folder. Use list_emails_metadata first to get email_ids and list_mailboxes to see available folders."
+)
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    ],
+    target_mailbox: Annotated[str, Field(description="The target mailbox/folder to move emails to.")],
+    source_mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox to move emails from.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, target_mailbox, source_mailbox)
+
+    result = f"Successfully moved {len(moved_ids)} email(s) to '{target_mailbox}'"
+    if failed_ids:
+        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
+    description="Create a new mailbox/folder. Use this to organize emails with custom folders."
+)
+async def create_mailbox(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    mailbox_name: Annotated[str, Field(description="The name of the mailbox/folder to create.")],
+) -> str:
+    handler = dispatch_handler(account_name)
+    success = await handler.create_mailbox(mailbox_name)
+
+    if success:
+        return f"Successfully created mailbox '{mailbox_name}'"
+    else:
+        return f"Failed to create mailbox '{mailbox_name}'"
