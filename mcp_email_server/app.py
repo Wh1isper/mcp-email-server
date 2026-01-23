@@ -239,7 +239,9 @@ async def move_emails(
         Field(description="List of email_id to move (obtained from list_emails_metadata)."),
     ],
     target_mailbox: Annotated[str, Field(description="The target mailbox/folder to move emails to.")],
-    source_mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox to move emails from.")] = "INBOX",
+    source_mailbox: Annotated[
+        str, Field(default="INBOX", description="The source mailbox to move emails from.")
+    ] = "INBOX",
 ) -> str:
     handler = dispatch_handler(account_name)
     moved_ids, failed_ids = await handler.move_emails(email_ids, target_mailbox, source_mailbox)
@@ -250,9 +252,7 @@ async def move_emails(
     return result
 
 
-@mcp.tool(
-    description="Create a new mailbox/folder. Use this to organize emails with custom folders."
-)
+@mcp.tool(description="Create a new mailbox/folder. Use this to organize emails with custom folders.")
 async def create_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],
     mailbox_name: Annotated[str, Field(description="The name of the mailbox/folder to create.")],
