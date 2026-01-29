@@ -149,19 +149,20 @@ class EmailClient:
         def _strip_html(html: str) -> str:
             """Simple HTML to text conversion."""
             import re
+
             # Remove script and style elements
-            text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
             # Convert common block elements to newlines
-            text = re.sub(r'<(br|p|div|tr|li)[^>]*/?>', '\n', text, flags=re.IGNORECASE)
+            text = re.sub(r"<(br|p|div|tr|li)[^>]*/?>", "\n", text, flags=re.IGNORECASE)
             # Remove all remaining HTML tags
-            text = re.sub(r'<[^>]+>', '', text)
+            text = re.sub(r"<[^>]+>", "", text)
             # Decode common HTML entities
-            text = text.replace('&nbsp;', ' ').replace('&amp;', '&')
-            text = text.replace('&lt;', '<').replace('&gt;', '>')
-            text = text.replace('&quot;', '"').replace('&#39;', "'")
+            text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+            text = text.replace("&lt;", "<").replace("&gt;", ">")
+            text = text.replace("&quot;", '"').replace("&#39;", "'")
             # Collapse multiple newlines and whitespace
-            text = re.sub(r'\n\s*\n', '\n\n', text)
-            text = re.sub(r' +', ' ', text)
+            text = re.sub(r"\n\s*\n", "\n\n", text)
+            text = re.sub(r" +", " ", text)
             return text.strip()
 
         if email_message.is_multipart():
