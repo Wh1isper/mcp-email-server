@@ -143,7 +143,26 @@ class EmailClient:
 
         # Get body content
         body = ""
+        html_body = ""  # Fallback if no text/plain
         attachments = []
+
+        def _strip_html(html: str) -> str:
+            """Simple HTML to text conversion."""
+            import re
+            # Remove script and style elements
+            text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            # Convert common block elements to newlines
+            text = re.sub(r'<(br|p|div|tr|li)[^>]*/?>', '\n', text, flags=re.IGNORECASE)
+            # Remove all remaining HTML tags
+            text = re.sub(r'<[^>]+>', '', text)
+            # Decode common HTML entities
+            text = text.replace('&nbsp;', ' ').replace('&amp;', '&')
+            text = text.replace('&lt;', '<').replace('&gt;', '>')
+            text = text.replace('&quot;', '"').replace('&#39;', "'")
+            # Collapse multiple newlines and whitespace
+            text = re.sub(r'\n\s*\n', '\n\n', text)
+            text = re.sub(r' +', ' ', text)
+            return text.strip()
 
         if email_message.is_multipart():
             for part in email_message.walk():
@@ -155,7 +174,7 @@ class EmailClient:
                     filename = part.get_filename()
                     if filename:
                         attachments.append(filename)
-                # Handle text parts
+                # Handle text parts - prefer text/plain
                 elif content_type == "text/plain":
                     body_part = part.get_payload(decode=True)
                     if body_part:
@@ -164,15 +183,34 @@ class EmailClient:
                             body += body_part.decode(charset)
                         except UnicodeDecodeError:
                             body += body_part.decode("utf-8", errors="replace")
+                # Collect HTML as fallback
+                elif content_type == "text/html" and not body:
+                    html_part = part.get_payload(decode=True)
+                    if html_part:
+                        charset = part.get_content_charset("utf-8")
+                        try:
+                            html_body += html_part.decode(charset)
+                        except UnicodeDecodeError:
+                            html_body += html_part.decode("utf-8", errors="replace")
+
+            # Fall back to HTML if no plain text found
+            if not body and html_body:
+                body = _strip_html(html_body)
         else:
-            # Handle plain text emails
+            # Handle single-part emails
+            content_type = email_message.get_content_type()
             payload = email_message.get_payload(decode=True)
             if payload:
                 charset = email_message.get_content_charset("utf-8")
                 try:
-                    body = payload.decode(charset)
+                    text = payload.decode(charset)
                 except UnicodeDecodeError:
-                    body = payload.decode("utf-8", errors="replace")
+                    text = payload.decode("utf-8", errors="replace")
+
+                if content_type == "text/html":
+                    body = _strip_html(text)
+                else:
+                    body = text
         # TODO: Allow retrieving full email body
         if body and len(body) > 20000:
             body = body[:20000] + "...[TRUNCATED]"
