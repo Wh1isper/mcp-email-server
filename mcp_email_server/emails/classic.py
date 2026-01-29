@@ -208,10 +208,7 @@ class EmailClient:
                 except UnicodeDecodeError:
                     text = payload.decode("utf-8", errors="replace")
 
-                if content_type == "text/html":
-                    body = _strip_html(text)
-                else:
-                    body = text
+                body = _strip_html(text) if content_type == "text/html" else text
         # TODO: Allow retrieving full email body
         if body and len(body) > 20000:
             body = body[:20000] + "...[TRUNCATED]"
