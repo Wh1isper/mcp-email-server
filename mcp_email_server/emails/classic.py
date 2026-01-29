@@ -343,6 +343,7 @@ class EmailClient:
         for i, item in enumerate(data):
             if not isinstance(item, bytes) or b"BODY[HEADER]" not in item:
                 continue
+            # First try to find UID in the same line (standard format)
             uid_match = re.search(rb"UID (\d+)", item)
             if uid_match and i + 1 < len(data) and isinstance(data[i + 1], bytearray):
                 uid = uid_match.group(1).decode()
@@ -350,6 +351,16 @@ class EmailClient:
                 metadata = self._parse_headers(uid, raw_headers)
                 if metadata:
                     results[uid] = metadata
+            # Proton Bridge format: UID comes AFTER header data in a separate item
+            # Format: [i]=b'N FETCH (BODY[HEADER] {size}', [i+1]=bytearray(headers), [i+2]=b' UID xxx)'
+            elif i + 2 < len(data) and isinstance(data[i + 1], bytearray):
+                uid_after_match = re.search(rb"UID (\d+)", data[i + 2]) if isinstance(data[i + 2], bytes) else None
+                if uid_after_match:
+                    uid = uid_after_match.group(1).decode()
+                    raw_headers = bytes(data[i + 1])
+                    metadata = self._parse_headers(uid, raw_headers)
+                    if metadata:
+                        results[uid] = metadata
 
         return results
 
