@@ -188,6 +188,42 @@ class EmailClient:
         }
 
     @staticmethod
+    def _parse_search_response(messages: list) -> list[bytes]:
+        """Parse UIDs from IMAP SEARCH response.
+
+        IMAP SEARCH responses can include:
+        - Actual UIDs as space-separated numbers
+        - Status messages like "SEARCH completed (took 5 ms)"
+
+        This method filters out status messages and returns only valid UIDs.
+        Status messages are identified by containing non-numeric words like
+        "SEARCH", "completed", "took", etc.
+        """
+        if not messages or not messages[0]:
+            return []
+
+        response = messages[0]
+        if isinstance(response, bytes):
+            response_str = response.decode("utf-8", errors="replace")
+        else:
+            response_str = str(response)
+
+        # Check if this looks like a status message rather than UIDs
+        # Status messages contain keywords like "SEARCH", "completed", "took"
+        status_keywords = ["SEARCH", "completed", "took", "OK", "BAD", "NO"]
+        if any(keyword in response_str for keyword in status_keywords):
+            return []
+
+        # Split and filter to only numeric values
+        parts = response_str.split()
+        email_ids = []
+        for part in parts:
+            if part.isdigit():
+                email_ids.append(part.encode() if isinstance(part, str) else part)
+
+        return email_ids
+
+    @staticmethod
     def _build_search_criteria(
         before: datetime | None = None,
         since: datetime | None = None,
@@ -388,7 +424,11 @@ class EmailClient:
             logger.info(f"Count: Search criteria: {search_criteria}")
             # Search for messages and count them - use UID SEARCH for consistency
             _, messages = await imap.uid_search(*search_criteria)
-            return len(messages[0].split())
+            # Parse UIDs from SEARCH response
+            # Valid responses contain UIDs as space-separated numbers
+            # Status messages like "SEARCH completed (took 5 ms)" should be ignored
+            email_ids = self._parse_search_response(messages)
+            return len(email_ids)
         finally:
             # Ensure we logout properly
             try:
@@ -437,12 +477,13 @@ class EmailClient:
             # Search for messages - use UID SEARCH for better compatibility
             _, messages = await imap.uid_search(*search_criteria)
 
-            # Handle empty or None responses
-            if not messages or not messages[0]:
-                logger.warning("No messages returned from search")
+            # Parse UIDs from SEARCH response
+            email_ids = self._parse_search_response(messages)
+
+            if not email_ids:
+                logger.info("No matching emails found")
                 return
 
-            email_ids = messages[0].split()
             logger.info(f"Found {len(email_ids)} email IDs")
 
             # Phase 1: Batch fetch INTERNALDATE for sorting (parallel chunks)
