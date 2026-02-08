@@ -76,6 +76,29 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def search_emails(
+        self,
+        query: str,
+        mailbox: str = "INBOX",
+        search_in: str = "all",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict:
+        """
+        Search emails using server-side IMAP SEARCH.
+
+        Args:
+            query: Text to search for.
+            mailbox: Mailbox to search in (default: "INBOX").
+            search_in: Where to search - "all", "subject", "body", "from".
+            page: Page number (starting from 1).
+            page_size: Number of results per page.
+
+        Returns:
+            Dictionary with query, total, page, and emails list.
+        """
+
+    @abc.abstractmethod
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)

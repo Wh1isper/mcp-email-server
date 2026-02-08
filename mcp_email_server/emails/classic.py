@@ -443,6 +443,95 @@ class EmailClient:
 
         return mailboxes
 
+    async def search_emails(
+        self,
+        query: str,
+        mailbox: str = "INBOX",
+        search_in: str = "all",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        """Search emails using server-side IMAP SEARCH.
+
+        Args:
+            query: Text to search for.
+            mailbox: Mailbox to search in (default: "INBOX").
+            search_in: Where to search - "all" (TEXT), "subject", "body", "from".
+            page: Page number (starting from 1).
+            page_size: Number of results per page.
+
+        Returns:
+            Dictionary with query, total count, page, and list of email metadata.
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            # Build IMAP search criteria based on search_in parameter
+            if search_in == "subject":
+                search_criteria = ["SUBJECT", query]
+            elif search_in == "body":
+                search_criteria = ["BODY", query]
+            elif search_in == "from":
+                search_criteria = ["FROM", query]
+            else:  # "all" - searches in headers and body
+                search_criteria = ["TEXT", query]
+
+            logger.info(f"Search: {search_criteria} in {mailbox}")
+
+            # Execute server-side search
+            _, messages = await imap.uid_search(*search_criteria)
+            email_ids = self._parse_search_response(messages)
+
+            total = len(email_ids)
+            logger.info(f"Search found {total} matching emails")
+
+            if not email_ids:
+                return {
+                    "query": query,
+                    "search_in": search_in,
+                    "mailbox": mailbox,
+                    "total": 0,
+                    "page": page,
+                    "page_size": page_size,
+                    "emails": [],
+                }
+
+            # Paginate (most recent first - from end of UID list)
+            start_idx = max(0, total - (page * page_size))
+            end_idx = total - ((page - 1) * page_size)
+            page_ids = email_ids[start_idx:end_idx]
+            page_ids = list(reversed([uid.decode() if isinstance(uid, bytes) else uid for uid in page_ids]))
+
+            # Fetch headers for the page
+            metadata_by_uid = await self._batch_fetch_headers(imap, page_ids)
+
+            emails = []
+            for uid in page_ids:
+                if uid in metadata_by_uid:
+                    emails.append(metadata_by_uid[uid])
+
+            return {
+                "query": query,
+                "search_in": search_in,
+                "mailbox": mailbox,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "emails": emails,
+            }
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
     async def get_email_count(
         self,
         before: datetime | None = None,
@@ -538,35 +627,37 @@ class EmailClient:
                 logger.info("No matching emails found")
                 return
 
-            logger.info(f"Found {len(email_ids)} email IDs")
+            total = len(email_ids)
+            logger.info(f"Found {total} email IDs")
 
-            # Phase 1: Batch fetch INTERNALDATE for sorting (parallel chunks)
-            fetch_dates_start = time.perf_counter()
-            uid_dates = await self._batch_fetch_dates(imap, email_ids)
-            fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
-
-            # Sort by INTERNALDATE
-            sorted_uids = sorted(uid_dates.items(), key=lambda x: x[1], reverse=(order == "desc"))
-
-            # Paginate
-            start = (page - 1) * page_size
-            page_uids = [uid for uid, _ in sorted_uids[start : start + page_size]]
+            # OPTIMIZED: Use UID ordering directly instead of fetching all dates
+            # UIDs are strictly ascending as messages are added to the mailbox
+            # This avoids fetching INTERNALDATE for potentially thousands of emails
+            if order == "desc":
+                # For descending: take from the end (most recent in this folder)
+                start_idx = max(0, total - (page * page_size))
+                end_idx = total - ((page - 1) * page_size)
+                page_uids = email_ids[start_idx:end_idx]
+                # Reverse to get most recent first
+                page_uids = list(reversed([uid.decode() if isinstance(uid, bytes) else uid for uid in page_uids]))
+            else:
+                # For ascending: take from the beginning
+                start_idx = (page - 1) * page_size
+                end_idx = min(start_idx + page_size, total)
+                page_uids = [uid.decode() if isinstance(uid, bytes) else uid for uid in email_ids[start_idx:end_idx]]
 
             if not page_uids:
-                logger.info(f"Phase 1 (dates): {len(uid_dates)} UIDs in {fetch_dates_elapsed:.2f}s, page {page} empty")
+                logger.info(f"Page {page} is empty (total: {total})")
                 return
 
-            # Phase 2: Batch fetch headers for requested page only
-            fetch_headers_start = time.perf_counter()
+            # Fetch headers only for the requested page
+            fetch_start = time.perf_counter()
             metadata_by_uid = await self._batch_fetch_headers(imap, page_uids)
-            fetch_headers_elapsed = time.perf_counter() - fetch_headers_start
+            fetch_elapsed = time.perf_counter() - fetch_start
 
-            logger.info(
-                f"Fetched page {page}: {fetch_dates_elapsed:.2f}s dates ({len(uid_dates)} UIDs), "
-                f"{fetch_headers_elapsed:.2f}s headers ({len(page_uids)} UIDs)"
-            )
+            logger.info(f"Fetched page {page}: {fetch_elapsed:.2f}s for {len(page_uids)} emails (total: {total})")
 
-            # Yield in sorted order
+            # Yield in page order
             for uid in page_uids:
                 if uid in metadata_by_uid:
                     yield metadata_by_uid[uid]
@@ -1107,6 +1198,17 @@ class ClassicEmailHandler(EmailHandler):
     async def list_mailboxes(self) -> list[dict]:
         """List all mailboxes (folders) in the email account."""
         return await self.incoming_client.list_mailboxes()
+
+    async def search_emails(
+        self,
+        query: str,
+        mailbox: str = "INBOX",
+        search_in: str = "all",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict:
+        """Search emails using server-side IMAP SEARCH."""
+        return await self.incoming_client.search_emails(query, mailbox, search_in, page, page_size)
 
     async def get_emails_metadata(
         self,

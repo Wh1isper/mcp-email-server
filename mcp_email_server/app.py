@@ -42,6 +42,25 @@ async def list_mailboxes(
     return await handler.list_mailboxes()
 
 
+@mcp.tool(
+    description="Search emails using server-side IMAP search. Fast even with thousands of emails. "
+    "Searches in subject, body, and headers by default."
+)
+async def search_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    query: Annotated[str, Field(description="Text to search for in emails.")],
+    mailbox: Annotated[str, Field(default="INBOX", description="Mailbox to search in.")] = "INBOX",
+    search_in: Annotated[
+        Literal["all", "subject", "body", "from"],
+        Field(default="all", description="Where to search: 'all' (headers+body), 'subject', 'body', or 'from'."),
+    ] = "all",
+    page: Annotated[int, Field(default=1, description="Page number (starting from 1).")] = 1,
+    page_size: Annotated[int, Field(default=20, description="Number of results per page.")] = 20,
+) -> dict:
+    handler = dispatch_handler(account_name)
+    return await handler.search_emails(query, mailbox, search_in, page, page_size)
+
+
 @mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()
