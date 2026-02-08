@@ -203,10 +203,7 @@ class EmailClient:
             return []
 
         response = messages[0]
-        if isinstance(response, bytes):
-            response_str = response.decode("utf-8", errors="replace")
-        else:
-            response_str = str(response)
+        response_str = response.decode("utf-8", errors="replace") if isinstance(response, bytes) else str(response)
 
         # Check if this looks like a status message rather than UIDs
         # Status messages contain keywords like "SEARCH", "completed", "took"
@@ -423,6 +420,7 @@ class EmailClient:
 
                 # Parse the response
                 import re
+
                 match = re.match(r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', item_str)
                 if match:
                     flags_str, delimiter, name = match.groups()
@@ -1148,7 +1146,7 @@ class EmailClient:
             await imap.select(_quote_mailbox(source_mailbox))
 
             # Check if MOVE is supported (RFC 6851) via protocol capabilities
-            has_move = hasattr(imap.protocol, 'capabilities') and b"MOVE" in imap.protocol.capabilities
+            has_move = hasattr(imap.protocol, "capabilities") and b"MOVE" in imap.protocol.capabilities
 
             for email_id in email_ids:
                 try:
@@ -1158,7 +1156,8 @@ class EmailClient:
                         if result[0] == "OK":
                             moved_ids.append(email_id)
                         else:
-                            raise Exception(f"MOVE failed: {result}")
+                            logger.error(f"MOVE failed for {email_id}: {result}")
+                            failed_ids.append(email_id)
                     else:
                         # Fallback: COPY then DELETE
                         copy_result = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
@@ -1166,7 +1165,8 @@ class EmailClient:
                             await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
                             moved_ids.append(email_id)
                         else:
-                            raise Exception(f"COPY failed: {copy_result}")
+                            logger.error(f"COPY failed for {email_id}: {copy_result}")
+                            failed_ids.append(email_id)
                 except Exception as e:
                     logger.error(f"Failed to move email {email_id}: {e}")
                     failed_ids.append(email_id)

@@ -365,6 +365,110 @@ class TestClassicEmailHandler:
             # Verify the client method was called correctly
             mock_get_body.assert_called_once_with("123", "INBOX")
 
+    @pytest.mark.asyncio
+    async def test_list_mailboxes(self, classic_handler):
+        """Test list_mailboxes method."""
+        mock_mailboxes = [
+            {"name": "INBOX", "flags": ["\\HasNoChildren"], "delimiter": "/"},
+            {"name": "Archive", "flags": ["\\HasNoChildren"], "delimiter": "/"},
+            {"name": "Sent", "flags": ["\\Sent"], "delimiter": "/"},
+        ]
+        mock_list = AsyncMock(return_value=mock_mailboxes)
+
+        with patch.object(classic_handler.incoming_client, "list_mailboxes", mock_list):
+            result = await classic_handler.list_mailboxes()
+
+            assert len(result) == 3
+            assert result[0]["name"] == "INBOX"
+            assert result[1]["name"] == "Archive"
+            mock_list.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_search_emails(self, classic_handler):
+        """Test search_emails method."""
+        mock_result = {
+            "query": "test",
+            "total": 2,
+            "page": 1,
+            "emails": [
+                {"email_id": "123", "subject": "Test email 1"},
+                {"email_id": "456", "subject": "Test email 2"},
+            ],
+        }
+        mock_search = AsyncMock(return_value=mock_result)
+
+        with patch.object(classic_handler.incoming_client, "search_emails", mock_search):
+            result = await classic_handler.search_emails("test", "INBOX", "all", 1, 20)
+
+            assert result["query"] == "test"
+            assert result["total"] == 2
+            assert len(result["emails"]) == 2
+            mock_search.assert_called_once_with("test", "INBOX", "all", 1, 20)
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read(self, classic_handler):
+        """Test mark_emails_as_read method."""
+        mock_mark = AsyncMock(return_value=(["123", "456"], []))
+
+        with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
+            success_ids, failed_ids = await classic_handler.mark_emails_as_read(
+                email_ids=["123", "456"],
+                mailbox="INBOX",
+                read=True,
+            )
+
+            assert success_ids == ["123", "456"]
+            assert failed_ids == []
+            mock_mark.assert_called_once_with(["123", "456"], "INBOX", True)
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_unread(self, classic_handler):
+        """Test mark_emails_as_read method with read=False."""
+        mock_mark = AsyncMock(return_value=(["789"], []))
+
+        with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
+            success_ids, failed_ids = await classic_handler.mark_emails_as_read(
+                email_ids=["789"],
+                mailbox="INBOX",
+                read=False,
+            )
+
+            assert success_ids == ["789"]
+            assert failed_ids == []
+            mock_mark.assert_called_once_with(["789"], "INBOX", False)
+
+    @pytest.mark.asyncio
+    async def test_move_emails(self, classic_handler):
+        """Test move_emails method."""
+        mock_move = AsyncMock(return_value=(["123", "456"], []))
+
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
+            moved_ids, failed_ids = await classic_handler.move_emails(
+                email_ids=["123", "456"],
+                destination_mailbox="Archive",
+                source_mailbox="INBOX",
+            )
+
+            assert moved_ids == ["123", "456"]
+            assert failed_ids == []
+            mock_move.assert_called_once_with(["123", "456"], "Archive", "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_failures(self, classic_handler):
+        """Test move_emails method with some failures."""
+        mock_move = AsyncMock(return_value=(["123"], ["456"]))
+
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
+            moved_ids, failed_ids = await classic_handler.move_emails(
+                email_ids=["123", "456"],
+                destination_mailbox="Trash",
+                source_mailbox="INBOX",
+            )
+
+            assert moved_ids == ["123"]
+            assert failed_ids == ["456"]
+            mock_move.assert_called_once_with(["123", "456"], "Trash", "INBOX")
+
 
 class TestEmailClientBatchMethods:
     """Test batch fetch methods for performance optimization."""

@@ -192,7 +192,11 @@ class TestEmailClient:
 
     @pytest.mark.asyncio
     async def test_get_emails_stream(self, email_client):
-        """Test getting emails stream returns sorted, paginated results."""
+        """Test getting emails stream returns paginated results using UID ordering.
+
+        With the optimized pagination, we use UID ordering directly (UIDs are
+        ascending by date added to mailbox) instead of fetching all dates first.
+        """
         mock_imap = AsyncMock()
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
@@ -202,19 +206,15 @@ class TestEmailClient:
         mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
 
-        # Mock at the helper level - test behavior, not implementation
-        mock_dates = {
-            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "2": datetime(2024, 1, 2, tzinfo=timezone.utc),
-            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
-        }
+        # Mock metadata returned by _batch_fetch_headers
+        # For desc order, UIDs are reversed: 3, 2, 1
         mock_metadata = {
-            "1": {
-                "email_id": "1",
-                "subject": "Subject 1",
-                "from": "a@test.com",
+            "3": {
+                "email_id": "3",
+                "subject": "Subject 3",
+                "from": "c@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
                 "attachments": [],
             },
             "2": {
@@ -225,38 +225,33 @@ class TestEmailClient:
                 "date": datetime(2024, 1, 2, tzinfo=timezone.utc),
                 "attachments": [],
             },
-            "3": {
-                "email_id": "3",
-                "subject": "Subject 3",
-                "from": "c@test.com",
+            "1": {
+                "email_id": "1",
+                "subject": "Subject 1",
+                "from": "a@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
                 "attachments": [],
             },
         }
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            with patch.object(email_client, "_batch_fetch_dates", return_value=mock_dates) as mock_fetch_dates:
-                with patch.object(
-                    email_client, "_batch_fetch_headers", return_value=mock_metadata
-                ) as mock_fetch_headers:
-                    emails = []
-                    async for email_data in email_client.get_emails_metadata_stream(page=1, page_size=10):
-                        emails.append(email_data)
+            with patch.object(email_client, "_batch_fetch_headers", return_value=mock_metadata) as mock_fetch_headers:
+                emails = []
+                async for email_data in email_client.get_emails_metadata_stream(page=1, page_size=10):
+                    emails.append(email_data)
 
-                    # Behavior: returns emails sorted by date desc (newest first)
-                    assert len(emails) == 3
-                    assert emails[0]["subject"] == "Subject 3"
-                    assert emails[1]["subject"] == "Subject 2"
-                    assert emails[2]["subject"] == "Subject 1"
+                # Behavior: returns emails in UID desc order (newest UIDs first)
+                assert len(emails) == 3
+                assert emails[0]["subject"] == "Subject 3"
+                assert emails[1]["subject"] == "Subject 2"
+                assert emails[2]["subject"] == "Subject 1"
 
-                    mock_imap.login.assert_called_once()
-                    mock_imap.logout.assert_called_once()
+                mock_imap.login.assert_called_once()
+                mock_imap.logout.assert_called_once()
 
-                    # Verify helpers called with correct arguments
-                    mock_fetch_dates.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])
-                    # Headers fetched for page UIDs in sorted order (desc by date)
-                    mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2", "1"])
+                # Headers fetched for page UIDs in desc order
+                mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2", "1"])
 
     @pytest.mark.asyncio
     async def test_get_email_count(self, email_client):
