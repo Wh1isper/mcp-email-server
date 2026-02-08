@@ -197,6 +197,52 @@ async def delete_emails(
 
 
 @mcp.tool(
+    description="Mark one or more emails as read or unread. Use list_emails_metadata first to get the email_id."
+)
+async def mark_emails_as_read(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to mark (obtained from list_emails_metadata)."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+    read: Annotated[bool, Field(default=True, description="True to mark as read, False to mark as unread.")] = True,
+) -> str:
+    handler = dispatch_handler(account_name)
+    success_ids, failed_ids = await handler.mark_emails_as_read(email_ids, mailbox, read)
+
+    status = "read" if read else "unread"
+    result = f"Successfully marked {len(success_ids)} email(s) as {status}"
+    if failed_ids:
+        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
+    description="Move one or more emails to a different mailbox/folder. Common destinations: 'Archive', 'Trash', 'Spam'. Use list_emails_metadata first to get the email_id."
+)
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    ],
+    destination_mailbox: Annotated[
+        str,
+        Field(description="Target mailbox name (e.g., 'Archive', 'Trash', 'Spam', '[Gmail]/All Mail')."),
+    ],
+    source_mailbox: Annotated[str, Field(default="INBOX", description="Source mailbox.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, destination_mailbox, source_mailbox)
+
+    result = f"Successfully moved {len(moved_ids)} email(s) to '{destination_mailbox}'"
+    if failed_ids:
+        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
     description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
 )
 async def download_attachment(

@@ -912,6 +912,91 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def mark_emails_as_read(
+        self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read or unread by their UIDs. Returns (success_ids, failed_ids)."""
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        success_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            flag_action = "+FLAGS" if read else "-FLAGS"
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, flag_action, r"(\Seen)")
+                    success_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} as {'read' if read else 'unread'}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return success_ids, failed_ids
+
+    async def move_emails(
+        self, email_ids: list[str], destination_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to another mailbox. Returns (moved_ids, failed_ids).
+
+        Uses IMAP MOVE command (RFC 6851) if supported, otherwise falls back to COPY + DELETE.
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        moved_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            # Check if MOVE is supported (RFC 6851)
+            capabilities = await imap.capability()
+            has_move = b"MOVE" in capabilities[1] if capabilities and len(capabilities) > 1 else False
+
+            for email_id in email_ids:
+                try:
+                    if has_move:
+                        # Use MOVE command directly
+                        result = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                        if result[0] == "OK":
+                            moved_ids.append(email_id)
+                        else:
+                            raise Exception(f"MOVE failed: {result}")
+                    else:
+                        # Fallback: COPY then DELETE
+                        copy_result = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                        if copy_result[0] == "OK":
+                            await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                            moved_ids.append(email_id)
+                        else:
+                            raise Exception(f"COPY failed: {copy_result}")
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            # Expunge deleted messages (only needed for COPY+DELETE fallback)
+            if moved_ids and not has_move:
+                await imap.expunge()
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1040,6 +1125,18 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def mark_emails_as_read(
+        self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read or unread. Returns (success_ids, failed_ids)."""
+        return await self.incoming_client.mark_emails_as_read(email_ids, mailbox, read)
+
+    async def move_emails(
+        self, email_ids: list[str], destination_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to another mailbox. Returns (moved_ids, failed_ids)."""
+        return await self.incoming_client.move_emails(email_ids, destination_mailbox, source_mailbox)
 
     async def download_attachment(
         self,

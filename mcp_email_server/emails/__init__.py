@@ -73,6 +73,32 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def mark_emails_as_read(
+        self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True
+    ) -> tuple[list[str], list[str]]:
+        """
+        Mark emails as read or unread. Returns (success_ids, failed_ids)
+
+        Args:
+            email_ids: List of email IDs to mark.
+            mailbox: The mailbox containing the emails (default: "INBOX").
+            read: True to mark as read, False to mark as unread.
+        """
+
+    @abc.abstractmethod
+    async def move_emails(
+        self, email_ids: list[str], destination_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """
+        Move emails to another mailbox. Returns (moved_ids, failed_ids)
+
+        Args:
+            email_ids: List of email IDs to move.
+            destination_mailbox: Target mailbox name (e.g., "Archive", "Trash").
+            source_mailbox: Source mailbox (default: "INBOX").
+        """
+
+    @abc.abstractmethod
     async def download_attachment(
         self,
         email_id: str,
