@@ -67,6 +67,15 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def list_mailboxes(self) -> list[dict]:
+        """
+        List all mailboxes (folders) in the email account.
+
+        Returns:
+            List of dictionaries with mailbox info (name, flags, delimiter).
+        """
+
+    @abc.abstractmethod
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)

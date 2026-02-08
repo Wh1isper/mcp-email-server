@@ -32,6 +32,16 @@ async def list_available_accounts() -> list[AccountAttributes]:
     return [account.masked() for account in settings.get_accounts()]
 
 
+@mcp.tool(
+    description="List all mailboxes (folders) in an email account. Use this to discover available folders like Archive, Sent, Trash, etc."
+)
+async def list_mailboxes(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+) -> list[dict]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_mailboxes()
+
+
 @mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()

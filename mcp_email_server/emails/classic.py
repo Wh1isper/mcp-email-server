@@ -389,6 +389,60 @@ class EmailClient:
 
         return results
 
+    async def list_mailboxes(self) -> list[dict[str, Any]]:
+        """List all mailboxes (folders) in the email account.
+
+        Returns a list of dictionaries with mailbox information:
+        - name: The mailbox name
+        - flags: List of flags (e.g., \\Noselect, \\HasChildren)
+        - delimiter: The hierarchy delimiter (usually "/" or ".")
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        mailboxes = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            # List all mailboxes
+            _, data = await imap.list('""', "*")
+
+            for item in data:
+                if not isinstance(item, bytes):
+                    continue
+
+                # Parse LIST response: (flags) "delimiter" "name"
+                # Example: (\HasNoChildren) "/" "Archive"
+                item_str = item.decode("utf-8", errors="replace")
+
+                # Skip status messages
+                if "LIST completed" in item_str or item_str.startswith("OK"):
+                    continue
+
+                # Parse the response
+                import re
+                match = re.match(r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', item_str)
+                if match:
+                    flags_str, delimiter, name = match.groups()
+                    flags = [f.strip() for f in flags_str.split() if f.strip()]
+                    # Remove trailing quote if present
+                    name = name.rstrip('"')
+                    mailboxes.append({
+                        "name": name,
+                        "flags": flags,
+                        "delimiter": delimiter,
+                    })
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return mailboxes
+
     async def get_email_count(
         self,
         before: datetime | None = None,
@@ -1049,6 +1103,10 @@ class ClassicEmailHandler(EmailHandler):
         )
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
+
+    async def list_mailboxes(self) -> list[dict]:
+        """List all mailboxes (folders) in the email account."""
+        return await self.incoming_client.list_mailboxes()
 
     async def get_emails_metadata(
         self,
