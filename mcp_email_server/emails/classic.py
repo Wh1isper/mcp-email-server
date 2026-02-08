@@ -1147,9 +1147,8 @@ class EmailClient:
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(source_mailbox))
 
-            # Check if MOVE is supported (RFC 6851)
-            capabilities = await imap.capability()
-            has_move = b"MOVE" in capabilities[1] if capabilities and len(capabilities) > 1 else False
+            # Check if MOVE is supported (RFC 6851) via protocol capabilities
+            has_move = hasattr(imap.protocol, 'capabilities') and b"MOVE" in imap.protocol.capabilities
 
             for email_id in email_ids:
                 try:
