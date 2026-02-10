@@ -74,53 +74,41 @@ class TestClassicEmailHandler:
         mock_stream = AsyncMock()
         mock_stream.__aiter__.return_value = [email_data]
 
-        # Mock the get_email_count method
-        mock_count = AsyncMock(return_value=1)
-
         # Apply the mocks
         with patch.object(classic_handler.incoming_client, "get_emails_metadata_stream", return_value=mock_stream):
-            with patch.object(classic_handler.incoming_client, "get_email_count", mock_count):
-                # Call the method
-                result = await classic_handler.get_emails_metadata(
-                    page=1,
-                    page_size=10,
-                    before=now,
-                    since=None,
-                    subject="Test",
-                    from_address="sender@example.com",
-                    to_address=None,
-                )
+            # Mock the _last_search_total to simulate the cache set by get_emails_metadata_stream
+            classic_handler.incoming_client._last_search_total = 1
 
-                # Verify the result
-                assert isinstance(result, EmailMetadataPageResponse)
-                assert result.page == 1
-                assert result.page_size == 10
-                assert result.before == now
-                assert result.since is None
-                assert result.subject == "Test"
-                assert len(result.emails) == 1
-                assert isinstance(result.emails[0], EmailMetadata)
-                assert result.emails[0].subject == "Test Subject"
-                assert result.emails[0].sender == "sender@example.com"
-                assert result.emails[0].date == now
-                assert result.emails[0].attachments == []
-                assert result.total == 1
+            # Call the method
+            result = await classic_handler.get_emails_metadata(
+                page=1,
+                page_size=10,
+                before=now,
+                since=None,
+                subject="Test",
+                from_address="sender@example.com",
+                to_address=None,
+            )
 
-                # Verify the client methods were called correctly
-                classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
-                    1, 10, now, None, "Test", "sender@example.com", None, "desc", "INBOX", None, None, None
-                )
-                mock_count.assert_called_once_with(
-                    now,
-                    None,
-                    "Test",
-                    from_address="sender@example.com",
-                    to_address=None,
-                    mailbox="INBOX",
-                    seen=None,
-                    flagged=None,
-                    answered=None,
-                )
+            # Verify the result
+            assert isinstance(result, EmailMetadataPageResponse)
+            assert result.page == 1
+            assert result.page_size == 10
+            assert result.before == now
+            assert result.since is None
+            assert result.subject == "Test"
+            assert len(result.emails) == 1
+            assert isinstance(result.emails[0], EmailMetadata)
+            assert result.emails[0].subject == "Test Subject"
+            assert result.emails[0].sender == "sender@example.com"
+            assert result.emails[0].date == now
+            assert result.emails[0].attachments == []
+            assert result.total == 1
+
+            # Verify the client methods were called correctly
+            classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
+                1, 10, now, None, "Test", "sender@example.com", None, "desc", "INBOX", None, None, None
+            )
 
     @pytest.mark.asyncio
     async def test_get_emails_with_mailbox(self, classic_handler):
@@ -137,34 +125,26 @@ class TestClassicEmailHandler:
 
         mock_stream = AsyncMock()
         mock_stream.__aiter__.return_value = [email_data]
-        mock_count = AsyncMock(return_value=1)
 
         with patch.object(classic_handler.incoming_client, "get_emails_metadata_stream", return_value=mock_stream):
-            with patch.object(classic_handler.incoming_client, "get_email_count", mock_count):
-                result = await classic_handler.get_emails_metadata(
-                    page=1,
-                    page_size=10,
-                    mailbox="Sent",
-                )
+            # Mock the _last_search_total to simulate the cache set by get_emails_metadata_stream
+            classic_handler.incoming_client._last_search_total = 1
 
-                assert isinstance(result, EmailMetadataPageResponse)
-                assert len(result.emails) == 1
+            # Add a before filter to satisfy the new validation requirement
+            result = await classic_handler.get_emails_metadata(
+                page=1,
+                page_size=10,
+                before=now,
+                mailbox="Sent",
+            )
 
-                # Verify mailbox parameter was passed correctly
-                classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
-                    1, 10, None, None, None, None, None, "desc", "Sent", None, None, None
-                )
-                mock_count.assert_called_once_with(
-                    None,
-                    None,
-                    None,
-                    from_address=None,
-                    to_address=None,
-                    mailbox="Sent",
-                    seen=None,
-                    flagged=None,
-                    answered=None,
-                )
+            assert isinstance(result, EmailMetadataPageResponse)
+            assert len(result.emails) == 1
+
+            # Verify mailbox parameter was passed correctly
+            classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
+                1, 10, now, None, None, None, None, "desc", "Sent", None, None, None
+            )
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):
