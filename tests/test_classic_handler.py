@@ -147,6 +147,21 @@ class TestClassicEmailHandler:
             )
 
     @pytest.mark.asyncio
+    async def test_get_emails_requires_filter(self, classic_handler):
+        """Test that get_emails_metadata requires at least one filter."""
+        # Call the method without any filters
+        with pytest.raises(ValueError) as exc_info:
+            await classic_handler.get_emails_metadata(
+                page=1,
+                page_size=10,
+            )
+
+        # Verify the error message
+        assert "At least one filter is required" in str(exc_info.value)
+        assert "since" in str(exc_info.value).lower()
+        assert "date" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):
         """Test send_email method."""
         # Mock the outgoing_client.send_email method
