@@ -1003,9 +1003,9 @@ class ClassicEmailHandler(EmailHandler):
         ])
         if not has_filter:
             msg = (
-                "At least one filter is required (date, subject, from, to, seen, flagged, or answered) "
-                "to prevent expensive searches on large mailboxes. "
-                "Example: provide 'since' with a recent date like the last 30 days."
+                "At least one filter is required to prevent expensive searches on large mailboxes. "
+                "Recommended: combine a date range (since/before) with optional text filters (subject/from/to). "
+                "Example: since=datetime(2026, 1, 1) or subject='work' + since=datetime(2025, 1, 1)"
             )
             raise ValueError(msg)
 
