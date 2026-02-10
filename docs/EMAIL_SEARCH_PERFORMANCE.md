@@ -25,6 +25,7 @@ Despite requesting only 5 emails per page, the internal flow is:
 ```
 
 **Pagination only applies AFTER the expensive operations.** This means:
+
 - On a mailbox with 10,000 emails: seconds of delay
 - On a mailbox with 100,000+ emails: minutes or timeout
 - On enterprise mailboxes: can hang indefinitely
@@ -44,15 +45,18 @@ There's no built-in way to limit results before the search phase.
 ### ✅ Fast Searches
 
 #### 1. Date Range (Fastest)
+
 ```python
 # Get last 30 days of emails
 from datetime import datetime, timedelta
 since = datetime.now() - timedelta(days=30)
 result = list_emails_metadata(account_name="Galaxia", since=since)
 ```
+
 **Why:** IMAP servers heavily index by date. Returns only recent emails.
 
 #### 2. Text Search (Medium Speed)
+
 ```python
 # Search for specific sender
 result = list_emails_metadata(
@@ -60,9 +64,11 @@ result = list_emails_metadata(
     from_address="boss@company.com"
 )
 ```
+
 **Why:** Text searches use server indices, but could match many emails.
 
 #### 3. Combined Filters (Fastest & Best)
+
 ```python
 # Search for work emails from last month
 since = datetime.now() - timedelta(days=30)
@@ -73,9 +79,11 @@ result = list_emails_metadata(
     since=since
 )
 ```
+
 **Why:** Narrows search space at IMAP level (most efficient).
 
 #### 4. Flag-Based Search
+
 ```python
 # Get unread emails from the last 7 days
 since = datetime.now() - timedelta(days=7)
@@ -85,18 +93,19 @@ result = list_emails_metadata(
     since=since
 )
 ```
+
 **Why:** Flag searches are fast; combining with date range is best.
 
 ## Performance Comparison
 
-| Query | Mailbox Size | Time |
-|-------|--------------|------|
-| `SEARCH ALL` | 10,000 emails | ~1 second |
-| `SEARCH ALL` | 100,000 emails | ~10+ seconds |
-| `SEARCH ALL` | 1,000,000 emails | **TIMEOUT** |
-| `SEARCH SINCE <date>` | Any size | ~100ms |
-| `SEARCH FROM "sender"` | 100,000 emails | ~500ms |
-| `SEARCH SINCE + FROM` | 100,000 emails | ~100ms |
+| Query                  | Mailbox Size     | Time         |
+| ---------------------- | ---------------- | ------------ |
+| `SEARCH ALL`           | 10,000 emails    | ~1 second    |
+| `SEARCH ALL`           | 100,000 emails   | ~10+ seconds |
+| `SEARCH ALL`           | 1,000,000 emails | **TIMEOUT**  |
+| `SEARCH SINCE <date>`  | Any size         | ~100ms       |
+| `SEARCH FROM "sender"` | 100,000 emails   | ~500ms       |
+| `SEARCH SINCE + FROM`  | 100,000 emails   | ~100ms       |
 
 ## Error Message Explanation
 
@@ -110,6 +119,7 @@ Example: since=datetime(2026, 1, 1) or subject='work' + since=datetime(2025, 1, 
 ```
 
 This error prevents:
+
 - Silent performance degradation
 - Unexplained timeouts
 - User frustration with "why is this so slow?"
@@ -147,11 +157,13 @@ All filters prevent full mailbox scans:
 If you were using unfiltered searches before:
 
 ### Before (Would fail now)
+
 ```python
 result = list_emails_metadata(account_name="Galaxia")
 ```
 
 ### After
+
 ```python
 from datetime import datetime, timedelta
 
