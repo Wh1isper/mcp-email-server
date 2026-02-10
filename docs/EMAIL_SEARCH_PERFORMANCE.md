@@ -203,4 +203,4 @@ A: Technically yes, but it's not recommended for mailboxes > 50,000 emails. Use:
 ## See Also
 
 - [IMAP RFC 3501](https://tools.ietf.org/html/rfc3501) - IMAP Protocol Specification
-- [mcp-email-server Configuration Guide](../README.md)
+- [mcp-email-server Repository](https://github.com/ai-zerolab/mcp-email-server) - Main project
