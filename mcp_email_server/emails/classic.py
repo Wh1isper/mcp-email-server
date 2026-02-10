@@ -991,7 +991,16 @@ class ClassicEmailHandler(EmailHandler):
         answered: bool | None = None,
     ) -> EmailMetadataPageResponse:
         # Require at least one filter to prevent expensive "ALL" searches on large mailboxes
-        has_filter = any([before, since, subject, from_address, to_address, seen is not None, flagged is not None, answered is not None])
+        has_filter = any([
+            before,
+            since,
+            subject,
+            from_address,
+            to_address,
+            seen is not None,
+            flagged is not None,
+            answered is not None,
+        ])
         if not has_filter:
             msg = (
                 "At least one filter is required (date, subject, from, to, seen, flagged, or answered) "
