@@ -104,6 +104,9 @@ class EmailClient:
         self.smtp_start_tls = self.email_server.start_ssl
         self.smtp_verify_ssl = self.email_server.verify_ssl
 
+        # Cache for last search total to avoid repeated searches
+        self._last_search_total = None
+
     def _get_smtp_ssl_context(self) -> ssl.SSLContext | None:
         """Get SSL context for SMTP connections based on verify_ssl setting."""
         return _create_smtp_ssl_context(self.smtp_verify_ssl)
@@ -481,7 +484,11 @@ class EmailClient:
                 return
 
             email_ids = messages[0].split()
-            logger.info(f"Found {len(email_ids)} email IDs")
+            total_found = len(email_ids)
+            logger.info(f"Found {total_found} email IDs")
+
+            # Cache the search result for this request (to avoid duplicate search in get_email_count)
+            self._last_search_total = total_found
 
             # Phase 1: Batch fetch INTERNALDATE for sorting (parallel chunks)
             fetch_dates_start = time.perf_counter()
@@ -983,6 +990,16 @@ class ClassicEmailHandler(EmailHandler):
         flagged: bool | None = None,
         answered: bool | None = None,
     ) -> EmailMetadataPageResponse:
+        # Require at least one filter to prevent expensive "ALL" searches on large mailboxes
+        has_filter = any([before, since, subject, from_address, to_address, seen is not None, flagged is not None, answered is not None])
+        if not has_filter:
+            msg = (
+                "At least one filter is required (date, subject, from, to, seen, flagged, or answered) "
+                "to prevent expensive searches on large mailboxes. "
+                "Example: provide 'since' with a recent date like the last 30 days."
+            )
+            raise ValueError(msg)
+
         emails = []
         async for email_data in self.incoming_client.get_emails_metadata_stream(
             page,
@@ -999,17 +1016,10 @@ class ClassicEmailHandler(EmailHandler):
             answered,
         ):
             emails.append(EmailMetadata.from_email(email_data))
-        total = await self.incoming_client.get_email_count(
-            before,
-            since,
-            subject,
-            from_address=from_address,
-            to_address=to_address,
-            mailbox=mailbox,
-            seen=seen,
-            flagged=flagged,
-            answered=answered,
-        )
+
+        # Use the cached total from the stream search instead of doing a separate search
+        total = self.incoming_client._last_search_total or 0
+
         return EmailMetadataPageResponse(
             page=page,
             page_size=page_size,
