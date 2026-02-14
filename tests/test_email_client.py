@@ -235,7 +235,7 @@ class TestEmailClient:
             },
         }
 
-        with patch.object(email_client, "imap_class", return_value=mock_imap):
+        with patch.object(email_client, "_connect_imap", return_value=mock_imap):
             with patch.object(email_client, "_batch_fetch_dates", return_value=mock_dates) as mock_fetch_dates:
                 with patch.object(
                     email_client, "_batch_fetch_headers", return_value=mock_metadata
@@ -273,7 +273,7 @@ class TestEmailClient:
         mock_imap.logout = AsyncMock()
 
         # Mock IMAP class
-        with patch.object(email_client, "imap_class", return_value=mock_imap):
+        with patch.object(email_client, "_connect_imap", return_value=mock_imap):
             count = await email_client.get_email_count()
 
             assert count == 5

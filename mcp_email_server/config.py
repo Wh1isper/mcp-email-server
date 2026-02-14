@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,14 +23,59 @@ DEFAILT_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
 CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAILT_CONFIG_PATH)).expanduser().resolve()
 
 
+class ConnectionSecurity(str, Enum):
+    """Connection security mode per RFC 8314.
+
+    - TLS: Implicit TLS — encrypted from the first byte (IMAP port 993, SMTP port 465)
+    - STARTTLS: Connect plaintext, then upgrade via STARTTLS command (IMAP port 143, SMTP port 587)
+    - NONE: No encryption (not recommended, only for trusted local connections)
+    """
+
+    TLS = "tls"
+    STARTTLS = "starttls"
+    NONE = "none"
+
+
 class EmailServer(BaseModel):
     user_name: str
     password: str
     host: str
     port: int
-    use_ssl: bool = True  # Usually port 465
-    start_ssl: bool = False  # Usually port 587
+    security: ConnectionSecurity = ConnectionSecurity.TLS
     verify_ssl: bool = True  # Set to False for self-signed certificates (e.g., ProtonMail Bridge)
+
+    # Deprecated: use `security` instead. Kept for backward compatibility with existing configs.
+    use_ssl: bool | None = None
+    start_ssl: bool | None = None
+
+    @model_validator(mode="after")
+    @classmethod
+    def resolve_security_from_legacy(cls, obj: EmailServer) -> EmailServer:
+        """Derive `security` from deprecated `use_ssl`/`start_ssl` for backward compatibility.
+
+        If both old and new fields are set, `security` takes precedence.
+        If only old fields are set, derive `security` from them.
+        """
+        # If legacy fields are explicitly set and security was not explicitly provided
+        # (i.e. it's at default), derive security from legacy fields
+        if obj.use_ssl is not None or obj.start_ssl is not None:
+            use_ssl = obj.use_ssl if obj.use_ssl is not None else False
+            start_ssl = obj.start_ssl if obj.start_ssl is not None else False
+
+            if use_ssl and start_ssl:
+                raise ValueError(
+                    "Invalid configuration: 'use_ssl' and 'start_ssl' cannot both be true. "
+                    "Use 'security = \"tls\"' for implicit TLS or 'security = \"starttls\"' for STARTTLS."
+                )
+
+            if use_ssl:
+                obj.security = ConnectionSecurity.TLS
+            elif start_ssl:
+                obj.security = ConnectionSecurity.STARTTLS
+            else:
+                obj.security = ConnectionSecurity.NONE
+
+        return obj
 
     def masked(self) -> EmailServer:
         return self.model_copy(update={"password": "********"})
@@ -93,36 +139,57 @@ class EmailSettings(AccountAttributes):
         imap_user_name: str | None = None,
         imap_password: str | None = None,
         imap_port: int = 993,
-        imap_ssl: bool = True,
+        imap_security: ConnectionSecurity = ConnectionSecurity.TLS,
+        imap_verify_ssl: bool = True,
         smtp_port: int = 465,
-        smtp_ssl: bool = True,
-        smtp_start_ssl: bool = False,
+        smtp_security: ConnectionSecurity = ConnectionSecurity.TLS,
         smtp_verify_ssl: bool = True,
         smtp_user_name: str | None = None,
         smtp_password: str | None = None,
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
+        # Deprecated parameters for backward compatibility
+        imap_ssl: bool | None = None,
+        smtp_ssl: bool | None = None,
+        smtp_start_ssl: bool | None = None,
     ) -> EmailSettings:
+        # Build incoming server config
+        incoming_kwargs: dict[str, Any] = {
+            "user_name": imap_user_name or user_name,
+            "password": imap_password or password,
+            "host": imap_host,
+            "port": imap_port,
+            "verify_ssl": imap_verify_ssl,
+        }
+        if imap_ssl is not None:
+            # Legacy path: use_ssl was explicitly passed
+            incoming_kwargs["use_ssl"] = imap_ssl
+        else:
+            incoming_kwargs["security"] = imap_security
+
+        # Build outgoing server config
+        outgoing_kwargs: dict[str, Any] = {
+            "user_name": smtp_user_name or user_name,
+            "password": smtp_password or password,
+            "host": smtp_host,
+            "port": smtp_port,
+            "verify_ssl": smtp_verify_ssl,
+        }
+        if smtp_ssl is not None or smtp_start_ssl is not None:
+            # Legacy path: use_ssl/start_ssl were explicitly passed
+            if smtp_ssl is not None:
+                outgoing_kwargs["use_ssl"] = smtp_ssl
+            if smtp_start_ssl is not None:
+                outgoing_kwargs["start_ssl"] = smtp_start_ssl
+        else:
+            outgoing_kwargs["security"] = smtp_security
+
         return cls(
             account_name=account_name,
             full_name=full_name,
             email_address=email_address,
-            incoming=EmailServer(
-                user_name=imap_user_name or user_name,
-                password=imap_password or password,
-                host=imap_host,
-                port=imap_port,
-                use_ssl=imap_ssl,
-            ),
-            outgoing=EmailServer(
-                user_name=smtp_user_name or user_name,
-                password=smtp_password or password,
-                host=smtp_host,
-                port=smtp_port,
-                use_ssl=smtp_ssl,
-                start_ssl=smtp_start_ssl,
-                verify_ssl=smtp_verify_ssl,
-            ),
+            incoming=EmailServer(**incoming_kwargs),
+            outgoing=EmailServer(**outgoing_kwargs),
             save_to_sent=save_to_sent,
             sent_folder_name=sent_folder_name,
         )
@@ -139,14 +206,19 @@ class EmailSettings(AccountAttributes):
         - MCP_EMAIL_SERVER_PASSWORD
         - MCP_EMAIL_SERVER_IMAP_HOST
         - MCP_EMAIL_SERVER_IMAP_PORT (default: 993)
-        - MCP_EMAIL_SERVER_IMAP_SSL (default: true)
+        - MCP_EMAIL_SERVER_IMAP_SECURITY (default: "tls") — "tls", "starttls", or "none"
+        - MCP_EMAIL_SERVER_IMAP_VERIFY_SSL (default: true)
         - MCP_EMAIL_SERVER_SMTP_HOST
         - MCP_EMAIL_SERVER_SMTP_PORT (default: 465)
-        - MCP_EMAIL_SERVER_SMTP_SSL (default: true)
-        - MCP_EMAIL_SERVER_SMTP_START_SSL (default: false)
+        - MCP_EMAIL_SERVER_SMTP_SECURITY (default: "tls") — "tls", "starttls", or "none"
         - MCP_EMAIL_SERVER_SMTP_VERIFY_SSL (default: true)
         - MCP_EMAIL_SERVER_SAVE_TO_SENT (default: true)
         - MCP_EMAIL_SERVER_SENT_FOLDER_NAME (default: auto-detect)
+
+        Deprecated (still supported for backward compatibility):
+        - MCP_EMAIL_SERVER_IMAP_SSL → use MCP_EMAIL_SERVER_IMAP_SECURITY instead
+        - MCP_EMAIL_SERVER_SMTP_SSL → use MCP_EMAIL_SERVER_SMTP_SECURITY instead
+        - MCP_EMAIL_SERVER_SMTP_START_SSL → use MCP_EMAIL_SERVER_SMTP_SECURITY instead
         """
         # Check if minimum required environment variables are set
         email_address = os.getenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS")
@@ -161,6 +233,17 @@ class EmailSettings(AccountAttributes):
                 return default
             return value.lower() in ("true", "1", "yes", "on")
 
+        def parse_security(
+            value: str | None, default: ConnectionSecurity = ConnectionSecurity.TLS
+        ) -> ConnectionSecurity:
+            if value is None:
+                return default
+            try:
+                return ConnectionSecurity(value.lower())
+            except ValueError:
+                logger.warning(f"Invalid security value '{value}', using default '{default.value}'")
+                return default
+
         # Get all environment variables with defaults
         account_name = os.getenv("MCP_EMAIL_SERVER_ACCOUNT_NAME", "default")
         full_name = os.getenv("MCP_EMAIL_SERVER_FULL_NAME", email_address.split("@")[0])
@@ -173,28 +256,57 @@ class EmailSettings(AccountAttributes):
             logger.warning("Missing required email configuration environment variables (IMAP_HOST or SMTP_HOST)")
             return None
 
+        # Resolve security settings: new env vars take precedence over legacy
+        imap_security_env = os.getenv("MCP_EMAIL_SERVER_IMAP_SECURITY")
+        smtp_security_env = os.getenv("MCP_EMAIL_SERVER_SMTP_SECURITY")
+        imap_ssl_env = os.getenv("MCP_EMAIL_SERVER_IMAP_SSL")
+        smtp_ssl_env = os.getenv("MCP_EMAIL_SERVER_SMTP_SSL")
+        smtp_start_ssl_env = os.getenv("MCP_EMAIL_SERVER_SMTP_START_SSL")
+
         try:
-            return cls.init(
-                account_name=account_name,
-                full_name=full_name,
-                email_address=email_address,
-                user_name=user_name,
-                password=password,
-                imap_host=imap_host,
-                imap_port=int(os.getenv("MCP_EMAIL_SERVER_IMAP_PORT", "993")),
-                imap_ssl=parse_bool(os.getenv("MCP_EMAIL_SERVER_IMAP_SSL"), True),
-                smtp_host=smtp_host,
-                smtp_port=int(os.getenv("MCP_EMAIL_SERVER_SMTP_PORT", "465")),
-                smtp_ssl=parse_bool(os.getenv("MCP_EMAIL_SERVER_SMTP_SSL"), True),
-                smtp_start_ssl=parse_bool(os.getenv("MCP_EMAIL_SERVER_SMTP_START_SSL"), False),
-                smtp_verify_ssl=parse_bool(os.getenv("MCP_EMAIL_SERVER_SMTP_VERIFY_SSL"), True),
-                smtp_user_name=os.getenv("MCP_EMAIL_SERVER_SMTP_USER_NAME", user_name),
-                smtp_password=os.getenv("MCP_EMAIL_SERVER_SMTP_PASSWORD", password),
-                imap_user_name=os.getenv("MCP_EMAIL_SERVER_IMAP_USER_NAME", user_name),
-                imap_password=os.getenv("MCP_EMAIL_SERVER_IMAP_PASSWORD", password),
-                save_to_sent=parse_bool(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),
-                sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
-            )
+            imap_port = int(os.getenv("MCP_EMAIL_SERVER_IMAP_PORT", "993"))
+            smtp_port = int(os.getenv("MCP_EMAIL_SERVER_SMTP_PORT", "465"))
+        except ValueError as e:
+            logger.error(f"Invalid port configuration: {e}")
+            return None
+
+        init_kwargs: dict[str, Any] = {
+            "account_name": account_name,
+            "full_name": full_name,
+            "email_address": email_address,
+            "user_name": user_name,
+            "password": password,
+            "imap_host": imap_host,
+            "imap_port": imap_port,
+            "imap_verify_ssl": parse_bool(os.getenv("MCP_EMAIL_SERVER_IMAP_VERIFY_SSL"), True),
+            "smtp_host": smtp_host,
+            "smtp_port": smtp_port,
+            "smtp_verify_ssl": parse_bool(os.getenv("MCP_EMAIL_SERVER_SMTP_VERIFY_SSL"), True),
+            "smtp_user_name": os.getenv("MCP_EMAIL_SERVER_SMTP_USER_NAME", user_name),
+            "smtp_password": os.getenv("MCP_EMAIL_SERVER_SMTP_PASSWORD", password),
+            "imap_user_name": os.getenv("MCP_EMAIL_SERVER_IMAP_USER_NAME", user_name),
+            "imap_password": os.getenv("MCP_EMAIL_SERVER_IMAP_PASSWORD", password),
+            "save_to_sent": parse_bool(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),
+            "sent_folder_name": os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
+        }
+
+        # IMAP security
+        if imap_security_env is not None:
+            init_kwargs["imap_security"] = parse_security(imap_security_env)
+        elif imap_ssl_env is not None:
+            init_kwargs["imap_ssl"] = parse_bool(imap_ssl_env, True)
+
+        # SMTP security
+        if smtp_security_env is not None:
+            init_kwargs["smtp_security"] = parse_security(smtp_security_env)
+        elif smtp_ssl_env is not None or smtp_start_ssl_env is not None:
+            if smtp_ssl_env is not None:
+                init_kwargs["smtp_ssl"] = parse_bool(smtp_ssl_env, True)
+            if smtp_start_ssl_env is not None:
+                init_kwargs["smtp_start_ssl"] = parse_bool(smtp_start_ssl_env, False)
+
+        try:
+            return cls.init(**init_kwargs)
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to create email settings from environment variables: {e}")
             return None

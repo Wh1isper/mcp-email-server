@@ -72,15 +72,27 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                    | -             | Yes      |
 | `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                  | -             | Yes      |
 | `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                  | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                   | `true`        | No       |
+| `MCP_EMAIL_SERVER_IMAP_SECURITY`              | IMAP connection security: `tls`, `starttls`, or `none` | `tls`   | No       |
+| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates                      | `true`        | No       |
 | `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                  | -             | Yes      |
 | `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                  | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                   | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                   | `false`       | No       |
-| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed) | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_SECURITY`              | SMTP connection security: `tls`, `starttls`, or `none` | `tls`   | No       |
+| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SMTP SSL certificates                      | `true`        | No       |
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                        | `false`       | No       |
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder              | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)  | -             | No       |
+
+> **Deprecated:** `MCP_EMAIL_SERVER_IMAP_SSL`, `MCP_EMAIL_SERVER_SMTP_SSL`, and `MCP_EMAIL_SERVER_SMTP_START_SSL` still work for backward compatibility but are superseded by the `*_SECURITY` variables above.
+
+#### Connection Security Modes
+
+The `security` field (or `*_SECURITY` env var) controls how the connection to the mail server is encrypted, per [RFC 8314](https://tools.ietf.org/html/rfc8314):
+
+| Mode       | Description                                              | IMAP Port | SMTP Port |
+| ---------- | -------------------------------------------------------- | --------- | --------- |
+| `tls`      | **Implicit TLS** — encrypted from the first byte         | 993       | 465       |
+| `starttls` | **STARTTLS** — connect plaintext, then upgrade to TLS    | 143       | 587       |
+| `none`     | **No encryption** — plaintext only (not recommended)     | 143       | 25        |
 
 ### Enabling Attachment Downloads
 
@@ -153,7 +165,7 @@ sent_folder_name = "INBOX.Sent"
 
 ### Self-Signed Certificates (e.g., ProtonMail Bridge)
 
-If you're using a local mail server with self-signed certificates (like ProtonMail Bridge), you'll need to disable SSL certificate verification:
+If you're using a local mail server with self-signed certificates (like ProtonMail Bridge), you'll need to disable SSL certificate verification for both IMAP and SMTP:
 
 ```json
 {
@@ -162,6 +174,7 @@ If you're using a local mail server with self-signed certificates (like ProtonMa
       "command": "uvx",
       "args": ["mcp-email-server@latest", "stdio"],
       "env": {
+        "MCP_EMAIL_SERVER_IMAP_VERIFY_SSL": "false",
         "MCP_EMAIL_SERVER_SMTP_VERIFY_SSL": "false"
       }
     }
@@ -176,7 +189,37 @@ Or in TOML configuration:
 account_name = "protonmail"
 # ... other settings ...
 
+[emails.incoming]
+verify_ssl = false
+
 [emails.outgoing]
+verify_ssl = false
+```
+
+#### ProtonMail Bridge Example
+
+ProtonMail Bridge uses STARTTLS on local ports with self-signed certificates:
+
+```toml
+[[emails]]
+account_name = "protonmail"
+full_name = "Your Name"
+email_address = "you@proton.me"
+
+[emails.incoming]
+host = "127.0.0.1"
+port = 1143
+user_name = "you@proton.me"
+password = "your-bridge-password"
+security = "starttls"
+verify_ssl = false
+
+[emails.outgoing]
+host = "127.0.0.1"
+port = 1025
+user_name = "you@proton.me"
+password = "your-bridge-password"
+security = "starttls"
 verify_ssl = false
 ```
 

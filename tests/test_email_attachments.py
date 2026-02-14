@@ -232,7 +232,7 @@ class TestDownloadAttachmentMailboxParam:
 
         # Mock _fetch_email_with_formats to return None (will raise ValueError)
         with patch.object(email_client, "_fetch_email_with_formats", return_value=None):
-            with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_connect_imap", return_value=mock_imap):
                 with pytest.raises(ValueError):
                     await email_client.download_attachment(
                         email_id="123",
@@ -246,20 +246,16 @@ class TestDownloadAttachmentMailboxParam:
     @pytest.mark.asyncio
     async def test_download_attachment_custom_mailbox(self, email_client, tmp_path):
         """Test download_attachment with custom mailbox parameter."""
-        import asyncio
 
         save_path = str(tmp_path / "attachment.pdf")
 
         mock_imap = AsyncMock()
-        mock_imap._client_task = asyncio.Future()
-        mock_imap._client_task.set_result(None)
-        mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
         mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "_fetch_email_with_formats", return_value=None):
-            with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_connect_imap", return_value=mock_imap):
                 with pytest.raises(ValueError):
                     await email_client.download_attachment(
                         email_id="123",
@@ -274,20 +270,16 @@ class TestDownloadAttachmentMailboxParam:
     @pytest.mark.asyncio
     async def test_download_attachment_special_folder(self, email_client, tmp_path):
         """Test download_attachment with special folder like [Gmail]/Sent Mail."""
-        import asyncio
 
         save_path = str(tmp_path / "attachment.pdf")
 
         mock_imap = AsyncMock()
-        mock_imap._client_task = asyncio.Future()
-        mock_imap._client_task.set_result(None)
-        mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
         mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "_fetch_email_with_formats", return_value=None):
-            with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_connect_imap", return_value=mock_imap):
                 with pytest.raises(ValueError):
                     await email_client.download_attachment(
                         email_id="123",
