@@ -73,6 +73,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                  | -             | Yes      |
 | `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                  | `993`         | No       |
 | `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                   | `true`        | No       |
+| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed) | `true`        | No       |
 | `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                  | -             | Yes      |
 | `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                  | `465`         | No       |
 | `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                   | `true`        | No       |
@@ -162,6 +163,7 @@ If you're using a local mail server with self-signed certificates (like ProtonMa
       "command": "uvx",
       "args": ["mcp-email-server@latest", "stdio"],
       "env": {
+        "MCP_EMAIL_SERVER_IMAP_VERIFY_SSL": "false",
         "MCP_EMAIL_SERVER_SMTP_VERIFY_SSL": "false"
       }
     }
@@ -175,6 +177,9 @@ Or in TOML configuration:
 [[emails]]
 account_name = "protonmail"
 # ... other settings ...
+
+[emails.incoming]
+verify_ssl = false
 
 [emails.outgoing]
 verify_ssl = false
