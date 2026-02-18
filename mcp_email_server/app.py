@@ -32,6 +32,35 @@ async def list_available_accounts() -> list[AccountAttributes]:
     return [account.masked() for account in settings.get_accounts()]
 
 
+@mcp.tool(
+    description="List all mailboxes (folders) in an email account. Use this to discover available folders like Archive, Sent, Trash, etc."
+)
+async def list_mailboxes(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+) -> list[dict]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_mailboxes()
+
+
+@mcp.tool(
+    description="Search emails using server-side IMAP search. Fast even with thousands of emails. "
+    "Searches in subject, body, and headers by default."
+)
+async def search_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    query: Annotated[str, Field(description="Text to search for in emails.")],
+    mailbox: Annotated[str, Field(default="INBOX", description="Mailbox to search in.")] = "INBOX",
+    search_in: Annotated[
+        Literal["all", "subject", "body", "from"],
+        Field(default="all", description="Where to search: 'all' (headers+body), 'subject', 'body', or 'from'."),
+    ] = "all",
+    page: Annotated[int, Field(default=1, description="Page number (starting from 1).")] = 1,
+    page_size: Annotated[int, Field(default=20, description="Number of results per page.")] = 20,
+) -> dict:
+    handler = dispatch_handler(account_name)
+    return await handler.search_emails(query, mailbox, search_in, page, page_size)
+
+
 @mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()
@@ -193,6 +222,50 @@ async def delete_emails(
     result = f"Successfully deleted {len(deleted_ids)} email(s)"
     if failed_ids:
         result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(description="Mark one or more emails as read or unread. Use list_emails_metadata first to get the email_id.")
+async def mark_emails_as_read(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to mark (obtained from list_emails_metadata)."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+    read: Annotated[bool, Field(default=True, description="True to mark as read, False to mark as unread.")] = True,
+) -> str:
+    handler = dispatch_handler(account_name)
+    success_ids, failed_ids = await handler.mark_emails_as_read(email_ids, mailbox, read)
+
+    status = "read" if read else "unread"
+    result = f"Successfully marked {len(success_ids)} email(s) as {status}"
+    if failed_ids:
+        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
+    description="Move one or more emails to a different mailbox/folder. Common destinations: 'Archive', 'Trash', 'Spam'. Use list_emails_metadata first to get the email_id."
+)
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    ],
+    destination_mailbox: Annotated[
+        str,
+        Field(description="Target mailbox name (e.g., 'Archive', 'Trash', 'Spam', '[Gmail]/All Mail')."),
+    ],
+    source_mailbox: Annotated[str, Field(default="INBOX", description="Source mailbox.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, destination_mailbox, source_mailbox)
+
+    result = f"Successfully moved {len(moved_ids)} email(s) to '{destination_mailbox}'"
+    if failed_ids:
+        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
     return result
 
 

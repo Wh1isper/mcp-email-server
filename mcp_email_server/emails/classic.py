@@ -234,6 +234,39 @@ class EmailClient:
         }
 
     @staticmethod
+    def _parse_search_response(messages: list) -> list[bytes]:
+        """Parse UIDs from IMAP SEARCH response.
+
+        IMAP SEARCH responses can include:
+        - Actual UIDs as space-separated numbers
+        - Status messages like "SEARCH completed (took 5 ms)"
+
+        This method filters out status messages and returns only valid UIDs.
+        Status messages are identified by containing non-numeric words like
+        "SEARCH", "completed", "took", etc.
+        """
+        if not messages or not messages[0]:
+            return []
+
+        response = messages[0]
+        response_str = response.decode("utf-8", errors="replace") if isinstance(response, bytes) else str(response)
+
+        # Check if this looks like a status message rather than UIDs
+        # Status messages contain keywords like "SEARCH", "completed", "took"
+        status_keywords = ["SEARCH", "completed", "took", "OK", "BAD", "NO"]
+        if any(keyword in response_str for keyword in status_keywords):
+            return []
+
+        # Split and filter to only numeric values
+        parts = response_str.split()
+        email_ids = []
+        for part in parts:
+            if part.isdigit():
+                email_ids.append(part.encode() if isinstance(part, str) else part)
+
+        return email_ids
+
+    @staticmethod
     def _build_search_criteria(
         before: datetime | None = None,
         since: datetime | None = None,
@@ -394,6 +427,150 @@ class EmailClient:
 
         return results
 
+    async def list_mailboxes(self) -> list[dict[str, Any]]:
+        """List all mailboxes (folders) in the email account.
+
+        Returns a list of dictionaries with mailbox information:
+        - name: The mailbox name
+        - flags: List of flags (e.g., \\Noselect, \\HasChildren)
+        - delimiter: The hierarchy delimiter (usually "/" or ".")
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        mailboxes = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            # List all mailboxes
+            _, data = await imap.list('""', "*")
+
+            for item in data:
+                if not isinstance(item, bytes):
+                    continue
+
+                # Parse LIST response: (flags) "delimiter" "name"
+                # Example: (\HasNoChildren) "/" "Archive"
+                item_str = item.decode("utf-8", errors="replace")
+
+                # Skip status messages
+                if "LIST completed" in item_str or item_str.startswith("OK"):
+                    continue
+
+                # Parse the response
+                import re
+
+                match = re.match(r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', item_str)
+                if match:
+                    flags_str, delimiter, name = match.groups()
+                    flags = [f.strip() for f in flags_str.split() if f.strip()]
+                    # Remove trailing quote if present
+                    name = name.rstrip('"')
+                    mailboxes.append({
+                        "name": name,
+                        "flags": flags,
+                        "delimiter": delimiter,
+                    })
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return mailboxes
+
+    async def search_emails(
+        self,
+        query: str,
+        mailbox: str = "INBOX",
+        search_in: str = "all",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        """Search emails using server-side IMAP SEARCH.
+
+        Args:
+            query: Text to search for.
+            mailbox: Mailbox to search in (default: "INBOX").
+            search_in: Where to search - "all" (TEXT), "subject", "body", "from".
+            page: Page number (starting from 1).
+            page_size: Number of results per page.
+
+        Returns:
+            Dictionary with query, total count, page, and list of email metadata.
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            # Build IMAP search criteria based on search_in parameter
+            if search_in == "subject":
+                search_criteria = ["SUBJECT", query]
+            elif search_in == "body":
+                search_criteria = ["BODY", query]
+            elif search_in == "from":
+                search_criteria = ["FROM", query]
+            else:  # "all" - searches in headers and body
+                search_criteria = ["TEXT", query]
+
+            logger.info(f"Search: {search_criteria} in {mailbox}")
+
+            # Execute server-side search
+            _, messages = await imap.uid_search(*search_criteria)
+            email_ids = self._parse_search_response(messages)
+
+            total = len(email_ids)
+            logger.info(f"Search found {total} matching emails")
+
+            if not email_ids:
+                return {
+                    "query": query,
+                    "search_in": search_in,
+                    "mailbox": mailbox,
+                    "total": 0,
+                    "page": page,
+                    "page_size": page_size,
+                    "emails": [],
+                }
+
+            # Paginate (most recent first - from end of UID list)
+            start_idx = max(0, total - (page * page_size))
+            end_idx = total - ((page - 1) * page_size)
+            page_ids = email_ids[start_idx:end_idx]
+            page_ids = list(reversed([uid.decode() if isinstance(uid, bytes) else uid for uid in page_ids]))
+
+            # Fetch headers for the page
+            metadata_by_uid = await self._batch_fetch_headers(imap, page_ids)
+
+            emails = []
+            for uid in page_ids:
+                if uid in metadata_by_uid:
+                    emails.append(metadata_by_uid[uid])
+
+            return {
+                "query": query,
+                "search_in": search_in,
+                "mailbox": mailbox,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "emails": emails,
+            }
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
     async def get_email_count(
         self,
         before: datetime | None = None,
@@ -429,7 +606,11 @@ class EmailClient:
             logger.info(f"Count: Search criteria: {search_criteria}")
             # Search for messages and count them - use UID SEARCH for consistency
             _, messages = await imap.uid_search(*search_criteria)
-            return len(messages[0].split())
+            # Parse UIDs from SEARCH response
+            # Valid responses contain UIDs as space-separated numbers
+            # Status messages like "SEARCH completed (took 5 ms)" should be ignored
+            email_ids = self._parse_search_response(messages)
+            return len(email_ids)
         finally:
             # Ensure we logout properly
             try:
@@ -478,45 +659,47 @@ class EmailClient:
             # Search for messages - use UID SEARCH for better compatibility
             _, messages = await imap.uid_search(*search_criteria)
 
-            # Handle empty or None responses
-            if not messages or not messages[0]:
-                logger.warning("No messages returned from search")
+            # Parse UIDs from SEARCH response
+            email_ids = self._parse_search_response(messages)
+
+            if not email_ids:
+                logger.info("No matching emails found")
                 return
 
-            email_ids = messages[0].split()
-            total_found = len(email_ids)
-            logger.info(f"Found {total_found} email IDs")
+            total = len(email_ids)
+            logger.info(f"Found {total} email IDs")
 
             # Cache the search result for this request (to avoid duplicate search in get_email_count)
-            self._last_search_total = total_found
+            self._last_search_total = total
 
-            # Phase 1: Batch fetch INTERNALDATE for sorting (parallel chunks)
-            fetch_dates_start = time.perf_counter()
-            uid_dates = await self._batch_fetch_dates(imap, email_ids)
-            fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
-
-            # Sort by INTERNALDATE
-            sorted_uids = sorted(uid_dates.items(), key=lambda x: x[1], reverse=(order == "desc"))
-
-            # Paginate
-            start = (page - 1) * page_size
-            page_uids = [uid for uid, _ in sorted_uids[start : start + page_size]]
+            # OPTIMIZED: Use UID ordering directly instead of fetching all dates
+            # UIDs are strictly ascending as messages are added to the mailbox
+            # This avoids fetching INTERNALDATE for potentially thousands of emails
+            if order == "desc":
+                # For descending: take from the end (most recent in this folder)
+                start_idx = max(0, total - (page * page_size))
+                end_idx = total - ((page - 1) * page_size)
+                page_uids = email_ids[start_idx:end_idx]
+                # Reverse to get most recent first
+                page_uids = list(reversed([uid.decode() if isinstance(uid, bytes) else uid for uid in page_uids]))
+            else:
+                # For ascending: take from the beginning
+                start_idx = (page - 1) * page_size
+                end_idx = min(start_idx + page_size, total)
+                page_uids = [uid.decode() if isinstance(uid, bytes) else uid for uid in email_ids[start_idx:end_idx]]
 
             if not page_uids:
-                logger.info(f"Phase 1 (dates): {len(uid_dates)} UIDs in {fetch_dates_elapsed:.2f}s, page {page} empty")
+                logger.info(f"Page {page} is empty (total: {total})")
                 return
 
-            # Phase 2: Batch fetch headers for requested page only
-            fetch_headers_start = time.perf_counter()
+            # Fetch headers only for the requested page
+            fetch_start = time.perf_counter()
             metadata_by_uid = await self._batch_fetch_headers(imap, page_uids)
-            fetch_headers_elapsed = time.perf_counter() - fetch_headers_start
+            fetch_elapsed = time.perf_counter() - fetch_start
 
-            logger.info(
-                f"Fetched page {page}: {fetch_dates_elapsed:.2f}s dates ({len(uid_dates)} UIDs), "
-                f"{fetch_headers_elapsed:.2f}s headers ({len(page_uids)} UIDs)"
-            )
+            logger.info(f"Fetched page {page}: {fetch_elapsed:.2f}s for {len(page_uids)} emails (total: {total})")
 
-            # Yield in sorted order
+            # Yield in page order
             for uid in page_uids:
                 if uid in metadata_by_uid:
                     yield metadata_by_uid[uid]
@@ -963,6 +1146,92 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def mark_emails_as_read(
+        self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read or unread by their UIDs. Returns (success_ids, failed_ids)."""
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        success_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            flag_action = "+FLAGS" if read else "-FLAGS"
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, flag_action, r"(\Seen)")
+                    success_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} as {'read' if read else 'unread'}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return success_ids, failed_ids
+
+    async def move_emails(
+        self, email_ids: list[str], destination_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to another mailbox. Returns (moved_ids, failed_ids).
+
+        Uses IMAP MOVE command (RFC 6851) if supported, otherwise falls back to COPY + DELETE.
+        """
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        moved_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            # Check if MOVE is supported (RFC 6851) via protocol capabilities
+            has_move = hasattr(imap.protocol, "capabilities") and b"MOVE" in imap.protocol.capabilities
+
+            for email_id in email_ids:
+                try:
+                    if has_move:
+                        # Use MOVE command directly
+                        result = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                        if result[0] == "OK":
+                            moved_ids.append(email_id)
+                        else:
+                            logger.error(f"MOVE failed for {email_id}: {result}")
+                            failed_ids.append(email_id)
+                    else:
+                        # Fallback: COPY then DELETE
+                        copy_result = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                        if copy_result[0] == "OK":
+                            await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                            moved_ids.append(email_id)
+                        else:
+                            logger.error(f"COPY failed for {email_id}: {copy_result}")
+                            failed_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            # Expunge deleted messages (only needed for COPY+DELETE fallback)
+            if moved_ids and not has_move:
+                await imap.expunge()
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -974,6 +1243,21 @@ class ClassicEmailHandler(EmailHandler):
         )
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
+
+    async def list_mailboxes(self) -> list[dict]:
+        """List all mailboxes (folders) in the email account."""
+        return await self.incoming_client.list_mailboxes()
+
+    async def search_emails(
+        self,
+        query: str,
+        mailbox: str = "INBOX",
+        search_in: str = "all",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict:
+        """Search emails using server-side IMAP SEARCH."""
+        return await self.incoming_client.search_emails(query, mailbox, search_in, page, page_size)
 
     async def get_emails_metadata(
         self,
@@ -1103,6 +1387,18 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def mark_emails_as_read(
+        self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read or unread. Returns (success_ids, failed_ids)."""
+        return await self.incoming_client.mark_emails_as_read(email_ids, mailbox, read)
+
+    async def move_emails(
+        self, email_ids: list[str], destination_mailbox: str, source_mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to another mailbox. Returns (moved_ids, failed_ids)."""
+        return await self.incoming_client.move_emails(email_ids, destination_mailbox, source_mailbox)
 
     async def download_attachment(
         self,
