@@ -63,25 +63,25 @@ You can also configure the email server using environment variables, which is pa
 
 #### Available Environment Variables
 
-| Variable                                      | Description                                       | Default       | Required |
-| --------------------------------------------- | ------------------------------------------------- | ------------- | -------- |
-| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                | `"default"`   | No       |
-| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                      | Email prefix  | No       |
-| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                     | -             | Yes      |
-| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                    | Same as email | No       |
-| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                    | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                  | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                  | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                   | `true`        | No       |
+| Variable                                      | Description                                            | Default       | Required |
+| --------------------------------------------- | ------------------------------------------------------ | ------------- | -------- |
+| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                     | `"default"`   | No       |
+| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                           | Email prefix  | No       |
+| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                          | -             | Yes      |
+| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                         | Same as email | No       |
+| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                         | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                       | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                       | `993`         | No       |
+| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                        | `true`        | No       |
 | `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed) | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                  | -             | Yes      |
-| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                  | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                   | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                   | `false`       | No       |
-| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed) | `true`        | No       |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                        | `false`       | No       |
-| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder              | `true`        | No       |
-| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)  | -             | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                       | -             | Yes      |
+| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                       | `465`         | No       |
+| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                        | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                        | `false`       | No       |
+| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)      | `true`        | No       |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                             | `false`       | No       |
+| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
+| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
 
 ### Enabling Attachment Downloads
 
