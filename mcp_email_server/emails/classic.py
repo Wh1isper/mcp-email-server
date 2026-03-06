@@ -970,6 +970,39 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """Move emails by their UIDs from one mailbox to another. Returns (moved_ids, failed_ids)."""
+        imap = self._imap_connect()
+        moved_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            for email_id in email_ids:
+                try:
+                    await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                    await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    moved_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            await imap.expunge()
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1098,6 +1131,12 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """Move emails from one mailbox to another. Returns (moved_ids, failed_ids)."""
+        return await self.incoming_client.move_emails(email_ids, source_mailbox, destination_mailbox)
 
     async def download_attachment(
         self,

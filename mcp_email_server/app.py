@@ -197,6 +197,51 @@ async def delete_emails(
 
 
 @mcp.tool(
+    description="Move one or more emails from one mailbox to another. Use list_emails_metadata first to get the email_id."
+)
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    ],
+    destination_mailbox: Annotated[
+        str,
+        Field(description="The destination mailbox to move emails to (e.g. 'Archive', 'Trash', 'Junk')."),
+    ],
+    source_mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox to move emails from.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
+
+    result = f"Successfully moved {len(moved_ids)} email(s) to {destination_mailbox}"
+    if failed_ids:
+        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
+    description="Archive one or more emails (move from INBOX to Archive folder). Use list_emails_metadata first to get the email_id."
+)
+async def archive_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to archive (obtained from list_emails_metadata)."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to archive emails from.")] = "INBOX",
+    archive_folder: Annotated[str, Field(default="Archive", description="The archive folder name (default: 'Archive').")] = "Archive",
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, mailbox, archive_folder)
+
+    result = f"Successfully archived {len(moved_ids)} email(s)"
+    if failed_ids:
+        result += f", failed to archive {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
     description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
 )
 async def download_attachment(

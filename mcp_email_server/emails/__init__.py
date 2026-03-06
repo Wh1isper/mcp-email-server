@@ -86,6 +86,14 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """
+        Move emails from one mailbox to another. Returns (moved_ids, failed_ids)
+        """
+
+    @abc.abstractmethod
     async def download_attachment(
         self,
         email_id: str,
