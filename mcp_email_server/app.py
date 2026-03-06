@@ -209,7 +209,9 @@ async def move_emails(
         str,
         Field(description="The destination mailbox to move emails to (e.g. 'Archive', 'Trash', 'Junk')."),
     ],
-    source_mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox to move emails from.")] = "INBOX",
+    source_mailbox: Annotated[
+        str, Field(default="INBOX", description="The source mailbox to move emails from.")
+    ] = "INBOX",
 ) -> str:
     handler = dispatch_handler(account_name)
     moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
@@ -230,7 +232,9 @@ async def archive_emails(
         Field(description="List of email_id to archive (obtained from list_emails_metadata)."),
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to archive emails from.")] = "INBOX",
-    archive_folder: Annotated[str, Field(default="Archive", description="The archive folder name (default: 'Archive').")] = "Archive",
+    archive_folder: Annotated[
+        str, Field(default="Archive", description="The archive folder name (default: 'Archive').")
+    ] = "Archive",
 ) -> str:
     handler = dispatch_handler(account_name)
     moved_ids, failed_ids = await handler.move_emails(email_ids, mailbox, archive_folder)
