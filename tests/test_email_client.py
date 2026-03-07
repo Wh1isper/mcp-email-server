@@ -370,7 +370,7 @@ class TestMoveEmails:
             call_count += 1
             # First email succeeds (copy + store), second email fails on copy
             if call_count == 3:  # third call = copy for second email
-                raise Exception("IMAP error")
+                raise OSError("IMAP error")
             return ("OK", [])
 
         mock_imap.uid = AsyncMock(side_effect=uid_side_effect)
