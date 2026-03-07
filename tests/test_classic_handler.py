@@ -275,6 +275,38 @@ class TestClassicEmailHandler:
             mock_delete.assert_called_once_with(["789"], "Archive")
 
     @pytest.mark.asyncio
+    async def test_move_emails(self, classic_handler):
+        """Test move_emails method."""
+        mock_move = AsyncMock(return_value=(["123", "456"], []))
+
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
+            moved_ids, failed_ids = await classic_handler.move_emails(
+                email_ids=["123", "456"],
+                source_mailbox="INBOX",
+                destination_mailbox="Archive",
+            )
+
+            assert moved_ids == ["123", "456"]
+            assert failed_ids == []
+            mock_move.assert_called_once_with(["123", "456"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_failures(self, classic_handler):
+        """Test move_emails method with some failures."""
+        mock_move = AsyncMock(return_value=(["123"], ["456"]))
+
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
+            moved_ids, failed_ids = await classic_handler.move_emails(
+                email_ids=["123", "456"],
+                source_mailbox="INBOX",
+                destination_mailbox="Trash",
+            )
+
+            assert moved_ids == ["123"]
+            assert failed_ids == ["456"]
+            mock_move.assert_called_once_with(["123", "456"], "INBOX", "Trash")
+
+    @pytest.mark.asyncio
     async def test_download_attachment(self, classic_handler, tmp_path):
         """Test download_attachment method."""
         save_path = str(tmp_path / "downloaded_attachment.pdf")

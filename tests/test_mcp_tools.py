@@ -5,11 +5,13 @@ import pytest
 
 from mcp_email_server.app import (
     add_email_account,
+    archive_emails,
     delete_emails,
     download_attachment,
     get_emails_content,
     list_available_accounts,
     list_emails_metadata,
+    move_emails,
     send_email,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
@@ -435,6 +437,101 @@ class TestMcpTools:
 
             assert result == "Successfully deleted 1 email(s)"
             mock_handler.delete_emails.assert_called_once_with(["12345"], "Trash")
+
+    @pytest.mark.asyncio
+    async def test_move_emails(self):
+        """Test move_emails MCP tool."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+                destination_mailbox="Archive",
+            )
+
+            assert result == "Successfully moved 2 email(s) to Archive"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_failures(self):
+        """Test move_emails MCP tool with some failures."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], ["12346", "12347"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346", "12347"],
+                destination_mailbox="Trash",
+            )
+
+            assert result == "Successfully moved 1 email(s) to Trash, failed to move 2 email(s): 12346, 12347"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346", "12347"], "INBOX", "Trash")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_source_mailbox(self):
+        """Test move_emails MCP tool with custom source mailbox."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345"],
+                destination_mailbox="Trash",
+                source_mailbox="Archive",
+            )
+
+            assert result == "Successfully moved 1 email(s) to Trash"
+            mock_handler.move_emails.assert_called_once_with(["12345"], "Archive", "Trash")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails(self):
+        """Test archive_emails MCP tool."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await archive_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert result == "Successfully archived 2 email(s)"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_with_failures(self):
+        """Test archive_emails MCP tool with some failures."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], ["12346"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await archive_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+            )
+
+            assert result == "Successfully archived 1 email(s), failed to archive 1 email(s): 12346"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_custom_folder(self):
+        """Test archive_emails MCP tool with custom archive folder."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await archive_emails(
+                account_name="test_account",
+                email_ids=["12345"],
+                archive_folder="Archives/2026",
+            )
+
+            assert result == "Successfully archived 1 email(s)"
+            mock_handler.move_emails.assert_called_once_with(["12345"], "INBOX", "Archives/2026")
 
     @pytest.mark.asyncio
     async def test_download_attachment_disabled(self):
