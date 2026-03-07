@@ -328,6 +328,85 @@ class TestEmailClient:
             assert "bcc@example.com" in recipients
 
 
+class TestMoveEmails:
+    @pytest.mark.asyncio
+    async def test_move_emails_success(self, email_client):
+        """Test moving emails via IMAP copy+delete."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(return_value=("OK", []))
+        mock_imap.expunge = AsyncMock()
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(
+                ["100", "200"], "INBOX", "Archive"
+            )
+
+            assert moved_ids == ["100", "200"]
+            assert failed_ids == []
+            assert mock_imap.uid.call_count == 4  # 2 copy + 2 store
+            mock_imap.expunge.assert_called_once()
+            mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_partial_failure(self, email_client):
+        """Test moving emails where some fail."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.expunge = AsyncMock()
+        mock_imap.logout = AsyncMock()
+
+        call_count = 0
+
+        async def uid_side_effect(*args):
+            nonlocal call_count
+            call_count += 1
+            # First email succeeds (copy + store), second email fails on copy
+            if call_count == 3:  # third call = copy for second email
+                raise Exception("IMAP error")
+            return ("OK", [])
+
+        mock_imap.uid = AsyncMock(side_effect=uid_side_effect)
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(
+                ["100", "200"], "INBOX", "Trash"
+            )
+
+            assert moved_ids == ["100"]
+            assert failed_ids == ["200"]
+
+    @pytest.mark.asyncio
+    async def test_move_emails_logout_error_handled(self, email_client):
+        """Test that logout errors are handled gracefully."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(return_value=("OK", []))
+        mock_imap.expunge = AsyncMock()
+        mock_imap.logout = AsyncMock(side_effect=Exception("Connection lost"))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(
+                ["100"], "INBOX", "Archive"
+            )
+
+            assert moved_ids == ["100"]
+            assert failed_ids == []
+
+
 class TestSendEmailMessageIdAndDate:
     @pytest.mark.asyncio
     async def test_send_email_sets_message_id_and_date(self, email_client):
