@@ -343,9 +343,7 @@ class TestMoveEmails:
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100", "200"], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100", "200"], "INBOX", "Archive")
 
             assert moved_ids == ["100", "200"]
             assert failed_ids == []
@@ -378,9 +376,7 @@ class TestMoveEmails:
         mock_imap.uid = AsyncMock(side_effect=uid_side_effect)
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100", "200"], "INBOX", "Trash"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100", "200"], "INBOX", "Trash")
 
             assert moved_ids == ["100"]
             assert failed_ids == ["200"]
@@ -399,9 +395,7 @@ class TestMoveEmails:
         mock_imap.logout = AsyncMock(side_effect=Exception("Connection lost"))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100"], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
 
             assert moved_ids == ["100"]
             assert failed_ids == []
