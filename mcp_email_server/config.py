@@ -32,7 +32,7 @@ CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAULT_CONFIG_PATH
 
 class EmailServer(BaseModel):
     user_name: str
-    password: str
+    password: str = Field(repr=False)
     host: str
     port: int
     use_ssl: bool = True  # Usually port 465
@@ -216,7 +216,7 @@ class EmailSettings(AccountAttributes):
 
 class ProviderSettings(AccountAttributes):
     provider_name: str
-    api_key: str
+    api_key: str = Field(repr=False)
 
     def masked(self) -> AccountAttributes:
         return self.model_copy(update={"api_key": "********"})

@@ -10,6 +10,25 @@ from mcp_email_server.config import (
 )
 
 
+def test_sensitive_fields_excluded_from_repr():
+    """Verify password and api_key are not in repr output."""
+    server = EmailServer(
+        user_name="user",
+        password="secret_pass",
+        host="imap.example.com",
+        port=993,
+        use_ssl=True,
+    )
+    assert "secret_pass" not in repr(server)
+
+    provider = ProviderSettings(
+        account_name="p",
+        provider_name="test",
+        api_key="secret_key",
+    )
+    assert "secret_key" not in repr(provider)
+
+
 def test_config():
     settings = get_settings()
     assert settings.emails == []

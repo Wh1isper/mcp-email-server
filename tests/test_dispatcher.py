@@ -69,19 +69,48 @@ class TestDispatcher:
 
     def test_dispatch_handler_with_nonexistent_account(self):
         """Test dispatch_handler with non-existent account (should raise ValueError)."""
-        # Mock the get_settings function to return None for get_account
+        email_account = EmailSettings(
+            account_name="email_acct",
+            full_name="Test User",
+            email_address="test@example.com",
+            incoming=EmailServer(
+                user_name="test_user",
+                password="secret_imap_pass",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+            outgoing=EmailServer(
+                user_name="test_user",
+                password="secret_smtp_pass",
+                host="smtp.example.com",
+                port=465,
+                use_ssl=True,
+            ),
+        )
+        provider_account = ProviderSettings(
+            account_name="provider_acct",
+            provider_name="test_provider",
+            api_key="secret_api_key_123",
+        )
+
         mock_settings = MagicMock()
         mock_settings.get_account.return_value = None
-        mock_settings.get_accounts.return_value = ["account1", "account2"]
+        mock_settings.get_accounts.return_value = [email_account, provider_account]
 
         with patch("mcp_email_server.emails.dispatcher.get_settings", return_value=mock_settings):
-            # Call the function and expect ValueError
             with pytest.raises(ValueError) as excinfo:
                 dispatch_handler("nonexistent_account")
 
-            # Verify the error message
-            assert "Account nonexistent_account not found" in str(excinfo.value)
+            error_msg = str(excinfo.value)
+            # Account names should appear in the error
+            assert "nonexistent_account" in error_msg
+            assert "email_acct" in error_msg
+            assert "provider_acct" in error_msg
+            # Credentials must NOT appear
+            assert "secret_imap_pass" not in error_msg
+            assert "secret_smtp_pass" not in error_msg
+            assert "secret_api_key_123" not in error_msg
 
-            # Verify get_account was called correctly
             mock_settings.get_account.assert_called_once_with("nonexistent_account")
             mock_settings.get_accounts.assert_called_once()
