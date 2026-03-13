@@ -991,8 +991,7 @@ class EmailClient:
                 line for line in response.lines if line and destination_mailbox in str(line)
             ):
                 raise OSError(
-                    f"Destination mailbox '{destination_mailbox}' does not exist. "
-                    f"Create it first before moving emails."
+                    f"Destination mailbox '{destination_mailbox}' does not exist. Create it first before moving emails."
                 )
 
             await imap.select(_quote_mailbox(source_mailbox))
@@ -1001,9 +1000,7 @@ class EmailClient:
                 try:
                     copy_response = await imap.uid("copy", email_id, dest_quoted)
                     if copy_response.result != "OK":
-                        logger.error(
-                            f"COPY failed for email {email_id}: {copy_response.result} {copy_response.lines}"
-                        )
+                        logger.error(f"COPY failed for email {email_id}: {copy_response.result} {copy_response.lines}")
                         failed_ids.append(email_id)
                         continue
                     await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
