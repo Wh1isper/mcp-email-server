@@ -4,7 +4,6 @@ import mimetypes
 import re
 import ssl
 import time
-
 from datetime import datetime, timezone
 from email.header import Header
 from email.mime.application import MIMEApplication
