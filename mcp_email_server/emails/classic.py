@@ -785,7 +785,7 @@ class EmailClient:
 
         return msg
 
-    async def send_email(
+    def _compose_message(
         self,
         recipients: list[str],
         subject: str,
@@ -796,8 +796,16 @@ class EmailClient:
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
-    ):
-        # Create message with or without attachments
+    ) -> MIMEText | MIMEMultipart:
+        """Compose an email message without sending it.
+
+        Builds MIME structure, sets headers (Subject, From, To, Cc, Date,
+        Message-Id, threading headers). Synchronous — no I/O.
+
+        Note: ``bcc`` is accepted for API symmetry with ``send_email`` but
+        intentionally not set as a header — BCC recipients must never appear
+        in message headers.
+        """
         if attachments:
             msg = self._create_message_with_attachments(body, html, attachments)
         else:
@@ -828,14 +836,35 @@ class EmailClient:
         if references:
             msg["References"] = references
 
-        # Set Date and Message-Id headers so the same values appear in both
-        # the SMTP-sent copy and the IMAP Sent folder copy
+        # Set Date and Message-Id headers
         msg["Date"] = email.utils.formatdate(localtime=True)
         sender_domain = self.sender.rsplit("@", 1)[-1].rstrip(">")
         msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
 
-        # Note: BCC recipients are not added to headers (they remain hidden)
-        # but will be included in the actual recipients for SMTP delivery
+        return msg
+
+    async def send_email(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ):
+        msg = self._compose_message(
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+        )
+
+        # BCC recipients are included in SMTP delivery but not in headers
+        all_recipients = recipients.copy()
+        if cc:
+            all_recipients.extend(cc)
+        if bcc:
+            all_recipients.extend(bcc)
 
         async with aiosmtplib.SMTP(
             hostname=self.email_server.host,
