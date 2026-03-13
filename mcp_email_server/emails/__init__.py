@@ -105,3 +105,25 @@ class EmailHandler(abc.ABC):
         Returns:
             AttachmentDownloadResponse with download result information.
         """
+
+    @abc.abstractmethod
+    async def create_folder(self, folder_name: str) -> str:
+        """
+        Create an IMAP folder/mailbox. Creates parent folders if needed
+        for hierarchical names (e.g. "Parent/Child").
+
+        Args:
+            folder_name: The name of the folder to create.
+
+        Returns:
+            A status message indicating success.
+        """
+
+    @abc.abstractmethod
+    async def list_folders(self) -> list[str]:
+        """
+        List all IMAP folders/mailboxes for the account.
+
+        Returns:
+            A list of folder names.
+        """

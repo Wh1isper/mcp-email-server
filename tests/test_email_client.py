@@ -721,3 +721,111 @@ class TestBatchFetchHeaders:
         assert len(result) == 2
         assert result["100"]["subject"] == "First"
         assert result["200"]["subject"] == "Second"
+
+
+class TestCreateFolder:
+    @pytest.mark.asyncio
+    async def test_create_folder_simple(self, email_client):
+        """Test creating a simple (non-hierarchical) folder."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\HasNoChildren) "/" "INBOX"']))
+        mock_imap.create = AsyncMock(return_value=("OK", [b"CREATE completed"]))
+        mock_imap.subscribe = AsyncMock(return_value=("OK", [b"SUBSCRIBE completed"]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.create_folder("Archive")
+
+        assert "Archive" in result
+        mock_imap.create.assert_called_once_with('"Archive"')
+        mock_imap.subscribe.assert_called_once_with('"Archive"')
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_folder_hierarchical(self, email_client):
+        """Test creating a hierarchical folder creates parent folders first."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\HasNoChildren) "/" "INBOX"']))
+        mock_imap.create = AsyncMock(return_value=("OK", [b"CREATE completed"]))
+        mock_imap.subscribe = AsyncMock(return_value=("OK", [b"SUBSCRIBE completed"]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            await email_client.create_folder("02 areas/VEA bestuur")
+
+        assert mock_imap.create.call_count == 2
+        mock_imap.create.assert_any_call('"02 areas"')
+        mock_imap.create.assert_any_call('"02 areas/VEA bestuur"')
+        assert mock_imap.subscribe.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_create_folder_already_exists(self, email_client):
+        """Test creating a folder that already exists returns appropriate message."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\HasNoChildren) "/" "INBOX"']))
+        mock_imap.create = AsyncMock(return_value=("NO", [b"Mailbox already exists"]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.create_folder("INBOX")
+
+        assert "already exists" in result
+
+
+class TestListFolders:
+    @pytest.mark.asyncio
+    async def test_list_folders(self, email_client):
+        """Test listing all IMAP folders."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasNoChildren) "/" "INBOX"',
+                    b'(\\HasNoChildren) "/" "Archive"',
+                    b'(\\HasNoChildren \\Sent) "/" "Sent"',
+                    b'(\\HasChildren) "/" "Projects"',
+                    b'(\\HasNoChildren) "/" "Projects/Active"',
+                ],
+            )
+        )
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            folders = await email_client.list_folders()
+
+        assert folders == ["Archive", "INBOX", "Projects", "Projects/Active", "Sent"]
+        mock_imap.login.assert_called_once()
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_list_folders_empty(self, email_client):
+        """Test listing folders when server returns empty list."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", []))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            folders = await email_client.list_folders()
+
+        assert folders == []
