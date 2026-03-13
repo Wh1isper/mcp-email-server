@@ -33,6 +33,24 @@ from mcp_email_server.log import logger
 MAX_BODY_LENGTH = 20000
 
 
+# RFC 3501 system flags (except \Recent which is read-only) + custom keyword atoms
+_VALID_IMAP_FLAG = re.compile(r"^\\[A-Za-z]+$|^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def _validate_flags(flags: list[str]) -> str:
+    """Validate and format IMAP flags into a parenthesised string.
+
+    Accepts system flags (e.g. ``\\Draft``, ``\\Seen``) and custom keyword
+    atoms.  Raises ``ValueError`` on anything that could inject IMAP protocol
+    characters.
+    """
+    for flag in flags:
+        if not _VALID_IMAP_FLAG.match(flag):
+            msg = f"Invalid IMAP flag: {flag!r}"
+            raise ValueError(msg)
+    return "(" + " ".join(flags) + ")"
+
+
 def _quote_mailbox(mailbox: str) -> str:
     """Quote mailbox name for IMAP compatibility.
 
@@ -785,7 +803,7 @@ class EmailClient:
 
         return msg
 
-    def _compose_message(
+    def compose_message(
         self,
         recipients: list[str],
         subject: str,
@@ -855,16 +873,9 @@ class EmailClient:
         in_reply_to: str | None = None,
         references: str | None = None,
     ):
-        msg = self._compose_message(
+        msg = self.compose_message(
             recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
         )
-
-        # BCC recipients are included in SMTP delivery but not in headers
-        all_recipients = recipients.copy()
-        if cc:
-            all_recipients.extend(cc)
-        if bcc:
-            all_recipients.extend(bcc)
 
         async with aiosmtplib.SMTP(
             hostname=self.email_server.host,
@@ -1016,11 +1027,13 @@ class EmailClient:
         incoming_server: EmailServer,
         mailbox: str,
         flags: str = r"(\Draft \Seen)",
-    ) -> bool:
+    ) -> str | None:
         """Append a message to the specified IMAP folder.
 
         Unlike append_to_sent, this targets a single user-specified mailbox
-        without folder discovery. Returns True on success, False on failure.
+        without folder discovery. Returns the IMAP UID of the appended message
+        (if the server supports APPENDUID / RFC 4315), or ``"unknown"`` on
+        success without UID, or ``None`` on failure.
         """
         if incoming_server.use_ssl:
             imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
@@ -1040,7 +1053,7 @@ class EmailClient:
             status = result[0] if isinstance(result, tuple) else result
             if str(status).upper() != "OK":
                 logger.warning(f"Mailbox '{mailbox}' not found or not selectable: {status}")
-                return False
+                return None
 
             msg_bytes = msg.as_bytes()
             append_result = await imap.append(
@@ -1050,15 +1063,24 @@ class EmailClient:
             )
             append_status = append_result[0] if isinstance(append_result, tuple) else append_result
             if str(append_status).upper() == "OK":
-                logger.info(f"Saved email to '{mailbox}'")
-                return True
+                # Try to extract UID from APPENDUID response (RFC 4315)
+                uid = None
+                if isinstance(append_result, tuple) and len(append_result) > 1:
+                    for part in append_result[1]:
+                        part_str = part.decode("utf-8") if isinstance(part, bytes) else str(part)
+                        match = re.search(r"APPENDUID\s+\d+\s+(\d+)", part_str, re.IGNORECASE)
+                        if match:
+                            uid = match.group(1)
+                            break
+                logger.info(f"Saved email to '{mailbox}'" + (f" (UID {uid})" if uid else ""))
+                return uid or "unknown"
             else:
                 logger.warning(f"Failed to append to '{mailbox}': {append_status}")
-                return False
+                return None
 
         except Exception as e:
             logger.error(f"Error saving to mailbox '{mailbox}': {e}")
-            return False
+            return None
         finally:
             try:
                 await imap.logout()
@@ -1342,23 +1364,24 @@ class ClassicEmailHandler(EmailHandler):
         references: str | None = None,
         flags: list[str] | None = None,
     ) -> str:
-        msg = self.outgoing_client._compose_message(
+        msg = self.outgoing_client.compose_message(
             recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
         )
 
         if flags is None:
             flags_str = r"(\Draft \Seen)"
         else:
-            flags_str = "(" + " ".join(flags) + ")"
+            flags_str = _validate_flags(flags)
 
-        success = await self.outgoing_client.append_to_mailbox(
+        uid = await self.outgoing_client.append_to_mailbox(
             msg, self.email_settings.incoming, mailbox, flags_str
         )
 
-        if not success:
+        if uid is None:
             raise RuntimeError(f"Failed to save email to mailbox '{mailbox}'")
 
-        return msg["Message-Id"] or "saved"
+        message_id = msg["Message-Id"] or "saved"
+        return f"{message_id}|uid:{uid}"
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
