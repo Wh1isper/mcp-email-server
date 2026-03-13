@@ -986,10 +986,8 @@ class EmailClient:
 
             # Verify destination mailbox exists before moving any emails
             dest_quoted = _quote_mailbox(destination_mailbox)
-            response = await imap.list("", dest_quoted)
-            if response.result != "OK" or not any(
-                line for line in response.lines if line and destination_mailbox in str(line)
-            ):
+            select_response = await imap.select(dest_quoted)
+            if select_response.result != "OK":
                 raise OSError(
                     f"Destination mailbox '{destination_mailbox}' does not exist. Create it first before moving emails."
                 )

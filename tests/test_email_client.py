@@ -330,19 +330,17 @@ class TestEmailClient:
 
 class TestMoveEmails:
     @staticmethod
-    def _mock_list_response(mailbox_name):
-        """Create a mock LIST response indicating the mailbox exists."""
+    def _mock_select_ok():
+        """Create a mock SELECT response indicating the mailbox exists."""
         response = MagicMock()
         response.result = "OK"
-        response.lines = [f'(\\HasNoChildren) "/" "{mailbox_name}"']
         return response
 
     @staticmethod
-    def _mock_list_response_empty():
-        """Create a mock LIST response indicating no matching mailbox."""
+    def _mock_select_no():
+        """Create a mock SELECT response indicating the mailbox does not exist."""
         response = MagicMock()
-        response.result = "OK"
-        response.lines = []
+        response.result = "NO"
         return response
 
     @staticmethod
@@ -369,8 +367,7 @@ class TestMoveEmails:
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
-        mock_imap.select = AsyncMock()
-        mock_imap.list = AsyncMock(return_value=self._mock_list_response("Archive"))
+        mock_imap.select = AsyncMock(return_value=self._mock_select_ok())
         mock_imap.uid = AsyncMock(return_value=self._mock_uid_response_ok())
         mock_imap.expunge = AsyncMock()
         mock_imap.logout = AsyncMock()
@@ -392,7 +389,7 @@ class TestMoveEmails:
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
-        mock_imap.list = AsyncMock(return_value=self._mock_list_response_empty())
+        mock_imap.select = AsyncMock(return_value=self._mock_select_no())
         mock_imap.uid = AsyncMock()
         mock_imap.expunge = AsyncMock()
         mock_imap.logout = AsyncMock()
@@ -413,8 +410,7 @@ class TestMoveEmails:
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
-        mock_imap.select = AsyncMock()
-        mock_imap.list = AsyncMock(return_value=self._mock_list_response("Archive"))
+        mock_imap.select = AsyncMock(return_value=self._mock_select_ok())
         mock_imap.uid = AsyncMock(return_value=self._mock_uid_response_no())
         mock_imap.expunge = AsyncMock()
         mock_imap.logout = AsyncMock()
@@ -437,8 +433,7 @@ class TestMoveEmails:
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
-        mock_imap.select = AsyncMock()
-        mock_imap.list = AsyncMock(return_value=self._mock_list_response("Trash"))
+        mock_imap.select = AsyncMock(return_value=self._mock_select_ok())
         mock_imap.expunge = AsyncMock()
         mock_imap.logout = AsyncMock()
 
@@ -468,8 +463,7 @@ class TestMoveEmails:
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock()
-        mock_imap.select = AsyncMock()
-        mock_imap.list = AsyncMock(return_value=self._mock_list_response("Archive"))
+        mock_imap.select = AsyncMock(return_value=self._mock_select_ok())
         mock_imap.uid = AsyncMock(return_value=self._mock_uid_response_ok())
         mock_imap.expunge = AsyncMock()
         mock_imap.logout = AsyncMock(side_effect=Exception("Connection lost"))
