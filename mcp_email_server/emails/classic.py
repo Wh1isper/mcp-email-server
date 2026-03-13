@@ -4,7 +4,7 @@ import mimetypes
 import re
 import ssl
 import time
-from collections.abc import AsyncGenerator
+
 from datetime import datetime, timezone
 from email.header import Header
 from email.mime.application import MIMEApplication
@@ -414,50 +414,7 @@ class EmailClient:
 
         return results
 
-    async def get_email_count(
-        self,
-        before: datetime | None = None,
-        since: datetime | None = None,
-        subject: str | None = None,
-        from_address: str | None = None,
-        to_address: str | None = None,
-        mailbox: str = "INBOX",
-        seen: bool | None = None,
-        flagged: bool | None = None,
-        answered: bool | None = None,
-    ) -> int:
-        imap = self._imap_connect()
-        try:
-            # Wait for the connection to be established
-            await imap._client_task
-            await imap.wait_hello_from_server()
-
-            # Login and select inbox
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
-            await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
-            search_criteria = self._build_search_criteria(
-                before,
-                since,
-                subject,
-                from_address=from_address,
-                to_address=to_address,
-                seen=seen,
-                flagged=flagged,
-                answered=answered,
-            )
-            logger.info(f"Count: Search criteria: {search_criteria}")
-            # Search for messages and count them - use UID SEARCH for consistency
-            _, messages = await imap.uid_search(*search_criteria)
-            return len(messages[0].split())
-        finally:
-            # Ensure we logout properly
-            try:
-                await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
-
-    async def get_emails_metadata_stream(
+    async def get_emails_metadata(
         self,
         page: int = 1,
         page_size: int = 10,
@@ -471,7 +428,7 @@ class EmailClient:
         seen: bool | None = None,
         flagged: bool | None = None,
         answered: bool | None = None,
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> tuple[int, list[dict[str, Any]]]:
         imap = self._imap_connect()
         try:
             # Wait for the connection to be established
@@ -501,7 +458,7 @@ class EmailClient:
             # Handle empty or None responses
             if not messages or not messages[0]:
                 logger.warning("No messages returned from search")
-                return
+                return 0, []
 
             email_ids = messages[0].split()
             logger.info(f"Found {len(email_ids)} email IDs")
@@ -520,7 +477,7 @@ class EmailClient:
 
             if not page_uids:
                 logger.info(f"Phase 1 (dates): {len(uid_dates)} UIDs in {fetch_dates_elapsed:.2f}s, page {page} empty")
-                return
+                return len(email_ids), []
 
             # Phase 2: Batch fetch headers for requested page only
             fetch_headers_start = time.perf_counter()
@@ -532,10 +489,9 @@ class EmailClient:
                 f"{fetch_headers_elapsed:.2f}s headers ({len(page_uids)} UIDs)"
             )
 
-            # Yield in sorted order
-            for uid in page_uids:
-                if uid in metadata_by_uid:
-                    yield metadata_by_uid[uid]
+            # Collect page results in sorted order
+            page_emails = [metadata_by_uid[uid] for uid in page_uids if uid in metadata_by_uid]
+            return len(email_ids), page_emails
         finally:
             try:
                 await imap.logout()
@@ -1009,8 +965,7 @@ class ClassicEmailHandler(EmailHandler):
         flagged: bool | None = None,
         answered: bool | None = None,
     ) -> EmailMetadataPageResponse:
-        emails = []
-        async for email_data in self.incoming_client.get_emails_metadata_stream(
+        total, email_dicts = await self.incoming_client.get_emails_metadata(
             page,
             page_size,
             before,
@@ -1023,19 +978,8 @@ class ClassicEmailHandler(EmailHandler):
             seen,
             flagged,
             answered,
-        ):
-            emails.append(EmailMetadata.from_email(email_data))
-        total = await self.incoming_client.get_email_count(
-            before,
-            since,
-            subject,
-            from_address=from_address,
-            to_address=to_address,
-            mailbox=mailbox,
-            seen=seen,
-            flagged=flagged,
-            answered=answered,
         )
+        emails = [EmailMetadata.from_email(d) for d in email_dicts]
         return EmailMetadataPageResponse(
             page=page,
             page_size=page_size,
