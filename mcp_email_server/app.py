@@ -185,6 +185,72 @@ async def send_email(
 
 
 @mcp.tool(
+    description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
+    "Same parameters as send_email, but saves instead of sending. "
+    "Default folder is Drafts with \\Draft and \\Seen flags.",
+)
+async def save_to_mailbox(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    recipients: Annotated[list[str], Field(description="A list of recipient email addresses.")],
+    subject: Annotated[str, Field(description="The subject of the email.")],
+    body: Annotated[str, Field(description="The body of the email.")],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="Drafts",
+            description="The IMAP folder to save to (e.g., 'Drafts', 'INBOX.Drafts', 'Templates').",
+        ),
+    ] = "Drafts",
+    cc: Annotated[
+        list[str] | None,
+        Field(default=None, description="A list of CC email addresses."),
+    ] = None,
+    bcc: Annotated[
+        list[str] | None,
+        Field(default=None, description="A list of BCC email addresses."),
+    ] = None,
+    html: Annotated[
+        bool,
+        Field(default=False, description="Whether the email body is HTML (True) or plain text (False)."),
+    ] = False,
+    attachments: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="A list of absolute file paths to attach to the email.",
+        ),
+    ] = None,
+    in_reply_to: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Message-ID of the email being replied to. Enables proper threading in email clients.",
+        ),
+    ] = None,
+    references: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Space-separated Message-IDs for the thread chain.",
+        ),
+    ] = None,
+    flags: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=r"IMAP flags to set on the message. Defaults to ['\\Draft', '\\Seen']. Common flags: '\\Draft', '\\Seen', '\\Flagged'.",
+        ),
+    ] = None,
+) -> str:
+    handler = dispatch_handler(account_name)
+    message_id = await handler.save_to_mailbox(
+        recipients, subject, body, mailbox, cc, bcc, html, attachments,
+        in_reply_to, references, flags,
+    )
+    return f"Email saved to '{mailbox}' successfully. Message-Id: {message_id}"
+
+
+@mcp.tool(
     description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
 )
 async def delete_emails(

@@ -308,3 +308,56 @@ class TestClassicEmailHandlerSaveToMailbox:
                         body="body",
                         mailbox="Nonexistent",
                     )
+
+
+# ---------------------------------------------------------------------------
+# Cycle 4: MCP tool
+# ---------------------------------------------------------------------------
+
+
+class TestSaveToMailboxTool:
+    """Tests for the save_to_mailbox MCP tool in app.py."""
+
+    @pytest.mark.asyncio
+    async def test_save_to_mailbox_tool_success(self, monkeypatch):
+        mock_handler = AsyncMock()
+        mock_handler.save_to_mailbox = AsyncMock(return_value="<msg-id@example.com>")
+        monkeypatch.setattr(
+            "mcp_email_server.app.dispatch_handler", lambda _: mock_handler
+        )
+
+        from mcp_email_server.app import save_to_mailbox
+
+        result = await save_to_mailbox(
+            account_name="test",
+            recipients=["r@example.com"],
+            subject="Draft",
+            body="body",
+        )
+        assert "Drafts" in result
+        assert "<msg-id@example.com>" in result
+
+    @pytest.mark.asyncio
+    async def test_save_to_mailbox_tool_custom_folder(self, monkeypatch):
+        mock_handler = AsyncMock()
+        mock_handler.save_to_mailbox = AsyncMock(return_value="<msg-id@example.com>")
+        monkeypatch.setattr(
+            "mcp_email_server.app.dispatch_handler", lambda _: mock_handler
+        )
+
+        from mcp_email_server.app import save_to_mailbox
+
+        result = await save_to_mailbox(
+            account_name="test",
+            recipients=["r@example.com"],
+            subject="Draft",
+            body="body",
+            mailbox="INBOX.Drafts",
+            flags=[r"\Draft", r"\Seen"],
+        )
+        assert "INBOX.Drafts" in result
+        mock_handler.save_to_mailbox.assert_called_once_with(
+            ["r@example.com"], "Draft", "body", "INBOX.Drafts",
+            None, None, False, None, None, None,
+            [r"\Draft", r"\Seen"],
+        )
