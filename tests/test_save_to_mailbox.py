@@ -214,3 +214,97 @@ class TestAppendToMailbox:
             result = await client.append_to_mailbox(msg, incoming_non_ssl, "Drafts")
         assert result is True
         mock_lib.IMAP4.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Cycle 3: ClassicEmailHandler.save_to_mailbox
+# ---------------------------------------------------------------------------
+
+
+class TestClassicEmailHandlerSaveToMailbox:
+    """Tests for ClassicEmailHandler.save_to_mailbox — end-to-end orchestration."""
+
+    @pytest.fixture
+    def email_settings(self):
+        return EmailSettings(
+            account_name="test_account",
+            full_name="Test User",
+            email_address="test@example.com",
+            incoming=EmailServer(
+                user_name="test_user",
+                password="test_password",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+            outgoing=EmailServer(
+                user_name="test_user",
+                password="test_password",
+                host="smtp.example.com",
+                port=465,
+                use_ssl=True,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_to_drafts_default_flags(self, email_settings):
+        handler = ClassicEmailHandler(email_settings)
+        mock_compose = MIMEText("body")
+        mock_compose["Message-Id"] = "<test-id@example.com>"
+        mock_append = AsyncMock(return_value=True)
+
+        with patch.object(handler.outgoing_client, "_compose_message", return_value=mock_compose):
+            with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+                result = await handler.save_to_mailbox(
+                    recipients=["r@example.com"],
+                    subject="Draft",
+                    body="draft body",
+                )
+
+        assert result == "<test-id@example.com>"
+        mock_append.assert_called_once_with(
+            mock_compose,
+            email_settings.incoming,
+            "Drafts",
+            r"(\Draft \Seen)",
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_to_custom_folder_custom_flags(self, email_settings):
+        handler = ClassicEmailHandler(email_settings)
+        mock_compose = MIMEText("body")
+        mock_compose["Message-Id"] = "<test-id@example.com>"
+        mock_append = AsyncMock(return_value=True)
+
+        with patch.object(handler.outgoing_client, "_compose_message", return_value=mock_compose):
+            with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+                await handler.save_to_mailbox(
+                    recipients=["r@example.com"],
+                    subject="Template",
+                    body="body",
+                    mailbox="Templates",
+                    flags=[r"\Seen", r"\Flagged"],
+                )
+
+        mock_append.assert_called_once_with(
+            mock_compose,
+            email_settings.incoming,
+            "Templates",
+            r"(\Seen \Flagged)",
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_raises_on_failure(self, email_settings):
+        handler = ClassicEmailHandler(email_settings)
+        mock_compose = MIMEText("body")
+        mock_append = AsyncMock(return_value=False)
+
+        with patch.object(handler.outgoing_client, "_compose_message", return_value=mock_compose):
+            with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+                with pytest.raises(RuntimeError, match="Failed to save email"):
+                    await handler.save_to_mailbox(
+                        recipients=["r@example.com"],
+                        subject="Fail",
+                        body="body",
+                        mailbox="Nonexistent",
+                    )

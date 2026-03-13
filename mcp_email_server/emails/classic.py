@@ -1328,6 +1328,38 @@ class ClassicEmailHandler(EmailHandler):
             except Exception as e:
                 logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
 
+    async def save_to_mailbox(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        mailbox: str = "Drafts",
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+        flags: list[str] | None = None,
+    ) -> str:
+        msg = self.outgoing_client._compose_message(
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+        )
+
+        if flags is None:
+            flags_str = r"(\Draft \Seen)"
+        else:
+            flags_str = "(" + " ".join(flags) + ")"
+
+        success = await self.outgoing_client.append_to_mailbox(
+            msg, self.email_settings.incoming, mailbox, flags_str
+        )
+
+        if not success:
+            raise RuntimeError(f"Failed to save email to mailbox '{mailbox}'")
+
+        return msg["Message-Id"] or "saved"
+
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)

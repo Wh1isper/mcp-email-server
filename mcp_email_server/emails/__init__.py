@@ -83,6 +83,23 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def save_to_mailbox(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        mailbox: str = "Drafts",
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+        flags: list[str] | None = None,
+    ) -> str:
+        """Compose an email and save it to the specified IMAP folder via APPEND."""
+
+    @abc.abstractmethod
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)
