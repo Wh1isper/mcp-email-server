@@ -246,6 +246,28 @@ async def archive_emails(
 
 
 @mcp.tool(
+    description="Create an IMAP folder/mailbox. Supports hierarchical folder names (e.g. 'Projects/Active') and automatically creates parent folders if needed."
+)
+async def create_folder(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    folder_name: Annotated[
+        str,
+        Field(description="The name of the folder to create (e.g. 'Archive', 'Projects/Active')."),
+    ],
+) -> str:
+    handler = dispatch_handler(account_name)
+    return await handler.create_folder(folder_name)
+
+
+@mcp.tool(description="List all IMAP folders/mailboxes for an email account.")
+async def list_folders(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+) -> list[str]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_folders()
+
+
+@mcp.tool(
     description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
 )
 async def download_attachment(

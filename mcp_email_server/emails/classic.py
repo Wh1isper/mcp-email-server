@@ -1019,6 +1019,83 @@ class EmailClient:
 
         return moved_ids, failed_ids
 
+    async def create_folder(self, folder_name: str) -> str:
+        """Create an IMAP folder. Creates parent folders if needed for hierarchical names."""
+        imap = self._imap_connect()
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            # Determine the hierarchy delimiter by listing the root
+            _, list_data = await imap.list('""', '""')
+            delimiter = "/"
+            for item in list_data:
+                item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                # Parse delimiter from LIST response: (flags) "delimiter" "name"
+                parts = item_str.split('"')
+                if len(parts) >= 2:
+                    delimiter = parts[1]
+                    break
+
+            # Split folder name on the delimiter and create parent folders first
+            folder_parts = folder_name.split(delimiter)
+            created = []
+            for i in range(1, len(folder_parts) + 1):
+                partial = delimiter.join(folder_parts[:i])
+                result = await imap.create(_quote_mailbox(partial))
+                status = result[0] if isinstance(result, tuple) else result
+                if str(status).upper() == "OK":
+                    # Subscribe so the folder is visible in email clients
+                    await imap.subscribe(_quote_mailbox(partial))
+                    created.append(partial)
+                    logger.info(f"Created and subscribed folder: '{partial}'")
+                else:
+                    # Folder may already exist — that's fine for parent folders
+                    logger.debug(f"Create folder '{partial}' returned: {status}")
+
+            if not created:
+                return f"Folder '{folder_name}' already exists"
+            if len(created) == 1:
+                return f"Created folder '{folder_name}'"
+            return f"Created folders: {', '.join(created)}"
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def list_folders(self) -> list[str]:
+        """List all IMAP folders/mailboxes."""
+        imap = self._imap_connect()
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+            await _send_imap_id(imap)
+
+            _, folders_data = await imap.list('""', "*")
+            folders = []
+            for item in folders_data:
+                item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                # IMAP LIST response format: (flags) "delimiter" "name"
+                parts = item_str.split('"')
+                if len(parts) >= 3:
+                    folder_name = parts[-2]
+                    folders.append(folder_name)
+
+            return sorted(folders)
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1153,6 +1230,14 @@ class ClassicEmailHandler(EmailHandler):
     ) -> tuple[list[str], list[str]]:
         """Move emails from one mailbox to another. Returns (moved_ids, failed_ids)."""
         return await self.incoming_client.move_emails(email_ids, source_mailbox, destination_mailbox)
+
+    async def create_folder(self, folder_name: str) -> str:
+        """Create an IMAP folder/mailbox."""
+        return await self.incoming_client.create_folder(folder_name)
+
+    async def list_folders(self) -> list[str]:
+        """List all IMAP folders/mailboxes."""
+        return await self.incoming_client.list_folders()
 
     async def download_attachment(
         self,
