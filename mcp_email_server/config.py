@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -32,15 +32,19 @@ CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAULT_CONFIG_PATH
 
 class EmailServer(BaseModel):
     user_name: str
-    password: str = Field(repr=False)
+    password: SecretStr
     host: str
     port: int
     use_ssl: bool = True  # Usually port 465
     start_ssl: bool = False  # Usually port 587
     verify_ssl: bool = True  # Set to False for self-signed certificates (e.g., ProtonMail Bridge)
 
+    @field_serializer("password")
+    def serialize_password(self, v: SecretStr) -> str:
+        return v.get_secret_value()
+
     def masked(self) -> EmailServer:
-        return self.model_copy(update={"password": "********"})
+        return self.model_copy(update={"password": SecretStr("********")})
 
 
 class AccountAttributes(BaseModel):
@@ -216,10 +220,14 @@ class EmailSettings(AccountAttributes):
 
 class ProviderSettings(AccountAttributes):
     provider_name: str
-    api_key: str = Field(repr=False)
+    api_key: SecretStr
+
+    @field_serializer("api_key")
+    def serialize_api_key(self, v: SecretStr) -> str:
+        return v.get_secret_value()
 
     def masked(self) -> AccountAttributes:
-        return self.model_copy(update={"api_key": "********"})
+        return self.model_copy(update={"api_key": SecretStr("********")})
 
 
 class Settings(BaseSettings):

@@ -102,11 +102,11 @@ def test_from_env_with_all_vars_set(monkeypatch):
     assert result.account_name == "myaccount"
     assert result.full_name == "John Doe"
     assert result.incoming.user_name == "imap_john"
-    assert result.incoming.password == "imap_pass"  # noqa: S105
+    assert result.incoming.password.get_secret_value() == "imap_pass"  # noqa: S105
     assert result.incoming.port == 143
     assert result.incoming.use_ssl is False
     assert result.outgoing.user_name == "smtp_john"
-    assert result.outgoing.password == "smtp_pass"  # noqa: S105
+    assert result.outgoing.password.get_secret_value() == "smtp_pass"  # noqa: S105
     assert result.outgoing.port == 587
     assert result.outgoing.use_ssl is False
     assert result.outgoing.start_ssl is True
@@ -306,8 +306,8 @@ def test_email_settings_masked(monkeypatch):
     assert email is not None
 
     masked = email.masked()
-    assert masked.incoming.password == "********"  # noqa: S105
-    assert masked.outgoing.password == "********"  # noqa: S105
+    assert masked.incoming.password.get_secret_value() == "********"  # noqa: S105
+    assert masked.outgoing.password.get_secret_value() == "********"  # noqa: S105
     assert masked.email_address == "test@example.com"
 
 

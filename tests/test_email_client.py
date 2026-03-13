@@ -280,7 +280,7 @@ class TestEmailClient:
 
             # Verify IMAP methods were called correctly
             mock_imap.login.assert_called_once_with(
-                email_client.email_server.user_name, email_client.email_server.password
+                email_client.email_server.user_name, email_client.email_server.password.get_secret_value()
             )
             mock_imap.select.assert_called_once_with('"INBOX"')
             mock_imap.uid_search.assert_called_once_with("ALL")
@@ -307,7 +307,7 @@ class TestEmailClient:
 
             # Verify SMTP methods were called correctly
             mock_smtp.login.assert_called_once_with(
-                email_client.email_server.user_name, email_client.email_server.password
+                email_client.email_server.user_name, email_client.email_server.password.get_secret_value()
             )
             mock_smtp.send_message.assert_called_once()
 

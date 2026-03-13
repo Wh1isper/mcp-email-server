@@ -1,5 +1,5 @@
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from mcp_email_server.config import (
     EmailServer,
@@ -11,7 +11,7 @@ from mcp_email_server.config import (
 
 
 def test_sensitive_fields_excluded_from_repr():
-    """Verify password and api_key are not in repr output."""
+    """Verify password and api_key are not in repr or str output."""
     server = EmailServer(
         user_name="user",
         password="secret_pass",
@@ -20,6 +20,7 @@ def test_sensitive_fields_excluded_from_repr():
         use_ssl=True,
     )
     assert "secret_pass" not in repr(server)
+    assert "secret_pass" not in str(server)
 
     provider = ProviderSettings(
         account_name="p",
@@ -27,6 +28,30 @@ def test_sensitive_fields_excluded_from_repr():
         api_key="secret_key",
     )
     assert "secret_key" not in repr(provider)
+    assert "secret_key" not in str(provider)
+
+
+def test_password_is_secret_type():
+    """Password field must be SecretStr — explicit access required."""
+    server = EmailServer(
+        user_name="user",
+        password="s3cret",
+        host="imap.example.com",
+        port=993,
+    )
+    assert isinstance(server.password, SecretStr)
+    assert server.password.get_secret_value() == "s3cret"
+
+
+def test_api_key_is_secret_type():
+    """API key field must be SecretStr."""
+    provider = ProviderSettings(
+        account_name="test",
+        provider_name="test",
+        api_key="sk-123",
+    )
+    assert isinstance(provider.api_key, SecretStr)
+    assert provider.api_key.get_secret_value() == "sk-123"
 
 
 def test_config():
