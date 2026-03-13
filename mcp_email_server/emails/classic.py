@@ -1364,10 +1364,7 @@ class ClassicEmailHandler(EmailHandler):
             recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
         )
 
-        if flags is None:
-            flags_str = r"(\Draft \Seen)"
-        else:
-            flags_str = _validate_flags(flags)
+        flags_str = r"(\Draft \Seen)" if flags is None else _validate_flags(flags)
 
         uid = await self.outgoing_client.append_to_mailbox(msg, self.email_settings.incoming, mailbox, flags_str)
 

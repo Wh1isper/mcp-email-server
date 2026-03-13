@@ -13,21 +13,21 @@ from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient, _v
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
-_OUTGOING_SERVER = dict(
-    user_name="test_user",
-    password="test_password",
-    host="smtp.example.com",
-    port=465,
-    use_ssl=True,
-)
+_OUTGOING_SERVER = {
+    "user_name": "test_user",
+    "password": "test_password",
+    "host": "smtp.example.com",
+    "port": 465,
+    "use_ssl": True,
+}
 
-_INCOMING_SERVER = dict(
-    user_name="test_user",
-    password="test_password",
-    host="imap.example.com",
-    port=993,
-    use_ssl=True,
-)
+_INCOMING_SERVER = {
+    "user_name": "test_user",
+    "password": "test_password",
+    "host": "imap.example.com",
+    "port": 993,
+    "use_ssl": True,
+}
 
 
 @pytest.fixture
