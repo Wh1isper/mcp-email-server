@@ -983,18 +983,37 @@ class EmailClient:
             await imap.wait_hello_from_server()
             await imap.login(self.email_server.user_name, self.email_server.password)
             await _send_imap_id(imap)
+
+            # Verify destination mailbox exists before moving any emails
+            dest_quoted = _quote_mailbox(destination_mailbox)
+            response = await imap.list("", dest_quoted)
+            if response.result != "OK" or not any(
+                line for line in response.lines if line and destination_mailbox in str(line)
+            ):
+                raise OSError(
+                    f"Destination mailbox '{destination_mailbox}' does not exist. "
+                    f"Create it first before moving emails."
+                )
+
             await imap.select(_quote_mailbox(source_mailbox))
 
             for email_id in email_ids:
                 try:
-                    await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                    copy_response = await imap.uid("copy", email_id, dest_quoted)
+                    if copy_response.result != "OK":
+                        logger.error(
+                            f"COPY failed for email {email_id}: {copy_response.result} {copy_response.lines}"
+                        )
+                        failed_ids.append(email_id)
+                        continue
                     await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
                     moved_ids.append(email_id)
                 except Exception as e:
                     logger.error(f"Failed to move email {email_id}: {e}")
                     failed_ids.append(email_id)
 
-            await imap.expunge()
+            if moved_ids:
+                await imap.expunge()
         finally:
             try:
                 await imap.logout()
