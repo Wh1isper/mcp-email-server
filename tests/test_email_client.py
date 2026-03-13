@@ -190,6 +190,26 @@ class TestEmailClient:
         assert "SUBJECT" in criteria
         assert "Important" in criteria
 
+    def test_build_search_criteria_multiword_subject(self):
+        """Multi-word subjects must be quoted for IMAP."""
+        criteria = EmailClient._build_search_criteria(subject="Meeting Notes")
+        assert criteria == ["SUBJECT", '"Meeting Notes"']
+
+    def test_build_search_criteria_multiword_from(self):
+        """Multi-word from_address must be quoted for IMAP."""
+        criteria = EmailClient._build_search_criteria(from_address="Alice Example")
+        assert criteria == ["FROM", '"Alice Example"']
+
+    def test_build_search_criteria_multiword_to(self):
+        """Multi-word to_address must be quoted for IMAP."""
+        criteria = EmailClient._build_search_criteria(to_address="Bob Smith")
+        assert criteria == ["TO", '"Bob Smith"']
+
+    def test_build_search_criteria_subject_with_embedded_quotes(self):
+        """Embedded double quotes must be stripped (invalid in IMAP quoted strings)."""
+        criteria = EmailClient._build_search_criteria(subject='He said "hello"')
+        assert criteria == ["SUBJECT", '"He said hello"']
+
     @pytest.mark.asyncio
     async def test_get_emails_stream(self, email_client):
         """Test getting emails stream returns sorted, paginated results."""
