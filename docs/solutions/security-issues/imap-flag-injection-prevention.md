@@ -51,6 +51,7 @@ def _validate_flags(flags: list[str]) -> str:
 ```
 
 The regex accepts:
+
 - **System flags:** `\` followed by an alpha sequence (`\Seen`, `\Draft`, `\Flagged`, etc.)
 - **Custom keywords:** alphanumeric atoms with `-` and `_` (`MyLabel`, `custom-tag`)
 
