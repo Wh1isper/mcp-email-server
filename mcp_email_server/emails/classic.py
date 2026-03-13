@@ -873,9 +873,7 @@ class EmailClient:
         in_reply_to: str | None = None,
         references: str | None = None,
     ):
-        msg = self.compose_message(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
-        )
+        msg = self.compose_message(recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references)
 
         async with aiosmtplib.SMTP(
             hostname=self.email_server.host,
@@ -1037,9 +1035,7 @@ class EmailClient:
         """
         if incoming_server.use_ssl:
             imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
-            imap = aioimaplib.IMAP4_SSL(
-                incoming_server.host, incoming_server.port, ssl_context=imap_ssl_context
-            )
+            imap = aioimaplib.IMAP4_SSL(incoming_server.host, incoming_server.port, ssl_context=imap_ssl_context)
         else:
             imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
 
@@ -1373,9 +1369,7 @@ class ClassicEmailHandler(EmailHandler):
         else:
             flags_str = _validate_flags(flags)
 
-        uid = await self.outgoing_client.append_to_mailbox(
-            msg, self.email_settings.incoming, mailbox, flags_str
-        )
+        uid = await self.outgoing_client.append_to_mailbox(msg, self.email_settings.incoming, mailbox, flags_str)
 
         if uid is None:
             raise RuntimeError(f"Failed to save email to mailbox '{mailbox}'")

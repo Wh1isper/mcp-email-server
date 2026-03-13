@@ -244,17 +244,23 @@ async def save_to_mailbox(
 ) -> str:
     handler = dispatch_handler(account_name)
     result = await handler.save_to_mailbox(
-        recipients, subject, body, mailbox, cc, bcc, html, attachments,
-        in_reply_to, references, flags,
+        recipients,
+        subject,
+        body,
+        mailbox,
+        cc,
+        bcc,
+        html,
+        attachments,
+        in_reply_to,
+        references,
+        flags,
     )
     # result format: "<message-id>|uid:<imap-uid>"
     parts = result.split("|uid:")
     message_id = parts[0]
     email_id = parts[1] if len(parts) > 1 else "unknown"
-    return (
-        f"Email saved to '{mailbox}' successfully. "
-        f"Message-Id: {message_id}, email_id: {email_id}"
-    )
+    return f"Email saved to '{mailbox}' successfully. Message-Id: {message_id}, email_id: {email_id}"
 
 
 @mcp.tool(
