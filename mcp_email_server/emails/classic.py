@@ -242,6 +242,18 @@ class EmailClient:
         }
 
     @staticmethod
+    def _sanitize_imap_value(value: str) -> str:
+        """Sanitize a string value for IMAP search criteria.
+
+        For multi-word values, strips embedded double quotes (invalid per RFC 3501
+        Section 4.3) and wraps in double quotes. Single-word values pass through unchanged.
+        """
+        if " " not in value:
+            return value
+        sanitized = value.replace('"', "")
+        return f'"{sanitized}"'
+
+    @staticmethod
     def _build_search_criteria(
         before: datetime | None = None,
         since: datetime | None = None,
@@ -260,15 +272,15 @@ class EmailClient:
         if since:
             search_criteria.extend(["SINCE", since.strftime("%d-%b-%Y").upper()])
         if subject:
-            search_criteria.extend(["SUBJECT", subject])
+            search_criteria.extend(["SUBJECT", EmailClient._sanitize_imap_value(subject)])
         if body:
-            search_criteria.extend(["BODY", body])
+            search_criteria.extend(["BODY", EmailClient._sanitize_imap_value(body)])
         if text:
-            search_criteria.extend(["TEXT", text])
+            search_criteria.extend(["TEXT", EmailClient._sanitize_imap_value(text)])
         if from_address:
-            search_criteria.extend(["FROM", from_address])
+            search_criteria.extend(["FROM", EmailClient._sanitize_imap_value(from_address)])
         if to_address:
-            search_criteria.extend(["TO", to_address])
+            search_criteria.extend(["TO", EmailClient._sanitize_imap_value(to_address)])
 
         # Flag-based criteria using mapping to reduce complexity
         flag_criteria = [
