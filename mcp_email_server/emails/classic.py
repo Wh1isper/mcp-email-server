@@ -1010,6 +1010,61 @@ class EmailClient:
             except Exception as e:
                 logger.debug(f"Error during logout: {e}")
 
+    async def append_to_mailbox(
+        self,
+        msg: MIMEText | MIMEMultipart,
+        incoming_server: EmailServer,
+        mailbox: str,
+        flags: str = r"(\Draft \Seen)",
+    ) -> bool:
+        """Append a message to the specified IMAP folder.
+
+        Unlike append_to_sent, this targets a single user-specified mailbox
+        without folder discovery. Returns True on success, False on failure.
+        """
+        if incoming_server.use_ssl:
+            imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
+            imap = aioimaplib.IMAP4_SSL(
+                incoming_server.host, incoming_server.port, ssl_context=imap_ssl_context
+            )
+        else:
+            imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(incoming_server.user_name, incoming_server.password)
+            await _send_imap_id(imap)
+
+            result = await imap.select(_quote_mailbox(mailbox))
+            status = result[0] if isinstance(result, tuple) else result
+            if str(status).upper() != "OK":
+                logger.warning(f"Mailbox '{mailbox}' not found or not selectable: {status}")
+                return False
+
+            msg_bytes = msg.as_bytes()
+            append_result = await imap.append(
+                msg_bytes,
+                mailbox=_quote_mailbox(mailbox),
+                flags=flags,
+            )
+            append_status = append_result[0] if isinstance(append_result, tuple) else append_result
+            if str(append_status).upper() == "OK":
+                logger.info(f"Saved email to '{mailbox}'")
+                return True
+            else:
+                logger.warning(f"Failed to append to '{mailbox}': {append_status}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error saving to mailbox '{mailbox}': {e}")
+            return False
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.debug(f"Error during logout: {e}")
+
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         imap = self._imap_connect()
