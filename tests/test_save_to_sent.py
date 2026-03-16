@@ -621,6 +621,49 @@ class TestAppendToSentWithFlagDetection:
             mock_imap.select.assert_called_with('"Flag Detected"')
 
 
+class TestSendEmailSentCopyBcc:
+    """Tests that send_email includes BCC in the Sent folder copy."""
+
+    @pytest.mark.asyncio
+    async def test_sent_copy_includes_bcc_header(self, email_settings_with_save_to_sent):
+        handler = ClassicEmailHandler(email_settings_with_save_to_sent)
+
+        mock_msg = MIMEText("Test body")
+        mock_send = AsyncMock(return_value=mock_msg)
+        mock_append = AsyncMock(return_value=True)
+
+        with patch.object(handler.outgoing_client, "send_email", mock_send):
+            with patch.object(handler.outgoing_client, "append_to_sent", mock_append):
+                await handler.send_email(
+                    recipients=["r@example.com"],
+                    subject="Test",
+                    body="Test body",
+                    bcc=["secret@example.com"],
+                )
+
+        appended_msg = mock_append.call_args[0][0]
+        assert appended_msg["Bcc"] == "secret@example.com"
+
+    @pytest.mark.asyncio
+    async def test_sent_copy_no_bcc_when_none(self, email_settings_with_save_to_sent):
+        handler = ClassicEmailHandler(email_settings_with_save_to_sent)
+
+        mock_msg = MIMEText("Test body")
+        mock_send = AsyncMock(return_value=mock_msg)
+        mock_append = AsyncMock(return_value=True)
+
+        with patch.object(handler.outgoing_client, "send_email", mock_send):
+            with patch.object(handler.outgoing_client, "append_to_sent", mock_append):
+                await handler.send_email(
+                    recipients=["r@example.com"],
+                    subject="Test",
+                    body="Test body",
+                )
+
+        appended_msg = mock_append.call_args[0][0]
+        assert appended_msg["Bcc"] is None
+
+
 class TestHandlerErrorHandling:
     """Tests for error handling in ClassicEmailHandler.send_email."""
 

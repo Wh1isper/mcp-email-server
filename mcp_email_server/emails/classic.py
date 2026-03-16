@@ -814,15 +814,18 @@ class EmailClient:
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
+        include_bcc_header: bool = False,
     ) -> MIMEText | MIMEMultipart:
         """Compose an email message without sending it.
 
         Builds MIME structure, sets headers (Subject, From, To, Cc, Date,
         Message-Id, threading headers). Synchronous — no I/O.
 
-        Note: ``bcc`` is accepted for API symmetry with ``send_email`` but
-        intentionally not set as a header — BCC recipients must never appear
-        in message headers.
+        When ``include_bcc_header`` is True (used for local IMAP storage such
+        as Drafts or Sent copies), the Bcc header is included so mail clients
+        can display the BCC recipients.  When False (default, used for SMTP
+        sending), the Bcc header is omitted — BCC recipients are delivered
+        via the SMTP envelope only.
         """
         if attachments:
             msg = self._create_message_with_attachments(body, html, attachments)
@@ -848,6 +851,10 @@ class EmailClient:
         if cc:
             msg["Cc"] = ", ".join(cc)
 
+        # Add BCC header when saving locally (drafts, sent copies)
+        if bcc and include_bcc_header:
+            msg["Bcc"] = ", ".join(bcc)
+
         # Set threading headers for replies
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
@@ -872,7 +879,7 @@ class EmailClient:
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
-    ):
+    ) -> MIMEText | MIMEMultipart:
         msg = self.compose_message(recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references)
 
         async with aiosmtplib.SMTP(
@@ -1337,6 +1344,11 @@ class ClassicEmailHandler(EmailHandler):
 
         # Save to Sent folder if enabled
         if self.save_to_sent and msg:
+            # Add BCC header to the saved copy so users can see who was BCC'd.
+            # This MUST happen after smtp.send_message() — that ordering is
+            # load-bearing for security (BCC must not appear in sent headers).
+            if bcc and msg["Bcc"] is None:
+                msg["Bcc"] = ", ".join(bcc)
             try:
                 await self.outgoing_client.append_to_sent(
                     msg,
@@ -1360,8 +1372,22 @@ class ClassicEmailHandler(EmailHandler):
         references: str | None = None,
         flags: list[str] | None = None,
     ) -> str:
+        """Compose and save an email to the specified IMAP mailbox.
+
+        BCC headers are preserved in the saved message so mail clients can
+        display BCC recipients (unlike ``send_email``, where BCC is handled
+        via the SMTP envelope only).
+
+        Returns:
+            A string in the format ``<message-id>|uid:<uid>``.
+
+        Raises:
+            ValueError: If any flag in *flags* is invalid per RFC 3501.
+            RuntimeError: If the IMAP APPEND operation fails.
+        """
         msg = self.outgoing_client.compose_message(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references,
+            include_bcc_header=True,
         )
 
         flags_str = r"(\Draft \Seen)" if flags is None else _validate_flags(flags)

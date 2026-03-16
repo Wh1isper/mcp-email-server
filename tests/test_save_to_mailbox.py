@@ -193,6 +193,38 @@ class TestComposeMessage:
         assert msg.get_content_type() == "multipart/mixed"
 
 
+class TestComposeMessageBccHeader:
+    """Tests for BCC header inclusion in compose_message."""
+
+    def test_bcc_header_included_when_flag_true(self, email_client):
+        msg = email_client.compose_message(
+            ["r@example.com"], "Sub", "Body",
+            bcc=["secret@example.com"], include_bcc_header=True,
+        )
+        assert msg["Bcc"] == "secret@example.com"
+
+    def test_bcc_header_multiple_recipients(self, email_client):
+        msg = email_client.compose_message(
+            ["r@example.com"], "Sub", "Body",
+            bcc=["a@example.com", "b@example.com"], include_bcc_header=True,
+        )
+        assert msg["Bcc"] == "a@example.com, b@example.com"
+
+    def test_bcc_header_omitted_when_empty_list(self, email_client):
+        msg = email_client.compose_message(
+            ["r@example.com"], "Sub", "Body",
+            bcc=[], include_bcc_header=True,
+        )
+        assert msg["Bcc"] is None
+
+    def test_bcc_header_omitted_when_none(self, email_client):
+        msg = email_client.compose_message(
+            ["r@example.com"], "Sub", "Body",
+            bcc=None, include_bcc_header=True,
+        )
+        assert msg["Bcc"] is None
+
+
 # ---------------------------------------------------------------------------
 # Cycle 2: append_to_mailbox
 # ---------------------------------------------------------------------------
@@ -364,6 +396,28 @@ class TestClassicEmailHandlerSaveToMailbox:
                 body="body",
                 flags=[r"\Seen) {9999}"],
             )
+
+
+class TestSaveToMailboxBcc:
+    """Tests that save_to_mailbox preserves BCC in the saved message."""
+
+    @pytest.mark.asyncio
+    async def test_save_to_mailbox_includes_bcc_header(self, email_settings):
+        handler = ClassicEmailHandler(email_settings)
+        mock_append = AsyncMock(return_value="42")
+
+        # Don't mock compose_message — let it run for real so we verify
+        # include_bcc_header=True is actually passed and produces a Bcc header
+        with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+            await handler.save_to_mailbox(
+                recipients=["r@example.com"],
+                subject="Draft",
+                body="draft body",
+                bcc=["secret@example.com"],
+            )
+
+        appended_msg = mock_append.call_args[0][0]
+        assert appended_msg["Bcc"] == "secret@example.com"
 
 
 # ---------------------------------------------------------------------------
