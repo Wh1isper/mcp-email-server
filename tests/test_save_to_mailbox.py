@@ -198,29 +198,41 @@ class TestComposeMessageBccHeader:
 
     def test_bcc_header_included_when_flag_true(self, email_client):
         msg = email_client.compose_message(
-            ["r@example.com"], "Sub", "Body",
-            bcc=["secret@example.com"], include_bcc_header=True,
+            ["r@example.com"],
+            "Sub",
+            "Body",
+            bcc=["secret@example.com"],
+            include_bcc_header=True,
         )
         assert msg["Bcc"] == "secret@example.com"
 
     def test_bcc_header_multiple_recipients(self, email_client):
         msg = email_client.compose_message(
-            ["r@example.com"], "Sub", "Body",
-            bcc=["a@example.com", "b@example.com"], include_bcc_header=True,
+            ["r@example.com"],
+            "Sub",
+            "Body",
+            bcc=["a@example.com", "b@example.com"],
+            include_bcc_header=True,
         )
         assert msg["Bcc"] == "a@example.com, b@example.com"
 
     def test_bcc_header_omitted_when_empty_list(self, email_client):
         msg = email_client.compose_message(
-            ["r@example.com"], "Sub", "Body",
-            bcc=[], include_bcc_header=True,
+            ["r@example.com"],
+            "Sub",
+            "Body",
+            bcc=[],
+            include_bcc_header=True,
         )
         assert msg["Bcc"] is None
 
     def test_bcc_header_omitted_when_none(self, email_client):
         msg = email_client.compose_message(
-            ["r@example.com"], "Sub", "Body",
-            bcc=None, include_bcc_header=True,
+            ["r@example.com"],
+            "Sub",
+            "Body",
+            bcc=None,
+            include_bcc_header=True,
         )
         assert msg["Bcc"] is None
 

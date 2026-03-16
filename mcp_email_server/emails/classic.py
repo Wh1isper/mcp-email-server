@@ -1386,7 +1386,15 @@ class ClassicEmailHandler(EmailHandler):
             RuntimeError: If the IMAP APPEND operation fails.
         """
         msg = self.outgoing_client.compose_message(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references,
+            recipients,
+            subject,
+            body,
+            cc,
+            bcc,
+            html,
+            attachments,
+            in_reply_to,
+            references,
             include_bcc_header=True,
         )
 
