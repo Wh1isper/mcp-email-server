@@ -1049,7 +1049,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(incoming_server.user_name, incoming_server.password)
+            await imap.login(incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
 
             result = await imap.select(_quote_mailbox(mailbox))
