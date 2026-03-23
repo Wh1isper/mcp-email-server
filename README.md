@@ -155,7 +155,7 @@ sent_folder_name = "INBOX.Sent"
 
 ### Restricting Recipients (Allowlist)
 
-By default, Claude can send email to any address. You can restrict sends to a trusted set of addresses using the `allowed_recipients` option.
+By default, the MCP client can send email to any address. You can restrict sends to a trusted set of addresses using the `allowed_recipients` option.
 
 **Option 1: Environment Variable**
 
@@ -179,7 +179,7 @@ By default, Claude can send email to any address. You can restrict sends to a tr
 allowed_recipients = ["alice@example.com", "bob@example.com"]
 ```
 
-When non-empty, `send_email` rejects any recipient (To, CC, BCC) not in the list with a clear error. Addresses are matched case-insensitively. Use the `list_allowed_recipients` tool to let Claude discover permitted addresses before sending.
+When non-empty, `send_email` rejects any recipient (To, CC, BCC) not in the list with a clear error. Addresses are matched case-insensitively. Use the `list_allowed_recipients` tool to let the MCP client discover permitted addresses before sending.
 
 ### Self-Signed Certificates (e.g., ProtonMail Bridge)
 
