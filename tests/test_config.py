@@ -105,3 +105,40 @@ def test_config():
                 ),
             )
         )
+
+
+def test_allowed_recipients_defaults_to_empty(tmp_path, monkeypatch):
+    """allowed_recipients is empty by default (allow-all)."""
+    import mcp_email_server.config as config_module
+
+    # Use a blank temp TOML to avoid reading the real user config
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("")
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_file)
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_recipients == []
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_recipients_toml_path_normalised(tmp_path, monkeypatch):
+    """allowed_recipients loaded from TOML are lowercased and deduplicated by __init__."""
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    toml_data = {"allowed_recipients": ["Alice@Example.COM", "BOB@example.com", "alice@example.com"]}
+    config_file = tmp_path / "config.toml"
+    config_file.write_bytes(tomli_w.dumps(toml_data).encode())
+
+    # The toml_file is baked into model_config at class-definition time; patch it directly
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_file)
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_recipients == ["alice@example.com", "bob@example.com"]
+    finally:
+        config_module._settings = None

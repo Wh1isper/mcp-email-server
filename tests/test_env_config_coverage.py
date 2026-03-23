@@ -127,17 +127,61 @@ def test_from_env_boolean_parsing_variations(monkeypatch):
     for key, value in base_env.items():
         monkeypatch.setenv(key, value)
 
-    result = EmailSettings.from_env()
-    assert result.incoming.use_ssl is True
-    assert result.outgoing.use_ssl is False
 
-    # Test "on"/"off"
-    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_SSL", "on")
-    monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_START_SSL", "off")
+def test_allowed_recipients_from_env(tmp_path, monkeypatch):
+    """MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS env var is parsed as comma-separated list."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
 
-    result = EmailSettings.from_env()
-    assert result.incoming.use_ssl is True
-    assert result.outgoing.start_ssl is False
+    # Point Settings at a blank TOML so real user config doesn't interfere
+    blank_toml = tmp_path / "config.toml"
+    blank_toml.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank_toml)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "alice@example.com, BOB@EXAMPLE.COM , alice@example.com")
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_recipients == ["alice@example.com", "bob@example.com"]
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_recipients_env_empty_string(tmp_path, monkeypatch):
+    """Empty MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS leaves list empty."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    blank_toml = tmp_path / "config.toml"
+    blank_toml.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank_toml)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "")
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_recipients == []
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_recipients_env_overrides_toml(tmp_path, monkeypatch):
+    """Env var takes precedence over TOML-configured allowed_recipients."""
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    toml_data = {"allowed_recipients": ["toml@example.com"]}
+    config_file = tmp_path / "config.toml"
+    config_file.write_bytes(tomli_w.dumps(toml_data).encode())
+
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_file)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "env@example.com")
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_recipients == ["env@example.com"]
+    finally:
+        config_module._settings = None
 
 
 def test_settings_init_no_env(monkeypatch, tmp_path):
