@@ -118,7 +118,23 @@ async def get_emails_content(
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
+    description=(
+        "List the globally allowed recipient email addresses for sending email. "
+        "Returns an empty list if no allowlist is configured, meaning all recipients are permitted. "
+        "Call this tool before any send_email call to verify the intended recipients are allowed."
+    )
+)
+async def list_allowed_recipients() -> list[str]:
+    return get_settings().allowed_recipients
+
+
+@mcp.tool(
+    description=(
+        "Send an email using the specified account. Supports replying to emails with proper threading "
+        "when in_reply_to is provided. IMPORTANT: If an allowlist is configured, ALL recipients "
+        "(To, CC, BCC) must appear in it — call list_allowed_recipients first to check. "
+        "Sends to addresses not on the allowlist will be rejected."
+    ),
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -159,6 +175,15 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
+    settings = get_settings()
+    if settings.allowed_recipients:
+        all_recipients = recipients + (cc or []) + (bcc or [])
+        blocked = [r for r in all_recipients if r.lower() not in settings.allowed_recipients]
+        if blocked:
+            raise ValueError(
+                f"Recipient(s) not in allowlist: {', '.join(blocked)}. "
+                f"Allowed: {', '.join(settings.allowed_recipients)}"
+            )
     handler = dispatch_handler(account_name)
     await handler.send_email(
         recipients,
