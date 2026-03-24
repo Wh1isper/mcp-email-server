@@ -159,6 +159,8 @@ async def get_emails_content(
         result.retrieved_count = len(result.emails)
         # Blocked emails are silently dropped — NOT added to failed_ids.
         # Adding them would reveal their existence to the AI.
+        # requested_count is intentionally left at the caller-supplied value: the AI
+        # already knows what IDs it requested, so leaving it unchanged leaks nothing.
     return result
 
 

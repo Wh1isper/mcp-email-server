@@ -892,6 +892,7 @@ class TestSenderAllowed:
 
     def test_unparseable_sender_blocked(self):
         """Malformed From header that parseaddr cannot parse is treated as not allowed."""
-        # parseaddr("not-an-email-at-all") returns ('', '') so fallback is the raw string,
-        # which will not match any normal pattern like *@example.com
+        # parseaddr("not-an-email-at-all") returns ('', 'not-an-email-at-all') — the raw
+        # string lands in the address slot since there are no angle brackets. Either way
+        # the result does not match a normal pattern like *@example.com.
         assert _sender_allowed("not-an-email-at-all", ["*@example.com"]) is False
