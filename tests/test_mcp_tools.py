@@ -137,44 +137,48 @@ class TestMcpTools:
         mock_handler = AsyncMock()
         mock_handler.get_emails_metadata.return_value = email_metadata_page
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            # Call the function
-            result = await list_emails_metadata(
-                account_name="test_account",
-                page=1,
-                page_size=10,
-                before=now,
-                since=None,
-                subject="Test",
-                from_address="sender@example.com",
-                to_address=None,
-            )
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
 
-            # Verify the result
-            assert result == email_metadata_page
-            assert result.page == 1
-            assert result.page_size == 10
-            assert result.before == now
-            assert result.subject == "Test"
-            assert len(result.emails) == 1
-            assert result.emails[0].subject == "Test Subject"
-            assert result.emails[0].email_id == "12345"
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                # Call the function
+                result = await list_emails_metadata(
+                    account_name="test_account",
+                    page=1,
+                    page_size=10,
+                    before=now,
+                    since=None,
+                    subject="Test",
+                    from_address="sender@example.com",
+                    to_address=None,
+                )
 
-            # Verify dispatch_handler and get_emails_metadata were called correctly
-            mock_handler.get_emails_metadata.assert_called_once_with(
-                page=1,
-                page_size=10,
-                before=now,
-                since=None,
-                subject="Test",
-                from_address="sender@example.com",
-                to_address=None,
-                order="desc",
-                mailbox="INBOX",
-                seen=None,
-                flagged=None,
-                answered=None,
-            )
+                # Verify the result
+                assert result == email_metadata_page
+                assert result.page == 1
+                assert result.page_size == 10
+                assert result.before == now
+                assert result.subject == "Test"
+                assert len(result.emails) == 1
+                assert result.emails[0].subject == "Test Subject"
+                assert result.emails[0].email_id == "12345"
+
+                # Verify dispatch_handler and get_emails_metadata were called correctly
+                mock_handler.get_emails_metadata.assert_called_once_with(
+                    page=1,
+                    page_size=10,
+                    before=now,
+                    since=None,
+                    subject="Test",
+                    from_address="sender@example.com",
+                    to_address=None,
+                    order="desc",
+                    mailbox="INBOX",
+                    seen=None,
+                    flagged=None,
+                    answered=None,
+                )
 
     @pytest.mark.asyncio
     async def test_list_emails_metadata_with_mailbox(self):
@@ -202,27 +206,31 @@ class TestMcpTools:
         mock_handler = AsyncMock()
         mock_handler.get_emails_metadata.return_value = email_metadata_page
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            result = await list_emails_metadata(
-                account_name="test_account",
-                mailbox="Sent",
-            )
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
 
-            assert result == email_metadata_page
-            mock_handler.get_emails_metadata.assert_called_once_with(
-                page=1,
-                page_size=10,
-                before=None,
-                since=None,
-                subject=None,
-                from_address=None,
-                to_address=None,
-                order="desc",
-                mailbox="Sent",
-                seen=None,
-                flagged=None,
-                answered=None,
-            )
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await list_emails_metadata(
+                    account_name="test_account",
+                    mailbox="Sent",
+                )
+
+                assert result == email_metadata_page
+                mock_handler.get_emails_metadata.assert_called_once_with(
+                    page=1,
+                    page_size=10,
+                    before=None,
+                    since=None,
+                    subject=None,
+                    from_address=None,
+                    to_address=None,
+                    order="desc",
+                    mailbox="Sent",
+                    seen=None,
+                    flagged=None,
+                    answered=None,
+                )
 
     @pytest.mark.asyncio
     async def test_get_emails_content_single(self):
@@ -250,24 +258,28 @@ class TestMcpTools:
         mock_handler = AsyncMock()
         mock_handler.get_emails_content.return_value = batch_response
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            # Call the function
-            result = await get_emails_content(
-                account_name="test_account",
-                email_ids=["12345"],
-            )
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
 
-            # Verify the result
-            assert result == batch_response
-            assert result.requested_count == 1
-            assert result.retrieved_count == 1
-            assert len(result.failed_ids) == 0
-            assert len(result.emails) == 1
-            assert result.emails[0].email_id == "12345"
-            assert result.emails[0].subject == "Test Subject"
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                # Call the function
+                result = await get_emails_content(
+                    account_name="test_account",
+                    email_ids=["12345"],
+                )
 
-            # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX")
+                # Verify the result
+                assert result == batch_response
+                assert result.requested_count == 1
+                assert result.retrieved_count == 1
+                assert len(result.failed_ids) == 0
+                assert len(result.emails) == 1
+                assert result.emails[0].email_id == "12345"
+                assert result.emails[0].subject == "Test Subject"
+
+                # Verify dispatch_handler and get_emails_content were called correctly
+                mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX")
 
     @pytest.mark.asyncio
     async def test_get_emails_content_batch(self):
@@ -305,25 +317,29 @@ class TestMcpTools:
         mock_handler = AsyncMock()
         mock_handler.get_emails_content.return_value = batch_response
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            # Call the function
-            result = await get_emails_content(
-                account_name="test_account",
-                email_ids=["12345", "12346", "12347"],
-            )
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
 
-            # Verify the result
-            assert result == batch_response
-            assert result.requested_count == 3
-            assert result.retrieved_count == 2
-            assert len(result.failed_ids) == 1
-            assert result.failed_ids[0] == "12347"
-            assert len(result.emails) == 2
-            assert result.emails[0].email_id == "12345"
-            assert result.emails[1].email_id == "12346"
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                # Call the function
+                result = await get_emails_content(
+                    account_name="test_account",
+                    email_ids=["12345", "12346", "12347"],
+                )
 
-            # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+                # Verify the result
+                assert result == batch_response
+                assert result.requested_count == 3
+                assert result.retrieved_count == 2
+                assert len(result.failed_ids) == 1
+                assert result.failed_ids[0] == "12347"
+                assert len(result.emails) == 2
+                assert result.emails[0].email_id == "12345"
+                assert result.emails[1].email_id == "12346"
+
+                # Verify dispatch_handler and get_emails_content were called correctly
+                mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
 
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
@@ -349,15 +365,19 @@ class TestMcpTools:
         mock_handler = AsyncMock()
         mock_handler.get_emails_content.return_value = batch_response
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            result = await get_emails_content(
-                account_name="test_account",
-                email_ids=["12345"],
-                mailbox="Sent",
-            )
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
 
-            assert result == batch_response
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent")
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await get_emails_content(
+                    account_name="test_account",
+                    email_ids=["12345"],
+                    mailbox="Sent",
+                )
+
+                assert result == batch_response
+                mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent")
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -539,13 +559,17 @@ class TestMcpTools:
             )
         )
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            result = await get_emails_content(
-                account_name="test",
-                email_ids=["123"],
-            )
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
 
-            assert result.emails[0].message_id == "<test@example.com>"
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await get_emails_content(
+                    account_name="test",
+                    email_ids=["123"],
+                )
+
+                assert result.emails[0].message_id == "<test@example.com>"
 
     @pytest.mark.asyncio
     async def test_list_allowed_senders_empty(self):
