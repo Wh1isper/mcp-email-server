@@ -358,3 +358,60 @@ def test_enable_attachment_download_env_overrides_toml(monkeypatch, tmp_path):
 
     settings = Settings()
     assert settings.enable_attachment_download is True
+
+
+def test_allowed_senders_from_env(tmp_path, monkeypatch):
+    """MCP_EMAIL_SERVER_ALLOWED_SENDERS env var parsed as comma-separated list."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_file)
+    monkeypatch.setenv(
+        "MCP_EMAIL_SERVER_ALLOWED_SENDERS",
+        "*@glez.de , Alice@EXAMPLE.COM , *@glez.de",
+    )
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_senders == ["*@glez.de", "alice@example.com"]
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_senders_env_empty_string(tmp_path, monkeypatch):
+    """Empty MCP_EMAIL_SERVER_ALLOWED_SENDERS leaves list empty."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_file)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", "")
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_senders == []
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_senders_env_overrides_toml(tmp_path, monkeypatch):
+    """Env var takes precedence over TOML-configured allowed_senders."""
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    toml_data = {"allowed_senders": ["toml@example.com"]}
+    config_file = tmp_path / "config.toml"
+    config_file.write_bytes(tomli_w.dumps(toml_data).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_file)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", "env@example.com")
+    config_module._settings = None
+    try:
+        s = config_module.get_settings(reload=True)
+        assert s.allowed_senders == ["env@example.com"]
+    finally:
+        config_module._settings = None

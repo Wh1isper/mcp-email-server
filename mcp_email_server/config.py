@@ -235,6 +235,7 @@ class Settings(BaseSettings):
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
+    allowed_senders: list[str] = []
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
@@ -247,6 +248,16 @@ class Settings(BaseSettings):
         if env_enable_attachment is not None:
             self.enable_attachment_download = _parse_bool_env(env_enable_attachment, False)
             logger.info(f"Set enable_attachment_download={self.enable_attachment_download} from environment variable")
+
+        # Normalise allowed_senders from TOML: lowercase and deduplicate (globs preserved)
+        if self.allowed_senders:
+            self.allowed_senders = list(dict.fromkeys(p.strip().lower() for p in self.allowed_senders if p.strip()))
+
+        # Parse allowed_senders from environment variable (comma-separated)
+        # Env var takes precedence over TOML-configured value
+        env_senders = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
+        if env_senders:
+            self.allowed_senders = list(dict.fromkeys(p.strip().lower() for p in env_senders.split(",") if p.strip()))
 
         # Check for email configuration from environment variables
         env_email = EmailSettings.from_env()
