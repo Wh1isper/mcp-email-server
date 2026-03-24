@@ -4,10 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_email_server.app import (
+    _sender_allowed,
     add_email_account,
     delete_emails,
     download_attachment,
     get_emails_content,
+    list_allowed_senders,
     list_available_accounts,
     list_emails_metadata,
     send_email,
@@ -544,3 +546,328 @@ class TestMcpTools:
             )
 
             assert result.emails[0].message_id == "<test@example.com>"
+
+    @pytest.mark.asyncio
+    async def test_list_allowed_senders_empty(self):
+        """Returns empty list when no sender allowlist is configured."""
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            result = await list_allowed_senders()
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_list_allowed_senders_returns_patterns(self):
+        """Returns configured patterns verbatim (including globs)."""
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@glez.de", "alice@example.com"]
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            result = await list_allowed_senders()
+
+        assert result == ["*@glez.de", "alice@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_list_emails_metadata_no_sender_allowlist(self):
+        """All emails returned when sender allowlist is empty."""
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
+        page = EmailMetadataPageResponse(
+            page=1,
+            page_size=10,
+            before=None,
+            since=None,
+            subject=None,
+            emails=[
+                EmailMetadata(
+                    email_id="1",
+                    subject="Hi",
+                    sender="anyone@evil.com",
+                    recipients=[],
+                    date=now,
+                    attachments=[],
+                ),
+            ],
+            total=1,
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_metadata.return_value = page
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await list_emails_metadata(account_name="test")
+
+        assert len(result.emails) == 1
+
+    @pytest.mark.asyncio
+    async def test_list_emails_metadata_filters_blocked_sender(self):
+        """Emails from unlisted senders are removed; allowed senders remain."""
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@glez.de"]
+        page = EmailMetadataPageResponse(
+            page=1,
+            page_size=10,
+            before=None,
+            since=None,
+            subject=None,
+            emails=[
+                EmailMetadata(
+                    email_id="1",
+                    subject="Good",
+                    sender="friend@glez.de",
+                    recipients=[],
+                    date=now,
+                    attachments=[],
+                ),
+                EmailMetadata(
+                    email_id="2",
+                    subject="Spam",
+                    sender="spam@evil.com",
+                    recipients=[],
+                    date=now,
+                    attachments=[],
+                ),
+            ],
+            total=2,
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_metadata.return_value = page
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await list_emails_metadata(account_name="test")
+
+        assert len(result.emails) == 1
+        assert result.emails[0].email_id == "1"
+
+    @pytest.mark.asyncio
+    async def test_list_emails_metadata_total_unchanged_after_filter(self):
+        """total reflects IMAP server count and is not adjusted post-filter."""
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@glez.de"]
+        page = EmailMetadataPageResponse(
+            page=1,
+            page_size=10,
+            before=None,
+            since=None,
+            subject=None,
+            emails=[
+                EmailMetadata(
+                    email_id="1",
+                    subject="Good",
+                    sender="friend@glez.de",
+                    recipients=[],
+                    date=now,
+                    attachments=[],
+                ),
+                EmailMetadata(
+                    email_id="2",
+                    subject="Spam",
+                    sender="spam@evil.com",
+                    recipients=[],
+                    date=now,
+                    attachments=[],
+                ),
+            ],
+            total=50,  # large server-side total — left unchanged after filtering
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_metadata.return_value = page
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await list_emails_metadata(account_name="test")
+
+        assert result.total == 50  # unchanged — reflects IMAP server count
+        assert len(result.emails) == 1  # filtered in the response
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_no_sender_allowlist(self):
+        """All emails returned when sender allowlist is empty."""
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
+        batch = EmailContentBatchResponse(
+            emails=[
+                EmailBodyResponse(
+                    email_id="1",
+                    subject="Any",
+                    sender="anyone@evil.com",
+                    recipients=[],
+                    date=now,
+                    body="hello",
+                    attachments=[],
+                ),
+            ],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await get_emails_content(account_name="test", email_ids=["1"])
+
+        assert len(result.emails) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_filters_blocked_sender(self):
+        """Emails from unlisted senders are silently dropped."""
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@glez.de"]
+        batch = EmailContentBatchResponse(
+            emails=[
+                EmailBodyResponse(
+                    email_id="1",
+                    subject="Good",
+                    sender="friend@glez.de",
+                    recipients=[],
+                    date=now,
+                    body="hi",
+                    attachments=[],
+                ),
+                EmailBodyResponse(
+                    email_id="2",
+                    subject="Spam",
+                    sender="spam@evil.com",
+                    recipients=[],
+                    date=now,
+                    body="buy now",
+                    attachments=[],
+                ),
+            ],
+            requested_count=2,
+            retrieved_count=2,
+            failed_ids=[],
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await get_emails_content(account_name="test", email_ids=["1", "2"])
+
+        assert len(result.emails) == 1
+        assert result.emails[0].email_id == "1"
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_retrieved_count_adjusted(self):
+        """retrieved_count is updated to reflect post-filter count."""
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@glez.de"]
+        batch = EmailContentBatchResponse(
+            emails=[
+                EmailBodyResponse(
+                    email_id="1",
+                    subject="Good",
+                    sender="friend@glez.de",
+                    recipients=[],
+                    date=now,
+                    body="hi",
+                    attachments=[],
+                ),
+                EmailBodyResponse(
+                    email_id="2",
+                    subject="Spam",
+                    sender="spam@evil.com",
+                    recipients=[],
+                    date=now,
+                    body="buy",
+                    attachments=[],
+                ),
+            ],
+            requested_count=2,
+            retrieved_count=2,
+            failed_ids=[],
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await get_emails_content(account_name="test", email_ids=["1", "2"])
+
+        assert result.retrieved_count == 1  # adjusted to post-filter count
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_blocked_not_in_failed_ids(self):
+        """Blocked emails are silently dropped — NOT added to failed_ids.
+
+        Adding a blocked email to failed_ids would reveal its existence to the AI,
+        defeating the purpose of the allowlist.
+        """
+        now = datetime.now(timezone.utc)
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@glez.de"]
+        batch = EmailContentBatchResponse(
+            emails=[
+                EmailBodyResponse(
+                    email_id="1",
+                    subject="Spam",
+                    sender="spam@evil.com",
+                    recipients=[],
+                    date=now,
+                    body="buy",
+                    attachments=[],
+                ),
+            ],
+            requested_count=1,
+            retrieved_count=1,
+            failed_ids=[],
+        )
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = batch
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await get_emails_content(account_name="test", email_ids=["1"])
+
+        assert result.failed_ids == []  # NOT populated with blocked email
+        assert len(result.emails) == 0
+
+
+class TestSenderAllowed:
+    """Tests for the _sender_allowed pure helper function."""
+
+    def test_empty_patterns_allows_all(self):
+        """Empty allowlist always returns True (allow all)."""
+        assert _sender_allowed("anyone@evil.com", []) is True
+
+    def test_exact_match(self):
+        """Exact address pattern matches correctly."""
+        assert _sender_allowed("alice@example.com", ["alice@example.com"]) is True
+
+    def test_glob_domain(self):
+        """Wildcard domain pattern matches any address at that domain."""
+        assert _sender_allowed("bob@glez.de", ["*@glez.de"]) is True
+
+    def test_name_addr_format(self):
+        """'Name <addr>' format: address portion extracted and matched."""
+        assert _sender_allowed("Alice <alice@example.com>", ["alice@example.com"]) is True
+
+    def test_case_insensitive(self):
+        """Matching is case-insensitive (patterns pre-lowercased, sender lowercased at match time)."""
+        assert _sender_allowed("Alice@EXAMPLE.COM", ["alice@example.com"]) is True
+
+    def test_no_match(self):
+        """Address not in allowlist returns False."""
+        assert _sender_allowed("spam@evil.com", ["*@glez.de"]) is False
+
+    def test_matches_second_pattern_in_list(self):
+        """Sender matching the second pattern returns True (any() traversal)."""
+        assert _sender_allowed("bob@example.com", ["alice@example.com", "bob@example.com"]) is True
+
+    def test_unparseable_sender_blocked(self):
+        """Malformed From header that parseaddr cannot parse is treated as not allowed."""
+        # parseaddr("not-an-email-at-all") returns ('', '') so fallback is the raw string,
+        # which will not match any normal pattern like *@example.com
+        assert _sender_allowed("not-an-email-at-all", ["*@example.com"]) is False

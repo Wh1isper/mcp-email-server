@@ -1,4 +1,6 @@
+import fnmatch
 from datetime import datetime
+from email import utils as email_utils
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -20,6 +22,22 @@ from mcp_email_server.emails.models import (
 mcp = FastMCP("email")
 
 
+def _sender_allowed(sender: str, patterns: list[str]) -> bool:
+    """Return True if sender matches any pattern in the allowlist, or if the list is empty.
+
+    Handles 'Name <addr>' format via email.utils.parseaddr. Matching is case-insensitive.
+    Patterns support fnmatch globs (e.g. *@example.com).
+
+    Unparseable sender strings (malformed From headers) are treated as not allowed
+    when an allowlist is configured — the safe default for the threat model.
+    """
+    if not patterns:
+        return True
+    _, addr = email_utils.parseaddr(sender)  # handles "Name <addr>" and bare addresses
+    addr = (addr or sender).lower()  # fallback to raw string if parse fails
+    return any(fnmatch.fnmatch(addr, pattern.lower()) for pattern in patterns)
+
+
 @mcp.resource("email://{account_name}")
 async def get_account(account_name: str) -> EmailSettings | ProviderSettings | None:
     settings = get_settings()
@@ -38,6 +56,18 @@ async def add_email_account(email: EmailSettings) -> str:
     settings.add_email(email)
     settings.store()
     return f"Successfully added email account '{email.account_name}'"
+
+
+@mcp.tool(
+    description=(
+        "List the globally allowed sender email address patterns. "
+        "Returns an empty list if no allowlist is configured, meaning emails from all senders are visible. "
+        "Patterns may include wildcards (e.g. *@example.com). "
+        "Call this tool to understand which senders the MCP client is permitted to read."
+    )
+)
+async def list_allowed_senders() -> list[str]:
+    return get_settings().allowed_senders
 
 
 @mcp.tool(
@@ -82,9 +112,11 @@ async def list_emails_metadata(
         Field(default=None, description="Filter by replied status: True=replied, False=not replied, None=all."),
     ] = None,
 ) -> EmailMetadataPageResponse:
+    # Read settings before the IMAP call to skip the round-trip when allowlist is empty
+    allowed = get_settings().allowed_senders
     handler = dispatch_handler(account_name)
 
-    return await handler.get_emails_metadata(
+    result = await handler.get_emails_metadata(
         page=page,
         page_size=page_size,
         before=before,
@@ -98,6 +130,11 @@ async def list_emails_metadata(
         flagged=flagged,
         answered=answered,
     )
+    if allowed:
+        result.emails = [e for e in result.emails if _sender_allowed(e.sender, allowed)]
+    # Note: result.total reflects the IMAP server-side count and is intentionally not adjusted.
+    # See known limitations in the spec.
+    return result
 
 
 @mcp.tool(
@@ -113,8 +150,16 @@ async def get_emails_content(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
 ) -> EmailContentBatchResponse:
+    # Read settings before the IMAP call to skip the round-trip when allowlist is empty
+    allowed = get_settings().allowed_senders
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids, mailbox)
+    result = await handler.get_emails_content(email_ids, mailbox)
+    if allowed:
+        result.emails = [e for e in result.emails if _sender_allowed(e.sender, allowed)]
+        result.retrieved_count = len(result.emails)
+        # Blocked emails are silently dropped — NOT added to failed_ids.
+        # Adding them would reveal their existence to the AI.
+    return result
 
 
 @mcp.tool(
