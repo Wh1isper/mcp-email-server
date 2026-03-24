@@ -63,25 +63,26 @@ You can also configure the email server using environment variables, which is pa
 
 #### Available Environment Variables
 
-| Variable                                      | Description                                            | Default       | Required |
-| --------------------------------------------- | ------------------------------------------------------ | ------------- | -------- |
-| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                     | `"default"`   | No       |
-| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                           | Email prefix  | No       |
-| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                          | -             | Yes      |
-| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                         | Same as email | No       |
-| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                         | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                       | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                       | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                        | `true`        | No       |
-| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed) | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                       | -             | Yes      |
-| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                       | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                        | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                        | `false`       | No       |
-| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)      | `true`        | No       |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                             | `false`       | No       |
-| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
-| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
+| Variable                                      | Description                                                                                                                                | Default       | Required |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | -------- |
+| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                                                                                                         | `"default"`   | No       |
+| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                                                                                                               | Email prefix  | No       |
+| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                                                                                                              | -             | Yes      |
+| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                                                                                                             | Same as email | No       |
+| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                                                                                                             | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                                                                                                           | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                                                                                                           | `993`         | No       |
+| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                                                                                                            | `true`        | No       |
+| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed)                                                                                     | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                                                                                                           | -             | Yes      |
+| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                                                                                                           | `465`         | No       |
+| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                                                                                                            | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                                                                                                            | `false`       | No       |
+| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)                                                                                          | `true`        | No       |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                                                                                                                 | `false`       | No       |
+| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                                                                                                       | `true`        | No       |
+| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)                                                                                           | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Comma-separated list of permitted sender address patterns. Supports fnmatch wildcards (e.g. `*@example.com`). Empty = allow all (default). | -             | No       |
 
 ### Enabling Attachment Downloads
 
@@ -151,6 +152,48 @@ sent_folder_name = "INBOX.Sent"
 ```
 
 **To disable saving to Sent folder**, set `MCP_EMAIL_SERVER_SAVE_TO_SENT=false` or `save_to_sent = false` in your TOML config.
+
+### Filtering Incoming Email (Sender Allowlist)
+
+By default, the MCP client can read emails from any sender. You can restrict this to a
+trusted set of senders using the `allowed_senders` option, protecting the AI from spam
+and prompt-injection attempts via email.
+
+**Option 1: Environment Variable**
+
+```json
+{
+  "mcpServers": {
+    "zerolib-email": {
+      "command": "uvx",
+      "args": ["mcp-email-server@latest", "stdio"],
+      "env": {
+        "MCP_EMAIL_SERVER_ALLOWED_SENDERS": "*@trusted-company.com,alice@example.com"
+      }
+    }
+  }
+}
+```
+
+**Option 2: TOML Configuration**
+
+```toml
+allowed_senders = ["*@trusted-company.com", "alice@example.com"]
+```
+
+> **Note:** This setting must be at the **top level** of the config file, not inside an
+> `[[emails]]` block. If placed inside `[[emails]]`, it is silently ignored with no error.
+
+If `allowed_senders` is not set or left empty, no filtering is applied and the MCP client
+can read email from any sender (backwards-compatible default). When non-empty,
+`list_emails_metadata` and `get_emails_content` silently exclude emails from unlisted
+senders. Patterns support Unix shell-style wildcards via `fnmatch` (`*@example.com`
+matches any address at that domain; `alice*@example.com` matches any address starting
+with `alice` at that domain). Matching is case-insensitive. Call `list_allowed_senders`
+at the start of a session to check which senders the MCP client has access to.
+
+Emails from filtered senders remain visible in your normal mail client — only the MCP
+client's view is restricted.
 
 ### Self-Signed Certificates (e.g., ProtonMail Bridge)
 
