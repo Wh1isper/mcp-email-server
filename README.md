@@ -84,6 +84,10 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)                                                                                           | -             | No       |
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Comma-separated list of permitted sender address patterns. Supports fnmatch wildcards (e.g. `*@example.com`). Empty = allow all (default). | -             | No       |
 
+> **Note:** Unknown keys in the TOML config file are silently ignored. This means typos,
+> keys from older versions, or settings from a different feature branch will not cause
+> the server to crash.
+
 ### Enabling Attachment Downloads
 
 By default, downloading email attachments is disabled for security reasons. To enable this feature, you can either:
