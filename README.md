@@ -82,6 +82,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                                                                                                                 | `false`       | No       |
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                                                                                                       | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)                                                                                           | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Comma-separated list of permitted recipient addresses. Empty = allow all (default). Example: `alice@example.com,bob@example.com`           | -             | No       |
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Comma-separated list of permitted sender address patterns. Supports fnmatch wildcards (e.g. `*@example.com`). Empty = allow all (default). | -             | No       |
 
 > **Note:** Unknown keys in the TOML config file are silently ignored. This means typos,
@@ -156,6 +157,34 @@ sent_folder_name = "INBOX.Sent"
 ```
 
 **To disable saving to Sent folder**, set `MCP_EMAIL_SERVER_SAVE_TO_SENT=false` or `save_to_sent = false` in your TOML config.
+
+### Restricting Recipients (Allowlist)
+
+By default, the MCP client can send email to any address. You can restrict sends to a trusted set of addresses using the `allowed_recipients` option.
+
+**Option 1: Environment Variable**
+
+```json
+{
+  "mcpServers": {
+    "zerolib-email": {
+      "command": "uvx",
+      "args": ["mcp-email-server@latest", "stdio"],
+      "env": {
+        "MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS": "alice@example.com,bob@example.com"
+      }
+    }
+  }
+}
+```
+
+**Option 2: TOML Configuration**
+
+```toml
+allowed_recipients = ["alice@example.com", "bob@example.com"]
+```
+
+When non-empty, `send_email` rejects any recipient (To, CC, BCC) not in the list with a clear error. Addresses are matched case-insensitively. Use the `list_allowed_recipients` tool to let the MCP client discover permitted addresses before sending.
 
 ### Filtering Incoming Email (Sender Allowlist)
 
