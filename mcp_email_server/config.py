@@ -237,7 +237,9 @@ class Settings(BaseSettings):
     enable_attachment_download: bool = False
     allowed_senders: list[str] = []
 
-    model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
+    model_config = SettingsConfigDict(
+        toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always", extra="ignore"
+    )
 
     def __init__(self, **data: Any) -> None:
         """Initialize Settings with support for environment variables."""
