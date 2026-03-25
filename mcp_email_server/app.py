@@ -133,7 +133,7 @@ async def list_emails_metadata(
     if allowed:
         result.emails = [e for e in result.emails if _sender_allowed(e.sender, allowed)]
     # Note: result.total reflects the IMAP server-side count and is intentionally not adjusted.
-    # See known limitations in the spec.
+    # See "Known limitation" in the README's "Filtering Incoming Email (Sender Allowlist)" section.
     return result
 
 

@@ -192,6 +192,11 @@ matches any address at that domain; `alice*@example.com` matches any address sta
 with `alice` at that domain). Matching is case-insensitive. Call `list_allowed_senders`
 at the start of a session to check which senders the MCP client has access to.
 
+> **Known limitation:** The `total` field returned by `list_emails_metadata` reflects the
+> IMAP server-side message count and is not adjusted after sender filtering. The number of
+> emails in the response may therefore be lower than `total`. Correcting `total` would
+> require fetching all pages from the server, which is impractical.
+
 Emails from filtered senders remain visible in your normal mail client — only the MCP
 client's view is restricted.
 
