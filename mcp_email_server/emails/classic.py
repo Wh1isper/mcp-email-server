@@ -572,7 +572,7 @@ class EmailClient:
 
     async def _fetch_email_with_formats(self, imap, email_id: str) -> list | None:
         """Try different fetch formats to get email data."""
-        fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
+        fetch_formats = ["BODY.PEEK[]", "(BODY.PEEK[])", "RFC822", "BODY[]"]
 
         for fetch_format in fetch_formats:
             try:
@@ -1084,7 +1084,9 @@ class ClassicEmailHandler(EmailHandler):
             total=total,
         )
 
-    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> EmailContentBatchResponse:
+    async def get_emails_content(
+        self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
+    ) -> EmailContentBatchResponse:
         """Batch retrieve email body content"""
         emails = []
         failed_ids = []
@@ -1110,6 +1112,10 @@ class ClassicEmailHandler(EmailHandler):
             except Exception as e:
                 logger.error(f"Failed to retrieve email {email_id}: {e}")
                 failed_ids.append(email_id)
+
+        if mark_as_read and emails:
+            successful_ids = [e.email_id for e in emails]
+            await self.incoming_client.mark_emails(successful_ids, "read", mailbox)
 
         return EmailContentBatchResponse(
             emails=emails,

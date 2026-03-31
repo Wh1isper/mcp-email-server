@@ -113,9 +113,13 @@ async def get_emails_content(
         ),
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
+    mark_as_read: Annotated[
+        bool,
+        Field(default=False, description="Mark fetched emails as read. Default: False (emails remain unread)."),
+    ] = False,
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids, mailbox)
+    return await handler.get_emails_content(email_ids, mailbox, mark_as_read=mark_as_read)
 
 
 @mcp.tool(

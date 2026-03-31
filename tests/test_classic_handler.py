@@ -365,6 +365,67 @@ class TestClassicEmailHandler:
             # Verify the client method was called correctly
             mock_get_body.assert_called_once_with("123", "INBOX")
 
+    @pytest.mark.asyncio
+    async def test_get_emails_content_mark_as_read_true(self, classic_handler):
+        """Test that mark_as_read=True calls mark_emails on successful fetches."""
+        now = datetime.now(timezone.utc)
+        email_data = {
+            "email_id": "123",
+            "message_id": "<test@example.com>",
+            "subject": "Test",
+            "from": "sender@example.com",
+            "to": ["recipient@example.com"],
+            "date": now,
+            "body": "Test body",
+            "attachments": [],
+        }
+
+        mock_get_body = AsyncMock(return_value=email_data)
+        mock_mark = AsyncMock(return_value=(["123"], []))
+
+        with (
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get_body),
+            patch.object(classic_handler.incoming_client, "mark_emails", mock_mark),
+        ):
+            result = await classic_handler.get_emails_content(
+                email_ids=["123"],
+                mailbox="INBOX",
+                mark_as_read=True,
+            )
+
+            assert result.retrieved_count == 1
+            mock_mark.assert_called_once_with(["123"], "read", "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_mark_as_read_false(self, classic_handler):
+        """Test that mark_as_read=False (default) does not call mark_emails."""
+        now = datetime.now(timezone.utc)
+        email_data = {
+            "email_id": "123",
+            "message_id": "<test@example.com>",
+            "subject": "Test",
+            "from": "sender@example.com",
+            "to": ["recipient@example.com"],
+            "date": now,
+            "body": "Test body",
+            "attachments": [],
+        }
+
+        mock_get_body = AsyncMock(return_value=email_data)
+        mock_mark = AsyncMock()
+
+        with (
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get_body),
+            patch.object(classic_handler.incoming_client, "mark_emails", mock_mark),
+        ):
+            result = await classic_handler.get_emails_content(
+                email_ids=["123"],
+                mailbox="INBOX",
+            )
+
+            assert result.retrieved_count == 1
+            mock_mark.assert_not_called()
+
 
 class TestEmailClientBatchMethods:
     """Test batch fetch methods for performance optimization."""
