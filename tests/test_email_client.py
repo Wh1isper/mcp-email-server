@@ -721,3 +721,139 @@ class TestBatchFetchHeaders:
         assert len(result) == 2
         assert result["100"]["subject"] == "First"
         assert result["200"]["subject"] == "Second"
+
+
+class TestMarkEmails:
+    """Tests for mark_emails method."""
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_success(self, email_client):
+        """Test marking emails as read successfully."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(return_value=(None, None))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            marked_ids, failed_ids = await email_client.mark_emails(
+                email_ids=["123", "456"],
+                mark_as="read",
+                mailbox="INBOX",
+            )
+
+            assert marked_ids == ["123", "456"]
+            assert failed_ids == []
+            # Verify +FLAGS was used for marking as read
+            calls = mock_imap.uid.call_args_list
+            assert len(calls) == 2
+            assert calls[0][0] == ("store", "123", "+FLAGS", r"(\Seen)")
+            assert calls[1][0] == ("store", "456", "+FLAGS", r"(\Seen)")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_unread_success(self, email_client):
+        """Test marking emails as unread successfully."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(return_value=(None, None))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            marked_ids, failed_ids = await email_client.mark_emails(
+                email_ids=["123", "456"],
+                mark_as="unread",
+                mailbox="INBOX",
+            )
+
+            assert marked_ids == ["123", "456"]
+            assert failed_ids == []
+            # Verify -FLAGS was used for marking as unread
+            calls = mock_imap.uid.call_args_list
+            assert len(calls) == 2
+            assert calls[0][0] == ("store", "123", "-FLAGS", r"(\Seen)")
+            assert calls[1][0] == ("store", "456", "-FLAGS", r"(\Seen)")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_partial_failure(self, email_client):
+        """Test marking emails with some failures."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        # First call succeeds, second raises exception
+        mock_imap.uid = AsyncMock(side_effect=[None, Exception("Email not found")])
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            marked_ids, failed_ids = await email_client.mark_emails(
+                email_ids=["123", "456"],
+                mark_as="read",
+                mailbox="INBOX",
+            )
+
+            assert marked_ids == ["123"]
+            assert failed_ids == ["456"]
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_invalid_mark_as_value(self, email_client):
+        """Test that invalid mark_as value raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            await email_client.mark_emails(
+                email_ids=["123"],
+                mark_as="invalid",
+                mailbox="INBOX",
+            )
+        assert "Invalid mark_as value" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_custom_mailbox(self, email_client):
+        """Test marking emails in a custom mailbox."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(return_value=(None, None))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            await email_client.mark_emails(
+                email_ids=["123"],
+                mark_as="read",
+                mailbox="[Gmail]/All Mail",
+            )
+
+            # Verify custom mailbox was selected (quoted)
+            mock_imap.select.assert_called_once_with('"[Gmail]/All Mail"')
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_logout_error(self, email_client):
+        """Test mark_emails handles logout errors gracefully (covers logout exception handler)."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(return_value=(None, None))
+        mock_imap.logout = AsyncMock(side_effect=OSError("Connection closed"))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            # Should complete successfully despite logout error
+            marked_ids, failed_ids = await email_client.mark_emails(
+                email_ids=["123"],
+                mark_as="read",
+                mailbox="INBOX",
+            )
+            assert marked_ids == ["123"]
+            assert failed_ids == []

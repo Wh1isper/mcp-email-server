@@ -14,6 +14,7 @@ from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
+    EmailMarkResponse,
     EmailMetadataPageResponse,
 )
 
@@ -194,6 +195,25 @@ async def delete_emails(
     if failed_ids:
         result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
     return result
+
+
+@mcp.tool(
+    description="Mark one or more emails as read or unread. Use list_emails_metadata first to get the email_id."
+)
+async def mark_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to mark (obtained from list_emails_metadata)."),
+    ],
+    mark_as: Annotated[
+        Literal["read", "unread"],
+        Field(description="Mark emails as 'read' or 'unread'."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="IMAP folder path. Standard: INBOX, Sent, Drafts, Trash. Provider-specific: Gmail uses '[Gmail]/...' prefix; ProtonMail Bridge uses 'Folders/<name>' and 'Labels/<name>'.")] = "INBOX",
+) -> EmailMarkResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.mark_emails(email_ids, mark_as, mailbox)
 
 
 @mcp.tool(

@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from mcp_email_server.emails.models import (
         AttachmentDownloadResponse,
         EmailContentBatchResponse,
+        EmailMarkResponse,
         EmailMetadataPageResponse,
     )
 
@@ -83,6 +84,25 @@ class EmailHandler(abc.ABC):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
         Delete emails by their IDs. Returns (deleted_ids, failed_ids)
+        """
+
+    @abc.abstractmethod
+    async def mark_emails(
+        self,
+        email_ids: list[str],
+        mark_as: str,
+        mailbox: str = "INBOX",
+    ) -> "EmailMarkResponse":
+        """
+        Mark emails as read or unread.
+
+        Args:
+            email_ids: List of email UIDs to mark.
+            mark_as: Either "read" or "unread".
+            mailbox: The mailbox containing the emails (default: "INBOX").
+
+        Returns:
+            EmailMarkResponse with operation results.
         """
 
     @abc.abstractmethod

@@ -24,6 +24,7 @@ from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailBodyResponse,
     EmailContentBatchResponse,
+    EmailMarkResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
 )
@@ -982,6 +983,43 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def mark_emails(
+        self, email_ids: list[str], mark_as: str, mailbox: str = "INBOX"
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read or unread. Returns (marked_ids, failed_ids)."""
+        if mark_as == "read":
+            flag_op = "+FLAGS"
+        elif mark_as == "unread":
+            flag_op = "-FLAGS"
+        else:
+            raise ValueError(f"Invalid mark_as value: {mark_as}. Must be 'read' or 'unread'.")
+
+        imap = self._imap_connect()
+        marked_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, flag_op, r"(\Seen)")
+                    marked_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} as {mark_as}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return marked_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1110,6 +1148,22 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def mark_emails(
+        self,
+        email_ids: list[str],
+        mark_as: str,
+        mailbox: str = "INBOX",
+    ) -> EmailMarkResponse:
+        """Mark emails as read or unread."""
+        marked_ids, failed_ids = await self.incoming_client.mark_emails(email_ids, mark_as, mailbox)
+        return EmailMarkResponse(
+            success=len(failed_ids) == 0,
+            marked_ids=marked_ids,
+            failed_ids=failed_ids,
+            mailbox=mailbox,
+            marked_as=mark_as,
+        )
 
     async def download_attachment(
         self,
