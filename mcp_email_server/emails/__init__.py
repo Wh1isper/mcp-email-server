@@ -7,6 +7,9 @@ if TYPE_CHECKING:
         AttachmentDownloadResponse,
         EmailContentBatchResponse,
         EmailMetadataPageResponse,
+        EmailMoveResponse,
+        FolderListResponse,
+        FolderOperationResponse,
     )
 
 
@@ -104,4 +107,88 @@ class EmailHandler(abc.ABC):
 
         Returns:
             AttachmentDownloadResponse with download result information.
+        """
+
+    @abc.abstractmethod
+    async def list_folders(self) -> "FolderListResponse":
+        """
+        List all folders/mailboxes for the account.
+
+        Returns:
+            FolderListResponse with list of folders and their metadata.
+        """
+
+    @abc.abstractmethod
+    async def move_emails(
+        self,
+        email_ids: list[str],
+        destination_folder: str,
+        source_mailbox: str = "INBOX",
+    ) -> "EmailMoveResponse":
+        """
+        Move emails to a destination folder.
+
+        Args:
+            email_ids: List of email UIDs to move.
+            destination_folder: The target folder name.
+            source_mailbox: The source mailbox (default: "INBOX").
+
+        Returns:
+            EmailMoveResponse with operation results.
+        """
+
+    @abc.abstractmethod
+    async def copy_emails(
+        self,
+        email_ids: list[str],
+        destination_folder: str,
+        source_mailbox: str = "INBOX",
+    ) -> "EmailMoveResponse":
+        """
+        Copy emails to a destination folder (preserves original).
+
+        Args:
+            email_ids: List of email UIDs to copy.
+            destination_folder: The target folder name.
+            source_mailbox: The source mailbox (default: "INBOX").
+
+        Returns:
+            EmailMoveResponse with operation results.
+        """
+
+    @abc.abstractmethod
+    async def create_folder(self, folder_name: str) -> "FolderOperationResponse":
+        """
+        Create a new folder/mailbox.
+
+        Args:
+            folder_name: The name of the folder to create.
+
+        Returns:
+            FolderOperationResponse with operation result.
+        """
+
+    @abc.abstractmethod
+    async def delete_folder(self, folder_name: str) -> "FolderOperationResponse":
+        """
+        Delete a folder/mailbox.
+
+        Args:
+            folder_name: The name of the folder to delete.
+
+        Returns:
+            FolderOperationResponse with operation result.
+        """
+
+    @abc.abstractmethod
+    async def rename_folder(self, old_name: str, new_name: str) -> "FolderOperationResponse":
+        """
+        Rename a folder/mailbox.
+
+        Args:
+            old_name: The current folder name.
+            new_name: The new folder name.
+
+        Returns:
+            FolderOperationResponse with operation result.
         """

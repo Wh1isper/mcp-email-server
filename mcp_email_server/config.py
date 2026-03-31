@@ -235,6 +235,7 @@ class Settings(BaseSettings):
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
+    enable_folder_management: bool = False
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
@@ -247,6 +248,12 @@ class Settings(BaseSettings):
         if env_enable_attachment is not None:
             self.enable_attachment_download = _parse_bool_env(env_enable_attachment, False)
             logger.info(f"Set enable_attachment_download={self.enable_attachment_download} from environment variable")
+
+        # Check for enable_folder_management from environment variable
+        env_enable_folder = os.getenv("MCP_EMAIL_SERVER_ENABLE_FOLDER_MANAGEMENT")
+        if env_enable_folder is not None:
+            self.enable_folder_management = _parse_bool_env(env_enable_folder, False)
+            logger.info(f"Set enable_folder_management={self.enable_folder_management} from environment variable")
 
         # Check for email configuration from environment variables
         env_email = EmailSettings.from_env()

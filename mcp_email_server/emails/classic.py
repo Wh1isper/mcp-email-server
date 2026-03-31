@@ -26,6 +26,10 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    EmailMoveResponse,
+    Folder,
+    FolderListResponse,
+    FolderOperationResponse,
 )
 from mcp_email_server.log import logger
 
@@ -982,6 +986,237 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    @staticmethod
+    def _parse_list_response(folder_data: bytes | str) -> Folder | None:
+        """Parse a single IMAP LIST response line into a Folder object.
+
+        IMAP LIST response format: (flags) "delimiter" "name"
+        Example: (\\HasNoChildren \\Sent) "/" "Sent"
+        """
+        folder_str = folder_data.decode("utf-8") if isinstance(folder_data, bytes) else str(folder_data)
+
+        # Skip empty or invalid responses
+        if not folder_str or folder_str == "LIST completed.":
+            return None
+
+        try:
+            # Extract flags (content between first set of parentheses)
+            flags_start = folder_str.find("(")
+            flags_end = folder_str.find(")")
+            if flags_start == -1 or flags_end == -1:
+                return None
+
+            flags_str = folder_str[flags_start + 1 : flags_end]
+            flags = [f.strip() for f in flags_str.split() if f.strip()]
+
+            # Extract delimiter and name from the rest
+            # Format after flags: "delimiter" "name"
+            rest = folder_str[flags_end + 1 :].strip()
+            parts = rest.split('"')
+            # parts should be like: ['', '/', ' ', 'INBOX', '']
+            if len(parts) >= 4:
+                delimiter = parts[1]
+                folder_name = parts[3]
+                return Folder(name=folder_name, delimiter=delimiter, flags=flags)
+
+        except Exception as e:
+            logger.debug(f"Error parsing folder response '{folder_str}': {e}")
+
+        return None
+
+    async def list_folders(self) -> list[Folder]:
+        """List all folders/mailboxes."""
+        imap = self._imap_connect()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            _, folder_data = await imap.list('""', "*")
+
+            folders = []
+            for item in folder_data:
+                folder = self._parse_list_response(item)
+                if folder:
+                    folders.append(folder)
+
+            logger.info(f"Found {len(folders)} folders")
+            return folders
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def copy_emails(
+        self,
+        email_ids: list[str],
+        destination_folder: str,
+        source_mailbox: str = "INBOX",
+    ) -> tuple[list[str], list[str]]:
+        """Copy emails to a destination folder. Returns (copied_ids, failed_ids)."""
+        imap = self._imap_connect()
+        copied_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            for email_id in email_ids:
+                try:
+                    result = await imap.uid("copy", email_id, _quote_mailbox(destination_folder))
+                    if result[0] == "OK":
+                        copied_ids.append(email_id)
+                    else:
+                        logger.error(f"Failed to copy email {email_id}: {result}")
+                        failed_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to copy email {email_id}: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return copied_ids, failed_ids
+
+    async def move_emails(
+        self,
+        email_ids: list[str],
+        destination_folder: str,
+        source_mailbox: str = "INBOX",
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to a destination folder. Returns (moved_ids, failed_ids).
+
+        Attempts to use MOVE command first (RFC 6851), falls back to COPY + DELETE.
+        """
+        imap = self._imap_connect()
+        moved_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(source_mailbox))
+
+            for email_id in email_ids:
+                try:
+                    # Try MOVE command first (RFC 6851)
+                    try:
+                        result = await imap.uid("move", email_id, _quote_mailbox(destination_folder))
+                        if result[0] == "OK":
+                            moved_ids.append(email_id)
+                            logger.debug(f"Moved email {email_id} to {destination_folder} using MOVE")
+                            continue
+                    except Exception as move_error:
+                        logger.debug(f"MOVE command failed, falling back to COPY+DELETE: {move_error}")
+
+                    # Fallback: COPY + mark as deleted
+                    copy_result = await imap.uid("copy", email_id, _quote_mailbox(destination_folder))
+                    if copy_result[0] == "OK":
+                        await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                        moved_ids.append(email_id)
+                        logger.debug(f"Moved email {email_id} to {destination_folder} using COPY+DELETE")
+                    else:
+                        logger.error(f"Failed to copy email {email_id}: {copy_result}")
+                        failed_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            if moved_ids:
+                await imap.expunge()
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
+    async def create_folder(self, folder_name: str) -> tuple[bool, str]:
+        """Create a new folder. Returns (success, message)."""
+        imap = self._imap_connect()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            result = await imap.create(_quote_mailbox(folder_name))
+            if result[0] == "OK":
+                logger.info(f"Created folder: {folder_name}")
+                return True, f"Folder '{folder_name}' created successfully"
+            else:
+                logger.error(f"Failed to create folder {folder_name}: {result}")
+                return False, f"Failed to create folder: {result}"
+        except Exception as e:
+            logger.error(f"Error creating folder {folder_name}: {e}")
+            return False, f"Error creating folder: {e}"
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def delete_folder(self, folder_name: str) -> tuple[bool, str]:
+        """Delete a folder. Returns (success, message)."""
+        imap = self._imap_connect()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            result = await imap.delete(_quote_mailbox(folder_name))
+            if result[0] == "OK":
+                logger.info(f"Deleted folder: {folder_name}")
+                return True, f"Folder '{folder_name}' deleted successfully"
+            else:
+                logger.error(f"Failed to delete folder {folder_name}: {result}")
+                return False, f"Failed to delete folder: {result}"
+        except Exception as e:
+            logger.error(f"Error deleting folder {folder_name}: {e}")
+            return False, f"Error deleting folder: {e}"
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+    async def rename_folder(self, old_name: str, new_name: str) -> tuple[bool, str]:
+        """Rename a folder. Returns (success, message)."""
+        imap = self._imap_connect()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            result = await imap.rename(_quote_mailbox(old_name), _quote_mailbox(new_name))
+            if result[0] == "OK":
+                logger.info(f"Renamed folder '{old_name}' to '{new_name}'")
+                return True, f"Folder renamed from '{old_name}' to '{new_name}'"
+            else:
+                logger.error(f"Failed to rename folder {old_name}: {result}")
+                return False, f"Failed to rename folder: {result}"
+        except Exception as e:
+            logger.error(f"Error renaming folder {old_name}: {e}")
+            return False, f"Error renaming folder: {e}"
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1136,4 +1371,68 @@ class ClassicEmailHandler(EmailHandler):
             mime_type=result["mime_type"],
             size=result["size"],
             saved_path=result["saved_path"],
+        )
+
+    async def list_folders(self) -> FolderListResponse:
+        """List all folders/mailboxes for the account."""
+        folders = await self.incoming_client.list_folders()
+        return FolderListResponse(folders=folders, total=len(folders))
+
+    async def move_emails(
+        self,
+        email_ids: list[str],
+        destination_folder: str,
+        source_mailbox: str = "INBOX",
+    ) -> EmailMoveResponse:
+        """Move emails to a destination folder."""
+        moved_ids, failed_ids = await self.incoming_client.move_emails(email_ids, destination_folder, source_mailbox)
+        return EmailMoveResponse(
+            success=len(failed_ids) == 0,
+            moved_ids=moved_ids,
+            failed_ids=failed_ids,
+            source_mailbox=source_mailbox,
+            destination_folder=destination_folder,
+        )
+
+    async def copy_emails(
+        self,
+        email_ids: list[str],
+        destination_folder: str,
+        source_mailbox: str = "INBOX",
+    ) -> EmailMoveResponse:
+        """Copy emails to a destination folder (preserves original)."""
+        copied_ids, failed_ids = await self.incoming_client.copy_emails(email_ids, destination_folder, source_mailbox)
+        return EmailMoveResponse(
+            success=len(failed_ids) == 0,
+            moved_ids=copied_ids,
+            failed_ids=failed_ids,
+            source_mailbox=source_mailbox,
+            destination_folder=destination_folder,
+        )
+
+    async def create_folder(self, folder_name: str) -> FolderOperationResponse:
+        """Create a new folder/mailbox."""
+        success, message = await self.incoming_client.create_folder(folder_name)
+        return FolderOperationResponse(
+            success=success,
+            folder_name=folder_name,
+            message=message,
+        )
+
+    async def delete_folder(self, folder_name: str) -> FolderOperationResponse:
+        """Delete a folder/mailbox."""
+        success, message = await self.incoming_client.delete_folder(folder_name)
+        return FolderOperationResponse(
+            success=success,
+            folder_name=folder_name,
+            message=message,
+        )
+
+    async def rename_folder(self, old_name: str, new_name: str) -> FolderOperationResponse:
+        """Rename a folder/mailbox."""
+        success, message = await self.incoming_client.rename_folder(old_name, new_name)
+        return FolderOperationResponse(
+            success=success,
+            folder_name=new_name,
+            message=message,
         )

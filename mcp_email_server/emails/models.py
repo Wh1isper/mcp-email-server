@@ -63,3 +63,36 @@ class AttachmentDownloadResponse(BaseModel):
     mime_type: str
     size: int
     saved_path: str
+
+
+class Folder(BaseModel):
+    """IMAP folder/mailbox information"""
+
+    name: str
+    delimiter: str
+    flags: list[str]
+
+
+class FolderListResponse(BaseModel):
+    """Response for list_folders operation"""
+
+    folders: list[Folder]
+    total: int
+
+
+class FolderOperationResponse(BaseModel):
+    """Response for folder operations (create, delete, rename)"""
+
+    success: bool
+    folder_name: str
+    message: str
+
+
+class EmailMoveResponse(BaseModel):
+    """Response for move/copy email operations"""
+
+    success: bool
+    moved_ids: list[str]
+    failed_ids: list[str]
+    source_mailbox: str
+    destination_folder: str
