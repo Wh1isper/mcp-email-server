@@ -321,7 +321,9 @@ class TestMcpTools:
             assert result.emails[1].email_id == "12346"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX", mark_as_read=False)
+            mock_handler.get_emails_content.assert_called_once_with(
+                ["12345", "12346", "12347"], "INBOX", mark_as_read=False
+            )
 
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
