@@ -982,7 +982,6 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
-
     async def move_emails(
         self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
     ) -> tuple[list[str], list[str]]:

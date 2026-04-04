@@ -206,7 +206,9 @@ async def move_emails(
         Field(description="List of email_id to move (obtained from list_emails_metadata)."),
     ],
     destination_mailbox: Annotated[str, Field(description="The destination mailbox/folder to move emails to.")],
-    source_mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox containing the emails.")] = "INBOX",
+    source_mailbox: Annotated[
+        str, Field(default="INBOX", description="The source mailbox containing the emails.")
+    ] = "INBOX",
 ) -> str:
     handler = dispatch_handler(account_name)
     moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
