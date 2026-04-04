@@ -55,6 +55,14 @@ class EmailContentBatchResponse(BaseModel):
     failed_ids: list[str]
 
 
+class MailboxInfo(BaseModel):
+    """IMAP mailbox/folder information"""
+
+    name: str
+    delimiter: str
+    flags: list[str]
+
+
 class AttachmentDownloadResponse(BaseModel):
     """Attachment download response"""
 

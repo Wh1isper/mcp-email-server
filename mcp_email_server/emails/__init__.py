@@ -7,6 +7,7 @@ if TYPE_CHECKING:
         AttachmentDownloadResponse,
         EmailContentBatchResponse,
         EmailMetadataPageResponse,
+        MailboxInfo,
     )
 
 
@@ -99,12 +100,16 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def list_mailboxes(self) -> list[str]:
+    async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list["MailboxInfo"]:
         """
-        List all available mailboxes/folders in the account.
+        List available mailboxes/folders in the account.
+
+        Args:
+            pattern: IMAP LIST pattern (e.g., "*" for all, "INBOX.*" for INBOX children).
+            reference: IMAP LIST reference name (namespace prefix).
 
         Returns:
-            List of mailbox names.
+            List of MailboxInfo with name, delimiter, and flags.
         """
 
     @abc.abstractmethod

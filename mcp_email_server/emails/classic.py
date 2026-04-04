@@ -985,7 +985,7 @@ class EmailClient:
     async def move_emails(
         self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
     ) -> tuple[list[str], list[str]]:
-        """Move emails to a different mailbox. Returns (moved_ids, failed_ids)."""
+        """Move emails to a different mailbox. Uses IMAP MOVE (RFC 6851) with COPY+DELETE fallback."""
         imap = self._imap_connect()
         moved_ids = []
         failed_ids = []
@@ -997,16 +997,21 @@ class EmailClient:
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(source_mailbox))
 
+            has_move = hasattr(imap, "move") and "MOVE" in getattr(imap, "capabilities", ())
+
             for email_id in email_ids:
                 try:
-                    await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
-                    await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    if has_move:
+                        await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                    else:
+                        await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                        await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
                     moved_ids.append(email_id)
                 except Exception as e:
                     logger.error(f"Failed to move email {email_id}: {e}")
                     failed_ids.append(email_id)
 
-            if moved_ids:
+            if not has_move and moved_ids:
                 await imap.expunge()
         finally:
             try:
@@ -1016,8 +1021,10 @@ class EmailClient:
 
         return moved_ids, failed_ids
 
-    async def list_mailboxes(self) -> list[str]:
-        """List all available IMAP mailboxes."""
+    async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[dict]:
+        """List available IMAP mailboxes with flags and delimiter."""
+        from mcp_email_server.emails.models import MailboxInfo
+
         imap = self._imap_connect()
         mailboxes = []
 
@@ -1027,17 +1034,26 @@ class EmailClient:
             await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
 
-            _, data = await imap.list('""', "*")
+            quoted_ref = f'"{reference}"' if reference else '""'
+            _, data = await imap.list(quoted_ref, pattern)
 
             for item in data:
                 if item == b"":
                     continue
                 item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
-                # IMAP LIST response format: (flags) "delimiter" "name"
+                # IMAP LIST response format: (\Flag1 \Flag2) "delimiter" "name"
+                # Parse flags from parentheses
+                flags = []
+                if "(" in item_str and ")" in item_str:
+                    flags_str = item_str[item_str.index("(") + 1 : item_str.index(")")]
+                    flags = [f.strip() for f in flags_str.split() if f.strip()]
+
+                # Parse delimiter and name from quoted parts
                 parts = item_str.split('"')
                 if len(parts) >= 3:
-                    folder_name = parts[-2]
-                    mailboxes.append(folder_name)
+                    delimiter = parts[1]  # First quoted string is delimiter
+                    folder_name = parts[-2]  # Last quoted string is name
+                    mailboxes.append(MailboxInfo(name=folder_name, delimiter=delimiter, flags=flags))
         finally:
             try:
                 await imap.logout()
@@ -1181,9 +1197,9 @@ class ClassicEmailHandler(EmailHandler):
         """Move emails between mailboxes. Returns (moved_ids, failed_ids)."""
         return await self.incoming_client.move_emails(email_ids, source_mailbox, destination_mailbox)
 
-    async def list_mailboxes(self) -> list[str]:
-        """List all available mailboxes."""
-        return await self.incoming_client.list_mailboxes()
+    async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list:
+        """List available mailboxes with flags and delimiter."""
+        return await self.incoming_client.list_mailboxes(pattern, reference)
 
     async def download_attachment(
         self,

@@ -15,6 +15,7 @@ from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
+    MailboxInfo,
 )
 
 mcp = FastMCP("email")
@@ -220,13 +221,21 @@ async def move_emails(
 
 
 @mcp.tool(
-    description="List all available mailboxes/folders for an email account. Useful for discovering folder names before moving emails."
+    description="List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails."
 )
 async def list_mailboxes(
     account_name: Annotated[str, Field(description="The name of the email account.")],
-) -> list[str]:
+    pattern: Annotated[
+        str,
+        Field(default="*", description="IMAP LIST pattern. Use '*' for all folders, 'INBOX.*' for INBOX children."),
+    ] = "*",
+    reference: Annotated[
+        str,
+        Field(default="", description="IMAP LIST reference name (namespace prefix). Usually empty."),
+    ] = "",
+) -> list[MailboxInfo]:
     handler = dispatch_handler(account_name)
-    return await handler.list_mailboxes()
+    return await handler.list_mailboxes(pattern, reference)
 
 
 @mcp.tool(
