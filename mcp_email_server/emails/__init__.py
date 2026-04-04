@@ -86,6 +86,28 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """
+        Move emails between mailboxes. Returns (moved_ids, failed_ids)
+
+        Args:
+            email_ids: List of email UIDs to move.
+            source_mailbox: The mailbox to move emails from.
+            destination_mailbox: The mailbox to move emails to.
+        """
+
+    @abc.abstractmethod
+    async def list_mailboxes(self) -> list[str]:
+        """
+        List all available mailboxes/folders in the account.
+
+        Returns:
+            List of mailbox names.
+        """
+
+    @abc.abstractmethod
     async def download_attachment(
         self,
         email_id: str,
