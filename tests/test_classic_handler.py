@@ -275,6 +275,51 @@ class TestClassicEmailHandler:
             mock_delete.assert_called_once_with(["789"], "Archive")
 
     @pytest.mark.asyncio
+    async def test_mark_emails_as_read(self, classic_handler):
+        """Test mark_emails_as_read method."""
+        mock_mark = AsyncMock(return_value=(["123", "456"], []))
+
+        with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
+            marked_ids, failed_ids = await classic_handler.mark_emails_as_read(
+                email_ids=["123", "456"],
+                mailbox="INBOX",
+            )
+
+            assert marked_ids == ["123", "456"]
+            assert failed_ids == []
+            mock_mark.assert_called_once_with(["123", "456"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_with_failures(self, classic_handler):
+        """Test mark_emails_as_read method with some failures."""
+        mock_mark = AsyncMock(return_value=(["123"], ["456"]))
+
+        with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
+            marked_ids, failed_ids = await classic_handler.mark_emails_as_read(
+                email_ids=["123", "456"],
+                mailbox="INBOX",
+            )
+
+            assert marked_ids == ["123"]
+            assert failed_ids == ["456"]
+            mock_mark.assert_called_once_with(["123", "456"], "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_custom_mailbox(self, classic_handler):
+        """Test mark_emails_as_read method with custom mailbox."""
+        mock_mark = AsyncMock(return_value=(["789"], []))
+
+        with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
+            marked_ids, failed_ids = await classic_handler.mark_emails_as_read(
+                email_ids=["789"],
+                mailbox="Archive",
+            )
+
+            assert marked_ids == ["789"]
+            assert failed_ids == []
+            mock_mark.assert_called_once_with(["789"], "Archive")
+
+    @pytest.mark.asyncio
     async def test_download_attachment(self, classic_handler, tmp_path):
         """Test download_attachment method."""
         save_path = str(tmp_path / "downloaded_attachment.pdf")
