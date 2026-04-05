@@ -5,14 +5,13 @@ Covers the new functionality introduced in PR #147.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
 from mcp_email_server.emails.models import MailboxInfo
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -96,9 +95,7 @@ class TestEmailClientMoveEmails:
         del mock_imap.move  # ensure hasattr(imap, "move") is False
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100", "200"], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100", "200"], "INBOX", "Archive")
 
         assert moved_ids == ["100", "200"]
         assert failed_ids == []
@@ -127,9 +124,7 @@ class TestEmailClientMoveEmails:
         mock_imap.capabilities = ("IMAP4rev1", "MOVE", "IDLE")  # MOVE in capabilities
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100"], "INBOX", "Trash"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Trash")
 
         assert moved_ids == ["100"]
         assert failed_ids == []
@@ -154,9 +149,7 @@ class TestEmailClientMoveEmails:
         mock_imap.uid = AsyncMock(side_effect=side_effects)
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100", "200"], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100", "200"], "INBOX", "Archive")
 
         assert moved_ids == ["100"]
         assert failed_ids == ["200"]
@@ -172,9 +165,7 @@ class TestEmailClientMoveEmails:
         mock_imap.uid = AsyncMock(side_effect=Exception("IMAP error"))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100"], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
 
         assert moved_ids == []
         assert failed_ids == ["100"]
@@ -188,9 +179,7 @@ class TestEmailClientMoveEmails:
         mock_imap.logout = AsyncMock(side_effect=Exception("Logout failed"))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100"], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
 
         # Should still return results despite logout error
         assert moved_ids == ["100"]
@@ -203,9 +192,7 @@ class TestEmailClientMoveEmails:
         del mock_imap.move
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                [], "INBOX", "Archive"
-            )
+            moved_ids, failed_ids = await email_client.move_emails([], "INBOX", "Archive")
 
         assert moved_ids == []
         assert failed_ids == []
@@ -221,9 +208,7 @@ class TestEmailClientMoveEmails:
         mock_imap.uid = AsyncMock(side_effect=Exception("MOVE failed"))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            moved_ids, failed_ids = await email_client.move_emails(
-                ["100"], "INBOX", "Trash"
-            )
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Trash")
 
         assert moved_ids == []
         assert failed_ids == ["100"]
