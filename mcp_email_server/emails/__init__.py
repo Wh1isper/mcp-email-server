@@ -86,6 +86,12 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """
+        Mark emails as read by their IDs. Returns (marked_ids, failed_ids)
+        """
+
+    @abc.abstractmethod
     async def download_attachment(
         self,
         email_id: str,

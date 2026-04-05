@@ -982,6 +982,34 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
+    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Mark emails as read by setting the \\Seen flag. Returns (marked_ids, failed_ids)."""
+        imap = self._imap_connect()
+        marked_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            await imap.select(_quote_mailbox(mailbox))
+
+            for email_id in email_ids:
+                try:
+                    await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    marked_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark email {email_id} as read: {e}")
+                    failed_ids.append(email_id)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return marked_ids, failed_ids
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1110,6 +1138,10 @@ class ClassicEmailHandler(EmailHandler):
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         return await self.incoming_client.delete_emails(email_ids, mailbox)
+
+    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Mark emails as read by their UIDs. Returns (marked_ids, failed_ids)."""
+        return await self.incoming_client.mark_emails_as_read(email_ids, mailbox)
 
     async def download_attachment(
         self,

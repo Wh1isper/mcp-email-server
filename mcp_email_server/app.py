@@ -197,6 +197,26 @@ async def delete_emails(
 
 
 @mcp.tool(
+    description="Mark one or more emails as read by their email_id. Use list_emails_metadata first to get the email_id."
+)
+async def mark_emails_as_read(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to mark as read (obtained from list_emails_metadata)."),
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    marked_ids, failed_ids = await handler.mark_emails_as_read(email_ids, mailbox)
+
+    result = f"Successfully marked {len(marked_ids)} email(s) as read"
+    if failed_ids:
+        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
     description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
 )
 async def download_attachment(
