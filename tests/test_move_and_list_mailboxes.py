@@ -453,7 +453,7 @@ class TestClassicHandlerMoveEmails:
         mock_move = AsyncMock(return_value=(["300"], []))
 
         with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
-            moved, failed = await classic_handler.move_emails(
+            moved, _failed = await classic_handler.move_emails(
                 email_ids=["300"],
                 source_mailbox="Trash",
                 destination_mailbox="INBOX",
