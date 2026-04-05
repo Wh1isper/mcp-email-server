@@ -411,6 +411,73 @@ class TestClassicEmailHandler:
             mock_get_body.assert_called_once_with("123", "INBOX")
 
 
+class TestEmailClientMarkAsRead:
+    """Test EmailClient.mark_emails_as_read with mock IMAP."""
+
+    @pytest.fixture
+    def email_client(self, email_settings):
+        return EmailClient(email_settings.incoming)
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_success(self, email_client, mock_imap):
+        """Test marking emails as read sets \\Seen flag via IMAP STORE."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"1 STORE +FLAGS (\\Seen)"]))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            marked_ids, failed_ids = await email_client.mark_emails_as_read(["123", "456"])
+
+        assert marked_ids == ["123", "456"]
+        assert failed_ids == []
+        assert mock_imap.uid.call_count == 2
+        mock_imap.uid.assert_any_call("store", "123", "+FLAGS", r"(\Seen)")
+        mock_imap.uid.assert_any_call("store", "456", "+FLAGS", r"(\Seen)")
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_partial_failure(self, email_client, mock_imap):
+        """Test marking emails handles partial failures gracefully."""
+        mock_imap.uid = AsyncMock(side_effect=[("OK", []), Exception("IMAP error")])
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            marked_ids, failed_ids = await email_client.mark_emails_as_read(["123", "456"])
+
+        assert marked_ids == ["123"]
+        assert failed_ids == ["456"]
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_custom_mailbox(self, email_client, mock_imap):
+        """Test marking emails in a custom mailbox."""
+        mock_imap.uid = AsyncMock(return_value=("OK", []))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            await email_client.mark_emails_as_read(["123"], mailbox="Archive")
+
+        mock_imap.select.assert_called_once()
+        # Verify the mailbox was quoted and passed to select
+        select_arg = mock_imap.select.call_args[0][0]
+        assert "Archive" in select_arg
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_logout_on_error(self, email_client, mock_imap):
+        """Test that IMAP logout is called even when errors occur."""
+        mock_imap.login = AsyncMock(side_effect=Exception("auth failed"))
+
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            with pytest.raises(Exception, match="auth failed"):
+                await email_client.mark_emails_as_read(["123"])
+
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_empty_list(self, email_client, mock_imap):
+        """Test marking empty list returns empty results."""
+        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
+            marked_ids, failed_ids = await email_client.mark_emails_as_read([])
+
+        assert marked_ids == []
+        assert failed_ids == []
+
+
 class TestEmailClientBatchMethods:
     """Test batch fetch methods for performance optimization."""
 
