@@ -352,7 +352,7 @@ class EmailClient:
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         email_ids: list[bytes],
-        chunk_size: int = 5000,
+        chunk_size: int = 500,
     ) -> dict[str, datetime]:
         """Batch fetch INTERNALDATE for all UIDs in parallel chunks."""
         if not email_ids:
