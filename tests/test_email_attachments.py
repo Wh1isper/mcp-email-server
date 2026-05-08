@@ -1,6 +1,13 @@
 """Test email attachment functionality."""
 
-from unittest.mock import AsyncMock, patch
+import re
+from email import encoders
+from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import make_msgid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -298,3 +305,237 @@ class TestDownloadAttachmentMailboxParam:
 
                 # Verify select was called with quoted special folder
                 mock_imap.select.assert_called_once_with('"[Gmail]/Sent Mail"')
+
+
+def _build_apple_mail_inline_image(image_bytes: bytes = b"\x89PNG\r\n\x1a\n_fake_png_") -> bytes:
+    """Build a multipart/mixed email mimicking Apple Mail (iOS) sending a photo.
+
+    Apple Mail attaches images with ``Content-Disposition: inline`` plus a
+    ``filename`` parameter — not ``attachment``. The strict
+    ``"attachment" in content_disposition`` check used to miss these entirely.
+    """
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = "Ausflug"
+    msg["From"] = "sender@example.com"
+    msg["To"] = "recipient@example.com"
+    msg["Message-ID"] = make_msgid(domain="example.com")
+    msg["Date"] = "Fri, 8 May 2026 19:17:09 +0200"
+
+    # Body part
+    msg.attach(MIMEText("Mach einen passenden Termin im Familienkalender. Siehe Attachment", "plain", "utf-8"))
+
+    # Inline-disposition image with filename — exactly how iOS Mail sends photos.
+    image_part = MIMEBase("image", "png")
+    image_part.set_payload(image_bytes)
+    encoders.encode_base64(image_part)
+    image_part.add_header("Content-Disposition", "inline", filename="ausflug.png")
+    msg.attach(image_part)
+
+    return msg.as_bytes()
+
+
+def _build_email_with_explicit_attachment() -> bytes:
+    """Build a multipart/mixed email with a Content-Disposition: attachment part."""
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = "Report"
+    msg["From"] = "sender@example.com"
+    msg["To"] = "recipient@example.com"
+    msg["Date"] = "Fri, 8 May 2026 19:17:09 +0200"
+    msg.attach(MIMEText("Please see attached report.", "plain", "utf-8"))
+
+    pdf_part = MIMEApplication(b"%PDF-1.4 fake pdf bytes", _subtype="pdf")
+    pdf_part.add_header("Content-Disposition", "attachment", filename="report.pdf")
+    msg.attach(pdf_part)
+    return msg.as_bytes()
+
+
+def _build_email_with_no_filename_inline() -> bytes:
+    """Inline part without filename (e.g. text/html body) must NOT count as attachment."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Hello"
+    msg["From"] = "sender@example.com"
+    msg["To"] = "recipient@example.com"
+    msg["Date"] = "Fri, 8 May 2026 19:17:09 +0200"
+    msg.attach(MIMEText("Hello there", "plain", "utf-8"))
+    msg.attach(MIMEText("<p>Hello there</p>", "html", "utf-8"))
+    return msg.as_bytes()
+
+
+class TestParseAttachmentsInBody:
+    """Tests for attachment detection in ``_parse_email_data``.
+
+    Regression for Apple Mail / iOS-style inline-disposition photos that the
+    legacy strict ``Content-Disposition: attachment`` check was ignoring.
+    """
+
+    def test_inline_image_with_filename_is_detected(self, email_client):
+        """Apple-Mail-style inline photo (Content-Disposition: inline) is reported."""
+        raw_email = _build_apple_mail_inline_image()
+
+        result = email_client._parse_email_data(raw_email, email_id="42")
+
+        assert result["attachments"] == ["ausflug.png"]
+        assert result["body"].startswith("Mach einen passenden Termin")
+        assert result["message_id"] is not None
+
+    def test_explicit_attachment_still_detected(self, email_client):
+        """Backward compatibility: classic Content-Disposition: attachment still works."""
+        raw_email = _build_email_with_explicit_attachment()
+
+        result = email_client._parse_email_data(raw_email, email_id="43")
+
+        assert result["attachments"] == ["report.pdf"]
+        assert result["body"].startswith("Please see attached report")
+
+    def test_alternative_parts_without_filename_are_not_attachments(self, email_client):
+        """text/plain + text/html alternatives have no filenames and must not be reported."""
+        raw_email = _build_email_with_no_filename_inline()
+
+        result = email_client._parse_email_data(raw_email, email_id="44")
+
+        assert result["attachments"] == []
+        assert result["body"] == "Hello there"
+
+    def test_is_attachment_part_helper(self, email_client):
+        """Direct unit test of the new classifier helper."""
+        attachment_email = _build_email_with_explicit_attachment()
+        inline_email = _build_apple_mail_inline_image()
+        plain_email = _build_email_with_no_filename_inline()
+
+        from email.parser import BytesParser
+        from email.policy import default
+
+        for raw, expected_filenames in (
+            (attachment_email, {"report.pdf"}),
+            (inline_email, {"ausflug.png"}),
+            (plain_email, set()),
+        ):
+            msg = BytesParser(policy=default).parsebytes(raw)
+            found = {
+                part.get_filename()
+                for part in msg.walk()
+                if email_client._is_attachment_part(part) and part.get_filename()
+            }
+            assert found == expected_filenames
+
+    def test_is_attachment_part_ignores_non_string_filename(self, email_client):
+        """Truthiness alone must not make a part look like an attachment."""
+        part = MagicMock()
+        part.get.return_value = ""
+        part.get_filename.return_value = MagicMock()
+
+        assert email_client._is_attachment_part(part) is False
+
+
+class TestParseHeadersExposesMessageId:
+    """``_parse_headers`` now surfaces Message-ID for use in metadata listings."""
+
+    def test_message_id_is_included_when_present(self, email_client):
+        raw_headers = (
+            b"From: sender@example.com\r\n"
+            b"To: recipient@example.com\r\n"
+            b"Subject: With Message-ID\r\n"
+            b"Date: Fri, 8 May 2026 19:17:09 +0200\r\n"
+            b"Message-ID: <abc-123@example.com>\r\n"
+            b"\r\n"
+        )
+
+        result = email_client._parse_headers("99", raw_headers)
+
+        assert result is not None
+        assert result["message_id"] == "<abc-123@example.com>"
+        assert result["attachments"] == []
+
+    def test_message_id_is_none_when_missing(self, email_client):
+        raw_headers = b"Subject: No Message-ID\r\n\r\n"
+
+        result = email_client._parse_headers("100", raw_headers)
+
+        assert result is not None
+        assert result["message_id"] is None
+
+
+class TestDownloadInlineAttachment:
+    """``download_attachment`` finds inline-disposition attachments by filename."""
+
+    @staticmethod
+    def _mock_imap():
+        import asyncio
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
+        mock_imap.logout = AsyncMock()
+        return mock_imap
+
+    @pytest.mark.asyncio
+    async def test_download_inline_attachment_succeeds(self, email_client, tmp_path):
+        """An iOS-style inline photo can be downloaded via download_attachment."""
+        save_path = str(tmp_path / "ausflug.png")
+        raw_email = _build_apple_mail_inline_image(b"\x89PNG\r\n\x1a\nactual_inline_png_bytes")
+
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            # Mimic ``_fetch_email_with_formats`` returning a list whose entry [1]
+            # is a bytearray of the raw email body — the shape ``_extract_raw_email``
+            # expects.
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.download_attachment(
+                    email_id="1",
+                    attachment_name="ausflug.png",
+                    save_path=save_path,
+                )
+
+        assert result["attachment_name"] == "ausflug.png"
+        assert result["mime_type"] == "image/png"
+        assert result["size"] > 0
+        # The file was actually written to disk
+        from pathlib import Path
+
+        assert Path(save_path).exists()
+        assert Path(save_path).read_bytes().startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    async def test_download_raises_when_attachment_name_does_not_match(self, email_client, tmp_path):
+        """Attachment parts with other filenames are skipped."""
+        raw_email = _build_email_with_explicit_attachment()
+
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                with pytest.raises(ValueError, match=re.escape("Attachment 'missing.pdf' not found")):
+                    await email_client.download_attachment(
+                        email_id="1",
+                        attachment_name="missing.pdf",
+                        save_path=str(tmp_path / "missing.pdf"),
+                    )
+
+    @pytest.mark.asyncio
+    async def test_download_raises_for_non_multipart_email(self, email_client, tmp_path):
+        """Single-part emails have no attachment parts to download."""
+        raw_email = MIMEText("No attachments here", "plain", "utf-8").as_bytes()
+
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                with pytest.raises(ValueError, match=re.escape("Attachment 'missing.pdf' not found")):
+                    await email_client.download_attachment(
+                        email_id="1",
+                        attachment_name="missing.pdf",
+                        save_path=str(tmp_path / "missing.pdf"),
+                    )

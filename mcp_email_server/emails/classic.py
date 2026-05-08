@@ -142,6 +142,33 @@ class EmailClient:
         except Exception:
             return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _is_attachment_part(part) -> bool:
+        """Determine whether a MIME part should be treated as an attachment.
+
+        A strict check on ``Content-Disposition: attachment`` misses a common case:
+        many clients (notably Apple Mail on iOS/macOS) send images, PDFs and other
+        files with ``Content-Disposition: inline`` (or no disposition header at all)
+        but with a filename parameter on the part. Those parts are real, user-facing
+        attachments — the user uploaded a file and expects it to show up — even
+        though they're inlined into the body via Content-ID references.
+
+        Treat a part as an attachment when:
+          - the disposition explicitly says ``attachment``, OR
+          - the part carries a filename (works for ``inline`` or no disposition).
+
+        Multipart container parts and bodyless text parts have no filename and an
+        empty disposition, so they are correctly excluded.
+        """
+        content_disposition = str(part.get("Content-Disposition", "")).lower()
+        if "attachment" in content_disposition:
+            return True
+        filename = part.get_filename()
+        # Be defensive: only trust real string filenames. (Unconfigured MagicMock
+        # instances in older tests return truthy MagicMock objects from
+        # ``get_filename`` and would otherwise misclassify text parts.)
+        return isinstance(filename, str) and bool(filename)
+
     def _parse_email_data(self, raw_email: bytes, email_id: str | None = None) -> dict[str, Any]:  # noqa: C901
         """Parse raw email data into a structured dictionary."""
         parser = BytesParser(policy=default)
@@ -186,10 +213,10 @@ class EmailClient:
         if email_message.is_multipart():
             for part in email_message.walk():
                 content_type = part.get_content_type()
-                content_disposition = str(part.get("Content-Disposition", ""))
 
-                # Handle attachments
-                if "attachment" in content_disposition:
+                # Handle attachments — including inline-disposition parts with a
+                # filename (Apple Mail commonly sends photos this way).
+                if self._is_attachment_part(part):
                     filename = part.get_filename()
                     if filename:
                         attachments.append(filename)
@@ -295,7 +322,13 @@ class EmailClient:
         return search_criteria or ["ALL"]
 
     def _parse_headers(self, email_id: str, raw_headers: bytes) -> dict[str, Any] | None:
-        """Parse raw email headers into metadata dictionary."""
+        """Parse raw email headers into metadata dictionary.
+
+        Note: this parses only header data (BODY.PEEK[HEADER]) so it cannot
+        populate the attachments list — that requires fetching BODYSTRUCTURE
+        or the full body. The attachments list is intentionally returned
+        empty here; ``_parse_email_data`` populates it from the full body.
+        """
         try:
             parser = BytesParser(policy=default)
             email_message = parser.parsebytes(raw_headers)
@@ -303,12 +336,15 @@ class EmailClient:
             subject = email_message.get("Subject", "")
             sender = email_message.get("From", "")
             date_str = email_message.get("Date", "")
+            # Expose Message-ID for reply threading and de-duplication on the client.
+            message_id = email_message.get("Message-ID")
 
             to_addresses = self._parse_recipients(email_message)
             date = self._parse_date(date_str)
 
             return {
                 "email_id": email_id,
+                "message_id": message_id,
                 "subject": subject,
                 "from": sender,
                 "to": to_addresses,
@@ -671,13 +707,15 @@ class EmailClient:
 
             if email_message.is_multipart():
                 for part in email_message.walk():
-                    content_disposition = str(part.get("Content-Disposition", ""))
-                    if "attachment" in content_disposition:
-                        filename = part.get_filename()
-                        if filename == attachment_name:
-                            attachment_data = part.get_payload(decode=True)
-                            mime_type = part.get_content_type()
-                            break
+                    # Match attachments listed by ``_parse_email_data`` — this includes
+                    # inline-disposition parts with a filename (e.g. iOS Mail photos).
+                    if not self._is_attachment_part(part):
+                        continue
+                    filename = part.get_filename()
+                    if filename == attachment_name:
+                        attachment_data = part.get_payload(decode=True)
+                        mime_type = part.get_content_type()
+                        break
 
             if attachment_data is None:
                 msg = f"Attachment '{attachment_name}' not found in email {email_id}"
