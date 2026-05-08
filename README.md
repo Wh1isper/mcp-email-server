@@ -83,6 +83,36 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
 
+### HTTP Transport Security
+
+HTTP transports (`sse` and `streamable-http`) validate request `Host` and `Origin` headers to protect against DNS rebinding attacks. Localhost is allowed by default. For Docker networks or reverse proxies, configure the expected service names explicitly.
+
+| Variable                              | Description                                                      | Default           |
+| ------------------------------------- | ---------------------------------------------------------------- | ----------------- |
+| `MCP_HOST`                            | HTTP bind host for `streamable-http`                             | `localhost`       |
+| `MCP_PORT`                            | HTTP bind port for `streamable-http`                             | `9557`            |
+| `MCP_ALLOWED_HOSTS`                   | Comma-separated allowed `Host` values. Supports `host:*` ports   | Localhost hosts   |
+| `MCP_ALLOWED_ORIGINS`                 | Comma-separated allowed `Origin` values. Supports `host:*` ports | Localhost origins |
+| `MCP_ENABLE_DNS_REBINDING_PROTECTION` | Enable DNS rebinding protection                                  | `true`            |
+
+Docker Compose example:
+
+```yaml
+services:
+  mcp-email-server:
+    image: ghcr.io/ai-zerolab/mcp-email-server:latest
+    command: ["streamable-http"]
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 9557
+      MCP_ALLOWED_HOSTS: mcp-email-server:*,localhost:*,127.0.0.1:*
+      MCP_ALLOWED_ORIGINS: http://mcp-email-server:*,http://localhost:*,http://127.0.0.1:*
+```
+
+Bare host entries such as `MCP_ALLOWED_HOSTS=mcp-email-server` also allow any port on that host. `MCP_ENABLE_DNS_REBINDING_PROTECTION=false`, `MCP_ALLOWED_HOSTS=*`, or `MCP_ALLOWED_ORIGINS=*` disables Host and Origin validation entirely. Use those options only in isolated local development environments.
+
+IPv6 literals in allowlists should use bracketed notation, such as `[::1]:*` and `http://[::1]:*`.
+
 ### Enabling Attachment Downloads
 
 By default, downloading email attachments is disabled for security reasons. To enable this feature, you can either:
