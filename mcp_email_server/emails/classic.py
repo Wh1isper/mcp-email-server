@@ -113,6 +113,40 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
         logger.warning(f"IMAP ID command failed: {e!s}")
 
 
+async def _imap_login(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    user_name: str,
+    password: str,
+) -> None:
+    """Authenticate to IMAP and fail loudly when the server rejects credentials.
+
+    aioimaplib's ``login()`` returns a Response with a ``.result`` of "OK",
+    "NO", or "BAD". A "NO" response (e.g. wrong credentials, account locked,
+    or a transient rate-limit cool-down on servers like Proton Mail Bridge)
+    does NOT raise — and an unchecked caller will happily proceed to issue
+    SELECT/FETCH on a NONAUTH connection, producing the misleading error
+    ``command SELECT illegal in state NONAUTH``. Worse, each tool call then
+    opens a fresh TCP connection and re-attempts ``LOGIN``, which amplifies
+    rate-limits on servers that count failed-login attempts and locks the
+    account out for tens of minutes.
+
+    Raise immediately on a non-OK result so callers (and end users) see the
+    real error and back off, and so a one-off auth failure does not cascade
+    into a multi-minute lock-out.
+    """
+    response = await imap.login(user_name, password)
+    if response.result == "OK":
+        return
+    detail = " ".join(
+        line.decode("utf-8", errors="replace") if isinstance(line, bytes) else str(line)
+        for line in (response.lines or [])
+    ).strip()
+    raise ConnectionError(
+        f"IMAP login failed for {user_name!r}: {response.result}"
+        + (f" ({detail})" if detail else "")
+    )
+
+
 def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
     """Create SSL context for SMTP/IMAP connections.
 
@@ -511,7 +545,7 @@ class EmailClient:
             await imap.wait_hello_from_server()
 
             # Login and select mailbox
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
 
@@ -628,7 +662,7 @@ class EmailClient:
             await imap.wait_hello_from_server()
 
             # Login and select mailbox
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
@@ -691,7 +725,7 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
 
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
 
@@ -972,7 +1006,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(incoming_server.user_name, incoming_server.password.get_secret_value())
+            await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
 
             # Try to find Sent folder by IMAP \Sent flag first
@@ -1049,7 +1083,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(incoming_server.user_name, incoming_server.password.get_secret_value())
+            await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
 
             result = await imap.select(_quote_mailbox(mailbox))
@@ -1081,6 +1115,8 @@ class EmailClient:
                 logger.warning(f"Failed to append to '{mailbox}': {append_status}")
                 return None
 
+        except ConnectionError:
+            raise
         except Exception as e:
             logger.error(f"Error saving to mailbox '{mailbox}': {e}")
             return None
@@ -1099,7 +1135,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
 
@@ -1129,7 +1165,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
@@ -1161,7 +1197,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(source_mailbox))
             _raise_for_imap_error(select_response, f"SELECT source mailbox {source_mailbox}")
@@ -1208,7 +1244,7 @@ class EmailClient:
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
 
             quoted_ref = _quote_mailbox(reference) if reference else '""'
