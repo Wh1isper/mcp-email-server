@@ -142,8 +142,7 @@ async def _imap_login(
         for line in (response.lines or [])
     ).strip()
     raise ConnectionError(
-        f"IMAP login failed for {user_name!r}: {response.result}"
-        + (f" ({detail})" if detail else "")
+        f"IMAP login failed for {user_name!r}: {response.result}" + (f" ({detail})" if detail else "")
     )
 
 
