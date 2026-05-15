@@ -1050,6 +1050,8 @@ class EmailClient:
             logger.warning("Could not find a valid Sent folder to save the message")
             return False
 
+        except ConnectionError:
+            raise
         except Exception as e:
             logger.error(f"Error saving to Sent folder: {e}")
             return False
