@@ -233,7 +233,7 @@ class TestDownloadAttachmentMailboxParam:
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
-        mock_imap.login = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
         mock_imap.logout = AsyncMock()
 
@@ -261,7 +261,7 @@ class TestDownloadAttachmentMailboxParam:
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
-        mock_imap.login = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
         mock_imap.logout = AsyncMock()
 
@@ -289,7 +289,7 @@ class TestDownloadAttachmentMailboxParam:
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
-        mock_imap.login = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
         mock_imap.logout = AsyncMock()
 
@@ -466,7 +466,7 @@ class TestDownloadInlineAttachment:
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
-        mock_imap.login = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
         mock_imap.logout = AsyncMock()
         return mock_imap

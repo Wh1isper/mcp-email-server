@@ -217,7 +217,7 @@ class TestEmailClient:
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
-        mock_imap.login = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock()
         mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
