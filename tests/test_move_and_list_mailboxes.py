@@ -8,6 +8,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aioimaplib import Response
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
@@ -69,9 +70,9 @@ def _make_mock_imap(**overrides):
     mock._client_task.set_result(None)
     mock.wait_hello_from_server = AsyncMock()
     mock.login = AsyncMock()
-    mock.select = AsyncMock()
-    mock.uid = AsyncMock()
-    mock.expunge = AsyncMock()
+    mock.select = AsyncMock(return_value=("OK", []))
+    mock.uid = AsyncMock(return_value=("OK", []))
+    mock.expunge = AsyncMock(return_value=("OK", []))
     mock.logout = AsyncMock()
     mock.list = AsyncMock(return_value=("OK", []))
     for k, v in overrides.items():
@@ -142,8 +143,8 @@ class TestEmailClientMoveEmails:
 
         # First email succeeds (copy OK, store OK), second email fails on copy
         side_effects = [
-            None,  # copy "100" succeeds
-            None,  # store "100" succeeds
+            Response("OK", [b"copied"]),  # copy "100" succeeds
+            Response("OK", [b"stored"]),  # store "100" succeeds
             Exception("IMAP error"),  # copy "200" fails
         ]
         mock_imap.uid = AsyncMock(side_effect=side_effects)
@@ -212,6 +213,90 @@ class TestEmailClientMoveEmails:
 
         assert moved_ids == []
         assert failed_ids == ["100"]
+
+    @pytest.mark.asyncio
+    async def test_move_emails_copy_no_response_does_not_delete_source(self, email_client):
+        """A COPY NO response should fail the email before STORE \\Deleted is sent."""
+        mock_imap = _make_mock_imap()
+        del mock_imap.move
+        mock_imap.uid = AsyncMock(return_value=Response("NO", [b"[TRYCREATE] mailbox does not exist"]))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Missing")
+
+        assert moved_ids == []
+        assert failed_ids == ["100"]
+        mock_imap.uid.assert_called_once_with("copy", "100", '"Missing"')
+        mock_imap.expunge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_store_no_response_marks_failed(self, email_client):
+        """A STORE NO response should fail the email and skip EXPUNGE."""
+        mock_imap = _make_mock_imap()
+        del mock_imap.move
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                Response("OK", [b"copied"]),
+                Response("NO", [b"store failed"]),
+            ]
+        )
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
+
+        assert moved_ids == []
+        assert failed_ids == ["100"]
+        assert mock_imap.uid.call_count == 2
+        mock_imap.expunge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_move_no_response_marks_failed(self, email_client):
+        """A native MOVE NO response should be reported as a failed move."""
+        mock_imap = _make_mock_imap()
+        mock_imap.move = AsyncMock()
+        mock_imap.capabilities = ("IMAP4rev1", "MOVE")
+        mock_imap.uid = AsyncMock(return_value=Response("NO", [b"move failed"]))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Trash")
+
+        assert moved_ids == []
+        assert failed_ids == ["100"]
+        mock_imap.expunge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_select_no_response_raises(self, email_client):
+        """A source mailbox SELECT NO response should stop before any move commands."""
+        mock_imap = _make_mock_imap()
+        del mock_imap.move
+        mock_imap.select = AsyncMock(return_value=Response("NO", [b"source missing"]))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with pytest.raises(RuntimeError, match="SELECT source mailbox Missing"):
+                await email_client.move_emails(["100"], "Missing", "Archive")
+
+        mock_imap.uid.assert_not_called()
+        mock_imap.expunge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_expunge_no_response_marks_moved_ids_failed(self, email_client):
+        """An EXPUNGE NO response should report copied and flagged emails as failed."""
+        mock_imap = _make_mock_imap()
+        del mock_imap.move
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                Response("OK", [b"copied"]),
+                Response("OK", [b"stored"]),
+            ]
+        )
+        mock_imap.expunge = AsyncMock(return_value=Response("NO", [b"expunge failed"]))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
+
+        assert moved_ids == []
+        assert failed_ids == ["100"]
+        mock_imap.expunge.assert_called_once()
 
 
 # ===========================================================================
@@ -405,6 +490,18 @@ class TestEmailClientListMailboxes:
         assert len(result) == 1
         assert result[0].name == "Junk"
         assert "\\HasNoChildren" in result[0].flags
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_no_response_raises(self, email_client):
+        """A LIST NO response should raise a clear error."""
+        mock_imap = _make_mock_imap()
+        mock_imap.list = AsyncMock(return_value=Response("NO", [b"LIST failed"]))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with pytest.raises(RuntimeError, match="LIST mailboxes with pattern"):
+                await email_client.list_mailboxes()
+
+        mock_imap.logout.assert_called_once()
 
 
 # ===========================================================================
