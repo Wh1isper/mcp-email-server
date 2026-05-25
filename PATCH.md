@@ -12,17 +12,17 @@ Upstream-PR-Kandidat identifiziert oder als Scher-spezifisch markiert ist.
 
 Im Upstream bereits vorhanden — **nicht neu zu bauen**:
 
-| Tool | Status |
-|------|--------|
-| `list_available_accounts` | upstream ✓ |
-| `add_email_account` | upstream ✓ |
-| `list_emails_metadata` | upstream ✓ (mit `seen`/`flagged`/`answered`/`subject`/`from_address`/`to_address`/`before`/`since`/`mailbox`/Pagination/Order — sehr vollständig) |
-| `get_emails_content` | upstream ✓ |
-| `send_email` | upstream ✓ (mit `in_reply_to`, `references`, `attachments`, auto Sent-Folder, `cc`, `bcc`, HTML) |
-| `delete_emails` | upstream ✓ (Bonus, war nicht im Briefing geplant) |
-| `move_emails` | upstream ✓ (Commit `40e7431`, mit MOVE/COPY-Fallback und EXPUNGE — exakt wie im Briefing skizziert) |
-| `list_mailboxes` | upstream ✓ (Commit `40e7431`, ersetzt das geplante `list_folders`) |
-| `download_attachment` | upstream ✓ (mit `enable_attachment_download` Security-Toggle) |
+| Tool                      | Status                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_available_accounts` | upstream ✓                                                                                                                                        |
+| `add_email_account`       | upstream ✓                                                                                                                                        |
+| `list_emails_metadata`    | upstream ✓ (mit `seen`/`flagged`/`answered`/`subject`/`from_address`/`to_address`/`before`/`since`/`mailbox`/Pagination/Order — sehr vollständig) |
+| `get_emails_content`      | upstream ✓                                                                                                                                        |
+| `send_email`              | upstream ✓ (mit `in_reply_to`, `references`, `attachments`, auto Sent-Folder, `cc`, `bcc`, HTML)                                                  |
+| `delete_emails`           | upstream ✓ (Bonus, war nicht im Briefing geplant)                                                                                                 |
+| `move_emails`             | upstream ✓ (Commit `40e7431`, mit MOVE/COPY-Fallback und EXPUNGE — exakt wie im Briefing skizziert)                                               |
+| `list_mailboxes`          | upstream ✓ (Commit `40e7431`, ersetzt das geplante `list_folders`)                                                                                |
+| `download_attachment`     | upstream ✓ (mit `enable_attachment_download` Security-Toggle)                                                                                     |
 
 Upstream-Architektur (relevant für Patches):
 
@@ -32,6 +32,7 @@ Upstream-Architektur (relevant für Patches):
 - `mcp_email_server/emails/dispatcher.py` — `dispatch_handler(account_name)` Factory.
 
 Wichtige Constraints:
+
 - Async via `aioimaplib` + `aiosmtplib` — alle neuen IMAP-Operationen müssen async sein.
 - IMAP-Befehle laufen über `imap.uid("...", ...)` (UID-basiert) — gleiche Konvention überall.
 - Helpers `_quote_mailbox`, `_raise_for_imap_error`, `_imap_status` stehen schon zur Verfügung.
@@ -118,16 +119,16 @@ Briefing-Punkt 1 (`move_emails`) — **gestrichen**, upstream bereits umgesetzt.
 
 Stand nach Implementierung der Patches (wird laufend aktualisiert):
 
-| Datei | Änderung | Grund |
-|-------|----------|-------|
-| `mcp_email_server/emails/__init__.py` | abstract `mark_seen`, `mark_unseen`, `ensure_folder`; `send_email`-Signatur um `message_id` erweitert | Handler-Interface |
-| `mcp_email_server/emails/classic.py` | `EmailClient.mark_seen`, `mark_unseen`, `ensure_folder`; `send_email` um `message_id` + `MCP_EMAIL_SERVER_REDIRECT_TO`-Logik erweitert; `ClassicEmailHandler` delegiert die neuen Methoden | Implementation |
-| `mcp_email_server/app.py` | `send_email`-Tool-Signatur um `message_id` erweitert; eine Zeile `register_scher_tools(mcp)` am Modulende | Tool-Surface |
-| `mcp_email_server/scher_tools.py` | **neue Datei** mit `mark_seen`, `mark_unseen`, `ensure_folder`, `diag`-Tool-Wrappern + `register_scher_tools()`-Funktion | Scher Extensions |
-| `tests/test_scher_tools.py` | **neue Datei** mit Mock-Tests für alle neuen Tools | Testabdeckung |
-| `tests/test_send_email_extensions.py` | **neue Datei** mit Tests für `message_id` und `REDIRECT_TO` | Regression-Schutz |
-| `pyproject.toml` | `name` → `mcp-email-server-scher`, Entry-Point angepasst | Distribution |
-| `README.md` | Neue Sektion "Scher Extensions" | Doku |
+| Datei                                 | Änderung                                                                                                                                                                                   | Grund             |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| `mcp_email_server/emails/__init__.py` | abstract `mark_seen`, `mark_unseen`, `ensure_folder`; `send_email`-Signatur um `message_id` erweitert                                                                                      | Handler-Interface |
+| `mcp_email_server/emails/classic.py`  | `EmailClient.mark_seen`, `mark_unseen`, `ensure_folder`; `send_email` um `message_id` + `MCP_EMAIL_SERVER_REDIRECT_TO`-Logik erweitert; `ClassicEmailHandler` delegiert die neuen Methoden | Implementation    |
+| `mcp_email_server/app.py`             | `send_email`-Tool-Signatur um `message_id` erweitert; eine Zeile `register_scher_tools(mcp)` am Modulende                                                                                  | Tool-Surface      |
+| `mcp_email_server/scher_tools.py`     | **neue Datei** mit `mark_seen`, `mark_unseen`, `ensure_folder`, `diag`-Tool-Wrappern + `register_scher_tools()`-Funktion                                                                   | Scher Extensions  |
+| `tests/test_scher_tools.py`           | **neue Datei** mit Mock-Tests für alle neuen Tools                                                                                                                                         | Testabdeckung     |
+| `tests/test_send_email_extensions.py` | **neue Datei** mit Tests für `message_id` und `REDIRECT_TO`                                                                                                                                | Regression-Schutz |
+| `pyproject.toml`                      | `name` → `mcp-email-server-scher`, Entry-Point angepasst                                                                                                                                   | Distribution      |
+| `README.md`                           | Neue Sektion "Scher Extensions"                                                                                                                                                            | Doku              |
 
 ## Upstream-Sync-Strategie
 
