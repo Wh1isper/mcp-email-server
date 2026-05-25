@@ -1,8 +1,11 @@
 [project]
-name = "mcp-email-server"
-version = "0.0.1"
-description = "IMAP and SMTP via MCP Server"
-authors = [{ name = "ai-zerolab", email = "jizhongsheng957@gmail.com" }]
+name = "mcp-email-server-scher"
+version = "0.1.0"
+description = "IMAP and SMTP via MCP Server — Scher Extensions fork of ai-zerolab/mcp-email-server with mark_seen/mark_unseen, ensure_folder, diag, custom Message-ID and test-mode redirect"
+authors = [
+    { name = "ai-zerolab", email = "jizhongsheng957@gmail.com" },
+    { name = "Wahed Hemati" },
+]
 readme = "README.md"
 keywords = ["MCP", "IMAP", "SMTP", "email"]
 requires-python = ">=3.10,<4.0"
@@ -32,11 +35,12 @@ dependencies = [
 
 [project.scripts]
 mcp-email-server = "mcp_email_server.cli:app"
+mcp-email-server-scher = "mcp_email_server.cli:app"
 
 [project.urls]
-Homepage = "https://ai-zerolab.github.io/mcp-email-server/"
-Repository = "https://github.com/ai-zerolab/mcp-email-server"
-Documentation = "https://ai-zerolab.github.io/mcp-email-server/"
+Homepage = "https://github.com/hemati/mcp-email-server"
+Repository = "https://github.com/hemati/mcp-email-server"
+Upstream = "https://github.com/ai-zerolab/mcp-email-server"
 
 [dependency-groups]
 dev = [

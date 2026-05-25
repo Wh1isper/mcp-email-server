@@ -1,16 +1,20 @@
-# mcp-email-server
+# mcp-email-server (Scher Extensions fork)
 
-[![Release](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)
-[![Build status](https://img.shields.io/github/actions/workflow/status/ai-zerolab/mcp-email-server/main.yml?branch=main)](https://github.com/ai-zerolab/mcp-email-server/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/ai-zerolab/mcp-email-server/branch/main/graph/badge.svg)](https://codecov.io/gh/ai-zerolab/mcp-email-server)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/ai-zerolab/mcp-email-server)](https://img.shields.io/github/commit-activity/m/ai-zerolab/mcp-email-server)
+> **Fork notice.** This is a soft fork of
+> [ai-zerolab/mcp-email-server](https://github.com/ai-zerolab/mcp-email-server)
+> with a small layer of additional tools (`mark_seen`, `mark_unseen`,
+> `ensure_folder`, `diag`) and two extensions to `send_email` (custom
+> Message-ID, test-mode redirect). All upstream tools are kept unchanged.
+> See [PATCH.md](PATCH.md) for the full list of upstream-touched files.
+> Original BSD-3-Clause license preserved.
+
 [![License](https://img.shields.io/github/license/ai-zerolab/mcp-email-server)](https://img.shields.io/github/license/ai-zerolab/mcp-email-server)
-[![smithery badge](https://smithery.ai/badge/@ai-zerolab/mcp-email-server)](https://smithery.ai/server/@ai-zerolab/mcp-email-server)
 
 IMAP and SMTP via MCP Server
 
-- **Github repository**: <https://github.com/ai-zerolab/mcp-email-server/>
-- **Documentation** <https://ai-zerolab.github.io/mcp-email-server/>
+- **Fork repository**: <https://github.com/hemati/mcp-email-server/>
+- **Upstream repository**: <https://github.com/ai-zerolab/mcp-email-server/>
+- **Upstream documentation**: <https://ai-zerolab.github.io/mcp-email-server/>
 
 ## Installation
 
@@ -281,6 +285,97 @@ await send_email(
 ```
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
+
+## Scher Extensions
+
+This fork adds a thin layer of MCP tools and `send_email` extensions on top of
+the upstream server. The full upstream tool surface (`list_emails_metadata`,
+`get_emails_content`, `send_email`, `move_emails`, `delete_emails`,
+`list_mailboxes`, `download_attachment`, etc.) is preserved unchanged.
+
+### New tools
+
+- **`mark_seen(account_name, email_ids, mailbox="INBOX")`** — set the IMAP
+  `\Seen` flag on UIDs without moving or expunging. Returns
+  `{marked_seen: [...], failed: [...], mailbox}`.
+
+- **`mark_unseen(account_name, email_ids, mailbox="INBOX")`** — symmetric
+  inverse of `mark_seen`; removes the `\Seen` flag.
+
+- **`ensure_folder(account_name, folder)`** — idempotent IMAP folder create.
+  Tries `CREATE`, tolerates `ALREADYEXISTS`, verifies via `LIST`. Returns
+  `{folder, existed, created, found}`. Use this before `move_emails` when
+  the destination might not exist yet.
+
+- **`diag(account_name)`** — connectivity self-test: env snapshot
+  (passwords masked), DNS, TCP connect (10s timeout), IMAP login +
+  `SELECT INBOX`, SMTP login + `NOOP`. Returns a list of per-check
+  results. Useful when an account refuses to work and you need to know
+  whether the problem is DNS, network, credentials, or server policy.
+
+### `send_email` extensions
+
+The upstream `send_email` tool gains two optional behaviors. Both default to
+the original behavior, so existing callers are unaffected.
+
+- **`message_id` argument** — override the auto-generated Message-Id header.
+  Angle brackets (`<...>`) are added if missing. Useful when threading replies
+  with a deterministic id chain, or when re-sending a queued message and you
+  want to keep its original id stable.
+
+- **`MCP_EMAIL_SERVER_REDIRECT_TO` env var** — when set, **every** outgoing
+  email is sent to this single address; the `To` / `Cc` envelope is replaced
+  and the original recipients are preserved in `X-Original-To` /
+  `X-Original-Cc` / `X-Original-Bcc` headers. The `Cc` and `Bcc` envelopes
+  are dropped — nothing leaks to production addresses in test mode. Default:
+  unset (no redirect).
+
+  Set the env var on the **MCP server** process (e.g. via `mcpServers.env`
+  in your MCP client config). Skills and other tool callers don't need to
+  change anything.
+
+### Example client config
+
+```json
+{
+  "mcpServers": {
+    "scher-email": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/hemati/mcp-email-server@scher-extensions",
+        "mcp-email-server-scher",
+        "stdio"
+      ],
+      "env": {
+        "MCP_EMAIL_SERVER_ACCOUNT_NAME": "work",
+        "MCP_EMAIL_SERVER_FULL_NAME": "Your Name",
+        "MCP_EMAIL_SERVER_EMAIL_ADDRESS": "you@example.com",
+        "MCP_EMAIL_SERVER_USER_NAME": "you@example.com",
+        "MCP_EMAIL_SERVER_PASSWORD": "your_password",
+        "MCP_EMAIL_SERVER_IMAP_HOST": "imap.example.com",
+        "MCP_EMAIL_SERVER_IMAP_PORT": "993",
+        "MCP_EMAIL_SERVER_SMTP_HOST": "smtp.example.com",
+        "MCP_EMAIL_SERVER_SMTP_PORT": "465"
+      }
+    }
+  }
+}
+```
+
+To enable test-mode redirection during development, add to the same `env`
+block:
+
+```json
+"MCP_EMAIL_SERVER_REDIRECT_TO": "your-sink-address@example.com"
+```
+
+### Upstream sync
+
+This fork is intentionally narrow: see [PATCH.md](PATCH.md) for every file we
+touch. The patches are designed to rebase cleanly onto upstream's `main`. PR
+candidates we plan to send back upstream when they stabilize: `mark_seen`,
+`mark_unseen`, `ensure_folder`, and the `message_id` argument on `send_email`.
 
 ## Development
 
