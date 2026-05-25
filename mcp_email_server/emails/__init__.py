@@ -64,6 +64,7 @@ class EmailHandler(abc.ABC):
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
+        message_id: str | None = None,
     ) -> None:
         """
         Send email
@@ -78,6 +79,9 @@ class EmailHandler(abc.ABC):
             attachments: List of file paths to attach.
             in_reply_to: Message-ID of the email being replied to (for threading).
             references: Space-separated Message-IDs for the thread chain.
+            message_id: Override the auto-generated Message-ID header. If None,
+                a Message-ID is generated automatically. ``<...>`` brackets are
+                added if missing.
         """
 
     @abc.abstractmethod
@@ -110,6 +114,47 @@ class EmailHandler(abc.ABC):
 
         Returns:
             List of MailboxInfo with name, delimiter, and flags.
+        """
+
+    @abc.abstractmethod
+    async def mark_seen(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """
+        Mark emails as read by setting the IMAP ``\\Seen`` flag. Does NOT move
+        or expunge — purely a flag operation, useful for triage paths that need
+        to mark ignored/handled messages without relocating them.
+
+        Args:
+            email_ids: List of email UIDs.
+            mailbox: Source mailbox (default ``INBOX``).
+
+        Returns:
+            Tuple of ``(succeeded_ids, failed_ids)``.
+        """
+
+    @abc.abstractmethod
+    async def mark_unseen(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """
+        Remove the IMAP ``\\Seen`` flag from emails (mark them unread again).
+
+        Args:
+            email_ids: List of email UIDs.
+            mailbox: Source mailbox (default ``INBOX``).
+
+        Returns:
+            Tuple of ``(succeeded_ids, failed_ids)``.
+        """
+
+    @abc.abstractmethod
+    async def ensure_folder(self, folder: str) -> dict[str, bool | str]:
+        """
+        Ensure that an IMAP folder exists. Idempotent: an already-existing
+        folder is treated as success.
+
+        Args:
+            folder: The IMAP folder name (e.g. ``INBOX/Archive``).
+
+        Returns:
+            ``{"folder": <name>, "existed": <bool>, "created": <bool>}``.
         """
 
     @abc.abstractmethod

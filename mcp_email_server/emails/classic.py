@@ -1,6 +1,7 @@
 import asyncio
 import email.utils
 import mimetypes
+import os
 import re
 import ssl
 import time
@@ -32,6 +33,54 @@ from mcp_email_server.log import logger
 
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
+
+# ENV switch to redirect all outgoing mail to a single test address.
+# When set, the original To/Cc/Bcc envelope is replaced with the redirect
+# target and the original recipients are preserved in X-Original-* headers.
+# Default unset → behavior unchanged.
+REDIRECT_ENV_VAR = "MCP_EMAIL_SERVER_REDIRECT_TO"
+
+
+def _normalize_msgid(msgid: str) -> str:
+    """Normalize a user-supplied Message-ID: strip whitespace, ensure ``<...>``.
+
+    Per RFC 5322 a Message-ID is ``"<" id-left "@" id-right ">"`` with no
+    embedded whitespace and no embedded angle brackets. We don't enforce the
+    full grammar, but we reject the most common malformed cases: whitespace
+    inside, embedded ``<`` or ``>``, and ASCII control characters. Adding the
+    outer brackets when missing is a convenience for callers that pass just
+    ``id@host``.
+
+    Raises ``ValueError`` on empty or syntactically invalid input.
+    """
+    s = (msgid or "").strip()
+    if not s:
+        msg = "message_id must not be empty"
+        raise ValueError(msg)
+
+    # Inspect content with outer angle brackets stripped, so we don't false-
+    # positive on the brackets the caller may or may not have included.
+    inner = s
+    if inner.startswith("<"):
+        inner = inner[1:]
+    if inner.endswith(">"):
+        inner = inner[:-1]
+
+    if any(c.isspace() for c in inner):
+        msg = f"message_id must not contain whitespace: {msgid!r}"
+        raise ValueError(msg)
+    if "<" in inner or ">" in inner:
+        msg = f"message_id must not contain embedded angle brackets: {msgid!r}"
+        raise ValueError(msg)
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in inner):
+        msg = f"message_id must not contain control characters: {msgid!r}"
+        raise ValueError(msg)
+
+    if not s.startswith("<"):
+        s = "<" + s
+    if not s.endswith(">"):
+        s = s + ">"
+    return s
 
 
 def _quote_mailbox(mailbox: str) -> str:
@@ -816,7 +865,7 @@ class EmailClient:
 
         return msg
 
-    async def send_email(
+    async def send_email(  # noqa: C901
         self,
         recipients: list[str],
         subject: str,
@@ -827,7 +876,38 @@ class EmailClient:
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
+        message_id: str | None = None,
     ):
+        # Apply MCP_EMAIL_SERVER_REDIRECT_TO test-mode redirection. When set,
+        # ALL outgoing mail goes to this single address; the original
+        # recipient lists are preserved in X-Original-To / X-Original-Cc
+        # headers for audit. Default unset → behavior unchanged.
+        #
+        # Safety: if the env var is *set but whitespace-only*, we refuse to
+        # send rather than silently fall back to live delivery. Operators
+        # who deliberately set REDIRECT_TO expect their mail to be captured,
+        # and a mistyped blank value would otherwise expose production.
+        original_to = recipients
+        original_cc = cc
+        original_bcc = bcc
+        redirect_env = os.environ.get(REDIRECT_ENV_VAR)
+        redirect_to = redirect_env.strip() if redirect_env is not None else ""
+        if redirect_env is not None and not redirect_to:
+            msg = (
+                f"{REDIRECT_ENV_VAR} is set but empty/whitespace-only. "
+                "Refusing to send to avoid accidental production delivery."
+            )
+            raise ValueError(msg)
+        if redirect_to:
+            logger.warning(
+                f"{REDIRECT_ENV_VAR} is set — redirecting all outgoing mail to {redirect_to!r}. "
+                f"Original To count={len(original_to or [])}, "
+                f"Cc count={len(original_cc or [])}, Bcc count={len(original_bcc or [])}"
+            )
+            recipients = [redirect_to]
+            cc = None
+            bcc = None
+
         # Create message with or without attachments
         if attachments:
             msg = self._create_message_with_attachments(body, html, attachments)
@@ -853,6 +933,16 @@ class EmailClient:
         if cc:
             msg["Cc"] = ", ".join(cc)
 
+        # Preserve original visible recipients (To/Cc) on redirect, for audit.
+        # BCC is intentionally NOT preserved as a header: BCC stays hidden by
+        # design and writing X-Original-Bcc would leak addresses to the
+        # redirect inbox.
+        if redirect_to:
+            if original_to:
+                msg["X-Original-To"] = ", ".join(original_to)
+            if original_cc:
+                msg["X-Original-Cc"] = ", ".join(original_cc)
+
         # Set threading headers for replies
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
@@ -860,10 +950,13 @@ class EmailClient:
             msg["References"] = references
 
         # Set Date and Message-Id headers so the same values appear in both
-        # the SMTP-sent copy and the IMAP Sent folder copy
+        # the SMTP-sent copy and the IMAP Sent folder copy.
         msg["Date"] = email.utils.formatdate(localtime=True)
-        sender_domain = self.sender.rsplit("@", 1)[-1].rstrip(">")
-        msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
+        if message_id is not None:
+            msg["Message-Id"] = _normalize_msgid(message_id)
+        else:
+            sender_domain = self.sender.rsplit("@", 1)[-1].rstrip(">")
+            msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
 
         # Note: BCC recipients are not added to headers (they remain hidden)
         # but will be included in the actual recipients for SMTP delivery
@@ -1133,6 +1226,125 @@ class EmailClient:
 
         return mailboxes
 
+    async def _set_seen_flag(
+        self,
+        email_ids: list[str],
+        mailbox: str,
+        store_op: str,
+    ) -> tuple[list[str], list[str]]:
+        """Internal helper for mark_seen / mark_unseen.
+
+        ``store_op`` is either ``+FLAGS`` or ``-FLAGS``. No EXPUNGE: this is
+        purely a flag operation.
+        """
+        imap = self._imap_connect()
+        succeeded: list[str] = []
+        failed: list[str] = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            for uid in email_ids:
+                try:
+                    store_response = await imap.uid("store", uid, store_op, r"(\Seen)")
+                    _raise_for_imap_error(store_response, f"STORE {store_op} \\Seen for UID {uid}")
+                    succeeded.append(uid)
+                except Exception as e:
+                    logger.error(f"Failed to {store_op} \\Seen for UID {uid}: {e}")
+                    failed.append(uid)
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return succeeded, failed
+
+    async def mark_seen(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Set the ``\\Seen`` flag on the given UIDs without moving or expunging."""
+        return await self._set_seen_flag(email_ids, mailbox, "+FLAGS")
+
+    async def mark_unseen(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Remove the ``\\Seen`` flag from the given UIDs."""
+        return await self._set_seen_flag(email_ids, mailbox, "-FLAGS")
+
+    async def ensure_folder(self, folder: str) -> dict[str, bool | str]:  # noqa: C901
+        """Idempotently ensure an IMAP folder exists.
+
+        Tries IMAP ``CREATE``; treats an ``ALREADYEXISTS`` NO response as
+        success (folder pre-exists). Verifies with ``LIST`` afterwards.
+        """
+        imap = self._imap_connect()
+        existed = False
+        created = False
+        found = False
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            try:
+                create_response = await imap.create(_quote_mailbox(folder))
+                status = _imap_status(create_response)
+                if status == "OK":
+                    created = True
+                else:
+                    detail = repr(create_response).upper()
+                    if "ALREADYEXISTS" in detail or "ALREADY EXISTS" in detail:
+                        existed = True
+                    else:
+                        # Some servers return NO without an ALREADYEXISTS hint
+                        # even though the folder is just pre-existing. Fall
+                        # back to LIST to disambiguate.
+                        logger.info(f"CREATE non-OK for {folder!r}: {create_response!r}; will verify via LIST")
+            except Exception as e:
+                logger.error(f"CREATE folder {folder!r} raised: {e}")
+
+            # Verify the folder exists via LIST. Use the folder itself as the
+            # pattern — exact match avoids walking the whole tree.
+            #
+            # Matching is delimiter-aware: a server with ``.`` as hierarchy
+            # delimiter reports ``INBOX.Archive`` while the caller may pass
+            # ``INBOX/Archive``. We normalize both sides to ``/`` before
+            # comparing so the verify step doesn't falsely report ``found=False``.
+            list_response = await imap.list('""', folder)
+            list_status = _imap_status(list_response)
+            if list_status == "OK":
+                _, data = list_response
+                normalized_target = folder.replace(".", "/")
+                for item in data:
+                    if item == b"":
+                        continue
+                    item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                    parts = item_str.split('"')
+                    if len(parts) < 3:
+                        continue
+                    server_delim = parts[1]
+                    server_name = parts[-2]
+                    if server_name == folder:
+                        found = True
+                        break
+                    if server_delim and server_name.replace(server_delim, "/") == normalized_target:
+                        found = True
+                        break
+
+            if not created and found:
+                existed = True
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return {"folder": folder, "existed": existed, "created": created, "found": found}
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1242,9 +1454,10 @@ class ClassicEmailHandler(EmailHandler):
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
+        message_id: str | None = None,
     ) -> None:
         msg = await self.outgoing_client.send_email(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references, message_id
         )
 
         # Save to Sent folder if enabled
@@ -1271,6 +1484,18 @@ class ClassicEmailHandler(EmailHandler):
     async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[MailboxInfo]:
         """List available mailboxes with flags and delimiter."""
         return await self.incoming_client.list_mailboxes(pattern, reference)
+
+    async def mark_seen(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Set the \\Seen flag on UIDs without moving or expunging."""
+        return await self.incoming_client.mark_seen(email_ids, mailbox)
+
+    async def mark_unseen(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Remove the \\Seen flag from UIDs."""
+        return await self.incoming_client.mark_unseen(email_ids, mailbox)
+
+    async def ensure_folder(self, folder: str) -> dict[str, bool | str]:
+        """Idempotently ensure an IMAP folder exists."""
+        return await self.incoming_client.ensure_folder(folder)
 
     async def download_attachment(
         self,

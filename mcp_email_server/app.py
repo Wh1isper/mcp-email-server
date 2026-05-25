@@ -159,6 +159,16 @@ async def send_email(
             description="Space-separated Message-IDs for the thread chain. Usually includes in_reply_to plus ancestors.",
         ),
     ] = None,
+    message_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Override the auto-generated Message-ID header. Angle brackets are added if missing. "
+                "Leave as None to let the server generate one."
+            ),
+        ),
+    ] = None,
 ) -> str:
     handler = dispatch_handler(account_name)
     await handler.send_email(
@@ -171,6 +181,7 @@ async def send_email(
         attachments,
         in_reply_to,
         references,
+        message_id,
     )
     recipient_str = ", ".join(recipients)
     attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
@@ -261,3 +272,11 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+
+
+# --- Scher Extensions ------------------------------------------------------
+# Additional tools live in mcp_email_server/scher_tools.py and are registered
+# here. See PATCH.md in the repo root for the full extension catalogue.
+from mcp_email_server.scher_tools import register_scher_tools  # noqa: E402
+
+register_scher_tools(mcp)

@@ -194,6 +194,7 @@ class TestClassicEmailHandler:
                 None,
                 None,
                 None,
+                None,
             )
 
     @pytest.mark.asyncio
@@ -225,6 +226,7 @@ class TestClassicEmailHandler:
                 None,
                 False,
                 [str(test_file)],
+                None,
                 None,
                 None,
             )
