@@ -4,6 +4,7 @@ import mimetypes
 import re
 import ssl
 import time
+import unicodedata
 from datetime import datetime, timezone
 from email.header import Header
 from email.mime.application import MIMEApplication
@@ -304,6 +305,11 @@ class EmailClient:
             return datetime.now(timezone.utc)
         except Exception:
             return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _normalize_attachment_name(name: str) -> str:
+        """Normalize attachment filenames for robust MIME round-trip matching."""
+        return unicodedata.normalize("NFC", name)
 
     @staticmethod
     def _is_attachment_part(part) -> bool:
@@ -833,6 +839,7 @@ class EmailClient:
             # Find the attachment
             attachment_data = None
             mime_type = None
+            normalized_attachment_name = self._normalize_attachment_name(attachment_name)
 
             if email_message.is_multipart():
                 for part in email_message.walk():
@@ -841,7 +848,9 @@ class EmailClient:
                     if not self._is_attachment_part(part):
                         continue
                     filename = part.get_filename()
-                    if filename == attachment_name:
+                    if not isinstance(filename, str):
+                        continue
+                    if self._normalize_attachment_name(filename) == normalized_attachment_name:
                         attachment_data = part.get_payload(decode=True)
                         mime_type = part.get_content_type()
                         break

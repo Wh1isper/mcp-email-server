@@ -1,6 +1,7 @@
 """Test email attachment functionality."""
 
 import re
+import unicodedata
 from email import encoders
 from email.mime.application import MIMEApplication
 from email.mime.base import MIMEBase
@@ -381,6 +382,37 @@ def _build_email_with_explicit_attachment() -> bytes:
     return msg.as_bytes()
 
 
+def _build_email_with_unicode_attachment(filename: str, payload: bytes = b"xlsx bytes") -> bytes:
+    """Build a multipart/mixed email with a non-ASCII attachment filename."""
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = "Unicode filename"
+    msg["From"] = "sender@example.com"
+    msg["To"] = "recipient@example.com"
+    msg["Date"] = "Fri, 8 May 2026 19:17:09 +0200"
+    msg.attach(MIMEText("Please see attached spreadsheet.", "plain", "utf-8"))
+
+    xlsx_part = MIMEApplication(payload, _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    xlsx_part.add_header("Content-Disposition", "attachment", filename=filename)
+    msg.attach(xlsx_part)
+    return msg.as_bytes()
+
+
+def _build_email_with_related_inline_pdf(payload: bytes = b"%PDF-1.4 fake pdf bytes") -> bytes:
+    """Build a multipart/related email with an inline PDF attachment."""
+    msg = MIMEMultipart("related")
+    msg["Subject"] = "Inline PDF"
+    msg["From"] = "sender@example.com"
+    msg["To"] = "recipient@example.com"
+    msg["Date"] = "Fri, 8 May 2026 19:17:09 +0200"
+    msg.attach(MIMEText("See the inline object.", "plain", "utf-8"))
+
+    pdf_part = MIMEApplication(payload, _subtype="pdf")
+    pdf_part.add_header("Content-Disposition", "inline", filename="0421.pdf")
+    pdf_part.add_header("Content-ID", "<pdf-0421@example.com>")
+    msg.attach(pdf_part)
+    return msg.as_bytes()
+
+
 def _build_email_with_no_filename_inline() -> bytes:
     """Inline part without filename (e.g. text/html body) must NOT count as attachment."""
     msg = MIMEMultipart("alternative")
@@ -418,6 +450,24 @@ class TestParseAttachmentsInBody:
 
         assert result["attachments"] == ["report.pdf"]
         assert result["body"].startswith("Please see attached report")
+
+    def test_unicode_attachment_filename_is_decoded(self, email_client):
+        """Non-ASCII attachment filenames are exposed as decoded strings."""
+        filename = "Actividades operacionales bienal MC rev 1 2 - con Análisis 1.xlsx"
+        raw_email = _build_email_with_unicode_attachment(filename)
+
+        result = email_client._parse_email_data(raw_email, email_id="44")
+
+        assert result["attachments"] == [filename]
+
+    def test_multipart_related_inline_pdf_with_filename_is_detected(self, email_client):
+        """multipart/related inline binary parts with filenames are exposed."""
+        raw_email = _build_email_with_related_inline_pdf()
+
+        result = email_client._parse_email_data(raw_email, email_id="45")
+
+        assert result["attachments"] == ["0421.pdf"]
+        assert result["body"] == "See the inline object."
 
     def test_alternative_parts_without_filename_are_not_attachments(self, email_client):
         """text/plain + text/html alternatives have no filenames and must not be reported."""
@@ -533,6 +583,53 @@ class TestDownloadInlineAttachment:
 
         assert Path(save_path).exists()
         assert Path(save_path).read_bytes().startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    async def test_download_unicode_attachment_with_nfd_request_name_succeeds(self, email_client, tmp_path):
+        """download_attachment normalizes Unicode filenames before matching."""
+        filename = "Actividades operacionales bienal MC rev 1 2 - con Análisis 1.xlsx"
+        raw_email = _build_email_with_unicode_attachment(filename, payload=b"spreadsheet bytes")
+        save_path = tmp_path / "analysis.xlsx"
+
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.download_attachment(
+                    email_id="1",
+                    attachment_name=unicodedata.normalize("NFD", filename),
+                    save_path=str(save_path),
+                )
+
+        assert result["attachment_name"] == unicodedata.normalize("NFD", filename)
+        assert result["mime_type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        assert save_path.read_bytes() == b"spreadsheet bytes"
+
+    @pytest.mark.asyncio
+    async def test_download_multipart_related_inline_pdf_succeeds(self, email_client, tmp_path):
+        """download_attachment retrieves multipart/related inline binary parts."""
+        raw_email = _build_email_with_related_inline_pdf(payload=b"%PDF inline bytes")
+        save_path = tmp_path / "0421.pdf"
+
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.download_attachment(
+                    email_id="1",
+                    attachment_name="0421.pdf",
+                    save_path=str(save_path),
+                )
+
+        assert result["attachment_name"] == "0421.pdf"
+        assert result["mime_type"] == "application/pdf"
+        assert save_path.read_bytes() == b"%PDF inline bytes"
 
     @pytest.mark.asyncio
     async def test_download_raises_when_attachment_name_does_not_match(self, email_client, tmp_path):
