@@ -26,6 +26,7 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
 )
 from mcp_email_server.log import logger
 
@@ -49,6 +50,22 @@ def _quote_mailbox(mailbox: str) -> str:
     # be escaped with a backslash. Backslashes themselves must also be escaped.
     escaped = mailbox.replace("\\", "\\\\").replace('"', r"\"")
     return f'"{escaped}"'
+
+
+def _imap_status(response: Any) -> str:
+    """Return the normalized status from an aioimaplib response."""
+    if hasattr(response, "result"):
+        return str(response.result).upper()
+    if isinstance(response, tuple) and response:
+        return str(response[0]).upper()
+    return str(response).upper()
+
+
+def _raise_for_imap_error(response: Any, operation: str) -> None:
+    """Raise when an IMAP command returns a non-OK status."""
+    if _imap_status(response) != "OK":
+        msg = f"{operation} failed: {response!r}"
+        raise RuntimeError(msg)
 
 
 async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
@@ -142,6 +159,33 @@ class EmailClient:
         except Exception:
             return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _is_attachment_part(part) -> bool:
+        """Determine whether a MIME part should be treated as an attachment.
+
+        A strict check on ``Content-Disposition: attachment`` misses a common case:
+        many clients (notably Apple Mail on iOS/macOS) send images, PDFs and other
+        files with ``Content-Disposition: inline`` (or no disposition header at all)
+        but with a filename parameter on the part. Those parts are real, user-facing
+        attachments — the user uploaded a file and expects it to show up — even
+        though they're inlined into the body via Content-ID references.
+
+        Treat a part as an attachment when:
+          - the disposition explicitly says ``attachment``, OR
+          - the part carries a filename (works for ``inline`` or no disposition).
+
+        Multipart container parts and bodyless text parts have no filename and an
+        empty disposition, so they are correctly excluded.
+        """
+        content_disposition = str(part.get("Content-Disposition", "")).lower()
+        if "attachment" in content_disposition:
+            return True
+        filename = part.get_filename()
+        # Be defensive: only trust real string filenames. (Unconfigured MagicMock
+        # instances in older tests return truthy MagicMock objects from
+        # ``get_filename`` and would otherwise misclassify text parts.)
+        return isinstance(filename, str) and bool(filename)
+
     def _parse_email_data(self, raw_email: bytes, email_id: str | None = None) -> dict[str, Any]:  # noqa: C901
         """Parse raw email data into a structured dictionary."""
         parser = BytesParser(policy=default)
@@ -186,10 +230,10 @@ class EmailClient:
         if email_message.is_multipart():
             for part in email_message.walk():
                 content_type = part.get_content_type()
-                content_disposition = str(part.get("Content-Disposition", ""))
 
-                # Handle attachments
-                if "attachment" in content_disposition:
+                # Handle attachments — including inline-disposition parts with a
+                # filename (Apple Mail commonly sends photos this way).
+                if self._is_attachment_part(part):
                     filename = part.get_filename()
                     if filename:
                         attachments.append(filename)
@@ -295,7 +339,13 @@ class EmailClient:
         return search_criteria or ["ALL"]
 
     def _parse_headers(self, email_id: str, raw_headers: bytes) -> dict[str, Any] | None:
-        """Parse raw email headers into metadata dictionary."""
+        """Parse raw email headers into metadata dictionary.
+
+        Note: this parses only header data (BODY.PEEK[HEADER]) so it cannot
+        populate the attachments list — that requires fetching BODYSTRUCTURE
+        or the full body. The attachments list is intentionally returned
+        empty here; ``_parse_email_data`` populates it from the full body.
+        """
         try:
             parser = BytesParser(policy=default)
             email_message = parser.parsebytes(raw_headers)
@@ -303,12 +353,15 @@ class EmailClient:
             subject = email_message.get("Subject", "")
             sender = email_message.get("From", "")
             date_str = email_message.get("Date", "")
+            # Expose Message-ID for reply threading and de-duplication on the client.
+            message_id = email_message.get("Message-ID")
 
             to_addresses = self._parse_recipients(email_message)
             date = self._parse_date(date_str)
 
             return {
                 "email_id": email_id,
+                "message_id": message_id,
                 "subject": subject,
                 "from": sender,
                 "to": to_addresses,
@@ -325,11 +378,15 @@ class EmailClient:
         chunk: list[bytes],
         chunk_num: int,
         total_chunks: int,
+        timeout: float = 30.0,
     ) -> dict[str, datetime]:
         """Fetch INTERNALDATE for a single chunk of UIDs."""
         uid_list = ",".join(uid.decode() for uid in chunk)
         chunk_start = time.perf_counter()
-        _, data = await imap.uid("fetch", uid_list, "(INTERNALDATE)")
+        _, data = await asyncio.wait_for(
+            imap.uid("fetch", uid_list, "(INTERNALDATE)"),
+            timeout=timeout,
+        )
         chunk_elapsed = time.perf_counter() - chunk_start
 
         chunk_dates: dict[str, datetime] = {}
@@ -352,9 +409,15 @@ class EmailClient:
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         email_ids: list[bytes],
-        chunk_size: int = 5000,
+        chunk_size: int = 500,
     ) -> dict[str, datetime]:
-        """Batch fetch INTERNALDATE for all UIDs in parallel chunks."""
+        """Batch fetch INTERNALDATE for all UIDs in sequential chunks.
+
+        Uses a conservative chunk_size (default 500) to avoid hitting
+        Python's recursion limit in aioimaplib's recursive response parser
+        (see: aioimaplib _handle_responses). IMAP connections are sequential
+        by protocol, so chunks must be fetched serially — not in parallel.
+        """
         if not email_ids:
             return {}
 
@@ -362,15 +425,10 @@ class EmailClient:
         chunks = [email_ids[i : i + chunk_size] for i in range(0, len(email_ids), chunk_size)]
         total_chunks = len(chunks)
 
-        # Fetch all chunks in parallel
-        tasks = [
-            self._fetch_dates_chunk(imap, chunk, chunk_num, total_chunks) for chunk_num, chunk in enumerate(chunks, 1)
-        ]
-        results = await asyncio.gather(*tasks)
-
-        # Merge results
+        # Fetch chunks sequentially (IMAP protocol is sequential on a single connection)
         uid_dates: dict[str, datetime] = {}
-        for chunk_dates in results:
+        for chunk_num, chunk in enumerate(chunks, 1):
+            chunk_dates = await self._fetch_dates_chunk(imap, chunk, chunk_num, total_chunks)
             uid_dates.update(chunk_dates)
 
         return uid_dates
@@ -506,7 +564,7 @@ class EmailClient:
             email_ids = messages[0].split()
             logger.info(f"Found {len(email_ids)} email IDs")
 
-            # Phase 1: Batch fetch INTERNALDATE for sorting (parallel chunks)
+            # Phase 1: Batch fetch INTERNALDATE for sorting (sequential chunks)
             fetch_dates_start = time.perf_counter()
             uid_dates = await self._batch_fetch_dates(imap, email_ids)
             fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
@@ -679,13 +737,15 @@ class EmailClient:
 
             if email_message.is_multipart():
                 for part in email_message.walk():
-                    content_disposition = str(part.get("Content-Disposition", ""))
-                    if "attachment" in content_disposition:
-                        filename = part.get_filename()
-                        if filename == attachment_name:
-                            attachment_data = part.get_payload(decode=True)
-                            mime_type = part.get_content_type()
-                            break
+                    # Match attachments listed by ``_parse_email_data`` — this includes
+                    # inline-disposition parts with a filename (e.g. iOS Mail photos).
+                    if not self._is_attachment_part(part):
+                        continue
+                    filename = part.get_filename()
+                    if filename == attachment_name:
+                        attachment_data = part.get_payload(decode=True)
+                        mime_type = part.get_content_type()
+                        break
 
             if attachment_data is None:
                 msg = f"Attachment '{attachment_name}' not found in email {email_id}"
@@ -1018,6 +1078,94 @@ class EmailClient:
 
         return marked_ids, failed_ids
 
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """Move emails to a different mailbox. Uses IMAP MOVE (RFC 6851) with COPY+DELETE fallback."""
+        imap = self._imap_connect()
+        moved_ids = []
+        failed_ids = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            select_response = await imap.select(_quote_mailbox(source_mailbox))
+            _raise_for_imap_error(select_response, f"SELECT source mailbox {source_mailbox}")
+
+            capabilities = {str(capability).upper() for capability in getattr(imap, "capabilities", ())}
+            has_move = hasattr(imap, "move") and "MOVE" in capabilities
+
+            for email_id in email_ids:
+                try:
+                    if has_move:
+                        move_response = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                        _raise_for_imap_error(move_response, f"MOVE email {email_id}")
+                    else:
+                        copy_response = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                        _raise_for_imap_error(copy_response, f"COPY email {email_id}")
+                        store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                        _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
+                    moved_ids.append(email_id)
+                except Exception as e:
+                    logger.error(f"Failed to move email {email_id}: {e}")
+                    failed_ids.append(email_id)
+
+            if not has_move and moved_ids:
+                try:
+                    expunge_response = await imap.expunge()
+                    _raise_for_imap_error(expunge_response, "EXPUNGE moved emails")
+                except Exception as e:
+                    logger.error(f"Failed to expunge moved emails: {e}")
+                    failed_ids.extend(moved_ids)
+                    moved_ids = []
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return moved_ids, failed_ids
+
+    async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[MailboxInfo]:
+        """List available IMAP mailboxes with flags and delimiter."""
+        imap = self._imap_connect()
+        mailboxes = []
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            quoted_ref = _quote_mailbox(reference) if reference else '""'
+            response = await imap.list(quoted_ref, pattern)
+            _raise_for_imap_error(response, f"LIST mailboxes with pattern {pattern}")
+            _, data = response
+
+            for item in data:
+                if item == b"":
+                    continue
+                item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                flags = []
+                if "(" in item_str and ")" in item_str:
+                    flags_str = item_str[item_str.index("(") + 1 : item_str.index(")")]
+                    flags = [f.strip() for f in flags_str.split() if f.strip()]
+
+                parts = item_str.split('"')
+                if len(parts) >= 3:
+                    delimiter = parts[1]
+                    folder_name = parts[-2]
+                    mailboxes.append(MailboxInfo(name=folder_name, delimiter=delimiter, flags=flags))
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
+        return mailboxes
+
 
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
@@ -1152,6 +1300,16 @@ class ClassicEmailHandler(EmailHandler):
     async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Mark emails as read by their UIDs. Returns (marked_ids, failed_ids)."""
         return await self.incoming_client.mark_emails_as_read(email_ids, mailbox)
+
+    async def move_emails(
+        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+    ) -> tuple[list[str], list[str]]:
+        """Move emails between mailboxes. Returns (moved_ids, failed_ids)."""
+        return await self.incoming_client.move_emails(email_ids, source_mailbox, destination_mailbox)
+
+    async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[MailboxInfo]:
+        """List available mailboxes with flags and delimiter."""
+        return await self.incoming_client.list_mailboxes(pattern, reference)
 
     async def download_attachment(
         self,

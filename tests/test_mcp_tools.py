@@ -10,7 +10,9 @@ from mcp_email_server.app import (
     get_emails_content,
     list_available_accounts,
     list_emails_metadata,
+    list_mailboxes,
     mark_emails_as_read,
+    move_emails,
     send_email,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
@@ -20,6 +22,7 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
 )
 
 
@@ -623,3 +626,91 @@ class TestMcpTools:
             )
 
             mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False)
+
+    @pytest.mark.asyncio
+    async def test_move_emails(self):
+        """Test move_emails MCP tool."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345", "12346"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346"],
+                destination_mailbox="Archive",
+            )
+
+            assert result == "Successfully moved 2 email(s) to Archive"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_source_mailbox(self):
+        """Test move_emails MCP tool with custom source mailbox."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], [])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345"],
+                source_mailbox="Trash",
+                destination_mailbox="INBOX",
+            )
+
+            assert result == "Successfully moved 1 email(s) to INBOX"
+            mock_handler.move_emails.assert_called_once_with(["12345"], "Trash", "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_move_emails_with_failures(self):
+        """Test move_emails MCP tool with some failures."""
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = (["12345"], ["12346", "12347"])
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["12345", "12346", "12347"],
+                destination_mailbox="Archive",
+            )
+
+            assert result == "Successfully moved 1 email(s) to Archive, failed to move 2 email(s): 12346, 12347"
+            mock_handler.move_emails.assert_called_once_with(["12345", "12346", "12347"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes(self):
+        """Test list_mailboxes MCP tool."""
+        mock_handler = AsyncMock()
+        mock_handler.list_mailboxes.return_value = [
+            MailboxInfo(name="INBOX", delimiter="/", flags=["\\HasChildren"]),
+            MailboxInfo(name="Sent", delimiter="/", flags=["\\Sent", "\\HasNoChildren"]),
+            MailboxInfo(name="Drafts", delimiter="/", flags=["\\Drafts", "\\HasNoChildren"]),
+            MailboxInfo(name="Trash", delimiter="/", flags=["\\Trash", "\\HasNoChildren"]),
+            MailboxInfo(name="Archive", delimiter="/", flags=["\\HasNoChildren"]),
+        ]
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await list_mailboxes(account_name="test_account")
+
+            assert len(result) == 5
+            assert result[0].name == "INBOX"
+            assert result[0].delimiter == "/"
+            assert "\\HasChildren" in result[0].flags
+            assert result[1].name == "Sent"
+            assert "\\Sent" in result[1].flags
+            mock_handler.list_mailboxes.assert_called_once_with("*", "")
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_with_pattern(self):
+        """Test list_mailboxes MCP tool with custom pattern."""
+        mock_handler = AsyncMock()
+        mock_handler.list_mailboxes.return_value = [
+            MailboxInfo(name="INBOX.Clients", delimiter=".", flags=["\\HasNoChildren"]),
+            MailboxInfo(name="INBOX.Projects", delimiter=".", flags=["\\HasNoChildren"]),
+        ]
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await list_mailboxes(account_name="test_account", pattern="INBOX.*")
+
+            assert len(result) == 2
+            assert result[0].delimiter == "."
+            mock_handler.list_mailboxes.assert_called_once_with("INBOX.*", "")

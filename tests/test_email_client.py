@@ -665,6 +665,77 @@ class TestBatchFetchDates:
 
         assert result["100"] == datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
+    @pytest.mark.asyncio
+    async def test_batch_fetch_dates_chunks_large_uid_lists(self, email_client):
+        """Test that _batch_fetch_dates splits large UID lists into sequential chunks.
+
+        Regression test for recursion overflow in aioimaplib when processing
+        responses for thousands of UIDs in a single FETCH command.
+        aioimaplib's _handle_responses uses recursion to parse response lines;
+        with >1000 responses in a single buffer, this exceeds Python's default
+        recursion limit and causes a RecursionError / infinite hang.
+
+        See: https://github.com/ai-zerolab/mcp-email-server/pull/155
+        """
+        # Simulate a mailbox with 1500 UIDs — must result in multiple chunks
+        num_uids = 1500
+        uid_list = [str(i).encode() for i in range(1, num_uids + 1)]
+
+        call_count = 0
+
+        async def mock_uid_fetch(cmd, uid_csv, fields):
+            nonlocal call_count
+            call_count += 1
+            uids = uid_csv.split(",")
+            data = [
+                f'{i} FETCH (UID {uid} INTERNALDATE "01-Jan-2024 12:00:00 +0000")'.encode()
+                for i, uid in enumerate(uids, 1)
+            ]
+            data.append(b"FETCH completed")
+            return (None, data)
+
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(side_effect=mock_uid_fetch)
+
+        result = await email_client._batch_fetch_dates(mock_imap, uid_list, chunk_size=500)
+
+        # Must have chunked into 3 calls (500 + 500 + 500)
+        assert call_count == 3, f"Expected 3 sequential chunks, got {call_count} calls"
+        assert len(result) == num_uids
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_dates_sequential_not_parallel(self, email_client):
+        """Test that chunks are fetched sequentially, not in parallel.
+
+        IMAP is a sequential protocol — parallel FETCH commands on a single
+        connection cause undefined behaviour. Verify that chunks execute serially.
+        """
+        execution_order = []
+        chunk_counter = 0
+
+        async def mock_uid_fetch(cmd, uid_csv, fields):
+            nonlocal chunk_counter
+            chunk_counter += 1
+            chunk_id = chunk_counter
+            execution_order.append(f"start-{chunk_id}")
+            await asyncio.sleep(0.01)  # Simulate network latency
+            execution_order.append(f"end-{chunk_id}")
+            uids = uid_csv.split(",")
+            data = [
+                f'{i} FETCH (UID {uid} INTERNALDATE "01-Jan-2024 12:00:00 +0000")'.encode()
+                for i, uid in enumerate(uids, 1)
+            ]
+            return (None, data)
+
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(side_effect=mock_uid_fetch)
+
+        uid_list = [str(i).encode() for i in range(1, 21)]
+        await email_client._batch_fetch_dates(mock_imap, uid_list, chunk_size=10)
+
+        # Sequential execution: start-1, end-1, start-2, end-2
+        assert execution_order == ["start-1", "end-1", "start-2", "end-2"]
+
 
 class TestBatchFetchHeaders:
     @pytest.mark.asyncio

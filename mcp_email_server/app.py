@@ -15,6 +15,7 @@ from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
+    MailboxInfo,
 )
 
 mcp = FastMCP("email")
@@ -221,6 +222,47 @@ async def mark_emails_as_read(
     if failed_ids:
         result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
     return result
+
+
+@mcp.tool(
+    description="Move one or more emails between IMAP folders by their email_id. Use list_emails_metadata first to get the email_id and list_mailboxes to discover available folders."
+)
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[
+        list[str],
+        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    ],
+    destination_mailbox: Annotated[str, Field(description="The destination mailbox/folder to move emails to.")],
+    source_mailbox: Annotated[
+        str, Field(default="INBOX", description="The source mailbox containing the emails.")
+    ] = "INBOX",
+) -> str:
+    handler = dispatch_handler(account_name)
+    moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
+
+    result = f"Successfully moved {len(moved_ids)} email(s) to {destination_mailbox}"
+    if failed_ids:
+        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+    return result
+
+
+@mcp.tool(
+    description="List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails."
+)
+async def list_mailboxes(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    pattern: Annotated[
+        str,
+        Field(default="*", description="IMAP LIST pattern. Use '*' for all folders, 'INBOX.*' for INBOX children."),
+    ] = "*",
+    reference: Annotated[
+        str,
+        Field(default="", description="IMAP LIST reference name (namespace prefix). Usually empty."),
+    ] = "",
+) -> list[MailboxInfo]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_mailboxes(pattern, reference)
 
 
 @mcp.tool(
