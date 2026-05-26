@@ -252,7 +252,7 @@ class TestEmailClient:
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
-        mock_imap.select = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", []))
         mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
 
@@ -310,6 +310,50 @@ class TestEmailClient:
                     mock_fetch_dates.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])
                     # Headers fetched for page UIDs in sorted order (desc by date)
                     mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2", "1"])
+
+    @pytest.mark.asyncio
+    async def test_get_emails_metadata_raises_on_select_failure(self, email_client):
+        """Test mailbox selection failures are surfaced before SEARCH."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("NO", [b"[NONEXISTENT] Unknown Mailbox: Archive"]))
+        mock_imap.uid_search = AsyncMock()
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with pytest.raises(RuntimeError) as exc_info:
+                await email_client.get_emails_metadata(mailbox="Archive")
+
+        message = str(exc_info.value)
+        assert "SELECT mailbox Archive failed" in message
+        assert "NO" in message
+        assert "[NONEXISTENT] Unknown Mailbox: Archive" in message
+        mock_imap.uid_search.assert_not_called()
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_raises_on_select_failure(self, email_client):
+        """Test delete stops when mailbox selection fails."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("NO", [b"[NONEXISTENT] Unknown Mailbox: Archive"]))
+        mock_imap.uid = AsyncMock()
+        mock_imap.expunge = AsyncMock()
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with pytest.raises(RuntimeError, match="SELECT mailbox Archive failed"):
+                await email_client.delete_emails(["123"], mailbox="Archive")
+
+        mock_imap.uid.assert_not_called()
+        mock_imap.expunge.assert_not_called()
+        mock_imap.logout.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_email(self, email_client):

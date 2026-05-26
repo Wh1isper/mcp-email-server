@@ -251,6 +251,38 @@ class TestDownloadAttachmentMailboxParam:
                 mock_imap.select.assert_called_once_with('"INBOX"')
 
     @pytest.mark.asyncio
+    async def test_download_attachment_raises_on_select_failure(self, email_client, tmp_path):
+        """Test download stops when mailbox selection fails."""
+        import asyncio
+
+        save_path = str(tmp_path / "attachment.pdf")
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("NO", [b"[NONEXISTENT] Unknown Mailbox: Archive"]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "_fetch_email_with_formats", return_value=None) as mock_fetch:
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                with pytest.raises(RuntimeError) as exc_info:
+                    await email_client.download_attachment(
+                        email_id="123",
+                        attachment_name="document.pdf",
+                        save_path=save_path,
+                        mailbox="Archive",
+                    )
+
+        message = str(exc_info.value)
+        assert "SELECT mailbox Archive failed" in message
+        assert "NO" in message
+        assert "[NONEXISTENT] Unknown Mailbox: Archive" in message
+        mock_fetch.assert_not_called()
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_download_attachment_custom_mailbox(self, email_client, tmp_path):
         """Test download_attachment with custom mailbox parameter."""
         import asyncio

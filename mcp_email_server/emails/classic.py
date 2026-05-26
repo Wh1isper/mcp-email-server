@@ -78,10 +78,29 @@ def _imap_status(response: Any) -> str:
     return str(response).upper()
 
 
+def _format_imap_response_detail(response: Any) -> str:
+    """Return a compact, readable IMAP response detail string."""
+    status = _imap_status(response)
+    lines = getattr(response, "lines", None)
+    if lines is None and isinstance(response, tuple) and len(response) > 1:
+        lines = response[1]
+
+    detail_parts = []
+    for line in lines or []:
+        if isinstance(line, bytes):
+            detail_parts.append(line.decode("utf-8", errors="replace"))
+        else:
+            detail_parts.append(str(line))
+
+    detail = " ".join(part for part in detail_parts if part).strip()
+    return f"{status} {detail}".strip()
+
+
 def _raise_for_imap_error(response: Any, operation: str) -> None:
     """Raise when an IMAP command returns a non-OK status."""
     if _imap_status(response) != "OK":
-        msg = f"{operation} failed: {response!r}"
+        detail = _format_imap_response_detail(response)
+        msg = f"{operation} failed" + (f": {detail}" if detail else "")
         raise RuntimeError(msg)
 
 
@@ -619,7 +638,8 @@ class EmailClient:
             # Login and select mailbox
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
             search_criteria = self._build_search_criteria(
                 before,
@@ -792,7 +812,8 @@ class EmailClient:
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
@@ -1190,7 +1211,8 @@ class EmailClient:
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
             for email_id in email_ids:
                 try:
