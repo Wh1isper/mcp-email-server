@@ -73,6 +73,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                       | -             | Yes      |
 | `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                       | `993`         | No       |
 | `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                        | `true`        | No       |
+| `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                   | `false`       | No       |
 | `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed) | `true`        | No       |
 | `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                       | -             | Yes      |
 | `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                       | `465`         | No       |
@@ -182,9 +183,9 @@ sent_folder_name = "INBOX.Sent"
 
 **To disable saving to Sent folder**, set `MCP_EMAIL_SERVER_SAVE_TO_SENT=false` or `save_to_sent = false` in your TOML config.
 
-### Self-Signed Certificates (e.g., ProtonMail Bridge)
+### Self-Signed Certificates and IMAP STARTTLS (e.g., ProtonMail Bridge)
 
-If you're using a local mail server with self-signed certificates (like ProtonMail Bridge), you'll need to disable SSL certificate verification:
+Local mail bridges such as ProtonMail Bridge commonly use STARTTLS with self-signed certificates. Configure IMAP with plaintext connect plus STARTTLS upgrade, and disable certificate verification for the local bridge certificate:
 
 ```json
 {
@@ -193,6 +194,10 @@ If you're using a local mail server with self-signed certificates (like ProtonMa
       "command": "uvx",
       "args": ["mcp-email-server@latest", "stdio"],
       "env": {
+        "MCP_EMAIL_SERVER_IMAP_HOST": "127.0.0.1",
+        "MCP_EMAIL_SERVER_IMAP_PORT": "1143",
+        "MCP_EMAIL_SERVER_IMAP_SSL": "false",
+        "MCP_EMAIL_SERVER_IMAP_START_SSL": "true",
         "MCP_EMAIL_SERVER_IMAP_VERIFY_SSL": "false",
         "MCP_EMAIL_SERVER_SMTP_VERIFY_SSL": "false"
       }
@@ -209,6 +214,10 @@ account_name = "protonmail"
 # ... other settings ...
 
 [emails.incoming]
+host = "127.0.0.1"
+port = 1143
+use_ssl = false
+start_ssl = true
 verify_ssl = false
 
 [emails.outgoing]

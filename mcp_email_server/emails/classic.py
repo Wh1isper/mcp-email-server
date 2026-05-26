@@ -160,6 +160,52 @@ def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
     return ctx
 
 
+def _create_starttls_ssl_context(verify_ssl: bool) -> ssl.SSLContext:
+    """Create a concrete SSL context for asyncio STARTTLS upgrades."""
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    if not verify_ssl:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _imap_capabilities(imap: aioimaplib.IMAP4) -> set[str]:
+    """Return normalized capabilities from an aioimaplib protocol."""
+    return {
+        capability.decode("utf-8", errors="replace").upper()
+        if isinstance(capability, bytes)
+        else str(capability).upper()
+        for capability in getattr(imap.protocol, "capabilities", ())
+    }
+
+
+async def _imap_starttls(imap: aioimaplib.IMAP4, ssl_context: ssl.SSLContext, host: str) -> None:
+    """Upgrade an IMAP connection to TLS via STARTTLS."""
+    capabilities = _imap_capabilities(imap)
+    if "STARTTLS" not in capabilities:
+        await imap.protocol.capability()
+        capabilities = _imap_capabilities(imap)
+    if "STARTTLS" not in capabilities:
+        raise OSError("IMAP server does not advertise STARTTLS capability")
+
+    response = await imap.protocol.execute(
+        aioimaplib.Command("STARTTLS", imap.protocol.new_tag(), loop=imap.protocol.loop)
+    )
+    status = _imap_status(response)
+    if status != "OK":
+        raise OSError(f"STARTTLS command failed: {status}")
+
+    loop = asyncio.get_running_loop()
+    tls_transport = await loop.start_tls(
+        imap.protocol.transport,
+        imap.protocol,
+        ssl_context,
+        server_hostname=host,
+    )
+    imap.protocol.transport = tls_transport
+    await imap.protocol.capability()
+
+
 # Backwards-compatible alias
 _create_smtp_ssl_context = _create_ssl_context
 
@@ -181,6 +227,37 @@ class EmailClient:
             imap_ssl_context = _create_ssl_context(self.email_server.verify_ssl)
             return self.imap_class(self.email_server.host, self.email_server.port, ssl_context=imap_ssl_context)
         return self.imap_class(self.email_server.host, self.email_server.port)
+
+    async def _connect_imap(self) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
+        """Create, greet, and optionally STARTTLS-upgrade an IMAP connection."""
+        imap = self._imap_connect()
+        return await self._prepare_imap_connection(imap, self.email_server)
+
+    @staticmethod
+    async def _prepare_imap_connection(
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        server: EmailServer,
+    ) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
+        """Wait for greeting and optionally STARTTLS-upgrade an IMAP connection."""
+        await imap._client_task
+        await imap.wait_hello_from_server()
+
+        if server.start_ssl:
+            ssl_context = _create_starttls_ssl_context(server.verify_ssl)
+            await _imap_starttls(imap, ssl_context, server.host)
+
+        return imap
+
+    @staticmethod
+    async def _connect_imap_server(server: EmailServer) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
+        """Create, greet, and optionally STARTTLS-upgrade an IMAP connection."""
+        if server.use_ssl:
+            imap_ssl_context = _create_ssl_context(server.verify_ssl)
+            imap = aioimaplib.IMAP4_SSL(server.host, server.port, ssl_context=imap_ssl_context)
+        else:
+            imap = aioimaplib.IMAP4(server.host, server.port)
+
+        return await EmailClient._prepare_imap_connection(imap, server)
 
     def _get_smtp_ssl_context(self) -> ssl.SSLContext | None:
         """Get SSL context for SMTP connections based on verify_ssl setting."""
@@ -537,12 +614,8 @@ class EmailClient:
         flagged: bool | None = None,
         answered: bool | None = None,
     ) -> tuple[int, list[dict[str, Any]]]:
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         try:
-            # Wait for the connection to be established
-            await imap._client_task
-            await imap.wait_hello_from_server()
-
             # Login and select mailbox
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
@@ -654,12 +727,8 @@ class EmailClient:
     async def get_email_body_by_id(
         self, email_id: str, mailbox: str = "INBOX", mark_as_read: bool = False
     ) -> dict[str, Any] | None:
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         try:
-            # Wait for the connection to be established
-            await imap._client_task
-            await imap.wait_hello_from_server()
-
             # Login and select mailbox
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
@@ -719,11 +788,8 @@ class EmailClient:
         Returns:
             A dictionary with download result information.
         """
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
-
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
@@ -983,11 +1049,7 @@ class EmailClient:
         Returns:
             True if successfully saved, False otherwise
         """
-        if incoming_server.use_ssl:
-            imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
-            imap = aioimaplib.IMAP4_SSL(incoming_server.host, incoming_server.port, ssl_context=imap_ssl_context)
-        else:
-            imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
+        imap = await self._connect_imap_server(incoming_server)
 
         # Common Sent folder names across different providers
         sent_folder_candidates = [
@@ -1003,8 +1065,6 @@ class EmailClient:
         sent_folder_candidates = [f for f in sent_folder_candidates if f]
 
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
             await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
 
@@ -1075,15 +1135,9 @@ class EmailClient:
         (if the server supports APPENDUID / RFC 4315), or ``"unknown"`` on
         success without UID, or ``None`` on failure.
         """
-        if incoming_server.use_ssl:
-            imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
-            imap = aioimaplib.IMAP4_SSL(incoming_server.host, incoming_server.port, ssl_context=imap_ssl_context)
-        else:
-            imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
+        imap = await self._connect_imap_server(incoming_server)
 
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
             await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
 
@@ -1129,13 +1183,11 @@ class EmailClient:
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         deleted_ids = []
         failed_ids = []
 
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
@@ -1159,13 +1211,11 @@ class EmailClient:
 
     async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Mark emails as read by setting the \\Seen flag. Returns (marked_ids, failed_ids)."""
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         marked_ids: list[str] = []
         failed_ids: list[str] = []
 
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
@@ -1191,13 +1241,11 @@ class EmailClient:
         self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
     ) -> tuple[list[str], list[str]]:
         """Move emails to a different mailbox. Uses IMAP MOVE (RFC 6851) with COPY+DELETE fallback."""
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         moved_ids = []
         failed_ids = []
 
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(source_mailbox))
@@ -1239,12 +1287,10 @@ class EmailClient:
 
     async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[MailboxInfo]:
         """List available IMAP mailboxes with flags and delimiter."""
-        imap = self._imap_connect()
+        imap = await self._connect_imap()
         mailboxes = []
 
         try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
 

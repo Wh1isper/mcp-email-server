@@ -106,6 +106,7 @@ class EmailSettings(AccountAttributes):
         imap_password: str | None = None,
         imap_port: int = 993,
         imap_ssl: bool = True,
+        imap_start_ssl: bool = False,
         imap_verify_ssl: bool = True,
         smtp_port: int = 465,
         smtp_ssl: bool = True,
@@ -126,6 +127,7 @@ class EmailSettings(AccountAttributes):
                 host=imap_host,
                 port=imap_port,
                 use_ssl=imap_ssl,
+                start_ssl=imap_start_ssl,
                 verify_ssl=imap_verify_ssl,
             ),
             outgoing=EmailServer(
@@ -154,6 +156,7 @@ class EmailSettings(AccountAttributes):
         - MCP_EMAIL_SERVER_IMAP_HOST
         - MCP_EMAIL_SERVER_IMAP_PORT (default: 993)
         - MCP_EMAIL_SERVER_IMAP_SSL (default: true)
+        - MCP_EMAIL_SERVER_IMAP_START_SSL (default: false)
         - MCP_EMAIL_SERVER_IMAP_VERIFY_SSL (default: true)
         - MCP_EMAIL_SERVER_SMTP_HOST
         - MCP_EMAIL_SERVER_SMTP_PORT (default: 465)
@@ -192,6 +195,7 @@ class EmailSettings(AccountAttributes):
                 imap_host=imap_host,
                 imap_port=int(os.getenv("MCP_EMAIL_SERVER_IMAP_PORT", "993")),
                 imap_ssl=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_IMAP_SSL"), True),
+                imap_start_ssl=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_IMAP_START_SSL"), False),
                 imap_verify_ssl=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_IMAP_VERIFY_SSL"), True),
                 smtp_host=smtp_host,
                 smtp_port=int(os.getenv("MCP_EMAIL_SERVER_SMTP_PORT", "465")),
