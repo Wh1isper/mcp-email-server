@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_email_server.config import EmailServer
-from mcp_email_server.emails.classic import EmailClient, _create_smtp_ssl_context
+from mcp_email_server.emails.classic import EmailClient, _create_smtp_ssl_context, _imap_login
 
 
 @pytest.fixture
@@ -25,6 +25,40 @@ def email_server():
 @pytest.fixture
 def email_client(email_server):
     return EmailClient(email_server, sender="Test User <test@example.com>")
+
+
+class TestImapLogin:
+    @pytest.mark.asyncio
+    async def test_imap_login_ok_returns_none(self):
+        imap = AsyncMock()
+        imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+
+        await _imap_login(imap, "user@example.com", "secret")
+
+        imap.login.assert_awaited_once_with("user@example.com", "secret")
+
+    @pytest.mark.asyncio
+    async def test_imap_login_no_raises_connection_error_with_detail(self):
+        imap = AsyncMock()
+        imap.login = AsyncMock(return_value=MagicMock(result="NO", lines=[b"Incorrect login credentials"]))
+
+        with pytest.raises(ConnectionError) as exc_info:
+            await _imap_login(imap, "user@example.com", "secret")
+
+        message = str(exc_info.value)
+        assert "user@example.com" in message
+        assert "NO" in message
+        assert "Incorrect login credentials" in message
+
+    @pytest.mark.asyncio
+    async def test_imap_login_decodes_non_utf8_detail_with_replacement(self):
+        imap = AsyncMock()
+        imap.login = AsyncMock(return_value=MagicMock(result="BAD", lines=[b"bad byte: \xff"]))
+
+        with pytest.raises(ConnectionError) as exc_info:
+            await _imap_login(imap, "user@example.com", "secret")
+
+        assert "bad byte:" in str(exc_info.value)
 
 
 class TestEmailClient:

@@ -11,7 +11,7 @@ os.environ["MCP_EMAIL_SERVER_LOG_LEVEL"] = "DEBUG"
 
 import asyncio
 from datetime import datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -77,7 +77,7 @@ def mock_imap():
     mock_imap._client_task = asyncio.Future()
     mock_imap._client_task.set_result(None)
     mock_imap.wait_hello_from_server = AsyncMock()
-    mock_imap.login = AsyncMock()
+    mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
     mock_imap.select = AsyncMock(return_value=("OK", []))
     mock_imap.search = AsyncMock(return_value=(None, [b"1 2 3"]))
     mock_imap.fetch = AsyncMock(return_value=(None, [b"HEADER", bytearray(b"EMAIL CONTENT")]))

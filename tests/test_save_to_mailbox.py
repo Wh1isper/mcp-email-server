@@ -2,7 +2,7 @@
 
 import asyncio
 from email.mime.text import MIMEText
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -62,7 +62,7 @@ def mock_imap():
     mock._client_task = asyncio.Future()
     mock._client_task.set_result(None)
     mock.wait_hello_from_server = AsyncMock()
-    mock.login = AsyncMock()
+    mock.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
     mock.select = AsyncMock(return_value=("OK", []))
     mock.append = AsyncMock(return_value=("OK", []))
     mock.logout = AsyncMock()
