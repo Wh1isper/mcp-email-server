@@ -585,7 +585,9 @@ class EmailClient:
 
         return None
 
-    async def get_email_body_by_id(self, email_id: str, mailbox: str = "INBOX") -> dict[str, Any] | None:
+    async def get_email_body_by_id(
+        self, email_id: str, mailbox: str = "INBOX", mark_as_read: bool = False
+    ) -> dict[str, Any] | None:
         imap = self._imap_connect()
         try:
             # Wait for the connection to be established
@@ -608,6 +610,12 @@ class EmailClient:
             if not raw_email:
                 logger.error(f"Could not find email data in response for email ID: {email_id}")
                 return None
+
+            if mark_as_read:
+                try:
+                    await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                except Exception as e:
+                    logger.warning(f"Failed to mark email {email_id} as read: {e}")
 
             # Parse the email
             try:
@@ -1046,14 +1054,16 @@ class ClassicEmailHandler(EmailHandler):
             total=total,
         )
 
-    async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> EmailContentBatchResponse:
+    async def get_emails_content(
+        self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
+    ) -> EmailContentBatchResponse:
         """Batch retrieve email body content"""
         emails = []
         failed_ids = []
 
         for email_id in email_ids:
             try:
-                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
+                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox, mark_as_read)
                 if email_data:
                     emails.append(
                         EmailBodyResponse(

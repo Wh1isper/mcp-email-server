@@ -265,7 +265,7 @@ class TestMcpTools:
             assert result.emails[0].subject == "Test Subject"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX")
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", False)
 
     @pytest.mark.asyncio
     async def test_get_emails_content_batch(self):
@@ -321,7 +321,7 @@ class TestMcpTools:
             assert result.emails[1].email_id == "12346"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX", False)
 
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
@@ -355,7 +355,7 @@ class TestMcpTools:
             )
 
             assert result == batch_response
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent")
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent", False)
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -544,3 +544,36 @@ class TestMcpTools:
             )
 
             assert result.emails[0].message_id == "<test@example.com>"
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_mark_as_read_true(self):
+        """Test that mark_as_read=True is passed through to the handler."""
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
+            emails=[], requested_count=1, retrieved_count=0, failed_ids=["123"]
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            await get_emails_content(
+                account_name="test",
+                email_ids=["123"],
+                mark_as_read=True,
+            )
+
+            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", True)
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_mark_as_read_default_false(self):
+        """Test that mark_as_read defaults to False."""
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
+            emails=[], requested_count=1, retrieved_count=0, failed_ids=["123"]
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            await get_emails_content(
+                account_name="test",
+                email_ids=["123"],
+            )
+
+            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False)
