@@ -372,6 +372,58 @@ class TestEmailClient:
                     mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2", "1"])
 
     @pytest.mark.asyncio
+    async def test_get_emails_metadata_falls_back_to_uid_order_when_dates_missing(self, email_client):
+        """Metadata listing should still return emails when INTERNALDATE parsing fails."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.logout = AsyncMock()
+
+        mock_metadata = {
+            "1": {
+                "email_id": "1",
+                "subject": "Subject 1",
+                "from": "a@test.com",
+                "to": [],
+                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+            "2": {
+                "email_id": "2",
+                "subject": "Subject 2",
+                "from": "b@test.com",
+                "to": [],
+                "date": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+            "3": {
+                "email_id": "3",
+                "subject": "Subject 3",
+                "from": "c@test.com",
+                "to": [],
+                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+        }
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_batch_fetch_dates", return_value={}) as mock_fetch_dates:
+                with patch.object(
+                    email_client, "_batch_fetch_headers", return_value=mock_metadata
+                ) as mock_fetch_headers:
+                    total, emails = await email_client.get_emails_metadata(page=1, page_size=2)
+
+        assert total == 3
+        assert [email["email_id"] for email in emails] == ["3", "2"]
+        mock_fetch_dates.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])
+        mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2"])
+        mock_imap.logout.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_get_emails_metadata_raises_on_select_failure(self, email_client):
         """Test mailbox selection failures are surfaced before SEARCH."""
         mock_imap = AsyncMock()

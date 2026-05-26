@@ -71,6 +71,12 @@ def _quote_mailbox(mailbox: str) -> str:
     return f'"{escaped}"'
 
 
+def _uid_sort_key(uid: bytes | str) -> int:
+    """Return a numeric sort key for IMAP UIDs."""
+    value = uid.decode() if isinstance(uid, bytes) else uid
+    return int(value)
+
+
 def _imap_status(response: Any) -> str:
     """Return the normalized status from an aioimaplib response."""
     if hasattr(response, "result"):
@@ -669,12 +675,39 @@ class EmailClient:
             uid_dates = await self._batch_fetch_dates(imap, email_ids)
             fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
 
-            # Sort by INTERNALDATE
-            sorted_uids = sorted(uid_dates.items(), key=lambda x: x[1], reverse=(order == "desc"))
+            missing_date_count = len(email_ids) - len(uid_dates)
+            if missing_date_count:
+                logger.warning(
+                    f"Missing INTERNALDATE for {missing_date_count}/{len(email_ids)} searched UIDs; "
+                    "falling back to UID order for those messages"
+                )
+
+            # Keep UID SEARCH results as the source of truth. Use INTERNALDATE where
+            # available, and fall back to UID ordering for provider-specific
+            # INTERNALDATE response formats that cannot be parsed.
+            if order == "desc":
+                sorted_uids = sorted(
+                    (uid.decode() for uid in email_ids),
+                    key=lambda uid: (
+                        uid_dates.get(uid) is not None,
+                        uid_dates.get(uid) or datetime.min.replace(tzinfo=timezone.utc),
+                        _uid_sort_key(uid),
+                    ),
+                    reverse=True,
+                )
+            else:
+                sorted_uids = sorted(
+                    (uid.decode() for uid in email_ids),
+                    key=lambda uid: (
+                        uid_dates.get(uid) is None,
+                        uid_dates.get(uid) or datetime.max.replace(tzinfo=timezone.utc),
+                        _uid_sort_key(uid),
+                    ),
+                )
 
             # Paginate
             start = (page - 1) * page_size
-            page_uids = [uid for uid, _ in sorted_uids[start : start + page_size]]
+            page_uids = sorted_uids[start : start + page_size]
 
             if not page_uids:
                 logger.info(f"Phase 1 (dates): {len(uid_dates)} UIDs in {fetch_dates_elapsed:.2f}s, page {page} empty")
