@@ -17,6 +17,7 @@ from typing import Any
 
 import aioimaplib
 import aiosmtplib
+from bs4 import BeautifulSoup
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
@@ -103,6 +104,18 @@ def _raise_for_imap_error(response: Any, operation: str) -> None:
         detail = _format_imap_response_detail(response)
         msg = f"{operation} failed" + (f": {detail}" if detail else "")
         raise RuntimeError(msg)
+
+
+def _html_to_text(html: str) -> str:
+    """Convert an HTML email body to readable plain text."""
+    soup = BeautifulSoup(html, "html.parser")
+    for element in soup(["script", "style"]):
+        element.decompose()
+
+    text = soup.get_text(separator="\n")
+    text = re.sub(r"\n\s*\n", "\n\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
 
 
 async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
@@ -360,25 +373,6 @@ class EmailClient:
         html_body = ""  # Fallback if no text/plain
         attachments = []
 
-        def _strip_html(html: str) -> str:
-            """Simple HTML to text conversion."""
-            import re
-
-            # Remove script and style elements
-            text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
-            # Convert common block elements to newlines
-            text = re.sub(r"<(br|p|div|tr|li)[^>]*/?>", "\n", text, flags=re.IGNORECASE)
-            # Remove all remaining HTML tags
-            text = re.sub(r"<[^>]+>", "", text)
-            # Decode common HTML entities
-            text = text.replace("&nbsp;", " ").replace("&amp;", "&")
-            text = text.replace("&lt;", "<").replace("&gt;", ">")
-            text = text.replace("&quot;", '"').replace("&#39;", "'")
-            # Collapse multiple newlines and whitespace
-            text = re.sub(r"\n\s*\n", "\n\n", text)
-            text = re.sub(r" +", " ", text)
-            return text.strip()
-
         if email_message.is_multipart():
             for part in email_message.walk():
                 content_type = part.get_content_type()
@@ -410,7 +404,7 @@ class EmailClient:
 
             # Fall back to HTML if no plain text found
             if not body and html_body:
-                body = _strip_html(html_body)
+                body = _html_to_text(html_body)
         else:
             # Handle single-part emails
             content_type = email_message.get_content_type()
@@ -422,7 +416,7 @@ class EmailClient:
                 except UnicodeDecodeError:
                     text = payload.decode("utf-8", errors="replace")
 
-                body = _strip_html(text) if content_type == "text/html" else text
+                body = _html_to_text(text) if content_type == "text/html" else text
         # TODO: Allow retrieving full email body
         if body and len(body) > MAX_BODY_LENGTH:
             body = body[:MAX_BODY_LENGTH] + "...[TRUNCATED]"

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_email_server.config import EmailServer
-from mcp_email_server.emails.classic import EmailClient, _create_smtp_ssl_context, _imap_login
+from mcp_email_server.emails.classic import EmailClient, _create_smtp_ssl_context, _html_to_text, _imap_login
 
 
 @pytest.fixture
@@ -94,6 +94,66 @@ class TestEmailClient:
         assert result["body"] == "This is a test email body"
         assert isinstance(result["date"], datetime)
         assert result["attachments"] == []
+
+    def test_html_to_text_removes_scripts_and_preserves_readable_text(self):
+        """HTML fallback extraction uses an HTML parser for readable plain text."""
+        html = """
+        <html>
+          <head><style>.hidden { display: none; }</style><script>alert('x')</script></head>
+          <body>
+            <h1>Title &amp; Updates</h1>
+            <p>Hello&nbsp;<strong>there</strong></p>
+            <div>Line<br>Break</div>
+            <ul><li>One</li><li>Two</li></ul>
+          </body>
+        </html>
+        """
+
+        result = _html_to_text(html)
+
+        assert "alert" not in result
+        assert "display" not in result
+        assert "Title & Updates" in result
+        assert "Hello" in result
+        assert "there" in result
+        assert "Line" in result
+        assert "Break" in result
+        assert "One" in result
+        assert "Two" in result
+
+    def test_parse_email_data_html_single_part_falls_back_to_text(self):
+        """Single-part HTML emails are converted to plain text."""
+        msg = MIMEText("<html><body><p>Hello&nbsp;<b>world</b></p><script>x()</script></body></html>", "html", "utf-8")
+        msg["Subject"] = "HTML Subject"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = email.utils.formatdate()
+
+        client = EmailClient(MagicMock())
+        result = client._parse_email_data(msg.as_bytes())
+
+        assert result["subject"] == "HTML Subject"
+        assert "Hello" in result["body"]
+        assert "world" in result["body"]
+        assert "script" not in result["body"]
+        assert "x()" not in result["body"]
+
+    def test_parse_email_data_html_fallback_when_plain_text_missing(self):
+        """Multipart emails use HTML fallback when text/plain is absent."""
+        from email.mime.multipart import MIMEMultipart
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "HTML Only"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = email.utils.formatdate()
+        msg.attach(MIMEText("<div>First</div><div>Second &amp; third</div>", "html", "utf-8"))
+
+        client = EmailClient(MagicMock())
+        result = client._parse_email_data(msg.as_bytes())
+
+        assert "First" in result["body"]
+        assert "Second & third" in result["body"]
 
     def test_parse_email_data_with_attachments(self):
         """Test parsing email with attachments."""
