@@ -628,12 +628,14 @@ class EmailClient:
         return None
 
     async def _fetch_email_with_formats(self, imap, email_id: str) -> list | None:
-        """Try different fetch formats to get email data."""
-        fetch_formats = ["RFC822", "BODY[]", "BODY.PEEK[]", "(BODY.PEEK[])"]
+        """Try non-mutating fetch formats to get email data."""
+        fetch_formats = ["BODY.PEEK[]", "(BODY.PEEK[])"]
 
         for fetch_format in fetch_formats:
             try:
-                _, data = await imap.uid("fetch", email_id, fetch_format)
+                response = await imap.uid("fetch", email_id, fetch_format)
+                _raise_for_imap_error(response, f"FETCH email {email_id} with {fetch_format}")
+                _, data = response
 
                 if data and len(data) > 0 and self._check_email_content(data):
                     return data
@@ -652,12 +654,13 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
 
-            # Login and select inbox
+            # Login and select mailbox
             await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
-            # Fetch the specific email by UID
+            # Fetch the specific email by UID without implicitly marking it as read
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
                 logger.error(f"Failed to fetch UID {email_id} with any format")
@@ -669,18 +672,21 @@ class EmailClient:
                 logger.error(f"Could not find email data in response for email ID: {email_id}")
                 return None
 
-            if mark_as_read:
-                try:
-                    await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
-                except Exception as e:
-                    logger.warning(f"Failed to mark email {email_id} as read: {e}")
-
             # Parse the email
             try:
-                return self._parse_email_data(raw_email, email_id)
+                email_data = self._parse_email_data(raw_email, email_id)
             except Exception as e:
                 logger.error(f"Error parsing email: {e!s}")
                 return None
+
+            if mark_as_read:
+                try:
+                    store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    _raise_for_imap_error(store_response, f"STORE \\Seen for email {email_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to mark email {email_id} as read: {e}")
+
+            return email_data
 
         finally:
             # Ensure we logout properly
@@ -1061,11 +1067,13 @@ class EmailClient:
             await imap.wait_hello_from_server()
             await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
-            await imap.select(_quote_mailbox(mailbox))
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
             for email_id in email_ids:
                 try:
-                    await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    _raise_for_imap_error(store_response, f"STORE \\Seen for email {email_id}")
                     marked_ids.append(email_id)
                 except Exception as e:
                     logger.error(f"Failed to mark email {email_id} as read: {e}")

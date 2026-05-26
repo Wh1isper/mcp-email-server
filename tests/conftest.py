@@ -78,7 +78,7 @@ def mock_imap():
     mock_imap._client_task.set_result(None)
     mock_imap.wait_hello_from_server = AsyncMock()
     mock_imap.login = AsyncMock()
-    mock_imap.select = AsyncMock()
+    mock_imap.select = AsyncMock(return_value=("OK", []))
     mock_imap.search = AsyncMock(return_value=(None, [b"1 2 3"]))
     mock_imap.fetch = AsyncMock(return_value=(None, [b"HEADER", bytearray(b"EMAIL CONTENT")]))
     mock_imap.logout = AsyncMock()
