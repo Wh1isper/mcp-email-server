@@ -75,7 +75,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                        | `true`        | No       |
 | `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                   | `false`       | No       |
 | `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed) | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                       | -             | Yes      |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for read-only mode              | -             | No       |
 | `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                       | `465`         | No       |
 | `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                        | `true`        | No       |
 | `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                        | `false`       | No       |
@@ -83,6 +83,26 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                             | `false`       | No       |
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
+
+### Read-only IMAP mode
+
+SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only read/mailbox-management tools. Outbound compose tools such as `send_email` and `save_to_mailbox` are hidden when every configured email account is read-only.
+
+```json
+{
+  "mcpServers": {
+    "zerolib-email": {
+      "command": "uvx",
+      "args": ["mcp-email-server@latest", "stdio"],
+      "env": {
+        "MCP_EMAIL_SERVER_EMAIL_ADDRESS": "john@example.com",
+        "MCP_EMAIL_SERVER_PASSWORD": "your_password",
+        "MCP_EMAIL_SERVER_IMAP_HOST": "imap.gmail.com"
+      }
+    }
+  }
+}
+```
 
 ### HTTP Transport Security
 

@@ -57,6 +57,26 @@ class TestClassicEmailHandler:
         assert handler.outgoing_client.email_server == email_settings.outgoing
         assert handler.outgoing_client.sender == f"{email_settings.full_name} <{email_settings.email_address}>"
 
+    def test_init_read_only_account(self):
+        """Read-only accounts initialize without an outgoing SMTP client."""
+        email_settings = EmailSettings(
+            account_name="read_only",
+            full_name="Read Only",
+            email_address="read-only@example.com",
+            incoming=EmailServer(
+                user_name="reader",
+                password="secret",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+        )
+
+        handler = ClassicEmailHandler(email_settings)
+
+        assert isinstance(handler.incoming_client, EmailClient)
+        assert handler.outgoing_client is None
+
     @pytest.mark.asyncio
     async def test_get_emails(self, classic_handler):
         """Test get_emails method."""
@@ -198,6 +218,54 @@ class TestClassicEmailHandler:
                 [str(test_file)],
                 None,
                 None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_read_only_account_rejects_send_email(self):
+        """Read-only accounts cannot send email."""
+        email_settings = EmailSettings(
+            account_name="read_only",
+            full_name="Read Only",
+            email_address="read-only@example.com",
+            incoming=EmailServer(
+                user_name="reader",
+                password="secret",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+        )
+        handler = ClassicEmailHandler(email_settings)
+
+        with pytest.raises(RuntimeError, match="SMTP is not configured"):
+            await handler.send_email(
+                recipients=["recipient@example.com"],
+                subject="Test Subject",
+                body="Test Body",
+            )
+
+    @pytest.mark.asyncio
+    async def test_read_only_account_rejects_save_to_mailbox(self):
+        """Read-only accounts cannot compose and save outbound drafts."""
+        email_settings = EmailSettings(
+            account_name="read_only",
+            full_name="Read Only",
+            email_address="read-only@example.com",
+            incoming=EmailServer(
+                user_name="reader",
+                password="secret",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+        )
+        handler = ClassicEmailHandler(email_settings)
+
+        with pytest.raises(RuntimeError, match="SMTP is not configured"):
+            await handler.save_to_mailbox(
+                recipients=["recipient@example.com"],
+                subject="Test Subject",
+                body="Test Body",
             )
 
     @pytest.mark.asyncio

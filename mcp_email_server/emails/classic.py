@@ -1384,9 +1384,13 @@ class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
         self.email_settings = email_settings
         self.incoming_client = EmailClient(email_settings.incoming)
-        self.outgoing_client = EmailClient(
-            email_settings.outgoing,
-            sender=f"{email_settings.full_name} <{email_settings.email_address}>",
+        self.outgoing_client = (
+            EmailClient(
+                email_settings.outgoing,
+                sender=f"{email_settings.full_name} <{email_settings.email_address}>",
+            )
+            if email_settings.outgoing
+            else None
         )
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
@@ -1479,6 +1483,9 @@ class ClassicEmailHandler(EmailHandler):
         in_reply_to: str | None = None,
         references: str | None = None,
     ) -> None:
+        if self.outgoing_client is None:
+            raise RuntimeError(f"SMTP is not configured for account '{self.email_settings.account_name}'")
+
         msg = await self.outgoing_client.send_email(
             recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
         )
@@ -1526,6 +1533,9 @@ class ClassicEmailHandler(EmailHandler):
             ValueError: If any flag in *flags* is invalid per RFC 3501.
             RuntimeError: If the IMAP APPEND operation fails.
         """
+        if self.outgoing_client is None:
+            raise RuntimeError(f"SMTP is not configured for account '{self.email_settings.account_name}'")
+
         msg = self.outgoing_client.compose_message(
             recipients,
             subject,

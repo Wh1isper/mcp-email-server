@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -18,7 +19,44 @@ from mcp_email_server.emails.models import (
     MailboxInfo,
 )
 
-mcp = FastMCP("email")
+ToolVisibilityPredicate = Callable[[], bool]
+
+
+def _has_send_capable_account() -> bool:
+    settings = get_settings()
+    return any(isinstance(account, EmailSettings) and account.can_send for account in settings.get_accounts())
+
+
+class VisibilityAwareFastMCP(FastMCP):
+    """FastMCP server with declarative tool visibility predicates."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tool_visibility: dict[str, ToolVisibilityPredicate] = {}
+
+    def tool(
+        self,
+        name: str | None = None,
+        *,
+        visible_if: ToolVisibilityPredicate | None = None,
+        **kwargs: Any,
+    ) -> Callable[[Any], Any]:
+        decorator = super().tool(name=name, **kwargs)
+
+        def wrapped(fn: Any) -> Any:
+            registered = decorator(fn)
+            if visible_if is not None:
+                self._tool_visibility[name or fn.__name__] = visible_if
+            return registered
+
+        return wrapped
+
+    async def list_tools(self):
+        tools = await super().list_tools()
+        return [tool for tool in tools if self._tool_visibility.get(tool.name, lambda: True)()]
+
+
+mcp = VisibilityAwareFastMCP("email")
 
 
 @mcp.resource("email://{account_name}")
@@ -127,6 +165,7 @@ async def get_emails_content(
 
 @mcp.tool(
     description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
+    visible_if=_has_send_capable_account,
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -188,6 +227,7 @@ async def send_email(
     description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
     "Same parameters as send_email, but saves instead of sending. "
     "Default folder is Drafts with \\Draft and \\Seen flags.",
+    visible_if=_has_send_capable_account,
 )
 async def save_to_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],

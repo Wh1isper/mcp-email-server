@@ -23,8 +23,8 @@ def test_from_env_missing_email_and_password(monkeypatch):
     assert result is None
 
 
-def test_from_env_missing_hosts_warning(monkeypatch):
-    """Test logger.warning for missing hosts - covers lines 154-156."""
+def test_from_env_missing_imap_host_warning(monkeypatch):
+    """Test logger.warning for missing required IMAP host."""
     monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "test@example.com")
     monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "pass")
 
@@ -32,16 +32,24 @@ def test_from_env_missing_hosts_warning(monkeypatch):
     result = EmailSettings.from_env()
     assert result is None
 
-    # Missing SMTP host
-    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.test.com")
-    result = EmailSettings.from_env()
-    assert result is None
-
     # Missing IMAP host
-    monkeypatch.delenv("MCP_EMAIL_SERVER_IMAP_HOST")
     monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_HOST", "smtp.test.com")
     result = EmailSettings.from_env()
     assert result is None
+
+
+def test_from_env_without_smtp_host_creates_read_only_account(monkeypatch):
+    """Test SMTP host is optional for read-only accounts."""
+    monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "test@example.com")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "pass")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.test.com")
+
+    result = EmailSettings.from_env()
+
+    assert result is not None
+    assert result.incoming.host == "imap.test.com"
+    assert result.outgoing is None
+    assert result.can_send is False
 
 
 def test_from_env_exception_handling(monkeypatch):
@@ -70,6 +78,7 @@ def test_from_env_success_with_all_defaults(monkeypatch):
     assert result.email_address == "user@example.com"
     assert result.incoming.user_name == "user@example.com"
     assert result.incoming.port == 993
+    assert result.outgoing is not None
     assert result.outgoing.port == 465
 
 
@@ -105,6 +114,7 @@ def test_from_env_with_all_vars_set(monkeypatch):
     assert result.incoming.password.get_secret_value() == "imap_pass"
     assert result.incoming.port == 143
     assert result.incoming.use_ssl is False
+    assert result.outgoing is not None
     assert result.outgoing.user_name == "smtp_john"
     assert result.outgoing.password.get_secret_value() == "smtp_pass"
     assert result.outgoing.port == 587
@@ -129,6 +139,7 @@ def test_from_env_boolean_parsing_variations(monkeypatch):
 
     result = EmailSettings.from_env()
     assert result.incoming.use_ssl is True
+    assert result.outgoing is not None
     assert result.outgoing.use_ssl is False
 
     # Test "on"/"off"
@@ -137,6 +148,7 @@ def test_from_env_boolean_parsing_variations(monkeypatch):
 
     result = EmailSettings.from_env()
     assert result.incoming.use_ssl is True
+    assert result.outgoing is not None
     assert result.outgoing.start_ssl is False
 
 
@@ -170,6 +182,47 @@ def test_settings_init_add_new_account(monkeypatch, tmp_path):
     settings = Settings()
     assert len(settings.emails) == 1
     assert settings.emails[0].account_name == "newaccount"
+
+
+def test_settings_init_add_read_only_account_from_env(monkeypatch, tmp_path):
+    """Test adding a read-only account from env without SMTP config."""
+    config_file = tmp_path / "empty.toml"
+    config_file.write_text("")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_file))
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ACCOUNT_NAME", "read_only")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "reader@example.com")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "readpass")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.reader.com")
+    monkeypatch.delenv("MCP_EMAIL_SERVER_SMTP_HOST", raising=False)
+
+    settings = Settings()
+
+    assert len(settings.emails) == 1
+    assert settings.emails[0].account_name == "read_only"
+    assert settings.emails[0].incoming.host == "imap.reader.com"
+    assert settings.emails[0].outgoing is None
+    assert settings.emails[0].can_send is False
+
+
+def test_email_settings_loads_read_only_account_without_outgoing_block():
+    """Test email accounts can omit outgoing SMTP configuration."""
+    email = EmailSettings.model_validate({
+        "account_name": "read_only",
+        "full_name": "Read Only",
+        "email_address": "reader@example.com",
+        "incoming": {
+            "user_name": "reader",
+            "password": "readpass",
+            "host": "imap.reader.com",
+            "port": 993,
+            "use_ssl": True,
+        },
+    })
+
+    assert email.account_name == "read_only"
+    assert email.outgoing is None
+    assert email.can_send is False
 
 
 def test_settings_init_override_existing(monkeypatch, tmp_path):
@@ -307,6 +360,7 @@ def test_email_settings_masked(monkeypatch):
 
     masked = email.masked()
     assert masked.incoming.password.get_secret_value() == "********"
+    assert masked.outgoing is not None
     assert masked.outgoing.password.get_secret_value() == "********"
     assert masked.email_address == "test@example.com"
 

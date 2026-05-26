@@ -87,9 +87,14 @@ class EmailSettings(AccountAttributes):
     full_name: str
     email_address: str
     incoming: EmailServer
-    outgoing: EmailServer
+    outgoing: EmailServer | None = None
     save_to_sent: bool = True  # Save sent emails to IMAP Sent folder
     sent_folder_name: str | None = None  # Override Sent folder name (auto-detect if None)
+
+    @property
+    def can_send(self) -> bool:
+        """Return whether this account has SMTP configuration."""
+        return self.outgoing is not None
 
     @classmethod
     def init(
@@ -101,7 +106,7 @@ class EmailSettings(AccountAttributes):
         user_name: str,
         password: str,
         imap_host: str,
-        smtp_host: str,
+        smtp_host: str | None = None,
         imap_user_name: str | None = None,
         imap_password: str | None = None,
         imap_port: int = 993,
@@ -130,14 +135,18 @@ class EmailSettings(AccountAttributes):
                 start_ssl=imap_start_ssl,
                 verify_ssl=imap_verify_ssl,
             ),
-            outgoing=EmailServer(
-                user_name=smtp_user_name or user_name,
-                password=smtp_password or password,
-                host=smtp_host,
-                port=smtp_port,
-                use_ssl=smtp_ssl,
-                start_ssl=smtp_start_ssl,
-                verify_ssl=smtp_verify_ssl,
+            outgoing=(
+                EmailServer(
+                    user_name=smtp_user_name or user_name,
+                    password=smtp_password or password,
+                    host=smtp_host,
+                    port=smtp_port,
+                    use_ssl=smtp_ssl,
+                    start_ssl=smtp_start_ssl,
+                    verify_ssl=smtp_verify_ssl,
+                )
+                if smtp_host
+                else None
             ),
             save_to_sent=save_to_sent,
             sent_folder_name=sent_folder_name,
@@ -158,7 +167,7 @@ class EmailSettings(AccountAttributes):
         - MCP_EMAIL_SERVER_IMAP_SSL (default: true)
         - MCP_EMAIL_SERVER_IMAP_START_SSL (default: false)
         - MCP_EMAIL_SERVER_IMAP_VERIFY_SSL (default: true)
-        - MCP_EMAIL_SERVER_SMTP_HOST
+        - MCP_EMAIL_SERVER_SMTP_HOST (optional; enables send_email)
         - MCP_EMAIL_SERVER_SMTP_PORT (default: 465)
         - MCP_EMAIL_SERVER_SMTP_SSL (default: true)
         - MCP_EMAIL_SERVER_SMTP_START_SSL (default: false)
@@ -181,8 +190,8 @@ class EmailSettings(AccountAttributes):
         smtp_host = os.getenv("MCP_EMAIL_SERVER_SMTP_HOST")
 
         # Required fields check
-        if not imap_host or not smtp_host:
-            logger.warning("Missing required email configuration environment variables (IMAP_HOST or SMTP_HOST)")
+        if not imap_host:
+            logger.warning("Missing required email configuration environment variable: IMAP_HOST")
             return None
 
         try:
@@ -217,7 +226,7 @@ class EmailSettings(AccountAttributes):
         return self.model_copy(
             update={
                 "incoming": self.incoming.masked(),
-                "outgoing": self.outgoing.masked(),
+                "outgoing": self.outgoing.masked() if self.outgoing else None,
             }
         )
 

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mcp_email_server import app as app_module
 from mcp_email_server.app import (
     add_email_account,
     delete_emails,
@@ -360,6 +361,63 @@ class TestMcpTools:
 
             assert result == batch_response
             mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent", False)
+
+    @pytest.mark.asyncio
+    async def test_tool_visibility_hides_outbound_tools_for_read_only_accounts(self):
+        """Read-only deployments should hide outbound tools from MCP clients."""
+        read_only_account = EmailSettings(
+            account_name="read_only",
+            full_name="Read Only",
+            email_address="read-only@example.com",
+            incoming=EmailServer(
+                user_name="reader",
+                password="secret",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+        )
+        mock_settings = MagicMock()
+        mock_settings.get_accounts.return_value = [read_only_account]
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
+
+        assert "send_email" not in tool_names
+        assert "save_to_mailbox" not in tool_names
+        assert "list_emails_metadata" in tool_names
+        assert "get_emails_content" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_tool_visibility_shows_outbound_tools_for_send_capable_accounts(self):
+        """SMTP-configured deployments should expose outbound tools."""
+        send_capable_account = EmailSettings(
+            account_name="send_capable",
+            full_name="Send Capable",
+            email_address="sender@example.com",
+            incoming=EmailServer(
+                user_name="reader",
+                password="secret",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+            outgoing=EmailServer(
+                user_name="sender",
+                password="secret",
+                host="smtp.example.com",
+                port=465,
+                use_ssl=True,
+            ),
+        )
+        mock_settings = MagicMock()
+        mock_settings.get_accounts.return_value = [send_capable_account]
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
+
+        assert "send_email" in tool_names
+        assert "save_to_mailbox" in tool_names
 
     @pytest.mark.asyncio
     async def test_send_email(self):

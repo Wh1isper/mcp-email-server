@@ -54,6 +54,28 @@ def test_api_key_is_secret_type():
     assert provider.api_key.get_secret_value() == "sk-123"
 
 
+def test_email_settings_without_outgoing_is_read_only():
+    """EmailSettings can represent read-only IMAP accounts."""
+    settings = EmailSettings(
+        account_name="read_only",
+        full_name="Read Only",
+        email_address="read-only@example.com",
+        incoming=EmailServer(
+            user_name="reader",
+            password="secret",
+            host="imap.example.com",
+            port=993,
+        ),
+    )
+
+    assert settings.outgoing is None
+    assert settings.can_send is False
+
+    masked = settings.masked()
+    assert masked.outgoing is None
+    assert masked.incoming.password.get_secret_value() == "********"
+
+
 def test_config():
     settings = get_settings()
     assert settings.emails == []
