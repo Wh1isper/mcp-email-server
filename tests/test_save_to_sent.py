@@ -507,6 +507,20 @@ class TestFindSentFolderByFlag:
         assert result == "[Gmail]/Gesendet"
 
     @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_decodes_modified_utf7(self, email_client):
+        """Sent folder detection should return decoded Unicode folder names."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                [b'(\\Sent \\HasNoChildren) "/" "Gesendete &ANw-bjekte"'],
+            )
+        )
+
+        result = await email_client._find_sent_folder_by_flag(mock)
+        assert result == "Gesendete Übjekte"
+
+    @pytest.mark.asyncio
     async def test_find_sent_folder_by_flag_not_found(self, email_client, mock_imap_without_sent_flag):
         """Test when no folder with \\Sent flag exists."""
         result = await email_client._find_sent_folder_by_flag(mock_imap_without_sent_flag)

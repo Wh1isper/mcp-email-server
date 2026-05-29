@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import email.utils
 import mimetypes
 import re
@@ -53,6 +55,153 @@ def _validate_flags(flags: list[str]) -> str:
     return "(" + " ".join(flags) + ")"
 
 
+def encode_mailbox_name(mailbox: str) -> str:
+    """Encode an IMAP mailbox name using RFC 3501 Modified UTF-7."""
+    result: list[str] = []
+    buffer: list[str] = []
+
+    def flush_buffer() -> None:
+        if not buffer:
+            return
+        text = "".join(buffer)
+        encoded = base64.b64encode(text.encode("utf-16-be")).decode("ascii")
+        result.append("&" + encoded.rstrip("=").replace("/", ",") + "-")
+        buffer.clear()
+
+    for char in mailbox:
+        codepoint = ord(char)
+        if char == "&":
+            flush_buffer()
+            result.append("&-")
+        elif 0x20 <= codepoint <= 0x7E:
+            flush_buffer()
+            result.append(char)
+        else:
+            buffer.append(char)
+
+    flush_buffer()
+    return "".join(result)
+
+
+def decode_mailbox_name(mailbox: str) -> str:
+    """Decode an IMAP mailbox name from RFC 3501 Modified UTF-7."""
+    result: list[str] = []
+    index = 0
+
+    while index < len(mailbox):
+        char = mailbox[index]
+        if char != "&":
+            result.append(char)
+            index += 1
+            continue
+
+        end = mailbox.find("-", index + 1)
+        if end == -1:
+            result.append(mailbox[index:])
+            break
+        if end == index + 1:
+            result.append("&")
+            index = end + 1
+            continue
+
+        encoded = mailbox[index + 1 : end].replace(",", "/")
+        padding = "=" * (-len(encoded) % 4)
+        try:
+            decoded = base64.b64decode(encoded + padding, validate=True).decode("utf-16-be")
+        except (binascii.Error, UnicodeDecodeError):
+            result.append(mailbox[index : end + 1])
+        else:
+            result.append(decoded)
+        index = end + 1
+
+    return "".join(result)
+
+
+def _skip_imap_whitespace(value: str, start: int) -> int:
+    """Return the next non-whitespace index in an IMAP response line."""
+    index = start
+    while index < len(value) and value[index].isspace():
+        index += 1
+    return index
+
+
+def _read_quoted_imap_token(value: str, start: int) -> tuple[str, int]:
+    """Read a quoted IMAP token."""
+    index = start + 1
+    token: list[str] = []
+    while index < len(value):
+        char = value[index]
+        if char == "\\" and index + 1 < len(value):
+            token.append(value[index + 1])
+            index += 2
+            continue
+        if char == '"':
+            return "".join(token), index + 1
+        token.append(char)
+        index += 1
+    return "".join(token), index
+
+
+def _read_parenthesized_imap_token(value: str, start: int) -> tuple[str, int]:
+    """Read a parenthesized IMAP token."""
+    depth = 1
+    index = start + 1
+    token: list[str] = []
+    while index < len(value):
+        char = value[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(token), index + 1
+        token.append(char)
+        index += 1
+    return "".join(token), index
+
+
+def _read_atom_imap_token(value: str, start: int) -> tuple[str, int]:
+    """Read an atom IMAP token."""
+    index = start
+    while index < len(value) and not value[index].isspace():
+        index += 1
+    return value[start:index], index
+
+
+def _read_imap_list_token(value: str, start: int) -> tuple[str | None, int]:
+    """Read one token from an IMAP LIST response line."""
+    index = _skip_imap_whitespace(value, start)
+    if index >= len(value):
+        return None, index
+    if value[index] == '"':
+        return _read_quoted_imap_token(value, index)
+    if value[index] == "(":
+        return _read_parenthesized_imap_token(value, index)
+    return _read_atom_imap_token(value, index)
+
+
+def _parse_list_response(item: bytes | str) -> MailboxInfo | None:
+    """Parse one IMAP LIST response into a MailboxInfo object."""
+    item_str = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
+    item_str = item_str.strip()
+    if not item_str:
+        return None
+
+    flags: list[str] = []
+    position = 0
+    if item_str.startswith("("):
+        flags_token, position = _read_imap_list_token(item_str, position)
+        flags = [flag.strip() for flag in (flags_token or "").split() if flag.strip()]
+
+    delimiter_token, position = _read_imap_list_token(item_str, position)
+    mailbox_token, _position = _read_imap_list_token(item_str, position)
+    if delimiter_token is None or mailbox_token is None:
+        return None
+
+    delimiter = "" if delimiter_token.upper() == "NIL" else delimiter_token
+    return MailboxInfo(name=decode_mailbox_name(mailbox_token), delimiter=delimiter, flags=flags)
+
+
 def _quote_mailbox(mailbox: str) -> str:
     """Quote mailbox name for IMAP compatibility.
 
@@ -61,13 +210,17 @@ def _quote_mailbox(mailbox: str) -> str:
 
     Per RFC 3501 Section 9 (Formal Syntax), quoted strings must escape
     backslashes and double-quote characters with a preceding backslash.
+    Mailbox names with non-ASCII characters are encoded using Modified UTF-7
+    as required by RFC 3501 Section 5.1.3.
 
     See: https://github.com/ai-zerolab/mcp-email-server/issues/87
+    See: https://github.com/ai-zerolab/mcp-email-server/issues/172
     See: https://www.rfc-editor.org/rfc/rfc3501#section-9
     """
+    encoded = encode_mailbox_name(mailbox)
     # Per RFC 3501, literal double-quote characters in a quoted string must
     # be escaped with a backslash. Backslashes themselves must also be escaped.
-    escaped = mailbox.replace("\\", "\\\\").replace('"', r"\"")
+    escaped = encoded.replace("\\", "\\\\").replace('"', r"\"")
     return f'"{escaped}"'
 
 
@@ -141,10 +294,13 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
         if response.result != "OK":
             # Fallback for strict servers (e.g., 163.com)
             # Send raw command with correct parenthesis format
+            new_tag = imap.protocol.new_tag()
+            if hasattr(new_tag, "__await__"):
+                new_tag = await new_tag
             await imap.protocol.execute(
                 aioimaplib.Command(
                     "ID",
-                    imap.protocol.new_tag(),
+                    new_tag,
                     '("name" "mcp-email-server" "version" "1.0.0")',
                 )
             )
@@ -1080,17 +1236,10 @@ class EmailClient:
 
             # Search for folder with \Sent flag
             for folder in folders:
-                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
-                # IMAP LIST response format: (flags) "delimiter" "name"
-                # Example: (\Sent \HasNoChildren) "/" "Gesendete Objekte"
-                if r"\Sent" in folder_str or "\\Sent" in folder_str:
-                    # Extract folder name from the response
-                    # Split by quotes and get the last quoted part
-                    parts = folder_str.split('"')
-                    if len(parts) >= 3:
-                        folder_name = parts[-2]  # The folder name is the second-to-last quoted part
-                        logger.info(f"Found Sent folder by \\Sent flag: '{folder_name}'")
-                        return folder_name
+                mailbox = _parse_list_response(folder)
+                if mailbox and r"\Sent" in mailbox.flags:
+                    logger.info(f"Found Sent folder by \\Sent flag: '{mailbox.name}'")
+                    return mailbox.name
         except Exception as e:
             logger.debug(f"Error finding Sent folder by flag: {e}")
 
@@ -1359,24 +1508,15 @@ class EmailClient:
             await _send_imap_id(imap)
 
             quoted_ref = _quote_mailbox(reference) if reference else '""'
-            response = await imap.list(quoted_ref, pattern)
+            quoted_pattern = _quote_mailbox(pattern)
+            response = await imap.list(quoted_ref, quoted_pattern)
             _raise_for_imap_error(response, f"LIST mailboxes with pattern {pattern}")
             _, data = response
 
             for item in data:
-                if item == b"":
-                    continue
-                item_str = item.decode("utf-8") if isinstance(item, bytes) else str(item)
-                flags = []
-                if "(" in item_str and ")" in item_str:
-                    flags_str = item_str[item_str.index("(") + 1 : item_str.index(")")]
-                    flags = [f.strip() for f in flags_str.split() if f.strip()]
-
-                parts = item_str.split('"')
-                if len(parts) >= 3:
-                    delimiter = parts[1]
-                    folder_name = parts[-2]
-                    mailboxes.append(MailboxInfo(name=folder_name, delimiter=delimiter, flags=flags))
+                mailbox = _parse_list_response(item)
+                if mailbox:
+                    mailboxes.append(mailbox)
         finally:
             try:
                 await imap.logout()

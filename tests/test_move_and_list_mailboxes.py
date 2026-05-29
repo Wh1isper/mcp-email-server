@@ -89,6 +89,20 @@ class TestEmailClientMoveEmails:
     """Tests for the low-level EmailClient.move_emails method."""
 
     @pytest.mark.asyncio
+    async def test_move_emails_encodes_unicode_mailboxes(self, email_client):
+        """Unicode mailbox names should be encoded before IMAP SELECT and COPY."""
+        mock_imap = _make_mock_imap()
+        del mock_imap.move
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            moved_ids, failed_ids = await email_client.move_emails(["100"], "Entwürfe", "Gelöschte Elemente")
+
+        assert moved_ids == ["100"]
+        assert failed_ids == []
+        mock_imap.select.assert_called_once_with('"Entw&APw-rfe"')
+        assert mock_imap.uid.call_args_list[0].args == ("copy", "100", '"Gel&APY-schte Elemente"')
+
+    @pytest.mark.asyncio
     async def test_move_emails_copy_delete_fallback(self, email_client):
         """When MOVE capability is absent, should use COPY + STORE \\Deleted + EXPUNGE."""
         mock_imap = _make_mock_imap()
@@ -341,7 +355,7 @@ class TestEmailClientListMailboxes:
         assert result[3].name == "Trash"
 
         # Verify IMAP list was called with correct args
-        mock_imap.list.assert_called_once_with('""', "*")
+        mock_imap.list.assert_called_once_with('""', '"*"')
         mock_imap.logout.assert_called_once()
 
     @pytest.mark.asyncio
@@ -390,6 +404,60 @@ class TestEmailClientListMailboxes:
         assert result[1].name == "Sent"
 
     @pytest.mark.asyncio
+    async def test_list_mailboxes_decodes_exchange_modified_utf7_and_atoms(self, email_client):
+        """Exchange LIST responses with localized folder names should parse correctly."""
+        mock_imap = _make_mock_imap()
+        mock_imap.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasChildren) "/" Posteingang',
+                    b'(\\Drafts \\HasNoChildren) "/" Entw&APw-rfe',
+                    b'(\\Trash \\HasNoChildren) "/" "Gel&APY-schte Elemente"',
+                ],
+            )
+        )
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.list_mailboxes()
+
+        assert len(result) == 3
+        assert result[0].name == "Posteingang"
+        assert result[0].delimiter == "/"
+        assert result[0].flags == ["\\HasChildren"]
+        assert result[1].name == "Entwürfe"
+        assert result[1].flags == ["\\Drafts", "\\HasNoChildren"]
+        assert result[2].name == "Gelöschte Elemente"
+        assert result[2].flags == ["\\Trash", "\\HasNoChildren"]
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_with_nil_delimiter(self, email_client):
+        """NIL hierarchy delimiters should be exposed as an empty string."""
+        mock_imap = _make_mock_imap()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\Noselect) NIL ""']))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.list_mailboxes()
+
+        assert len(result) == 1
+        assert result[0].name == ""
+        assert result[0].delimiter == ""
+        assert result[0].flags == ["\\Noselect"]
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_with_escaped_quoted_name(self, email_client):
+        """Quoted mailbox strings may contain escaped characters."""
+        mock_imap = _make_mock_imap()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\HasNoChildren) "/" "Project \\"A\\""']))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.list_mailboxes()
+
+        assert len(result) == 1
+        assert result[0].name == 'Project "A"'
+        assert result[0].delimiter == "/"
+
+    @pytest.mark.asyncio
     async def test_list_mailboxes_with_pattern(self, email_client):
         """A custom pattern should be passed through to IMAP LIST."""
         mock_imap = _make_mock_imap()
@@ -406,7 +474,31 @@ class TestEmailClientListMailboxes:
             result = await email_client.list_mailboxes(pattern="INBOX.*")
 
         assert len(result) == 1
-        mock_imap.list.assert_called_once_with('""', "INBOX.*")
+        mock_imap.list.assert_called_once_with('""', '"INBOX.*"')
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_quotes_encoded_pattern_with_spaces(self, email_client):
+        """Exact localized mailbox patterns should be encoded and quoted."""
+        mock_imap = _make_mock_imap()
+        mock_imap.list = AsyncMock(return_value=("OK", []))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.list_mailboxes(pattern="Gelöschte Elemente")
+
+        assert result == []
+        mock_imap.list.assert_called_once_with('""', '"Gel&APY-schte Elemente"')
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_quotes_encoded_pattern_preserving_wildcards(self, email_client):
+        """Wildcard patterns should remain wildcard patterns after quoting."""
+        mock_imap = _make_mock_imap()
+        mock_imap.list = AsyncMock(return_value=("OK", []))
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            result = await email_client.list_mailboxes(pattern="Gelöschte *")
+
+        assert result == []
+        mock_imap.list.assert_called_once_with('""', '"Gel&APY-schte *"')
 
     @pytest.mark.asyncio
     async def test_list_mailboxes_with_reference(self, email_client):
@@ -418,7 +510,7 @@ class TestEmailClientListMailboxes:
             result = await email_client.list_mailboxes(reference="INBOX")
 
         assert result == []
-        mock_imap.list.assert_called_once_with('"INBOX"', "*")
+        mock_imap.list.assert_called_once_with('"INBOX"', '"*"')
 
     @pytest.mark.asyncio
     async def test_list_mailboxes_empty_response(self, email_client):

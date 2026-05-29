@@ -1,6 +1,6 @@
-"""Tests for the _quote_mailbox helper function."""
+"""Tests for IMAP mailbox encoding and quoting helpers."""
 
-from mcp_email_server.emails.classic import _quote_mailbox
+from mcp_email_server.emails.classic import _quote_mailbox, decode_mailbox_name, encode_mailbox_name
 
 
 class TestQuoteMailbox:
@@ -43,3 +43,31 @@ class TestQuoteMailbox:
         # Per RFC 3501, we should always escape and quote
         # '"INBOX"' should become '"\\"INBOX\\""' (quotes escaped)
         assert _quote_mailbox('"INBOX"') == r'"\"INBOX\""'
+
+
+class TestModifiedUtf7MailboxCodec:
+    """Tests for RFC 3501 Modified UTF-7 mailbox codec."""
+
+    def test_decodes_exchange_german_folder_names(self):
+        """Exchange localized folder names should decode to Unicode."""
+        assert decode_mailbox_name("Entw&APw-rfe") == "Entwürfe"
+        assert decode_mailbox_name("Gel&APY-schte Elemente") == "Gelöschte Elemente"
+
+    def test_encodes_exchange_german_folder_names(self):
+        """Unicode folder names should encode to IMAP wire names."""
+        assert encode_mailbox_name("Entwürfe") == "Entw&APw-rfe"
+        assert encode_mailbox_name("Gelöschte Elemente") == "Gel&APY-schte Elemente"
+
+    def test_ampersand_round_trips(self):
+        """Literal ampersands use the special &- sequence."""
+        assert decode_mailbox_name("Sales &- Support") == "Sales & Support"
+        assert encode_mailbox_name("Sales & Support") == "Sales &- Support"
+
+    def test_invalid_modified_utf7_sequence_is_preserved(self):
+        """Malformed encoded runs should remain visible to callers."""
+        assert decode_mailbox_name("Broken&NotBase64-") == "Broken&NotBase64-"
+
+    def test_quote_mailbox_encodes_unicode_folder_name(self):
+        """Quoted mailbox arguments should use Modified UTF-7 on the wire."""
+        assert _quote_mailbox("Entwürfe") == '"Entw&APw-rfe"'
+        assert _quote_mailbox("Gelöschte Elemente") == '"Gel&APY-schte Elemente"'

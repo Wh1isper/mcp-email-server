@@ -257,6 +257,18 @@ class TestAppendToMailbox:
         mock_imap.append.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_append_encodes_unicode_mailbox(self, email_client, incoming_server, mock_imap):
+        msg = MIMEText("body")
+        with patch("mcp_email_server.emails.classic.aioimaplib") as mock_lib:
+            mock_lib.IMAP4_SSL.return_value = mock_imap
+            result = await email_client.append_to_mailbox(msg, incoming_server, "Entwürfe")
+
+        assert result == "unknown"
+        mock_imap.select.assert_called_with('"Entw&APw-rfe"')
+        _, kwargs = mock_imap.append.call_args
+        assert kwargs["mailbox"] == '"Entw&APw-rfe"'
+
+    @pytest.mark.asyncio
     async def test_append_returns_uid_from_appenduid(self, email_client, incoming_server, mock_imap):
         mock_imap.append = AsyncMock(return_value=("OK", [b"[APPENDUID 1234567890 42] APPEND completed"]))
         msg = MIMEText("body")

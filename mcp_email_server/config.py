@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_serializer, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -48,25 +48,16 @@ class EmailServer(BaseModel):
 
 
 class AccountAttributes(BaseModel):
-    model_config = ConfigDict(json_encoders={datetime.datetime: lambda v: v.isoformat()})
     account_name: str
     description: str = ""
     created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(ZoneInfo("UTC")))
     updated_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(ZoneInfo("UTC")))
 
     @model_validator(mode="after")
-    @classmethod
-    def update_updated_at(cls, obj: AccountAttributes) -> AccountAttributes:
+    def update_updated_at(self) -> AccountAttributes:
         """Update updated_at field."""
-        # must disable validation to avoid infinite loop
-        obj.model_config["validate_assignment"] = False
-
-        # update updated_at field
-        obj.updated_at = datetime.datetime.now(ZoneInfo("UTC"))
-
-        # enable validation again
-        obj.model_config["validate_assignment"] = True
-        return obj
+        self.updated_at = datetime.datetime.now(ZoneInfo("UTC"))
+        return self
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, AccountAttributes):
@@ -312,19 +303,18 @@ class Settings(BaseSettings):
         return accounts
 
     @model_validator(mode="after")
-    @classmethod
-    def check_unique_account_names(cls, obj: Settings) -> Settings:
+    def check_unique_account_names(self) -> Settings:
         account_names = set()
-        for email in obj.emails:
+        for email in self.emails:
             if email.account_name in account_names:
                 raise ValueError(f"Duplicate account name {email.account_name}")
             account_names.add(email.account_name)
-        for provider in obj.providers:
+        for provider in self.providers:
             if provider.account_name in account_names:
                 raise ValueError(f"Duplicate account name {provider.account_name}")
             account_names.add(provider.account_name)
 
-        return obj
+        return self
 
     @classmethod
     def settings_customise_sources(
