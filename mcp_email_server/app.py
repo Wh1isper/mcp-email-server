@@ -12,11 +12,13 @@ from mcp_email_server.config import (
     get_settings,
 )
 from mcp_email_server.emails.dispatcher import dispatch_handler
+from mcp_email_server.emails.extract import extract_code
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
     MailboxInfo,
+    VerificationCodeResponse,
 )
 
 ToolVisibilityPredicate = Callable[[], bool]
@@ -161,6 +163,33 @@ async def get_emails_content(
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
     return await handler.get_emails_content(email_ids, mailbox, mark_as_read)
+
+
+@mcp.tool(
+    description="Extract a verification/OTP code from a specific email. Uses a deterministic regex "
+    "(no LLM call), supports English/Chinese/Japanese/Korean, and rejects years and dates to avoid "
+    "false positives. Use list_emails_metadata first to get the email_id."
+)
+async def extract_verification_code(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_id: Annotated[
+        str, Field(description="The email_id to extract the code from (obtained from list_emails_metadata).")
+    ],
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to read the email from.")] = "INBOX",
+) -> VerificationCodeResponse:
+    handler = dispatch_handler(account_name)
+    batch = await handler.get_emails_content([email_id], mailbox)
+    if not batch.emails:
+        return VerificationCodeResponse(email_id=email_id, code=None, found=False)
+    email = batch.emails[0]
+    code = extract_code(email.body) or extract_code(email.subject)
+    return VerificationCodeResponse(
+        email_id=email.email_id,
+        code=code,
+        found=code is not None,
+        sender=email.sender,
+        subject=email.subject,
+    )
 
 
 @mcp.tool(

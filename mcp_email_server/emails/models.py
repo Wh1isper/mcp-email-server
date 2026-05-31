@@ -71,3 +71,13 @@ class AttachmentDownloadResponse(BaseModel):
     mime_type: str
     size: int
     saved_path: str
+
+
+class VerificationCodeResponse(BaseModel):
+    """Verification/OTP code extracted from a single email"""
+
+    email_id: str
+    code: str | None
+    found: bool
+    sender: str | None = None
+    subject: str | None = None

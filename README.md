@@ -311,6 +311,18 @@ await send_email(
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
 
+### Extracting Verification Codes
+
+To pull a one-time passcode / verification code out of an email (for example, to complete an automated sign-up or login flow), use the `extract_verification_code` tool. It runs a deterministic regex (no LLM call) over the email body and subject:
+
+```python
+result = await extract_verification_code(account_name="work", email_id="123")
+if result.found:
+    print(result.code)  # e.g. "654321"
+```
+
+The extractor is keyword-guided across English, Chinese, Japanese and Korean (`verification code`, `OTP`, `passcode`, and their localized equivalents) and rejects 4-digit years and `YYYYMMDD` dates to avoid false positives. It returns `found=False` with `code=None` when no code is present.
+
 ## Development
 
 This project is managed using [uv](https://github.com/ai-zerolab/uv).
