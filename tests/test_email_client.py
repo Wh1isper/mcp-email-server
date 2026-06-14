@@ -391,6 +391,29 @@ class TestEmailClient:
         mock_imap.select.assert_called_once_with('"Entw&APw-rfe"')
 
     @pytest.mark.asyncio
+    async def test_get_emails_metadata_search_omits_charset(self, email_client):
+        """UID SEARCH must not send 'CHARSET utf-8'.
+
+        aioimaplib defaults to charset='utf-8'; Microsoft Exchange rejects that
+        with `NO [BADCHARSET (US-ASCII)]`, breaking all search/list operations.
+        We must pass charset=None so no CHARSET token is sent.
+        """
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b""]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            await email_client.get_emails_metadata(mailbox="INBOX")
+
+        mock_imap.uid_search.assert_called_once()
+        assert mock_imap.uid_search.call_args.kwargs.get("charset") is None
+
+    @pytest.mark.asyncio
     async def test_get_emails_metadata_falls_back_to_uid_order_when_dates_missing(self, email_client):
         """Metadata listing should still return emails when INTERNALDATE parsing fails."""
         mock_imap = AsyncMock()

@@ -815,8 +815,12 @@ class EmailClient:
             )
             logger.info(f"Get metadata: Search criteria: {search_criteria}")
 
-            # Search for messages - use UID SEARCH for better compatibility
-            _, messages = await imap.uid_search(*search_criteria)
+            # Search for messages - use UID SEARCH for better compatibility.
+            # charset=None: aioimaplib defaults to "CHARSET utf-8", which Microsoft
+            # Exchange rejects with `NO [BADCHARSET (US-ASCII)] The specified charset
+            # is not supported.`, breaking all search/list operations. Omitting the
+            # CHARSET token works on Exchange and is harmless on other servers.
+            _, messages = await imap.uid_search(*search_criteria, charset=None)
 
             # Handle empty or None responses
             if not messages or not messages[0]:
