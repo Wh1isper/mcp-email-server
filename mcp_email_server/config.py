@@ -274,9 +274,9 @@ class Settings(BaseSettings):
         if self.allowed_recipients:
             self.allowed_recipients = _normalize_address_list(self.allowed_recipients)
 
-        # Environment variable overrides TOML (comma-separated)
+        # Environment variable overrides TOML (comma-separated); an empty string clears the allowlist.
         env_allowed = os.getenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS")
-        if env_allowed:
+        if env_allowed is not None:
             self.allowed_recipients = _normalize_address_list(env_allowed.split(","))
 
         # Check for email configuration from environment variables

@@ -459,3 +459,20 @@ def test_allowed_recipients_env_overrides_toml(tmp_path, monkeypatch):
         assert config_module.get_settings(reload=True).allowed_recipients == ["fromenv@example.com"]
     finally:
         config_module._settings = None
+
+
+def test_allowed_recipients_empty_env_overrides_toml(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({"allowed_recipients": ["fromtoml@example.com"]}).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_recipients == []
+    finally:
+        config_module._settings = None
