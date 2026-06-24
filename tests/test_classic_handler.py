@@ -276,9 +276,7 @@ class TestClassicEmailHandler:
         with patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)):
             with patch.object(classic_handler.incoming_client, "extract_attachments", AsyncMock(return_value=[])):
                 with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
-                    await classic_handler.forward_email(
-                        email_id="1", mailbox="INBOX", recipients=["x@example.com"]
-                    )
+                    await classic_handler.forward_email(email_id="1", mailbox="INBOX", recipients=["x@example.com"])
 
         assert mock_send.call_args.args[1] == "Fwd: Already forwarded"
 
