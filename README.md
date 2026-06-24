@@ -83,6 +83,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                             | `false`       | No       |
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all     | -             | No       |
 
 ### Read-only IMAP mode
 
@@ -202,6 +203,25 @@ sent_folder_name = "INBOX.Sent"
 ```
 
 **To disable saving to Sent folder**, set `MCP_EMAIL_SERVER_SAVE_TO_SENT=false` or `save_to_sent = false` in your TOML config.
+
+### Restricting Recipients (Allowlist)
+
+By default the server can send to any address. Set `allowed_recipients` to restrict **both**
+`send_email` and `save_to_mailbox` to a trusted set. Leave it empty (the default) to allow all.
+
+```toml
+allowed_recipients = ["alice@example.com", "bob@example.com"]
+```
+
+Or via environment variable (comma-separated):
+
+```
+MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS="alice@example.com,bob@example.com"
+```
+
+When configured, any To/CC/BCC address not on the list is rejected with a clear error. Matching is
+case-insensitive and understands the `Name <addr@example.com>` form. The `list_allowed_recipients`
+tool appears only when an allowlist is configured, so default installs keep a minimal tool surface.
 
 ### Self-Signed Certificates and IMAP STARTTLS (e.g., ProtonMail Bridge)
 

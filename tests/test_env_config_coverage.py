@@ -412,3 +412,50 @@ def test_enable_attachment_download_env_overrides_toml(monkeypatch, tmp_path):
 
     settings = Settings()
     assert settings.enable_attachment_download is True
+
+
+def test_allowed_recipients_from_env(tmp_path, monkeypatch):
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    blank = tmp_path / "config.toml"
+    blank.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "alice@example.com, BOB@EXAMPLE.COM , alice@example.com")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_recipients == ["alice@example.com", "bob@example.com"]
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_recipients_env_empty_string_keeps_empty(tmp_path, monkeypatch):
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    blank = tmp_path / "config.toml"
+    blank.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_recipients == []
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_recipients_env_overrides_toml(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({"allowed_recipients": ["fromtoml@example.com"]}).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", "fromenv@example.com")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_recipients == ["fromenv@example.com"]
+    finally:
+        config_module._settings = None

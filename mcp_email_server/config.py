@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime
 import os
+from collections.abc import Iterable
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -25,6 +27,21 @@ def _parse_bool_env(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.lower() in ("true", "1", "yes", "on")
+
+
+def normalize_address(raw: str) -> str:
+    """Extract and normalize a bare email address for case-insensitive comparison.
+
+    "Alice <Alice@Example.com>" -> "alice@example.com"; "" -> "". ``parseaddr`` is lenient,
+    so non-address input yields a token that will not equal a real configured address.
+    """
+    _, addr = parseaddr(raw)
+    return addr.strip().lower()
+
+
+def _normalize_address_list(raw: Iterable[str]) -> list[str]:
+    """Normalize each address, drop empties, de-duplicate (order-preserving)."""
+    return list(dict.fromkeys(a for a in (normalize_address(x) for x in raw) if a))
 
 
 CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAULT_CONFIG_PATH)).expanduser().resolve()
@@ -239,6 +256,7 @@ class Settings(BaseSettings):
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
+    allowed_recipients: list[str] = []
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
@@ -251,6 +269,15 @@ class Settings(BaseSettings):
         if env_enable_attachment is not None:
             self.enable_attachment_download = _parse_bool_env(env_enable_attachment, False)
             logger.info(f"Set enable_attachment_download={self.enable_attachment_download} from environment variable")
+
+        # Normalise allowed_recipients from TOML (bare, lowercased, de-duplicated)
+        if self.allowed_recipients:
+            self.allowed_recipients = _normalize_address_list(self.allowed_recipients)
+
+        # Environment variable overrides TOML (comma-separated)
+        env_allowed = os.getenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS")
+        if env_allowed:
+            self.allowed_recipients = _normalize_address_list(env_allowed.split(","))
 
         # Check for email configuration from environment variables
         env_email = EmailSettings.from_env()

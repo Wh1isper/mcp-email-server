@@ -6,8 +6,23 @@ from mcp_email_server.config import (
     EmailSettings,
     ProviderSettings,
     get_settings,
+    normalize_address,
     store_settings,
 )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("alice@example.com", "alice@example.com"),
+        ("Alice@Example.COM", "alice@example.com"),
+        ("Alice <Alice@Example.com>", "alice@example.com"),
+        ("  bob@example.com  ", "bob@example.com"),
+        ("", ""),
+    ],
+)
+def test_normalize_address(raw, expected):
+    assert normalize_address(raw) == expected
 
 
 def test_sensitive_fields_excluded_from_repr():
@@ -127,3 +142,34 @@ def test_config():
                 ),
             )
         )
+
+
+def test_allowed_recipients_defaults_to_empty(tmp_path, monkeypatch):
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    blank = tmp_path / "config.toml"
+    blank.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank)
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_recipients == []
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_recipients_toml_normalised(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    toml_data = {"allowed_recipients": ["Alice <Alice@Example.com>", "BOB@example.com", "alice@example.com"]}
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps(toml_data).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_recipients == ["alice@example.com", "bob@example.com"]
+    finally:
+        config_module._settings = None

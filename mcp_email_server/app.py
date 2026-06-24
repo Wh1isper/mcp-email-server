@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from datetime import datetime
+from email.utils import getaddresses
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -10,6 +11,7 @@ from mcp_email_server.config import (
     EmailSettings,
     ProviderSettings,
     get_settings,
+    normalize_address,
 )
 from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
@@ -25,6 +27,29 @@ ToolVisibilityPredicate = Callable[[], bool]
 def _has_send_capable_account() -> bool:
     settings = get_settings()
     return any(isinstance(account, EmailSettings) and account.can_send for account in settings.get_accounts())
+
+
+def _has_allowed_recipients() -> bool:
+    return bool(get_settings().allowed_recipients)
+
+
+def _enforce_recipient_allowlist(
+    recipients: list[str],
+    cc: list[str] | None,
+    bcc: list[str] | None,
+) -> None:
+    """Raise ValueError if any To/CC/BCC address is not in a configured allowlist.
+
+    No-op when the allowlist is empty (all recipients permitted).
+    """
+    allowed = get_settings().allowed_recipients
+    if not allowed:
+        return
+    allowed_set = set(allowed)
+    candidates = [*recipients, *(cc or []), *(bcc or [])]
+    blocked = [addr for _, addr in getaddresses(candidates) if normalize_address(addr) not in allowed_set]
+    if blocked:
+        raise ValueError(f"Recipient(s) not in allowlist: {', '.join(blocked)}. Allowed: {', '.join(allowed)}")
 
 
 class VisibilityAwareFastMCP(FastMCP):
@@ -164,6 +189,17 @@ async def get_emails_content(
 
 
 @mcp.tool(
+    description=(
+        "List the configured outbound recipient allowlist — the addresses that send_email and "
+        "save_to_mailbox are permitted to send to. Only available when an allowlist is configured."
+    ),
+    visible_if=_has_allowed_recipients,
+)
+async def list_allowed_recipients() -> list[str]:
+    return get_settings().allowed_recipients
+
+
+@mcp.tool(
     description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
     visible_if=_has_send_capable_account,
 )
@@ -213,6 +249,7 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
+    _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     await handler.send_email(
         recipients,
@@ -290,6 +327,7 @@ async def save_to_mailbox(
         ),
     ] = None,
 ) -> str:
+    _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     result = await handler.save_to_mailbox(
         recipients,
