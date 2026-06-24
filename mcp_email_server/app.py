@@ -145,6 +145,22 @@ async def list_emails_metadata(
         bool | None,
         Field(default=None, description="Filter by replied status: True=replied, False=not replied, None=all."),
     ] = None,
+    body: Annotated[
+        str | None,
+        Field(default=None, description="Search for text in the email body (IMAP BODY)."),
+    ] = None,
+    text: Annotated[
+        str | None,
+        Field(default=None, description="Search for text in the entire message — headers and body (IMAP TEXT)."),
+    ] = None,
+    has_attachment: Annotated[
+        bool | None,
+        Field(
+            default=None,
+            description="Filter by attachment presence: True=has attachment, False=none, None=all "
+            "(multipart/mixed heuristic; may miss inline images or yield false positives).",
+        ),
+    ] = None,
 ) -> EmailMetadataPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -161,6 +177,9 @@ async def list_emails_metadata(
         seen=seen,
         flagged=flagged,
         answered=answered,
+        body=body,
+        text=text,
+        has_attachment=has_attachment,
     )
 
 

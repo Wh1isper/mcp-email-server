@@ -273,6 +273,18 @@ class TestEmailClient:
         assert "FLAGGED" in criteria
         assert "ANSWERED" in criteria
 
+        # Test has_attachment=True (multipart/mixed heuristic)
+        criteria = EmailClient._build_search_criteria(has_attachment=True)
+        assert criteria == ["HEADER", "Content-Type", "multipart/mixed"]
+
+        # Test has_attachment=False (negated heuristic)
+        criteria = EmailClient._build_search_criteria(has_attachment=False)
+        assert criteria == ["NOT", "HEADER", "Content-Type", "multipart/mixed"]
+
+        # Test has_attachment=None (no criteria added)
+        criteria = EmailClient._build_search_criteria(has_attachment=None)
+        assert criteria == ["ALL"]
+
         # Test compound criteria: unread, flagged, from specific sender, with subject
         criteria = EmailClient._build_search_criteria(
             seen=False, flagged=True, from_address="test@example.com", subject="Important"

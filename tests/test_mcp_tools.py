@@ -179,6 +179,9 @@ class TestMcpTools:
                 seen=None,
                 flagged=None,
                 answered=None,
+                body=None,
+                text=None,
+                has_attachment=None,
             )
 
     @pytest.mark.asyncio
@@ -227,6 +230,9 @@ class TestMcpTools:
                 seen=None,
                 flagged=None,
                 answered=None,
+                body=None,
+                text=None,
+                has_attachment=None,
             )
 
     @pytest.mark.asyncio

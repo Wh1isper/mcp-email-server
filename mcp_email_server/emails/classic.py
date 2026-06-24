@@ -617,22 +617,32 @@ class EmailClient:
         seen: bool | None = None,
         flagged: bool | None = None,
         answered: bool | None = None,
+        has_attachment: bool | None = None,
     ) -> list[str]:
         search_criteria = []
         if before:
             search_criteria.extend(["BEFORE", before.strftime("%d-%b-%Y").upper()])
         if since:
             search_criteria.extend(["SINCE", since.strftime("%d-%b-%Y").upper()])
-        if subject:
-            search_criteria.extend(["SUBJECT", EmailClient._sanitize_imap_value(subject)])
-        if body:
-            search_criteria.extend(["BODY", EmailClient._sanitize_imap_value(body)])
-        if text:
-            search_criteria.extend(["TEXT", EmailClient._sanitize_imap_value(text)])
-        if from_address:
-            search_criteria.extend(["FROM", EmailClient._sanitize_imap_value(from_address)])
-        if to_address:
-            search_criteria.extend(["TO", EmailClient._sanitize_imap_value(to_address)])
+
+        # Substring-match fields (IMAP keyword, value)
+        text_criteria = [
+            ("SUBJECT", subject),
+            ("BODY", body),
+            ("TEXT", text),
+            ("FROM", from_address),
+            ("TO", to_address),
+        ]
+        for keyword, value in text_criteria:
+            if value:
+                search_criteria.extend([keyword, EmailClient._sanitize_imap_value(value)])
+
+        # Attachment heuristic: most attachments are carried in multipart/mixed.
+        # May miss some types (e.g. inline images) or yield false positives.
+        if has_attachment is True:
+            search_criteria.extend(["HEADER", "Content-Type", "multipart/mixed"])
+        elif has_attachment is False:
+            search_criteria.extend(["NOT", "HEADER", "Content-Type", "multipart/mixed"])
 
         # Flag-based criteria using mapping to reduce complexity
         flag_criteria = [
@@ -794,6 +804,9 @@ class EmailClient:
         seen: bool | None = None,
         flagged: bool | None = None,
         answered: bool | None = None,
+        body: str | None = None,
+        text: str | None = None,
+        has_attachment: bool | None = None,
     ) -> tuple[int, list[dict[str, Any]]]:
         imap = await self._connect_imap()
         try:
@@ -807,11 +820,14 @@ class EmailClient:
                 before,
                 since,
                 subject,
+                body=body,
+                text=text,
                 from_address=from_address,
                 to_address=to_address,
                 seen=seen,
                 flagged=flagged,
                 answered=answered,
+                has_attachment=has_attachment,
             )
             logger.info(f"Get metadata: Search criteria: {search_criteria}")
 
@@ -1559,6 +1575,9 @@ class ClassicEmailHandler(EmailHandler):
         seen: bool | None = None,
         flagged: bool | None = None,
         answered: bool | None = None,
+        body: str | None = None,
+        text: str | None = None,
+        has_attachment: bool | None = None,
     ) -> EmailMetadataPageResponse:
         total, email_dicts = await self.incoming_client.get_emails_metadata(
             page,
@@ -1573,6 +1592,9 @@ class ClassicEmailHandler(EmailHandler):
             seen,
             flagged,
             answered,
+            body,
+            text,
+            has_attachment,
         )
         emails = [EmailMetadata.from_email(d) for d in email_dicts]
         return EmailMetadataPageResponse(
