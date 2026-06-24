@@ -222,6 +222,74 @@ class TestClassicEmailHandler:
             )
 
     @pytest.mark.asyncio
+    async def test_forward_email(self, classic_handler):
+        """forward_email fetches the original, builds a Fwd subject, re-attaches attachments, and sends."""
+        original = {
+            "subject": "Quarterly report",
+            "from": "boss@example.com",
+            "to": ["me@example.com"],
+            "date": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            "body": "Please review.",
+            "attachments": ["report.pdf"],
+        }
+        mock_get_body = AsyncMock(return_value=original)
+        mock_extract = AsyncMock(return_value=[("report.pdf", "application/pdf", b"PDFDATA")])
+        mock_send = AsyncMock(return_value=None)
+
+        with patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get_body):
+            with patch.object(classic_handler.incoming_client, "extract_attachments", mock_extract):
+                with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
+                    await classic_handler.forward_email(
+                        email_id="42",
+                        mailbox="INBOX",
+                        recipients=["friend@example.com"],
+                        body="FYI",
+                    )
+
+        mock_get_body.assert_called_once_with("42", "INBOX")
+        mock_extract.assert_called_once_with("42", "INBOX")
+        mock_send.assert_called_once()
+        # send_email(recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references, reply_to, extra_parts)
+        args = mock_send.call_args.args
+        assert args[0] == ["friend@example.com"]
+        assert args[1] == "Fwd: Quarterly report"
+        assert "FYI" in args[2]
+        assert "Forwarded message" in args[2]
+        assert "Please review." in args[2]
+        extra_parts = args[10]
+        assert len(extra_parts) == 1
+        assert extra_parts[0].get_filename() == "report.pdf"
+
+    @pytest.mark.asyncio
+    async def test_forward_email_keeps_existing_fwd_prefix(self, classic_handler):
+        """A subject already prefixed with Fwd: is not double-prefixed."""
+        original = {
+            "subject": "Fwd: Already forwarded",
+            "from": "a@example.com",
+            "to": [],
+            "date": None,
+            "body": "body",
+            "attachments": [],
+        }
+        mock_send = AsyncMock(return_value=None)
+
+        with patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)):
+            with patch.object(classic_handler.incoming_client, "extract_attachments", AsyncMock(return_value=[])):
+                with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
+                    await classic_handler.forward_email(
+                        email_id="1", mailbox="INBOX", recipients=["x@example.com"]
+                    )
+
+        assert mock_send.call_args.args[1] == "Fwd: Already forwarded"
+
+    @pytest.mark.asyncio
+    async def test_forward_email_raises_when_not_found(self, classic_handler):
+        """A missing original email raises ValueError."""
+        with patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=None)):
+            with pytest.raises(ValueError, match="not found"):
+                await classic_handler.forward_email(email_id="404", mailbox="INBOX", recipients=["x@example.com"])
+
+    @pytest.mark.asyncio
     async def test_send_email_with_attachments(self, classic_handler, tmp_path):
         """Test send_email method with attachments."""
         # Create a temporary test file

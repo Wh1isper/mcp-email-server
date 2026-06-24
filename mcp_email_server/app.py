@@ -338,6 +338,34 @@ async def send_email(
 
 
 @mcp.tool(
+    description="Forward an email to new recipients. The original message is appended below any "
+    "optional message you add, and the original attachments are re-attached. Use "
+    "list_emails_metadata first to get the email_id.",
+    visible_if=_has_send_capable_account,
+)
+async def forward_email(
+    account_name: Annotated[str, Field(description="The name of the email account to send from.")],
+    email_id: Annotated[
+        str, Field(description="The email_id of the message to forward (obtained from list_emails_metadata).")
+    ],
+    recipients: Annotated[list[str], Field(description="A list of recipient email addresses to forward to.")],
+    mailbox: Annotated[
+        str, Field(default="INBOX", description="The mailbox containing the email to forward.")
+    ] = "INBOX",
+    body: Annotated[
+        str | None,
+        Field(default=None, description="Optional message to prepend above the forwarded content."),
+    ] = None,
+    cc: Annotated[list[str] | None, Field(default=None, description="A list of CC email addresses.")] = None,
+    bcc: Annotated[list[str] | None, Field(default=None, description="A list of BCC email addresses.")] = None,
+) -> str:
+    _enforce_recipient_allowlist(recipients, cc, bcc)
+    handler = dispatch_handler(account_name)
+    await handler.forward_email(email_id, mailbox, recipients, body, cc, bcc)
+    return f"Email forwarded successfully to {', '.join(recipients)}"
+
+
+@mcp.tool(
     description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
     "Same parameters as send_email, but saves instead of sending. "
     "Default folder is Drafts with \\Draft and \\Seen flags. "

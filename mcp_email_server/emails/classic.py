@@ -1231,6 +1231,39 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
+    async def extract_attachments(self, email_id: str, mailbox: str = "INBOX") -> list[tuple[str, str, bytes]]:
+        """Fetch an email and return its attachments as ``(filename, mime_type, data)`` tuples."""
+        imap = await self._connect_imap()
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            data = await self._fetch_email_with_formats(imap, email_id)
+            if not data:
+                return []
+            raw_email = self._extract_raw_email(data)
+            if not raw_email:
+                return []
+
+            email_message = BytesParser(policy=default).parsebytes(raw_email)
+            attachments: list[tuple[str, str, bytes]] = []
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    if not self._is_attachment_part(part):
+                        continue
+                    filename = part.get_filename()
+                    payload = part.get_payload(decode=True)
+                    if isinstance(filename, str) and payload:
+                        attachments.append((filename, part.get_content_type(), payload))
+            return attachments
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
+
     def _validate_attachment(self, file_path: str) -> Path:
         """Validate attachment file path."""
         path = Path(file_path)
@@ -1264,8 +1297,14 @@ class EmailClient:
         logger.info(f"Attached file: {path.name} ({mime_type})")
         return attachment_part
 
-    def _create_message_with_attachments(self, body: str, html: bool, attachments: list[str]) -> MIMEMultipart:
-        """Create multipart message with attachments."""
+    def _create_message_with_attachments(
+        self,
+        body: str,
+        html: bool,
+        attachments: list[str],
+        extra_parts: list[MIMEApplication] | None = None,
+    ) -> MIMEMultipart:
+        """Create multipart message with file-path attachments and/or prebuilt MIME parts."""
         msg = MIMEMultipart()
         content_type = "html" if html else "plain"
         text_part = MIMEText(body, content_type, "utf-8")
@@ -1279,6 +1318,9 @@ class EmailClient:
             except Exception as e:
                 logger.error(f"Failed to attach file {file_path}: {e}")
                 raise
+
+        for part in extra_parts or []:
+            msg.attach(part)
 
         return msg
 
@@ -1295,6 +1337,7 @@ class EmailClient:
         references: str | None = None,
         include_bcc_header: bool = False,
         reply_to: str | None = None,
+        extra_parts: list[MIMEApplication] | None = None,
     ) -> MIMEText | MIMEMultipart:
         """Compose an email message without sending it.
 
@@ -1306,9 +1349,12 @@ class EmailClient:
         can display the BCC recipients.  When False (default, used for SMTP
         sending), the Bcc header is omitted — BCC recipients are delivered
         via the SMTP envelope only.
+
+        ``extra_parts`` are prebuilt MIME parts attached as-is (used to
+        re-attach the original attachments when forwarding).
         """
-        if attachments:
-            msg = self._create_message_with_attachments(body, html, attachments)
+        if attachments or extra_parts:
+            msg = self._create_message_with_attachments(body, html, attachments or [], extra_parts)
         else:
             content_type = "html" if html else "plain"
             msg = MIMEText(body, content_type, "utf-8")
@@ -1368,9 +1414,21 @@ class EmailClient:
         in_reply_to: str | None = None,
         references: str | None = None,
         reply_to: str | None = None,
+        extra_parts: list[MIMEApplication] | None = None,
     ) -> MIMEText | MIMEMultipart:
         msg = self.compose_message(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references, False, reply_to
+            recipients,
+            subject,
+            body,
+            cc,
+            bcc,
+            html,
+            attachments,
+            in_reply_to,
+            references,
+            False,
+            reply_to,
+            extra_parts,
         )
 
         async with aiosmtplib.SMTP(
@@ -1753,6 +1811,22 @@ class EmailClient:
         return mailboxes
 
 
+def _format_forwarded_text(original: dict[str, Any]) -> str:
+    """Build a plain-text 'forwarded message' block from a parsed email dict."""
+    to = original.get("to") or []
+    to_str = ", ".join(to) if isinstance(to, list) else str(to)
+    date = original.get("date")
+    date_str = date.strftime("%a, %d %b %Y %H:%M:%S %z") if isinstance(date, datetime) else str(date or "")
+    header = (
+        "---------- Forwarded message ----------\n"
+        f"From: {original.get('from', '')}\n"
+        f"Date: {date_str}\n"
+        f"Subject: {original.get('subject', '')}\n"
+        f"To: {to_str}\n"
+    )
+    return f"{header}\n{original.get('body', '')}"
+
+
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
         self.email_settings = email_settings
@@ -1898,6 +1972,49 @@ class ClassicEmailHandler(EmailHandler):
                 )
             except Exception as e:
                 logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
+
+    async def forward_email(
+        self,
+        email_id: str,
+        mailbox: str,
+        recipients: list[str],
+        body: str | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+    ) -> None:
+        """Forward an email to new recipients, re-attaching the original's attachments."""
+        if self.outgoing_client is None:
+            raise RuntimeError(f"SMTP is not configured for account '{self.email_settings.account_name}'")
+
+        original = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
+        if original is None:
+            raise ValueError(f"Email {email_id} not found in {mailbox}")
+
+        original_subject = original.get("subject") or ""
+        subject = original_subject if original_subject.lower().startswith("fwd:") else f"Fwd: {original_subject}"
+
+        forwarded = _format_forwarded_text(original)
+        full_body = f"{body}\n\n{forwarded}" if body else forwarded
+
+        extra_parts = []
+        for filename, mime_type, payload in await self.incoming_client.extract_attachments(email_id, mailbox):
+            subtype = mime_type.split("/", 1)[1] if "/" in mime_type else "octet-stream"
+            part = MIMEApplication(payload, _subtype=subtype)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            extra_parts.append(part)
+
+        msg = await self.outgoing_client.send_email(
+            recipients, subject, full_body, cc, bcc, False, None, None, None, None, extra_parts
+        )
+
+        # Save to Sent folder if enabled (BCC header added after send, as in send_email)
+        if self.save_to_sent and msg:
+            if bcc and msg["Bcc"] is None:
+                msg["Bcc"] = ", ".join(bcc)
+            try:
+                await self.outgoing_client.append_to_sent(msg, self.email_settings.incoming, self.sent_folder_name)
+            except Exception as e:
+                logger.error(f"Failed to save forwarded email to Sent folder: {e}", exc_info=True)
 
     async def save_to_mailbox(
         self,

@@ -102,6 +102,28 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def forward_email(
+        self,
+        email_id: str,
+        mailbox: str,
+        recipients: list[str],
+        body: str | None = None,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+    ) -> None:
+        """
+        Forward an email to new recipients, re-attaching the original's attachments.
+
+        Args:
+            email_id: The UID of the email to forward.
+            mailbox: The mailbox containing the email.
+            recipients: List of recipient email addresses.
+            body: Optional message to prepend above the forwarded content.
+            cc: List of CC email addresses.
+            bcc: List of BCC email addresses.
+        """
+
+    @abc.abstractmethod
     async def save_to_mailbox(
         self,
         recipients: list[str],

@@ -9,6 +9,7 @@ from mcp_email_server.app import (
     archive_emails,
     delete_emails,
     download_attachment,
+    forward_email,
     get_emails_content,
     list_allowed_recipients,
     list_allowed_senders,
@@ -520,6 +521,42 @@ class TestMcpTools:
                     None,  # references
                     None,  # reply_to
                 )
+
+    @pytest.mark.asyncio
+    async def test_forward_email(self):
+        """Test forward_email MCP tool dispatches and reports success."""
+        mock_handler = AsyncMock()
+        mock_settings = MagicMock()
+        mock_settings.allowed_recipients = []
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                result = await forward_email(
+                    account_name="test_account",
+                    email_id="12345",
+                    recipients=["friend@example.com"],
+                    body="FYI",
+                )
+
+        assert result == "Email forwarded successfully to friend@example.com"
+        mock_handler.forward_email.assert_called_once_with("12345", "INBOX", ["friend@example.com"], "FYI", None, None)
+
+    @pytest.mark.asyncio
+    async def test_forward_email_blocks_unlisted_recipient(self):
+        """forward_email enforces the recipient allowlist."""
+        mock_handler = AsyncMock()
+        mock_settings = MagicMock()
+        mock_settings.allowed_recipients = ["allowed@example.com"]
+
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+                with pytest.raises(ValueError, match="not in allowlist"):
+                    await forward_email(
+                        account_name="test_account",
+                        email_id="12345",
+                        recipients=["stranger@example.com"],
+                    )
+        mock_handler.forward_email.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_emails(self):
