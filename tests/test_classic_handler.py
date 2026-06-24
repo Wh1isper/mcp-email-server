@@ -124,7 +124,21 @@ class TestClassicEmailHandler:
 
             # Verify the client method was called correctly
             mock_get_metadata.assert_called_once_with(
-                1, 10, now, None, "Test", "sender@example.com", None, "desc", "INBOX", None, None, None, None, None, None
+                1,
+                10,
+                now,
+                None,
+                "Test",
+                "sender@example.com",
+                None,
+                "desc",
+                "INBOX",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
             )
 
     @pytest.mark.asyncio
