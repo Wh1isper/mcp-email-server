@@ -668,3 +668,113 @@ class TestDownloadInlineAttachment:
                         attachment_name="missing.pdf",
                         save_path=str(tmp_path / "missing.pdf"),
                     )
+
+
+class TestDownloadAttachmentSenderAllowlist:
+    """download_attachment must honor the sender allowlist (read-path protection)."""
+
+    @staticmethod
+    def _mock_imap():
+        import asyncio
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
+        mock_imap.logout = AsyncMock()
+        return mock_imap
+
+    @pytest.mark.asyncio
+    async def test_blocked_sender_never_fetches_body(self, email_client, tmp_path):
+        """A blocked sender's attachment download never reads the full message body."""
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(
+                email_client, "_batch_fetch_senders", AsyncMock(return_value={"1": "evil@blocked.com"})
+            ) as mock_senders,
+            patch.object(email_client, "_fetch_email_with_formats", AsyncMock()) as mock_fetch,
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match=re.escape("Failed to fetch email with UID 1")):
+                await email_client.download_attachment(
+                    email_id="1",
+                    attachment_name="out.png",
+                    save_path=str(tmp_path / "out.png"),
+                    allowed_senders=["*@allowed.com"],
+                )
+        mock_senders.assert_awaited_once()
+        mock_fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blocked_indistinguishable_from_missing(self, email_client, tmp_path):
+        """A blocked-existing UID and a nonexistent UID raise the identical error (no oracle)."""
+        save_path = str(tmp_path / "out.png")
+
+        async def _run(senders):
+            mock_imap = self._mock_imap()
+            with (
+                patch.object(email_client, "_batch_fetch_senders", AsyncMock(return_value=senders)),
+                patch.object(email_client, "_fetch_email_with_formats", AsyncMock(return_value=None)) as mock_fetch,
+                patch.object(email_client, "imap_class", return_value=mock_imap),
+            ):
+                with pytest.raises(ValueError) as exc:
+                    await email_client.download_attachment(
+                        email_id="1",
+                        attachment_name="out.png",
+                        save_path=save_path,
+                        allowed_senders=["*@allowed.com"],
+                    )
+                mock_fetch.assert_not_called()
+            return str(exc.value)
+
+        blocked_msg = await _run({"1": "evil@blocked.com"})  # exists but blocked
+        missing_msg = await _run({})  # does not exist
+        assert blocked_msg == missing_msg == "Failed to fetch email with UID 1"
+
+    @pytest.mark.asyncio
+    async def test_allowed_sender_downloads(self, email_client, tmp_path):
+        """An allowed sender's attachment is fetched and saved."""
+        raw_email = _build_apple_mail_inline_image(b"\x89PNG\r\n\x1a\ninline")
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with (
+            patch.object(email_client, "_batch_fetch_senders", AsyncMock(return_value={"1": "ok@allowed.com"})),
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch) as mock_fetch,
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            result = await email_client.download_attachment(
+                email_id="1",
+                attachment_name="ausflug.png",
+                save_path=str(tmp_path / "ausflug.png"),
+                allowed_senders=["*@allowed.com"],
+            )
+        assert result["attachment_name"] == "ausflug.png"
+        mock_fetch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_allowlist_skips_sender_check(self, email_client, tmp_path):
+        """With no allowlist, download_attachment does no sender fetch (backwards-compatible)."""
+        raw_email = _build_apple_mail_inline_image(b"\x89PNG\r\n\x1a\ninline")
+        mock_imap = self._mock_imap()
+
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        with (
+            patch.object(email_client, "_batch_fetch_senders", AsyncMock()) as mock_senders,
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=_fake_fetch),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            result = await email_client.download_attachment(
+                email_id="1",
+                attachment_name="ausflug.png",
+                save_path=str(tmp_path / "ausflug.png"),
+                allowed_senders=[],
+            )
+        assert result["attachment_name"] == "ausflug.png"
+        mock_senders.assert_not_called()

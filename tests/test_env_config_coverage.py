@@ -476,3 +476,52 @@ def test_allowed_recipients_empty_env_overrides_toml(tmp_path, monkeypatch):
         assert config_module.get_settings(reload=True).allowed_recipients == []
     finally:
         config_module._settings = None
+
+
+def test_allowed_senders_from_env(tmp_path, monkeypatch):
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    blank = tmp_path / "config.toml"
+    blank.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", "*@Example.com, BOB@EXAMPLE.COM , *@example.com")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_senders == ["*@example.com", "bob@example.com"]
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_senders_env_overrides_toml(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({"allowed_senders": ["fromtoml@example.com"]}).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", "*@env.com")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_senders == ["*@env.com"]
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_senders_empty_env_clears_toml(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({"allowed_senders": ["*@example.com"]}).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", "")
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_senders == []
+    finally:
+        config_module._settings = None

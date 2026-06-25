@@ -33,6 +33,10 @@ def _has_allowed_recipients() -> bool:
     return bool(get_settings().allowed_recipients)
 
 
+def _has_allowed_senders() -> bool:
+    return bool(get_settings().allowed_senders)
+
+
 def _enforce_recipient_allowlist(
     recipients: list[str],
     cc: list[str] | None,
@@ -216,6 +220,17 @@ async def get_emails_content(
 )
 async def list_allowed_recipients() -> list[str]:
     return get_settings().allowed_recipients
+
+
+@mcp.tool(
+    description=(
+        "List the configured inbound sender allowlist — the address patterns whose mail is visible "
+        "via list_emails_metadata and get_emails_content. Only available when an allowlist is configured."
+    ),
+    visible_if=_has_allowed_senders,
+)
+async def list_allowed_senders() -> list[str]:
+    return get_settings().allowed_senders
 
 
 @mcp.tool(

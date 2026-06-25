@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import fnmatch
 import os
 from collections.abc import Iterable
 from email.utils import parseaddr
@@ -39,9 +40,29 @@ def normalize_address(raw: str) -> str:
     return addr.strip().lower()
 
 
+def sender_allowed(sender: str, patterns: list[str]) -> bool:
+    """Return True if the sender's address matches any allowlist pattern (or the list is empty).
+
+    The bare address is extracted via normalize_address (handles "Name <addr>") and lowercased,
+    then matched against the lowercased glob patterns with fnmatchcase. An empty allowlist allows
+    everyone; an unparseable sender never matches a non-empty allowlist (blocked, safe default).
+    """
+    if not patterns:
+        return True
+    addr = normalize_address(sender)
+    if not addr:
+        return False
+    return any(fnmatch.fnmatchcase(addr, pattern.lower()) for pattern in patterns)
+
+
 def _normalize_address_list(raw: Iterable[str]) -> list[str]:
     """Normalize each address, drop empties, de-duplicate (order-preserving)."""
     return list(dict.fromkeys(a for a in (normalize_address(x) for x in raw) if a))
+
+
+def _normalize_pattern_list(raw: Iterable[str]) -> list[str]:
+    """Lowercase, strip, de-duplicate (order-preserving). Glob characters are preserved."""
+    return list(dict.fromkeys(p.strip().lower() for p in raw if p.strip()))
 
 
 CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAULT_CONFIG_PATH)).expanduser().resolve()
@@ -257,6 +278,7 @@ class Settings(BaseSettings):
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
     allowed_recipients: list[str] = []
+    allowed_senders: list[str] = []
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
@@ -278,6 +300,15 @@ class Settings(BaseSettings):
         env_allowed = os.getenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS")
         if env_allowed is not None:
             self.allowed_recipients = _normalize_address_list(env_allowed.split(","))
+
+        # Normalise allowed_senders from TOML (lowercased, de-duplicated; globs preserved)
+        if self.allowed_senders:
+            self.allowed_senders = _normalize_pattern_list(self.allowed_senders)
+
+        # Environment variable overrides TOML (comma-separated); an empty string clears the allowlist.
+        env_senders = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
+        if env_senders is not None:
+            self.allowed_senders = _normalize_pattern_list(env_senders.split(","))
 
         # Check for email configuration from environment variables
         env_email = EmailSettings.from_env()

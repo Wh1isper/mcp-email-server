@@ -11,6 +11,7 @@ from mcp_email_server.app import (
     download_attachment,
     get_emails_content,
     list_allowed_recipients,
+    list_allowed_senders,
     list_available_accounts,
     list_emails_metadata,
     list_mailboxes,
@@ -951,3 +952,29 @@ class TestMcpTools:
                         body="B",
                     )
         mock_handler.save_to_mailbox.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_allowed_senders_hidden_when_unconfigured(self):
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = []
+        mock_settings.get_accounts.return_value = []
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
+        assert "list_allowed_senders" not in tool_names
+
+    @pytest.mark.asyncio
+    async def test_list_allowed_senders_visible_when_configured(self):
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@example.com"]
+        mock_settings.get_accounts.return_value = []
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
+        assert "list_allowed_senders" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_list_allowed_senders_returns_list(self):
+        mock_settings = MagicMock()
+        mock_settings.allowed_senders = ["*@example.com", "bob@example.com"]
+        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+            result = await list_allowed_senders()
+        assert result == ["*@example.com", "bob@example.com"]

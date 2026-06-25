@@ -21,7 +21,7 @@ import aioimaplib
 import aiosmtplib
 from bs4 import BeautifulSoup
 
-from mcp_email_server.config import EmailServer, EmailSettings
+from mcp_email_server.config import EmailServer, EmailSettings, get_settings, sender_allowed
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
@@ -804,6 +804,59 @@ class EmailClient:
 
         return results
 
+    async def _batch_fetch_senders(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        email_ids: list[bytes] | list[str],
+        chunk_size: int = 500,
+    ) -> dict[str, str]:
+        """Batch fetch the From header for all UIDs (chunked, sequential), for allowlist filtering.
+
+        Returns {uid: raw From header}. Fetches only HEADER.FIELDS (FROM) to stay light and reuses
+        _parse_headers (which tolerates a From-only header block).
+        """
+        if not email_ids:
+            return {}
+
+        chunks = [email_ids[i : i + chunk_size] for i in range(0, len(email_ids), chunk_size)]
+        senders: dict[str, str] = {}
+        for chunk in chunks:
+            str_ids = [uid.decode() if isinstance(uid, bytes) else uid for uid in chunk]
+            uid_list = ",".join(str_ids)
+            _, data = await imap.uid("fetch", uid_list, "BODY.PEEK[HEADER.FIELDS (FROM)]")
+            for i, item in enumerate(data):
+                if not isinstance(item, bytes) or b"BODY[HEADER" not in item:
+                    continue
+                uid_match = re.search(rb"UID (\d+)", item)
+                if uid_match and i + 1 < len(data) and isinstance(data[i + 1], bytearray):
+                    meta = self._parse_headers(uid_match.group(1).decode(), bytes(data[i + 1]))
+                    if meta:
+                        senders[meta["email_id"]] = meta["from"]
+                elif i + 2 < len(data) and isinstance(data[i + 1], bytearray):
+                    uid_after = re.search(rb"UID (\d+)", data[i + 2]) if isinstance(data[i + 2], bytes) else None
+                    if uid_after:
+                        meta = self._parse_headers(uid_after.group(1).decode(), bytes(data[i + 1]))
+                        if meta:
+                            senders[meta["email_id"]] = meta["from"]
+        return senders
+
+    async def _enforce_sender_allowlist(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        email_id: str,
+        allowed_senders: list[str] | None,
+    ) -> None:
+        """Raise ValueError (identical to not-found) when sender is not on the allowlist.
+
+        No-op when ``allowed_senders`` is empty or None (backwards-compatible).
+        """
+        if allowed_senders:
+            uid_senders = await self._batch_fetch_senders(imap, [email_id])
+            if not sender_allowed(uid_senders.get(email_id, ""), allowed_senders):
+                msg = f"Failed to fetch email with UID {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+
     async def get_emails_metadata(
         self,
         page: int = 1,
@@ -821,6 +874,7 @@ class EmailClient:
         body: str | None = None,
         text: str | None = None,
         has_attachment: bool | None = None,
+        allowed_senders: list[str] | None = None,
     ) -> tuple[int, list[dict[str, Any]]]:
         imap = await self._connect_imap()
         try:
@@ -859,6 +913,16 @@ class EmailClient:
 
             email_ids = messages[0].split()
             logger.info(f"Found {len(email_ids)} email IDs")
+
+            # Sender allowlist: filter candidates BEFORE sorting/pagination so total + pages stay honest.
+            if allowed_senders:
+                uid_senders = await self._batch_fetch_senders(imap, email_ids)
+                email_ids = [
+                    uid for uid in email_ids if sender_allowed(uid_senders.get(uid.decode(), ""), allowed_senders)
+                ]
+                logger.info(f"Sender allowlist active: {len(email_ids)} of {len(uid_senders)} match")
+                if not email_ids:
+                    return 0, []
 
             # Phase 1: Batch fetch INTERNALDATE for sorting (sequential chunks)
             fetch_dates_start = time.perf_counter()
@@ -968,7 +1032,11 @@ class EmailClient:
         return None
 
     async def get_email_body_by_id(
-        self, email_id: str, mailbox: str = "INBOX", mark_as_read: bool = False
+        self,
+        email_id: str,
+        mailbox: str = "INBOX",
+        mark_as_read: bool = False,
+        allowed_senders: list[str] | None = None,
     ) -> dict[str, Any] | None:
         imap = await self._connect_imap()
         try:
@@ -977,6 +1045,14 @@ class EmailClient:
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            # Sender allowlist: check the From header BEFORE reading the body, so a blocked
+            # message is never fetched/parsed, never marked read, and is indistinguishable from
+            # a missing/inaccessible one (caller sees None either way).
+            if allowed_senders:
+                uid_senders = await self._batch_fetch_senders(imap, [email_id])
+                if not sender_allowed(uid_senders.get(email_id, ""), allowed_senders):
+                    return None
 
             # Fetch the specific email by UID without implicitly marking it as read
             data = await self._fetch_email_with_formats(imap, email_id)
@@ -1019,6 +1095,7 @@ class EmailClient:
         attachment_name: str,
         save_path: str,
         mailbox: str = "INBOX",
+        allowed_senders: list[str] | None = None,
     ) -> dict[str, Any]:
         """Download a specific attachment from an email and save it to disk.
 
@@ -1027,6 +1104,8 @@ class EmailClient:
             attachment_name: The filename of the attachment to download.
             save_path: The local path where the attachment will be saved.
             mailbox: The mailbox to search in (default: "INBOX").
+            allowed_senders: Optional sender allowlist; when set, a non-allowed sender's
+                message is treated as not found and its body is never fetched.
 
         Returns:
             A dictionary with download result information.
@@ -1037,6 +1116,11 @@ class EmailClient:
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            # Read-path allowlist: check the From header before fetching the body, so a
+            # blocked sender's message is never read. Blocked fails identically to a missing
+            # UID (same ValueError below), so it does not reveal whether the message exists.
+            await self._enforce_sender_allowlist(imap, email_id, allowed_senders)
 
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
@@ -1609,6 +1693,7 @@ class ClassicEmailHandler(EmailHandler):
             body,
             text,
             has_attachment,
+            allowed_senders=get_settings().allowed_senders,
         )
         emails = [EmailMetadata.from_email(d) for d in email_dicts]
         return EmailMetadataPageResponse(
@@ -1624,28 +1709,36 @@ class ClassicEmailHandler(EmailHandler):
     async def get_emails_content(
         self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
     ) -> EmailContentBatchResponse:
-        """Batch retrieve email body content"""
+        """Batch retrieve email body content, honoring the sender allowlist.
+
+        The allowlist is enforced in the read path: get_email_body_by_id checks the From header
+        before fetching the body, so a blocked message is never read or marked and returns None —
+        indistinguishable from a missing/inaccessible one (both land in failed_ids).
+        """
+        allowed_senders = get_settings().allowed_senders
         emails = []
         failed_ids = []
 
         for email_id in email_ids:
             try:
-                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox, mark_as_read)
-                if email_data:
-                    emails.append(
-                        EmailBodyResponse(
-                            email_id=email_data["email_id"],
-                            message_id=email_data.get("message_id"),
-                            subject=email_data["subject"],
-                            sender=email_data["from"],
-                            recipients=email_data["to"],
-                            date=email_data["date"],
-                            body=email_data["body"],
-                            attachments=email_data["attachments"],
-                        )
-                    )
-                else:
+                email_data = await self.incoming_client.get_email_body_by_id(
+                    email_id, mailbox, mark_as_read, allowed_senders=allowed_senders
+                )
+                if not email_data:
                     failed_ids.append(email_id)
+                    continue
+                emails.append(
+                    EmailBodyResponse(
+                        email_id=email_data["email_id"],
+                        message_id=email_data.get("message_id"),
+                        subject=email_data["subject"],
+                        sender=email_data["from"],
+                        recipients=email_data["to"],
+                        date=email_data["date"],
+                        body=email_data["body"],
+                        attachments=email_data["attachments"],
+                    )
+                )
             except Exception as e:
                 logger.error(f"Failed to retrieve email {email_id}: {e}")
                 failed_ids.append(email_id)
@@ -1807,7 +1900,10 @@ class ClassicEmailHandler(EmailHandler):
         Returns:
             AttachmentDownloadResponse with download result information.
         """
-        result = await self.incoming_client.download_attachment(email_id, attachment_name, save_path, mailbox)
+        allowed_senders = get_settings().allowed_senders
+        result = await self.incoming_client.download_attachment(
+            email_id, attachment_name, save_path, mailbox, allowed_senders=allowed_senders
+        )
         return AttachmentDownloadResponse(
             email_id=result["email_id"],
             attachment_name=result["attachment_name"],

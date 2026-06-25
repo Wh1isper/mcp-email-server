@@ -7,6 +7,7 @@ from mcp_email_server.config import (
     ProviderSettings,
     get_settings,
     normalize_address,
+    sender_allowed,
     store_settings,
 )
 
@@ -144,6 +145,28 @@ def test_config():
         )
 
 
+@pytest.mark.parametrize(
+    ("sender", "patterns", "expected"),
+    [
+        ("alice@example.com", [], True),  # empty allowlist => all allowed
+        ("alice@example.com", ["alice@example.com"], True),  # exact
+        ("Alice <Alice@Example.com>", ["alice@example.com"], True),  # display name + case-insensitive
+        ("bob@example.com", ["*@example.com"], True),  # domain glob
+        ("bob@other.com", ["*@example.com"], False),  # domain glob, no match
+        ("mallory@evil.com", ["alice@example.com"], False),  # no match
+        ("alice@example.com", ["*@other.com", "alice@example.com"], True),  # matches second pattern
+        ("", ["*@example.com"], False),  # empty sender => blocked
+        ("not an email", ["*@example.com"], False),  # unparseable => blocked
+        # multi-address From: parseaddr takes the first address, so a blocked sender
+        # cannot smuggle through by appending an allowed one => blocked
+        ("blocked@evil.com, alice@example.com", ["alice@example.com"], False),
+        ("alice@example.com", ["*@Example.com"], True),  # mixed-case pattern still matches
+    ],
+)
+def test_sender_allowed(sender, patterns, expected):
+    assert sender_allowed(sender, patterns) is expected
+
+
 def test_allowed_recipients_defaults_to_empty(tmp_path, monkeypatch):
     import mcp_email_server.config as config_module
     from mcp_email_server.config import Settings
@@ -171,5 +194,37 @@ def test_allowed_recipients_toml_normalised(tmp_path, monkeypatch):
     config_module._settings = None
     try:
         assert config_module.get_settings(reload=True).allowed_recipients == ["alice@example.com", "bob@example.com"]
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_senders_defaults_to_empty(tmp_path, monkeypatch):
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    blank = tmp_path / "config.toml"
+    blank.write_text("")
+    monkeypatch.setitem(Settings.model_config, "toml_file", blank)
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).allowed_senders == []
+    finally:
+        config_module._settings = None
+
+
+def test_allowed_senders_toml_normalised_preserves_globs(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    toml_data = {"allowed_senders": ["*@Example.COM", "BOB@example.com", "*@example.com"]}
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps(toml_data).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        # lowercased + de-duplicated, but glob characters preserved (NOT run through parseaddr)
+        assert config_module.get_settings(reload=True).allowed_senders == ["*@example.com", "bob@example.com"]
     finally:
         config_module._settings = None

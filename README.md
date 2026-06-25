@@ -84,6 +84,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
 | `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all     | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all  | -             | No       |
 
 ### Read-only IMAP mode
 
@@ -222,6 +223,37 @@ MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS="alice@example.com,bob@example.com"
 When configured, any To/CC/BCC address not on the list is rejected with a clear error. Matching is
 case-insensitive and understands the `Name <addr@example.com>` form. The `list_allowed_recipients`
 tool appears only when an allowlist is configured, so default installs keep a minimal tool surface.
+
+### Filtering Incoming Mail (Sender Allowlist)
+
+By default all senders are visible. Set `allowed_senders` to show mail only from trusted senders.
+Patterns support globs (e.g. `*@company.com`) and exact addresses, matched case-insensitively. Leave
+it empty (the default) to show everything.
+
+```toml
+allowed_senders = ["*@company.com", "alice@example.com"]
+```
+
+Or via environment variable (comma-separated):
+
+```
+MCP_EMAIL_SERVER_ALLOWED_SENDERS="*@company.com,alice@example.com"
+```
+
+When configured, filtering is applied in the read path: `list_emails_metadata` excludes non-allowed
+senders **before** pagination, so `total` and page sizes reflect only allowed mail; `get_emails_content`
+and `download_attachment` check the sender before reading a message, so a non-allowed message's body and
+attachments are never fetched or marked read, and it is reported as inaccessible — indistinguishable from
+a missing message. The `list_allowed_senders` tool appears only when an allowlist is configured.
+
+**Scope:** the allowlist protects read paths only (`list_emails_metadata`, `get_emails_content`,
+`download_attachment`). UID-based mutation tools (`delete_emails`, `mark_emails_as_read`, `move_emails`,
+`archive_emails`) are not yet filtered and can still act on any UID; enforcing the allowlist on those is
+planned as a follow-up.
+
+**Note:** matching is against the message's `From` header — local filtering only, not sender
+authentication. A spoofed `From` will pass the allowlist, so this is not a substitute for provider-side
+SPF / DKIM / DMARC enforcement.
 
 ### Self-Signed Certificates and IMAP STARTTLS (e.g., ProtonMail Bridge)
 

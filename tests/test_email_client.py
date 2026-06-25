@@ -1044,3 +1044,273 @@ class TestBatchFetchHeaders:
         assert len(result) == 2
         assert result["100"]["subject"] == "First"
         assert result["200"]["subject"] == "Second"
+
+
+class TestBatchFetchSenders:
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders(self, email_client):
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            return_value=(
+                None,
+                [
+                    b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {25}",
+                    bytearray(b"From: alice@example.com\r\n\r\n"),
+                    b")",
+                    b"2 FETCH (UID 101 BODY[HEADER.FIELDS (FROM)] {32}",
+                    bytearray(b"From: Bob <bob@evil.com>\r\n\r\n"),
+                    b")",
+                ],
+            )
+        )
+        result = await email_client._batch_fetch_senders(mock_imap, [b"100", b"101"])
+        assert result == {"100": "alice@example.com", "101": "Bob <bob@evil.com>"}
+
+
+class TestGetEmailsMetadataSenderFilter:
+    @pytest.mark.asyncio
+    async def test_get_emails_metadata_filters_blocked_senders_honest_total(self, email_client):
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.logout = AsyncMock()
+
+        mock_senders = {"1": "alice@example.com", "2": "bob@evil.com", "3": "alice@example.com"}
+        mock_dates = {
+            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
+        }
+        mock_metadata = {
+            "3": {
+                "email_id": "3",
+                "subject": "S3",
+                "from": "alice@example.com",
+                "to": [],
+                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+            "1": {
+                "email_id": "1",
+                "subject": "S1",
+                "from": "alice@example.com",
+                "to": [],
+                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+        }
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_batch_fetch_senders", return_value=mock_senders) as mock_fs:
+                with patch.object(email_client, "_batch_fetch_dates", return_value=mock_dates) as mock_fd:
+                    with patch.object(email_client, "_batch_fetch_headers", return_value=mock_metadata):
+                        total, emails = await email_client.get_emails_metadata(
+                            page=1, page_size=10, allowed_senders=["alice@example.com"]
+                        )
+
+        assert total == 2  # honest: allowed count, NOT the raw 3
+        assert len(emails) == 2
+        assert all(e["from"] == "alice@example.com" for e in emails)
+        mock_fs.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])  # senders fetched for ALL matches
+        mock_fd.assert_called_once_with(mock_imap, [b"1", b"3"])  # dates only for allowed
+
+    @pytest.mark.asyncio
+    async def test_get_emails_metadata_full_page_despite_blocked(self, email_client):
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3 4"]))
+        mock_imap.logout = AsyncMock()
+
+        mock_senders = {
+            "1": "alice@example.com",
+            "2": "bob@evil.com",
+            "3": "alice@example.com",
+            "4": "alice@example.com",
+        }
+        mock_dates = {
+            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
+            "4": datetime(2024, 1, 4, tzinfo=timezone.utc),
+        }
+        mock_metadata = {
+            "4": {
+                "email_id": "4",
+                "subject": "S4",
+                "from": "alice@example.com",
+                "to": [],
+                "date": datetime(2024, 1, 4, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+            "3": {
+                "email_id": "3",
+                "subject": "S3",
+                "from": "alice@example.com",
+                "to": [],
+                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+        }
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_batch_fetch_senders", return_value=mock_senders):
+                with patch.object(email_client, "_batch_fetch_dates", return_value=mock_dates):
+                    with patch.object(email_client, "_batch_fetch_headers", return_value=mock_metadata):
+                        total, emails = await email_client.get_emails_metadata(
+                            page=1, page_size=2, allowed_senders=["alice@example.com"]
+                        )
+
+        assert total == 3  # 3 allowed (4 matched, 1 blocked)
+        assert len(emails) == 2  # full page, not short
+
+    @pytest.mark.asyncio
+    async def test_get_emails_metadata_no_allowlist_skips_sender_fetch(self, email_client):
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.logout = AsyncMock()
+
+        mock_dates = {
+            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "2": datetime(2024, 1, 2, tzinfo=timezone.utc),
+            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
+        }
+        mock_metadata = {
+            "3": {
+                "email_id": "3",
+                "subject": "S3",
+                "from": "c@test.com",
+                "to": [],
+                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+            "2": {
+                "email_id": "2",
+                "subject": "S2",
+                "from": "b@test.com",
+                "to": [],
+                "date": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+            "1": {
+                "email_id": "1",
+                "subject": "S1",
+                "from": "a@test.com",
+                "to": [],
+                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "attachments": [],
+            },
+        }
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_batch_fetch_senders") as mock_fs:
+                with patch.object(email_client, "_batch_fetch_dates", return_value=mock_dates):
+                    with patch.object(email_client, "_batch_fetch_headers", return_value=mock_metadata):
+                        total, emails = await email_client.get_emails_metadata(page=1, page_size=10)
+
+        assert total == 3
+        assert len(emails) == 3
+        mock_fs.assert_not_called()  # zero overhead when no allowlist
+
+
+class TestSenderFilterCoverage:
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders_empty_returns_empty(self, email_client):
+        mock_imap = AsyncMock()
+        result = await email_client._batch_fetch_senders(mock_imap, [])
+        assert result == {}
+        mock_imap.uid.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders_skips_unparseable_header(self, email_client):
+        """A header block that fails to parse is skipped, not added."""
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            return_value=(
+                None,
+                [b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {1}", bytearray(b"x"), b")"],
+            )
+        )
+        with patch.object(email_client, "_parse_headers", return_value=None):
+            result = await email_client._batch_fetch_senders(mock_imap, [b"100"])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders_proton_bridge_format(self, email_client):
+        """Proton Bridge returns the UID in a trailing item after the header payload."""
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            return_value=(
+                None,
+                [
+                    b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {23}",
+                    bytearray(b"From: bob@example.com\r\n\r\n"),
+                    b" UID 200)",
+                ],
+            )
+        )
+        result = await email_client._batch_fetch_senders(mock_imap, [b"200"])
+        assert result == {"200": "bob@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_get_emails_metadata_all_blocked_returns_empty(self, email_client):
+        """When every match is filtered out, total is 0 and the date fetch is skipped."""
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", []))
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2"]))
+        mock_imap.logout = AsyncMock()
+        mock_senders = {"1": "bob@evil.com", "2": "carol@evil.com"}
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_batch_fetch_senders", return_value=mock_senders):
+                with patch.object(email_client, "_batch_fetch_dates") as mock_fd:
+                    total, emails = await email_client.get_emails_metadata(
+                        page=1, page_size=10, allowed_senders=["alice@example.com"]
+                    )
+        assert total == 0
+        assert emails == []
+        mock_fd.assert_not_called()  # early return before the date fetch
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders_non_bytearray_payload_skipped(self, email_client):
+        """An item whose payload is not a bytearray matches neither branch and is skipped."""
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            return_value=(None, [b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {0}", b"not-bytearray", b")"])
+        )
+        result = await email_client._batch_fetch_senders(mock_imap, [b"100"])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders_proton_missing_uid_skipped(self, email_client):
+        """A trailing-payload item with no UID is skipped."""
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            return_value=(None, [b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {x}", bytearray(b"From: a@b.com\r\n\r\n"), b")"])
+        )
+        result = await email_client._batch_fetch_senders(mock_imap, [b"100"])
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_batch_fetch_senders_proton_unparseable_skipped(self, email_client):
+        """A trailing-UID item whose header fails to parse is skipped."""
+        mock_imap = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            return_value=(None, [b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {1}", bytearray(b"x"), b" UID 300)"])
+        )
+        with patch.object(email_client, "_parse_headers", return_value=None):
+            result = await email_client._batch_fetch_senders(mock_imap, [b"300"])
+        assert result == {}
