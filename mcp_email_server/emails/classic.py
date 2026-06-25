@@ -274,6 +274,17 @@ def _html_to_text(html: str) -> str:
     for element in soup(["script", "style"]):
         element.decompose()
 
+    for link in soup.find_all("a"):
+        href = str(link.get("href") or "").strip()
+        normalized_href_scheme = re.sub(r"[\x00-\x20]+", "", href).lower()
+        if not href or href.startswith("#") or normalized_href_scheme.startswith(("mailto:", "javascript:")):
+            continue
+
+        link_text = link.get_text(" ", strip=True)
+        replacement = href if not link_text or link_text == href else f"{link_text} ({href})"
+        link.replace_with(replacement)
+
+    soup.smooth()
     text = soup.get_text(separator="\n")
     text = re.sub(r"\n\s*\n", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)

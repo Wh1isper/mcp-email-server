@@ -121,6 +121,43 @@ class TestEmailClient:
         assert "One" in result
         assert "Two" in result
 
+    def test_html_to_text_preserves_useful_link_urls(self):
+        """HTML fallback preserves useful anchor hrefs in readable text."""
+        html = """
+        <p>Click <a href="https://example.com/verify">here</a> to verify.</p>
+        <p>Visit <a href="https://example.com/help">https://example.com/help</a>.</p>
+        <p>Textless <a href="https://example.com/textless"></a></p>
+        """
+
+        result = _html_to_text(html)
+
+        assert "here (https://example.com/verify)" in result
+        assert "https://example.com/help (https://example.com/help)" not in result
+        assert "https://example.com/help" in result
+        assert "https://example.com/textless" in result
+
+    def test_html_to_text_skips_unsafe_or_non_content_links(self):
+        """HTML fallback skips hrefs that should not be exposed as useful content links."""
+        html = """
+        <p><a href="#section">section</a></p>
+        <p><a href="mailto:help@example.com">email us</a></p>
+        <p><a href="javascript:alert('x')">click</a></p>
+        <p><a href="java&#10;script:alert('x')">obfuscated</a></p>
+        <p><a href="">empty</a></p>
+        """
+
+        result = _html_to_text(html)
+
+        assert "section" in result
+        assert "email us" in result
+        assert "click" in result
+        assert "obfuscated" in result
+        assert "empty" in result
+        assert "#section" not in result
+        assert "mailto:" not in result
+        assert "javascript:" not in result
+        assert "alert" not in result
+
     def test_parse_email_data_html_single_part_falls_back_to_text(self):
         """Single-part HTML emails are converted to plain text."""
         msg = MIMEText("<html><body><p>Hello&nbsp;<b>world</b></p><script>x()</script></body></html>", "html", "utf-8")
