@@ -157,9 +157,10 @@ def test_config():
         ("alice@example.com", ["*@other.com", "alice@example.com"], True),  # matches second pattern
         ("", ["*@example.com"], False),  # empty sender => blocked
         ("not an email", ["*@example.com"], False),  # unparseable => blocked
-        # multi-address From: parseaddr takes the first address, so a blocked sender
-        # cannot smuggle through by appending an allowed one => blocked
+        # Multi-address From headers fail closed regardless of address order.
         ("blocked@evil.com, alice@example.com", ["alice@example.com"], False),
+        ("alice@example.com, blocked@evil.com", ["alice@example.com"], False),
+        ("Alice <alice@example.com>, Mallory <blocked@evil.com>", ["alice@example.com"], False),
         ("alice@example.com", ["*@Example.com"], True),  # mixed-case pattern still matches
     ],
 )

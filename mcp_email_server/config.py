@@ -4,7 +4,7 @@ import datetime
 import fnmatch
 import os
 from collections.abc import Iterable
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -41,18 +41,19 @@ def normalize_address(raw: str) -> str:
 
 
 def sender_allowed(sender: str, patterns: list[str]) -> bool:
-    """Return True if the sender's address matches any allowlist pattern (or the list is empty).
+    """Return True if exactly one sender address matches any allowlist pattern.
 
-    The bare address is extracted via normalize_address (handles "Name <addr>") and lowercased,
-    then matched against the lowercased glob patterns with fnmatchcase. An empty allowlist allows
-    everyone; an unparseable sender never matches a non-empty allowlist (blocked, safe default).
+    An empty allowlist allows everyone. When an allowlist is configured, malformed, empty, or
+    multi-address From headers fail closed rather than relying on parser leniency.
     """
     if not patterns:
         return True
-    addr = normalize_address(sender)
-    if not addr:
+
+    addrs = [addr.strip().lower() for _name, addr in getaddresses([sender]) if addr.strip()]
+    if len(addrs) != 1:
         return False
-    return any(fnmatch.fnmatchcase(addr, pattern.lower()) for pattern in patterns)
+
+    return any(fnmatch.fnmatchcase(addrs[0], pattern.lower()) for pattern in patterns)
 
 
 def _normalize_address_list(raw: Iterable[str]) -> list[str]:
