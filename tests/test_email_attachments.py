@@ -778,3 +778,126 @@ class TestDownloadAttachmentSenderAllowlist:
             )
         assert result["attachment_name"] == "ausflug.png"
         mock_senders.assert_not_called()
+
+
+class TestExtractAttachments:
+    """``extract_attachments`` returns the original's attachments as (name, mime, bytes) tuples."""
+
+    @staticmethod
+    def _mock_imap():
+        import asyncio
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
+        mock_imap.logout = AsyncMock()
+        return mock_imap
+
+    @staticmethod
+    def _fetch_returning(raw_email: bytes):
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        return _fake_fetch
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_explicit_attachment(self, email_client):
+        """An explicit-disposition attachment is returned with its filename, mime type, and bytes."""
+        raw_email = _build_email_with_explicit_attachment()
+        mock_imap = self._mock_imap()
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch_returning(raw_email)):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.extract_attachments("1", "INBOX")
+
+        assert result == [("report.pdf", "application/pdf", b"%PDF-1.4 fake pdf bytes")]
+        mock_imap.select.assert_called_once_with('"INBOX"')
+        mock_imap.logout.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_extract_includes_inline_attachment_with_filename(self, email_client):
+        """Inline-disposition parts that carry a filename (iOS-style photos) are also extracted."""
+        raw_email = _build_apple_mail_inline_image(b"\x89PNG\r\n\x1a\ninline_png")
+        mock_imap = self._mock_imap()
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch_returning(raw_email)):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.extract_attachments("1")
+
+        assert len(result) == 1
+        filename, mime_type, payload = result[0]
+        assert filename == "ausflug.png"
+        assert mime_type == "image/png"
+        assert payload.startswith(b"\x89PNG")
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_empty_for_non_multipart_email(self, email_client):
+        """A single-part email has no attachment parts."""
+        raw_email = MIMEText("No attachments here", "plain", "utf-8").as_bytes()
+        mock_imap = self._mock_imap()
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch_returning(raw_email)):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.extract_attachments("1")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_empty_when_fetch_yields_nothing(self, email_client):
+        """When the fetch returns no data, extract_attachments yields an empty list (no crash)."""
+        mock_imap = self._mock_imap()
+
+        with patch.object(email_client, "_fetch_email_with_formats", return_value=None):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.extract_attachments("1")
+
+        assert result == []
+        mock_imap.logout.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_empty_when_raw_body_missing(self, email_client):
+        """A fetch response with no extractable raw body yields an empty list."""
+        mock_imap = self._mock_imap()
+
+        with patch.object(email_client, "_fetch_email_with_formats", return_value=[b"junk"]):
+            with patch.object(email_client, "_extract_raw_email", return_value=None):
+                with patch.object(email_client, "imap_class", return_value=mock_imap):
+                    result = await email_client.extract_attachments("1")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_extract_tolerates_logout_failure(self, email_client):
+        """A logout error is swallowed; the extracted attachments are still returned."""
+        raw_email = _build_email_with_explicit_attachment()
+        mock_imap = self._mock_imap()
+        mock_imap.logout = AsyncMock(side_effect=RuntimeError("connection reset"))
+
+        with patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch_returning(raw_email)):
+            with patch.object(email_client, "imap_class", return_value=mock_imap):
+                result = await email_client.extract_attachments("1")
+
+        assert result == [("report.pdf", "application/pdf", b"%PDF-1.4 fake pdf bytes")]
+
+
+class TestComposeMessageExtraParts:
+    """compose_message re-attaches prebuilt MIME parts (used when forwarding)."""
+
+    def test_compose_message_attaches_extra_parts(self, email_client):
+        """extra_parts are attached to the outgoing message alongside the text body."""
+        extra = MIMEApplication(b"%PDF-1.4 forwarded", _subtype="pdf")
+        extra.add_header("Content-Disposition", "attachment", filename="orig.pdf")
+
+        msg = email_client.compose_message(
+            recipients=["to@example.com"],
+            subject="Fwd: hi",
+            body="see attached",
+            extra_parts=[extra],
+        )
+
+        assert msg.is_multipart()
+        attached = {part.get_filename(): part.get_payload(decode=True) for part in msg.walk() if part.get_filename()}
+        assert attached == {"orig.pdf": b"%PDF-1.4 forwarded"}
