@@ -502,7 +502,9 @@ class TestClassicEmailHandler:
             assert result.emails[0].body == "Test email body"
 
             # Verify the client method was called correctly
-            mock_get_body.assert_called_once_with("123", "INBOX", False, allowed_senders=[])
+            mock_get_body.assert_called_once_with(
+                "123", "INBOX", False, allowed_senders=[], body_offset=0, max_body_length=20000
+            )
 
     @pytest.mark.asyncio
     async def test_get_emails_content_mark_as_read_true(self, classic_handler):
@@ -529,7 +531,9 @@ class TestClassicEmailHandler:
             )
 
             assert len(result.emails) == 1
-            mock_get_body.assert_called_once_with("123", "INBOX", True, allowed_senders=[])
+            mock_get_body.assert_called_once_with(
+                "123", "INBOX", True, allowed_senders=[], body_offset=0, max_body_length=20000
+            )
 
     @pytest.mark.asyncio
     async def test_get_emails_content_mark_as_read_default_false(self, classic_handler):
@@ -551,7 +555,9 @@ class TestClassicEmailHandler:
         with patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get_body):
             await classic_handler.get_emails_content(email_ids=["456"])
 
-            mock_get_body.assert_called_once_with("456", "INBOX", False, allowed_senders=[])
+            mock_get_body.assert_called_once_with(
+                "456", "INBOX", False, allowed_senders=[], body_offset=0, max_body_length=20000
+            )
 
     @pytest.mark.asyncio
     async def test_get_emails_metadata_passes_allowlist_to_client(self, classic_handler):

@@ -1,0 +1,157 @@
+{"level":30,"time":"2026-01-27T07:17:23.402Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T07:17:23.755Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"itK30U8X6zXVkbc7oRLfvN0/u7FznuE5ft2giBdf6WA="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T07:17:23.866Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T07:17:24.263Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T07:17:24.389Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 0 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T07:17:24.415Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"15 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T07:17:24.520Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T07:17:24.521Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T07:17:24.522Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T07:27:24.406Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T07:37:25.241Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T07:47:25.239Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T07:57:25.288Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T08:07:25.438Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T08:17:29.191Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T08:27:25.571Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T09:23:34.893Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T09:23:34.894Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T09:23:34.894Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T09:23:35.314Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T09:23:35.523Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"GumQuqtYZ2NRS2pAr5YhTfo+2b5OiEDYLMBv13vaglc="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T09:23:35.700Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T09:23:36.168Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T09:23:36.283Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T09:23:36.428Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 9 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T09:23:36.528Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"15 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T09:23:36.666Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T09:23:36.668Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T09:23:36.669Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T09:27:09.855Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T09:27:09.857Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T09:27:09.857Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T09:27:10.316Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T09:27:10.557Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"kaRFpb96cX8jpeKwLAfBoEjsg5UAccN+ACHgYf1ErRc="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T09:27:10.622Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T09:27:10.842Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"14 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T09:27:10.844Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T09:27:10.885Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T09:27:10.890Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 2 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T09:27:10.899Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T09:27:10.900Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T09:27:10.900Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T09:45:01.272Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection Terminated\n    at WebSocketClient.<anonymous> (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:454:30)\n    at WebSocketClient.emit (node:events:508:20)\n    at WebSocket.<anonymous> (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/Client/websocket.js:46:100)\n    at WebSocket.emit (node:events:508:20)\n    at WebSocket.emitClose (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/ws/lib/websocket.js:272:10)\n    at Receiver.receiverOnFinish (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/ws/lib/websocket.js:1209:20)\n    at Receiver.emit (node:events:508:20)\n    at finish (node:internal/streams/writable:953:10)\n    at node:internal/streams/writable:934:13\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T09:45:01.272Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: connectionClosed"}
+{"level":30,"time":"2026-01-27T09:45:01.272Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T09:45:01.342Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T09:45:01.556Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"a7SOKfk6t7YAd9Q1Z/ba90N9myowXl43Zb8AjxRfTCI="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T09:45:01.619Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T09:45:01.833Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T09:45:01.835Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"13 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T09:45:01.876Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T09:45:01.882Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 3 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T09:45:01.888Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T09:45:01.894Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T09:45:01.895Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T10:31:52.318Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection Terminated\n    at WebSocketClient.<anonymous> (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:454:30)\n    at WebSocketClient.emit (node:events:508:20)\n    at WebSocket.<anonymous> (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/Client/websocket.js:46:100)\n    at WebSocket.emit (node:events:508:20)\n    at WebSocket.emitClose (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/ws/lib/websocket.js:272:10)\n    at Receiver.receiverOnFinish (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/ws/lib/websocket.js:1209:20)\n    at Receiver.emit (node:events:508:20)\n    at finish (node:internal/streams/writable:953:10)\n    at node:internal/streams/writable:934:13\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T10:31:52.318Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: connectionClosed"}
+{"level":30,"time":"2026-01-27T10:31:52.318Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T10:31:52.402Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T10:31:52.612Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"RI8uacxTT3/1RmbAFCi77d2Hikn0Hp6Nk0MOSeMJYC8="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T10:31:52.758Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T10:31:53.237Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T10:31:53.379Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"11 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T10:31:53.411Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T10:31:53.419Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 4 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T10:31:53.530Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T10:31:53.534Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T10:31:53.544Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T11:32:56.098Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T11:32:56.100Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T11:32:56.100Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T11:32:56.187Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T11:32:56.293Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"18ddRASGOpTn9tcX6CjguWXjyBWlUyOxej2RuTbA2nY="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T11:32:56.341Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T11:32:56.539Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T11:32:56.541Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T11:32:56.555Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"resyncing regular from v5"}
+{"level":30,"time":"2026-01-27T11:32:56.566Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"9 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T11:32:56.583Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 8 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T11:32:56.606Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T11:32:56.610Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T11:32:56.612Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T11:32:56.652Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"synced regular to v6"}
+{"level":30,"time":"2026-01-27T11:32:56.655Z","pid":93651,"hostname":"MacBookPro.localdomain","count":30,"msg":"uploading pre-keys"}
+{"level":30,"time":"2026-01-27T11:32:56.821Z","pid":93651,"hostname":"MacBookPro.localdomain","count":30,"msg":"uploaded pre-keys"}
+{"level":30,"time":"2026-01-27T11:32:56.834Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T11:50:04.128Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T11:50:04.129Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T11:50:04.129Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T11:50:04.192Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T11:50:04.323Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"16ldBA6XCveHV5Zkj2ga6Lv8eVtW5AM37y8YPSC3Um8="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T11:50:04.436Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T11:50:04.647Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T11:50:04.673Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"30 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T11:50:04.701Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T11:50:04.702Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 2 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T11:50:04.728Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T11:50:04.729Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T11:50:04.729Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T12:07:17.665Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T12:07:17.666Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T12:07:17.666Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T12:07:18.539Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T12:07:18.744Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"eBhQ1mR9G8yb2jOMmC9m1KziiU+V75UdDiRT809KZl0="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T12:07:18.888Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T12:07:19.410Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T12:07:19.559Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"30 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T12:07:19.582Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T12:07:21.354Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 1 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T12:07:21.355Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T12:07:21.357Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T12:07:21.359Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T12:23:52.672Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T12:23:52.672Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T12:23:52.672Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T12:23:53.181Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T12:23:53.446Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"Dh4ZhYRIeMXXvr5y4wQOuIR/SEBA8qDtEQnelJMNukc="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T12:23:53.598Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T12:23:54.073Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T12:23:54.211Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"29 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T12:23:54.233Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T12:23:54.245Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 4 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T12:23:54.351Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T12:23:54.352Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T12:23:54.354Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T12:33:48.666Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T12:33:48.666Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T12:33:48.666Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T12:33:49.162Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T12:33:49.329Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"obmV8MLA9L4yPJ9ysG/itGxj4hKcshqHaGscplNUJk4="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T12:33:49.403Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T12:33:49.630Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"29 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T12:33:49.631Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T12:33:49.662Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 0 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T12:33:49.684Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T12:33:49.686Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T12:33:49.687Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T13:28:25.818Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Connection was lost\n    at Timeout._onTimeout (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:303:17)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T13:28:25.819Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: timedOut"}
+{"level":30,"time":"2026-01-27T13:28:25.819Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Reconnecting..."}
+{"level":30,"time":"2026-01-27T13:28:25.918Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Using WA v2.3000.1032141294, isLatest: true"}
+{"level":30,"time":"2026-01-27T13:28:26.087Z","pid":93651,"hostname":"MacBookPro.localdomain","browser":["Ubuntu","Chrome","22.04.4"],"helloMsg":{"clientHello":{"ephemeral":"Is0NrMcAdUDSDJTVwdps4rpabJiqI51bGWfC4yUpgkY="}},"msg":"connected to WA"}
+{"level":30,"time":"2026-01-27T13:28:26.215Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"username":"15617896860","passive":false,"userAgent":{"platform":"WEB","appVersion":{"primary":2,"secondary":3000,"tertiary":1032141294},"mcc":"000","mnc":"000","osVersion":"0.1","device":"Desktop","osBuildNumber":"0.1","releaseChannel":"RELEASE","localeLanguageIso6391":"en","localeCountryIso31661Alpha2":"US"},"webInfo":{"webSubPlatform":"WEB_BROWSER"},"connectType":"WIFI_UNKNOWN","connectReason":"USER_ACTIVATED","device":8,"pull":true},"msg":"logging in..."}
+{"level":30,"time":"2026-01-27T13:28:26.438Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T13:28:26.438Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"29 pre-keys found on server"}
+{"level":30,"time":"2026-01-27T13:28:26.474Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"offline preview received"}
+{"level":30,"time":"2026-01-27T13:28:26.477Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"handled 4 offline messages/notifications"}
+{"level":30,"time":"2026-01-27T13:28:26.497Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"opened connection to WA"}
+{"level":30,"time":"2026-01-27T13:28:26.502Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection opened. WA user: Jack Koch"}
+{"level":30,"time":"2026-01-27T13:28:26.506Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T13:38:27.530Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T13:48:27.494Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":30,"time":"2026-01-27T13:58:27.527Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Credentials saved."}
+{"level":50,"time":"2026-01-27T13:59:38.151Z","pid":93651,"hostname":"MacBookPro.localdomain","node":{"tag":"stream:error","attrs":{},"content":[{"tag":"conflict","attrs":{"type":"replaced"}}]},"msg":"stream errored out"}
+{"level":30,"time":"2026-01-27T13:59:38.151Z","pid":93651,"hostname":"MacBookPro.localdomain","trace":"Error: Stream Errored (conflict)\n    at WebSocketClient.<anonymous> (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:519:13)\n    at WebSocketClient.emit (node:events:508:20)\n    at /Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Socket/socket.js:236:35\n    at Object.decodeFrame (/Users/jbkjr/code/whatsapp-mcp-ts/node_modules/@whiskeysockets/baileys/lib/Utils/noise-handler.js:144:17)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)","msg":"connection errored"}
+{"level":40,"time":"2026-01-27T13:59:38.151Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection closed. Reason: connectionReplaced"}
+{"level":50,"time":"2026-01-27T13:59:38.151Z","pid":93651,"hostname":"MacBookPro.localdomain","msg":"Connection replaced by another instance. Exiting to prevent conflict loop."}

@@ -280,7 +280,7 @@ class TestMcpTools:
             assert result.emails[0].subject == "Test Subject"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", False)
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", False, 0, 20000)
 
     @pytest.mark.asyncio
     async def test_get_emails_content_batch(self):
@@ -336,7 +336,9 @@ class TestMcpTools:
             assert result.emails[1].email_id == "12346"
 
             # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345", "12346", "12347"], "INBOX", False)
+            mock_handler.get_emails_content.assert_called_once_with(
+                ["12345", "12346", "12347"], "INBOX", False, 0, 20000
+            )
 
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
@@ -370,7 +372,7 @@ class TestMcpTools:
             )
 
             assert result == batch_response
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent", False)
+            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent", False, 0, 20000)
 
     @pytest.mark.asyncio
     async def test_tool_visibility_hides_outbound_tools_for_read_only_accounts(self):
@@ -684,7 +686,7 @@ class TestMcpTools:
                 mark_as_read=True,
             )
 
-            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", True)
+            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", True, 0, 20000)
 
     @pytest.mark.asyncio
     async def test_get_emails_content_mark_as_read_default_false(self):
@@ -700,7 +702,25 @@ class TestMcpTools:
                 email_ids=["123"],
             )
 
-            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False)
+            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False, 0, 20000)
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_body_offset_and_max_body_length(self):
+        """body_offset and max_body_length are passed through to the handler for paging."""
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
+            emails=[], requested_count=1, retrieved_count=0, failed_ids=["123"]
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            await get_emails_content(
+                account_name="test",
+                email_ids=["123"],
+                body_offset=4000,
+                max_body_length=2000,
+            )
+
+            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False, 4000, 2000)
 
     @pytest.mark.asyncio
     async def test_move_emails(self):

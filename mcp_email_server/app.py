@@ -206,9 +206,29 @@ async def get_emails_content(
             description="If True, mark each successfully retrieved email as read. If marking fails, a warning is logged and retrieval still succeeds.",
         ),
     ] = False,
+    body_offset: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            description="Character offset into each email body to start reading from. Use together "
+            "with max_body_length to page through long emails: if a returned body ends with the "
+            "'...[TRUNCATED]' marker, fetch the next chunk with body_offset += max_body_length.",
+        ),
+    ] = 0,
+    max_body_length: Annotated[
+        int,
+        Field(
+            default=20000,
+            ge=1,
+            le=100000,
+            description="Maximum number of body characters to return, counted from body_offset. "
+            "If the body extends past this window, the result ends with the '...[TRUNCATED]' marker.",
+        ),
+    ] = 20000,
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids, mailbox, mark_as_read)
+    return await handler.get_emails_content(email_ids, mailbox, mark_as_read, body_offset, max_body_length)
 
 
 @mcp.tool(

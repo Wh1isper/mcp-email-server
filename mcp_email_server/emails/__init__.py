@@ -55,10 +55,20 @@ class EmailHandler(abc.ABC):
 
     @abc.abstractmethod
     async def get_emails_content(
-        self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        mark_as_read: bool = False,
+        body_offset: int = 0,
+        max_body_length: int = 20000,
     ) -> "EmailContentBatchResponse":
         """
-        Get full content (including body) of multiple emails by their email IDs (IMAP UIDs)
+        Get full content (including body) of multiple emails by their email IDs (IMAP UIDs).
+
+        Args:
+            body_offset: Character offset into each body to start reading from (for paging).
+            max_body_length: Maximum number of body characters to return, counted from
+                body_offset. If more remains, the body ends with the '...[TRUNCATED]' marker.
         """
 
     @abc.abstractmethod

@@ -527,7 +527,13 @@ class EmailClient:
         # ``get_filename`` and would otherwise misclassify text parts.)
         return isinstance(filename, str) and bool(filename)
 
-    def _parse_email_data(self, raw_email: bytes, email_id: str | None = None) -> dict[str, Any]:  # noqa: C901
+    def _parse_email_data(  # noqa: C901
+        self,
+        raw_email: bytes,
+        email_id: str | None = None,
+        body_offset: int = 0,
+        max_body_length: int = MAX_BODY_LENGTH,
+    ) -> dict[str, Any]:
         """Parse raw email data into a structured dictionary."""
         parser = BytesParser(policy=default)
         email_message = parser.parsebytes(raw_email)
@@ -593,9 +599,14 @@ class EmailClient:
                     text = payload.decode("utf-8", errors="replace")
 
                 body = _html_to_text(text) if content_type == "text/html" else text
-        # TODO: Allow retrieving full email body
-        if body and len(body) > MAX_BODY_LENGTH:
-            body = body[:MAX_BODY_LENGTH] + "...[TRUNCATED]"
+        # Return at most ``max_body_length`` characters starting at ``body_offset``. When more of
+        # the body remains past the window, append the ``...[TRUNCATED]`` marker so callers can page
+        # through a long email by re-requesting with ``body_offset += max_body_length``.
+        if body:
+            window = body[body_offset : body_offset + max_body_length]
+            if body_offset + max_body_length < len(body):
+                window += "...[TRUNCATED]"
+            body = window
         return {
             "email_id": email_id or "",
             "message_id": message_id,
@@ -1037,6 +1048,8 @@ class EmailClient:
         mailbox: str = "INBOX",
         mark_as_read: bool = False,
         allowed_senders: list[str] | None = None,
+        body_offset: int = 0,
+        max_body_length: int = MAX_BODY_LENGTH,
     ) -> dict[str, Any] | None:
         imap = await self._connect_imap()
         try:
@@ -1068,7 +1081,9 @@ class EmailClient:
 
             # Parse the email
             try:
-                email_data = self._parse_email_data(raw_email, email_id)
+                email_data = self._parse_email_data(
+                    raw_email, email_id, body_offset=body_offset, max_body_length=max_body_length
+                )
             except Exception as e:
                 logger.error(f"Error parsing email: {e!s}")
                 return None
@@ -1707,7 +1722,12 @@ class ClassicEmailHandler(EmailHandler):
         )
 
     async def get_emails_content(
-        self, email_ids: list[str], mailbox: str = "INBOX", mark_as_read: bool = False
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        mark_as_read: bool = False,
+        body_offset: int = 0,
+        max_body_length: int = MAX_BODY_LENGTH,
     ) -> EmailContentBatchResponse:
         """Batch retrieve email body content, honoring the sender allowlist.
 
@@ -1722,7 +1742,12 @@ class ClassicEmailHandler(EmailHandler):
         for email_id in email_ids:
             try:
                 email_data = await self.incoming_client.get_email_body_by_id(
-                    email_id, mailbox, mark_as_read, allowed_senders=allowed_senders
+                    email_id,
+                    mailbox,
+                    mark_as_read,
+                    allowed_senders=allowed_senders,
+                    body_offset=body_offset,
+                    max_body_length=max_body_length,
                 )
                 if not email_data:
                     failed_ids.append(email_id)
