@@ -1297,8 +1297,13 @@ class EmailClient:
         else:
             msg["Subject"] = subject
 
-        # Handle sender name with special characters
-        if any(ord(c) > 127 for c in self.sender):
+        sender_name, sender_address = email.utils.parseaddr(self.sender)
+
+        # Encode only the display name. RFC 2047 encoded-words must not cover the
+        # addr-spec, otherwise strict clients may show the raw encoded blob.
+        if sender_address:
+            msg["From"] = email.utils.formataddr((str(Header(sender_name, "utf-8")), sender_address))
+        elif any(ord(c) > 127 for c in self.sender):
             msg["From"] = Header(self.sender, "utf-8")
         else:
             msg["From"] = self.sender
@@ -1323,7 +1328,8 @@ class EmailClient:
 
         # Set Date and Message-Id headers
         msg["Date"] = email.utils.formatdate(localtime=True)
-        sender_domain = self.sender.rsplit("@", 1)[-1].rstrip(">")
+        sender_for_domain = sender_address or self.sender
+        sender_domain = sender_for_domain.rsplit("@", 1)[-1].rstrip(">")
         msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
 
         return msg

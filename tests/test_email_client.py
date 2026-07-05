@@ -721,6 +721,22 @@ class TestEmailClient:
 
 
 class TestSendEmailMessageIdAndDate:
+    def test_compose_message_encodes_only_non_ascii_sender_display_name(self, email_server):
+        """Non-ASCII display names must not encode the addr-spec in the From header."""
+        client = EmailClient(email_server, sender="刘滨瑞 <lbr1@mails.tsinghua.edu.cn>")
+
+        msg = client.compose_message(
+            recipients=["recipient@example.com"],
+            subject="Test Subject",
+            body="Test Body",
+        )
+
+        serialized = msg.as_string()
+        from_header = next(line for line in serialized.splitlines() if line.startswith("From:"))
+        assert from_header.startswith("From: =?utf-8?")
+        assert "<lbr1@mails.tsinghua.edu.cn>" in from_header
+        assert "@mails.tsinghua.edu.cn>" in msg["Message-Id"]
+
     @pytest.mark.asyncio
     async def test_send_email_sets_message_id_and_date(self, email_client):
         """Test that send_email sets Message-Id and Date headers."""
