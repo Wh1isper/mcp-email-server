@@ -148,6 +148,22 @@ class TestEmailClient:
         result = client._parse_email_data(raw_email, body_offset=10, max_body_length=20000)
         assert result["body"] == ""
 
+    def test_parse_email_data_rejects_negative_body_offset(self):
+        """body_offset must be non-negative, matching the public tool constraint."""
+        raw_email = self._make_raw_email("abc")
+        client = EmailClient(MagicMock())
+
+        with pytest.raises(ValueError, match="body_offset must be >= 0"):
+            client._parse_email_data(raw_email, body_offset=-1, max_body_length=10)
+
+    def test_parse_email_data_rejects_non_positive_max_body_length(self):
+        """max_body_length must be positive, matching the public tool constraint."""
+        raw_email = self._make_raw_email("abc")
+        client = EmailClient(MagicMock())
+
+        with pytest.raises(ValueError, match="max_body_length must be >= 1"):
+            client._parse_email_data(raw_email, body_offset=0, max_body_length=0)
+
     def test_html_to_text_removes_scripts_and_preserves_readable_text(self):
         """HTML fallback extraction uses an HTML parser for readable plain text."""
         html = """

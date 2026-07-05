@@ -599,6 +599,11 @@ class EmailClient:
                     text = payload.decode("utf-8", errors="replace")
 
                 body = _html_to_text(text) if content_type == "text/html" else text
+        if body_offset < 0:
+            raise ValueError("body_offset must be >= 0")
+        if max_body_length < 1:
+            raise ValueError("max_body_length must be >= 1")
+
         # Return at most ``max_body_length`` characters starting at ``body_offset``. When more of
         # the body remains past the window, append the ``...[TRUNCATED]`` marker so callers can page
         # through a long email by re-requesting with ``body_offset += max_body_length``.

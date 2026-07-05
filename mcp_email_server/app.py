@@ -223,7 +223,8 @@ async def get_emails_content(
             ge=1,
             le=100000,
             description="Maximum number of body characters to return, counted from body_offset. "
-            "If the body extends past this window, the result ends with the '...[TRUNCATED]' marker.",
+            "If the body extends past this window, the '...[TRUNCATED]' marker is appended after "
+            "the requested body window.",
         ),
     ] = 20000,
 ) -> EmailContentBatchResponse:
