@@ -618,7 +618,9 @@ class TestClassicHandlerMoveEmails:
 
         assert moved == ["100", "200"]
         assert failed == []
-        mock_move.assert_called_once_with(["100", "200"], "INBOX", "Archive")
+        mock_move.assert_called_once_with(
+            ["100", "200"], "INBOX", "Archive", allowed_senders=[], report_blocked_mutations=False
+        )
 
     @pytest.mark.asyncio
     async def test_move_emails_with_failures(self, classic_handler):
@@ -634,7 +636,9 @@ class TestClassicHandlerMoveEmails:
 
         assert moved == ["100"]
         assert failed == ["200"]
-        mock_move.assert_called_once_with(["100", "200"], "INBOX", "Trash")
+        mock_move.assert_called_once_with(
+            ["100", "200"], "INBOX", "Trash", allowed_senders=[], report_blocked_mutations=False
+        )
 
     @pytest.mark.asyncio
     async def test_move_emails_custom_source(self, classic_handler):
@@ -649,7 +653,7 @@ class TestClassicHandlerMoveEmails:
             )
 
         assert moved == ["300"]
-        mock_move.assert_called_once_with(["300"], "Trash", "INBOX")
+        mock_move.assert_called_once_with(["300"], "Trash", "INBOX", allowed_senders=[], report_blocked_mutations=False)
 
 
 class TestClassicHandlerArchiveEmails:
@@ -672,7 +676,9 @@ class TestClassicHandlerArchiveEmails:
         assert moved == ["100"]
         assert failed == []
         assert archive_folder == "All Mail"
-        mock_move.assert_called_once_with(["100"], "INBOX", "All Mail")
+        mock_move.assert_called_once_with(
+            ["100"], "INBOX", "All Mail", allowed_senders=[], report_blocked_mutations=False
+        )
 
     @pytest.mark.asyncio
     async def test_archive_falls_back_to_common_name(self, classic_handler):
@@ -690,7 +696,9 @@ class TestClassicHandlerArchiveEmails:
 
         assert moved == ["100", "200"]
         assert archive_folder == "Archive"
-        mock_move.assert_called_once_with(["100", "200"], "INBOX", "Archive")
+        mock_move.assert_called_once_with(
+            ["100", "200"], "INBOX", "Archive", allowed_senders=[], report_blocked_mutations=False
+        )
 
     @pytest.mark.asyncio
     async def test_archive_fallback_preserves_server_mailbox_case(self, classic_handler):
@@ -709,7 +717,9 @@ class TestClassicHandlerArchiveEmails:
         assert moved == ["100"]
         assert failed == []
         assert archive_folder == "archive"
-        mock_move.assert_called_once_with(["100"], "INBOX", "archive")
+        mock_move.assert_called_once_with(
+            ["100"], "INBOX", "archive", allowed_senders=[], report_blocked_mutations=False
+        )
 
     @pytest.mark.asyncio
     async def test_archive_raises_when_no_archive_folder(self, classic_handler):

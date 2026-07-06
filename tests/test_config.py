@@ -229,3 +229,54 @@ def test_allowed_senders_toml_normalised_preserves_globs(tmp_path, monkeypatch):
         assert config_module.get_settings(reload=True).allowed_senders == ["*@example.com", "bob@example.com"]
     finally:
         config_module._settings = None
+
+
+def test_report_blocked_mutations_defaults_to_false(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({}).encode())
+    monkeypatch.delenv("MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS", raising=False)
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).report_blocked_mutations is False
+    finally:
+        config_module._settings = None
+
+
+def test_report_blocked_mutations_from_toml(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({"report_blocked_mutations": True}).encode())
+    monkeypatch.delenv("MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS", raising=False)
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).report_blocked_mutations is True
+    finally:
+        config_module._settings = None
+
+
+def test_report_blocked_mutations_env_overrides_toml(tmp_path, monkeypatch):
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps({"report_blocked_mutations": False}).encode())
+    monkeypatch.setenv("MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS", "true")
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        assert config_module.get_settings(reload=True).report_blocked_mutations is True
+    finally:
+        config_module._settings = None

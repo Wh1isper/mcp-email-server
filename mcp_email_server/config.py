@@ -280,18 +280,22 @@ class Settings(BaseSettings):
     enable_attachment_download: bool = False
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
+    report_blocked_mutations: bool = False
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
+
+    def _apply_bool_env_override(self, attr: str, env_var: str) -> None:
+        value = os.getenv(env_var)
+        if value is not None:
+            setattr(self, attr, _parse_bool_env(value, False))
+            logger.info(f"Set {attr}={getattr(self, attr)} from environment variable")
 
     def __init__(self, **data: Any) -> None:
         """Initialize Settings with support for environment variables."""
         super().__init__(**data)
 
-        # Check for enable_attachment_download from environment variable
-        env_enable_attachment = os.getenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD")
-        if env_enable_attachment is not None:
-            self.enable_attachment_download = _parse_bool_env(env_enable_attachment, False)
-            logger.info(f"Set enable_attachment_download={self.enable_attachment_download} from environment variable")
+        self._apply_bool_env_override("enable_attachment_download", "MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD")
+        self._apply_bool_env_override("report_blocked_mutations", "MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS")
 
         # Normalise allowed_recipients from TOML (bare, lowercased, de-duplicated)
         if self.allowed_recipients:

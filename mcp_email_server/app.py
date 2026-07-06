@@ -245,8 +245,11 @@ async def list_allowed_recipients() -> list[str]:
 
 @mcp.tool(
     description=(
-        "List the configured inbound sender allowlist — the address patterns whose mail is visible "
-        "via list_emails_metadata and get_emails_content. Only available when an allowlist is configured."
+        "List the configured inbound sender allowlist — the address patterns whose mail the server "
+        "will read or act on. When configured, only these senders' mail is visible to the read tools "
+        "(list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation "
+        "tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Only available when an "
+        "allowlist is configured."
     ),
     visible_if=_has_allowed_senders,
 )

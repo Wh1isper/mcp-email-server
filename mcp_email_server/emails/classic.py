@@ -873,6 +873,18 @@ class EmailClient:
                 logger.error(msg)
                 raise ValueError(msg)
 
+    async def _blocked_uids(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        email_ids: list[str],
+        allowed_senders: list[str] | None,
+    ) -> set[str]:
+        """UIDs whose From is not on the allowlist. Empty set when no allowlist (no IMAP work)."""
+        if not allowed_senders:
+            return set()
+        uid_senders = await self._batch_fetch_senders(imap, email_ids)
+        return {uid for uid in email_ids if not sender_allowed(uid_senders.get(uid, ""), allowed_senders)}
+
     async def get_emails_metadata(
         self,
         page: int = 1,
@@ -1544,8 +1556,19 @@ class EmailClient:
             except Exception as e:
                 logger.debug(f"Error during logout: {e}")
 
-    async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
-        """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
+    async def delete_emails(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        allowed_senders: list[str] | None = None,
+        report_blocked_mutations: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        """Delete emails by their UIDs. Returns (deleted_ids, failed_ids).
+
+        A blocked sender's UID is never flagged \\Deleted: by default it is reported as a
+        no-op success (indistinguishable from a nonexistent UID); when
+        report_blocked_mutations is True it is reported in failed_ids instead.
+        """
         imap = await self._connect_imap()
         deleted_ids = []
         failed_ids = []
@@ -1556,15 +1579,23 @@ class EmailClient:
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
+            blocked = await self._blocked_uids(imap, email_ids, allowed_senders)
+            deleted_any = False
             for email_id in email_ids:
+                if email_id in blocked:
+                    (failed_ids if report_blocked_mutations else deleted_ids).append(email_id)
+                    continue
                 try:
-                    await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
                     deleted_ids.append(email_id)
+                    deleted_any = True
                 except Exception as e:
                     logger.error(f"Failed to delete email {email_id}: {e}")
                     failed_ids.append(email_id)
 
-            await imap.expunge()
+            if deleted_any:
+                await imap.expunge()
         finally:
             try:
                 await imap.logout()
@@ -1573,8 +1604,18 @@ class EmailClient:
 
         return deleted_ids, failed_ids
 
-    async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
-        """Mark emails as read by setting the \\Seen flag. Returns (marked_ids, failed_ids)."""
+    async def mark_emails_as_read(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        allowed_senders: list[str] | None = None,
+        report_blocked_mutations: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        """Mark emails as read by setting the \\Seen flag. Returns (marked_ids, failed_ids).
+
+        A blocked sender's UID is never flagged \\Seen: reported as a no-op success by
+        default, or in failed_ids when report_blocked_mutations is True.
+        """
         imap = await self._connect_imap()
         marked_ids: list[str] = []
         failed_ids: list[str] = []
@@ -1585,7 +1626,11 @@ class EmailClient:
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
+            blocked = await self._blocked_uids(imap, email_ids, allowed_senders)
             for email_id in email_ids:
+                if email_id in blocked:
+                    (failed_ids if report_blocked_mutations else marked_ids).append(email_id)
+                    continue
                 try:
                     store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
                     _raise_for_imap_error(store_response, f"STORE \\Seen for email {email_id}")
@@ -1602,9 +1647,18 @@ class EmailClient:
         return marked_ids, failed_ids
 
     async def move_emails(
-        self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+        allowed_senders: list[str] | None = None,
+        report_blocked_mutations: bool = False,
     ) -> tuple[list[str], list[str]]:
-        """Move emails to a different mailbox. Uses IMAP MOVE (RFC 6851) with COPY+DELETE fallback."""
+        """Move emails to a different mailbox. Uses IMAP MOVE (RFC 6851) with COPY+DELETE fallback.
+
+        A blocked sender's UID is never copied/moved: reported as a no-op success by default,
+        or in failed_ids when report_blocked_mutations is True.
+        """
         imap = await self._connect_imap()
         moved_ids = []
         failed_ids = []
@@ -1618,7 +1672,12 @@ class EmailClient:
             capabilities = {str(capability).upper() for capability in getattr(imap, "capabilities", ())}
             has_move = hasattr(imap, "move") and "MOVE" in capabilities
 
+            blocked = await self._blocked_uids(imap, email_ids, allowed_senders)
+            copied: list[str] = []  # allowed UIDs that actually completed COPY+STORE on the fallback path
             for email_id in email_ids:
+                if email_id in blocked:
+                    (failed_ids if report_blocked_mutations else moved_ids).append(email_id)
+                    continue
                 try:
                     if has_move:
                         move_response = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
@@ -1628,19 +1687,20 @@ class EmailClient:
                         _raise_for_imap_error(copy_response, f"COPY email {email_id}")
                         store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
                         _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
+                        copied.append(email_id)
                     moved_ids.append(email_id)
                 except Exception as e:
                     logger.error(f"Failed to move email {email_id}: {e}")
                     failed_ids.append(email_id)
 
-            if not has_move and moved_ids:
+            if copied:  # only expunge when real COPY+STORE happened — never for blocked/no-op UIDs
                 try:
                     expunge_response = await imap.expunge()
                     _raise_for_imap_error(expunge_response, "EXPUNGE moved emails")
                 except Exception as e:
                     logger.error(f"Failed to expunge moved emails: {e}")
-                    failed_ids.extend(moved_ids)
-                    moved_ids = []
+                    failed_ids.extend(copied)
+                    moved_ids = [uid for uid in moved_ids if uid not in set(copied)]
         finally:
             try:
                 await imap.logout()
@@ -1884,17 +1944,36 @@ class ClassicEmailHandler(EmailHandler):
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        return await self.incoming_client.delete_emails(email_ids, mailbox)
+        settings = get_settings()
+        return await self.incoming_client.delete_emails(
+            email_ids,
+            mailbox,
+            allowed_senders=settings.allowed_senders,
+            report_blocked_mutations=settings.report_blocked_mutations,
+        )
 
     async def mark_emails_as_read(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Mark emails as read by their UIDs. Returns (marked_ids, failed_ids)."""
-        return await self.incoming_client.mark_emails_as_read(email_ids, mailbox)
+        settings = get_settings()
+        return await self.incoming_client.mark_emails_as_read(
+            email_ids,
+            mailbox,
+            allowed_senders=settings.allowed_senders,
+            report_blocked_mutations=settings.report_blocked_mutations,
+        )
 
     async def move_emails(
         self, email_ids: list[str], source_mailbox: str, destination_mailbox: str
     ) -> tuple[list[str], list[str]]:
         """Move emails between mailboxes. Returns (moved_ids, failed_ids)."""
-        return await self.incoming_client.move_emails(email_ids, source_mailbox, destination_mailbox)
+        settings = get_settings()
+        return await self.incoming_client.move_emails(
+            email_ids,
+            source_mailbox,
+            destination_mailbox,
+            allowed_senders=settings.allowed_senders,
+            report_blocked_mutations=settings.report_blocked_mutations,
+        )
 
     async def _find_archive_folder(self) -> str | None:
         """Locate the Archive folder via the RFC 6154 ``\\Archive`` flag, then common names."""
@@ -1918,7 +1997,14 @@ class ClassicEmailHandler(EmailHandler):
                 "No Archive folder found (looked for the RFC 6154 \\Archive flag and common names: "
                 f"{', '.join(_ARCHIVE_FOLDER_CANDIDATES)}). Use move_emails with an explicit folder instead."
             )
-        moved_ids, failed_ids = await self.incoming_client.move_emails(email_ids, mailbox, archive_folder)
+        settings = get_settings()
+        moved_ids, failed_ids = await self.incoming_client.move_emails(
+            email_ids,
+            mailbox,
+            archive_folder,
+            allowed_senders=settings.allowed_senders,
+            report_blocked_mutations=settings.report_blocked_mutations,
+        )
         return moved_ids, failed_ids, archive_folder
 
     async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[MailboxInfo]:

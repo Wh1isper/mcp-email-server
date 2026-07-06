@@ -315,7 +315,9 @@ class TestClassicEmailHandler:
 
             assert deleted_ids == ["123", "456"]
             assert failed_ids == []
-            mock_delete.assert_called_once_with(["123", "456"], "INBOX")
+            mock_delete.assert_called_once_with(
+                ["123", "456"], "INBOX", allowed_senders=[], report_blocked_mutations=False
+            )
 
     @pytest.mark.asyncio
     async def test_delete_emails_with_failures(self, classic_handler):
@@ -330,7 +332,9 @@ class TestClassicEmailHandler:
 
             assert deleted_ids == ["123"]
             assert failed_ids == ["456"]
-            mock_delete.assert_called_once_with(["123", "456"], "Trash")
+            mock_delete.assert_called_once_with(
+                ["123", "456"], "Trash", allowed_senders=[], report_blocked_mutations=False
+            )
 
     @pytest.mark.asyncio
     async def test_delete_emails_custom_mailbox(self, classic_handler):
@@ -345,7 +349,7 @@ class TestClassicEmailHandler:
 
             assert deleted_ids == ["789"]
             assert failed_ids == []
-            mock_delete.assert_called_once_with(["789"], "Archive")
+            mock_delete.assert_called_once_with(["789"], "Archive", allowed_senders=[], report_blocked_mutations=False)
 
     @pytest.mark.asyncio
     async def test_mark_emails_as_read(self, classic_handler):
@@ -360,7 +364,9 @@ class TestClassicEmailHandler:
 
             assert marked_ids == ["123", "456"]
             assert failed_ids == []
-            mock_mark.assert_called_once_with(["123", "456"], "INBOX")
+            mock_mark.assert_called_once_with(
+                ["123", "456"], "INBOX", allowed_senders=[], report_blocked_mutations=False
+            )
 
     @pytest.mark.asyncio
     async def test_mark_emails_as_read_with_failures(self, classic_handler):
@@ -375,7 +381,9 @@ class TestClassicEmailHandler:
 
             assert marked_ids == ["123"]
             assert failed_ids == ["456"]
-            mock_mark.assert_called_once_with(["123", "456"], "INBOX")
+            mock_mark.assert_called_once_with(
+                ["123", "456"], "INBOX", allowed_senders=[], report_blocked_mutations=False
+            )
 
     @pytest.mark.asyncio
     async def test_mark_emails_as_read_custom_mailbox(self, classic_handler):
@@ -390,7 +398,7 @@ class TestClassicEmailHandler:
 
             assert marked_ids == ["789"]
             assert failed_ids == []
-            mock_mark.assert_called_once_with(["789"], "Archive")
+            mock_mark.assert_called_once_with(["789"], "Archive", allowed_senders=[], report_blocked_mutations=False)
 
     @pytest.mark.asyncio
     async def test_download_attachment(self, classic_handler, tmp_path):
@@ -633,6 +641,55 @@ class TestClassicEmailHandler:
         assert result.retrieved_count == 1
         assert mock_get.call_args.args[2] is True  # mark passed through to fetch
         mock_mark.assert_not_called()  # no deferred batch-mark when not filtering
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_passes_allowlist_and_report_flag(self, classic_handler):
+        mock_delete = AsyncMock(return_value=(["1"], []))
+        with patch(
+            "mcp_email_server.emails.classic.get_settings",
+            return_value=MagicMock(allowed_senders=["*@example.com"], report_blocked_mutations=True),
+        ):
+            with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+                await classic_handler.delete_emails(["1"], "INBOX")
+        assert mock_delete.call_args.kwargs.get("allowed_senders") == ["*@example.com"]
+        assert mock_delete.call_args.kwargs.get("report_blocked_mutations") is True
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_as_read_passes_allowlist_and_report_flag(self, classic_handler):
+        mock_mark = AsyncMock(return_value=(["1"], []))
+        with patch(
+            "mcp_email_server.emails.classic.get_settings",
+            return_value=MagicMock(allowed_senders=["*@example.com"], report_blocked_mutations=False),
+        ):
+            with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
+                await classic_handler.mark_emails_as_read(["1"], "INBOX")
+        assert mock_mark.call_args.kwargs.get("allowed_senders") == ["*@example.com"]
+        assert mock_mark.call_args.kwargs.get("report_blocked_mutations") is False
+
+    @pytest.mark.asyncio
+    async def test_move_emails_passes_allowlist_and_report_flag(self, classic_handler):
+        mock_move = AsyncMock(return_value=(["1"], []))
+        with patch(
+            "mcp_email_server.emails.classic.get_settings",
+            return_value=MagicMock(allowed_senders=["*@example.com"], report_blocked_mutations=True),
+        ):
+            with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
+                await classic_handler.move_emails(["1"], "INBOX", "Archive")
+        assert mock_move.call_args.kwargs.get("allowed_senders") == ["*@example.com"]
+        assert mock_move.call_args.kwargs.get("report_blocked_mutations") is True
+
+    @pytest.mark.asyncio
+    async def test_archive_emails_passes_allowlist_and_report_flag(self, classic_handler):
+        mock_move = AsyncMock(return_value=(["1"], []))
+        with patch(
+            "mcp_email_server.emails.classic.get_settings",
+            return_value=MagicMock(allowed_senders=["*@example.com"], report_blocked_mutations=True),
+        ):
+            with patch.object(classic_handler, "_find_archive_folder", AsyncMock(return_value="Archive")):
+                with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
+                    await classic_handler.archive_emails(["1"], "INBOX")
+        assert mock_move.call_args.kwargs.get("allowed_senders") == ["*@example.com"]
+        assert mock_move.call_args.kwargs.get("report_blocked_mutations") is True
 
 
 class TestEmailClientGetEmailBodyById:

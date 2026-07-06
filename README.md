@@ -63,28 +63,29 @@ You can also configure the email server using environment variables, which is pa
 
 #### Available Environment Variables
 
-| Variable                                      | Description                                            | Default       | Required |
-| --------------------------------------------- | ------------------------------------------------------ | ------------- | -------- |
-| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                     | `"default"`   | No       |
-| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                           | Email prefix  | No       |
-| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                          | -             | Yes      |
-| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                         | Same as email | No       |
-| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                         | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                       | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                       | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                        | `true`        | No       |
-| `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                   | `false`       | No       |
-| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed) | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for read-only mode              | -             | No       |
-| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                       | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                        | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                        | `false`       | No       |
-| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)      | `true`        | No       |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                             | `false`       | No       |
-| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                   | `true`        | No       |
-| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)       | -             | No       |
-| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all     | -             | No       |
-| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all  | -             | No       |
+| Variable                                      | Description                                                  | Default       | Required |
+| --------------------------------------------- | ------------------------------------------------------------ | ------------- | -------- |
+| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                           | `"default"`   | No       |
+| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                                 | Email prefix  | No       |
+| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                                | -             | Yes      |
+| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                               | Same as email | No       |
+| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                               | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                             | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                             | `993`         | No       |
+| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                              | `true`        | No       |
+| `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                         | `false`       | No       |
+| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed)       | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for read-only mode                    | -             | No       |
+| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                             | `465`         | No       |
+| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                              | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                              | `false`       | No       |
+| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)            | `true`        | No       |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                                   | `false`       | No       |
+| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                         | `true`        | No       |
+| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)             | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all           | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all        | -             | No       |
+| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | Report blocked mutations as failures (default: silent no-op) | `false`       | No       |
 
 ### Read-only IMAP mode
 
@@ -246,10 +247,16 @@ and `download_attachment` check the sender before reading a message, so a non-al
 attachments are never fetched or marked read, and it is reported as inaccessible — indistinguishable from
 a missing message. The `list_allowed_senders` tool appears only when an allowlist is configured.
 
-**Scope:** the allowlist protects read paths only (`list_emails_metadata`, `get_emails_content`,
-`download_attachment`). UID-based mutation tools (`delete_emails`, `mark_emails_as_read`, `move_emails`,
-`archive_emails`) are not yet filtered and can still act on any UID; enforcing the allowlist on those is
-planned as a follow-up.
+**Scope:** the allowlist protects every inbound path — read (`list_emails_metadata`, `get_emails_content`,
+`download_attachment`) and mutation (`delete_emails`, `mark_emails_as_read`, `move_emails`,
+`archive_emails`). A blocked sender's mail is never read, deleted, flagged, or moved.
+
+**Blocked mutations (`report_blocked_mutations`, default `false`):** when a mutation targets a blocked
+sender's message, it is never performed. By default the result is reported as a successful no-op —
+indistinguishable from acting on a non-existent message, so the allowlist does not reveal that a hidden
+message exists. Set `report_blocked_mutations = true` (or `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS=true`)
+to instead report blocked UIDs as failures (explicit, but reveals a blocked-but-real message differs from
+a missing one).
 
 **Note:** matching is against the message's `From` header — local filtering only, not sender
 authentication. A spoofed `From` will pass the allowlist, so this is not a substitute for provider-side
