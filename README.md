@@ -241,11 +241,12 @@ Or via environment variable (comma-separated):
 MCP_EMAIL_SERVER_ALLOWED_SENDERS="*@company.com,alice@example.com"
 ```
 
-When configured, filtering is applied in the read path: `list_emails_metadata` excludes non-allowed
-senders **before** pagination, so `total` and page sizes reflect only allowed mail; `get_emails_content`
-and `download_attachment` check the sender before reading a message, so a non-allowed message's body and
-attachments are never fetched or marked read, and it is reported as inaccessible — indistinguishable from
-a missing message. The `list_allowed_senders` tool appears only when an allowlist is configured.
+When configured, filtering is applied to inbound read and mutation paths: `list_emails_metadata` excludes
+non-allowed senders **before** pagination, so `total` and page sizes reflect only allowed mail;
+`get_emails_content` and `download_attachment` check the sender before reading a message, so a non-allowed
+message's body and attachments are never fetched or marked read, and it is reported as inaccessible —
+indistinguishable from a missing message. Mutation tools first check the sender and never delete, flag, or
+move blocked mail. The `list_allowed_senders` tool appears only when an allowlist is configured.
 
 **Scope:** the allowlist protects every inbound path — read (`list_emails_metadata`, `get_emails_content`,
 `download_attachment`) and mutation (`delete_emails`, `mark_emails_as_read`, `move_emails`,

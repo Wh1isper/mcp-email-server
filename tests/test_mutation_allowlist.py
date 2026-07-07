@@ -90,6 +90,34 @@ class TestDeleteEmailsAllowlist:
         assert _uid_op_targets(mock_imap, "store") == []  # no STORE issued
         mock_imap.expunge.assert_not_called()  # and crucially, no EXPUNGE
 
+    @pytest.mark.asyncio
+    async def test_sender_fetch_failure_is_not_reported_as_silent_success(self, email_client):
+        mock_imap = _make_mock_imap()
+
+        async def uid_side_effect(command, *args):
+            if command == "fetch":
+                return "NO", [b"FETCH failed"]
+            return "OK", []
+
+        mock_imap.uid = AsyncMock(side_effect=uid_side_effect)
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with pytest.raises(RuntimeError, match="FETCH From headers for UIDs 1,2 failed"):
+                await email_client.delete_emails(["1", "2"], allowed_senders=["*@allowed.com"])
+
+        assert _uid_op_targets(mock_imap, "store") == []
+        mock_imap.expunge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_expunge_failure_reports_delete_failure(self, email_client):
+        mock_imap = _make_mock_imap(expunge=AsyncMock(return_value=("NO", [b"EXPUNGE failed"])))
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            deleted, failed = await email_client.delete_emails(["1", "2"], allowed_senders=[])
+
+        assert deleted == []
+        assert failed == ["1", "2"]
+        assert _uid_op_targets(mock_imap, "store") == ["1", "2"]
+        mock_imap.expunge.assert_called_once()
+
 
 class TestMarkAsReadAllowlist:
     @pytest.mark.asyncio

@@ -268,6 +268,14 @@ def _raise_for_imap_error(response: Any, operation: str) -> None:
         raise RuntimeError(msg)
 
 
+def _raise_for_imap_command_failure(response: Any, operation: str) -> None:
+    """Raise only when an IMAP command reports an explicit failure status."""
+    if _imap_status(response) in {"NO", "BAD"}:
+        detail = _format_imap_response_detail(response)
+        msg = f"{operation} failed" + (f": {detail}" if detail else "")
+        raise RuntimeError(msg)
+
+
 def _html_to_text(html: str) -> str:
     """Convert an HTML email body to readable plain text."""
     soup = BeautifulSoup(html, "html.parser")
@@ -839,7 +847,9 @@ class EmailClient:
         for chunk in chunks:
             str_ids = [uid.decode() if isinstance(uid, bytes) else uid for uid in chunk]
             uid_list = ",".join(str_ids)
-            _, data = await imap.uid("fetch", uid_list, "BODY.PEEK[HEADER.FIELDS (FROM)]")
+            fetch_response = await imap.uid("fetch", uid_list, "BODY.PEEK[HEADER.FIELDS (FROM)]")
+            _raise_for_imap_command_failure(fetch_response, f"FETCH From headers for UIDs {uid_list}")
+            _, data = fetch_response
             for i, item in enumerate(data):
                 if not isinstance(item, bytes) or b"BODY[HEADER" not in item:
                     continue
@@ -1595,7 +1605,13 @@ class EmailClient:
                     failed_ids.append(email_id)
 
             if deleted_any:
-                await imap.expunge()
+                try:
+                    expunge_response = await imap.expunge()
+                    _raise_for_imap_error(expunge_response, "EXPUNGE deleted emails")
+                except Exception as e:
+                    logger.error(f"Failed to expunge deleted emails: {e}")
+                    failed_ids.extend(deleted_ids)
+                    deleted_ids = []
         finally:
             try:
                 await imap.logout()
