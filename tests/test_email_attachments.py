@@ -882,6 +882,37 @@ class TestExtractAttachments:
 
         assert result == [("report.pdf", "application/pdf", b"%PDF-1.4 fake pdf bytes")]
 
+    @pytest.mark.asyncio
+    async def test_extract_blocked_sender_returns_empty_and_skips_fetch(self, email_client):
+        """A blocked sender's attachments are never fetched; the result is empty (like no attachments)."""
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(
+                email_client, "_batch_fetch_senders", AsyncMock(return_value={"1": "evil@blocked.com"})
+            ) as mock_senders,
+            patch.object(email_client, "_fetch_email_with_formats", AsyncMock()) as mock_fetch,
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            result = await email_client.extract_attachments("1", allowed_senders=["*@allowed.com"])
+
+        assert result == []
+        mock_senders.assert_awaited_once()
+        mock_fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_extract_allowed_sender_is_fetched(self, email_client):
+        """An allowed sender's attachments are fetched and returned."""
+        raw_email = _build_email_with_explicit_attachment()
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(email_client, "_batch_fetch_senders", AsyncMock(return_value={"1": "boss@allowed.com"})),
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch_returning(raw_email)),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            result = await email_client.extract_attachments("1", allowed_senders=["*@allowed.com"])
+
+        assert result == [("report.pdf", "application/pdf", b"%PDF-1.4 fake pdf bytes")]
+
 
 class TestComposeMessageExtraParts:
     """compose_message re-attaches prebuilt MIME parts (used when forwarding)."""

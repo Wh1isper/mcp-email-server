@@ -8,8 +8,10 @@ import ssl
 import time
 import unicodedata
 from datetime import datetime, timezone
+from email import encoders
 from email.header import Header
 from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
@@ -1231,14 +1233,28 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
-    async def extract_attachments(self, email_id: str, mailbox: str = "INBOX") -> list[tuple[str, str, bytes]]:
-        """Fetch an email and return its attachments as ``(filename, mime_type, data)`` tuples."""
+    async def extract_attachments(
+        self, email_id: str, mailbox: str = "INBOX", allowed_senders: list[str] | None = None
+    ) -> list[tuple[str, str, bytes]]:
+        """Fetch an email and return its attachments as ``(filename, mime_type, data)`` tuples.
+
+        Honors the sender allowlist: when ``allowed_senders`` is set, a message from a non-allowed
+        sender is never fetched and yields ``[]`` — indistinguishable from an email that has no
+        attachments or a missing/inaccessible one.
+        """
         imap = await self._connect_imap()
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            # Sender allowlist: check the From header BEFORE fetching the body, so a blocked
+            # message is never read (mirrors get_email_body_by_id).
+            if allowed_senders:
+                uid_senders = await self._batch_fetch_senders(imap, [email_id])
+                if not sender_allowed(uid_senders.get(email_id, ""), allowed_senders):
+                    return []
 
             data = await self._fetch_email_with_formats(imap, email_id)
             if not data:
@@ -1302,7 +1318,7 @@ class EmailClient:
         body: str,
         html: bool,
         attachments: list[str],
-        extra_parts: list[MIMEApplication] | None = None,
+        extra_parts: list[MIMEBase] | None = None,
     ) -> MIMEMultipart:
         """Create multipart message with file-path attachments and/or prebuilt MIME parts."""
         msg = MIMEMultipart()
@@ -1337,7 +1353,7 @@ class EmailClient:
         references: str | None = None,
         include_bcc_header: bool = False,
         reply_to: str | None = None,
-        extra_parts: list[MIMEApplication] | None = None,
+        extra_parts: list[MIMEBase] | None = None,
     ) -> MIMEText | MIMEMultipart:
         """Compose an email message without sending it.
 
@@ -1414,7 +1430,7 @@ class EmailClient:
         in_reply_to: str | None = None,
         references: str | None = None,
         reply_to: str | None = None,
-        extra_parts: list[MIMEApplication] | None = None,
+        extra_parts: list[MIMEBase] | None = None,
     ) -> MIMEText | MIMEMultipart:
         msg = self.compose_message(
             recipients,
@@ -1822,7 +1838,8 @@ def _format_forwarded_text(original: dict[str, Any]) -> str:
         f"From: {original.get('from', '')}\n"
         f"Date: {date_str}\n"
         f"Subject: {original.get('subject', '')}\n"
-        f"To: {to_str}\n"
+        # Neutral label: the parsed "to" list may include Cc recipients, so "To:" would mislead.
+        f"Recipients: {to_str}\n"
     )
     return f"{header}\n{original.get('body', '')}"
 
@@ -1986,7 +2003,11 @@ class ClassicEmailHandler(EmailHandler):
         if self.outgoing_client is None:
             raise RuntimeError(f"SMTP is not configured for account '{self.email_settings.account_name}'")
 
-        original = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
+        # Enforce the sender allowlist on both reads: a blocked original is indistinguishable from
+        # a missing one (get_email_body_by_id returns None) and never reaches send_email below.
+        allowed_senders = get_settings().allowed_senders
+
+        original = await self.incoming_client.get_email_body_by_id(email_id, mailbox, allowed_senders=allowed_senders)
         if original is None:
             raise ValueError(f"Email {email_id} not found in {mailbox}")
 
@@ -1997,9 +2018,17 @@ class ClassicEmailHandler(EmailHandler):
         full_body = f"{body}\n\n{forwarded}" if body else forwarded
 
         extra_parts = []
-        for filename, mime_type, payload in await self.incoming_client.extract_attachments(email_id, mailbox):
-            subtype = mime_type.split("/", 1)[1] if "/" in mime_type else "octet-stream"
-            part = MIMEApplication(payload, _subtype=subtype)
+        for filename, mime_type, payload in await self.incoming_client.extract_attachments(
+            email_id, mailbox, allowed_senders=allowed_senders
+        ):
+            # Preserve the original main type: MIMEApplication would force every part to
+            # application/*, turning image/png into application/png, etc.
+            maintype, _, subtype = mime_type.partition("/")
+            if not subtype:
+                maintype, subtype = "application", "octet-stream"
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(payload)
+            encoders.encode_base64(part)
             part.add_header("Content-Disposition", "attachment", filename=filename)
             extra_parts.append(part)
 

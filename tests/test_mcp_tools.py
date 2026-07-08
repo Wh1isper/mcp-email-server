@@ -451,6 +451,7 @@ class TestMcpTools:
 
         assert "send_email" not in tool_names
         assert "save_to_mailbox" in tool_names
+        assert "forward_email" not in tool_names
         assert "list_emails_metadata" in tool_names
         assert "get_emails_content" in tool_names
 
@@ -484,6 +485,7 @@ class TestMcpTools:
 
         assert "send_email" in tool_names
         assert "save_to_mailbox" in tool_names
+        assert "forward_email" in tool_names
 
     @pytest.mark.asyncio
     async def test_send_email(self):

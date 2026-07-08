@@ -339,8 +339,10 @@ async def send_email(
 
 @mcp.tool(
     description="Forward an email to new recipients. The original message is appended below any "
-    "optional message you add, and the original attachments are re-attached. Use "
-    "list_emails_metadata first to get the email_id.",
+    "optional message you add, and the original attachments are re-attached. The forwarded "
+    "content is the original's parsed plain text (HTML formatting is lost, and a very long "
+    "body may be truncated by the body parsing limit). Use list_emails_metadata first to get "
+    "the email_id.",
     visible_if=_has_send_capable_account,
 )
 async def forward_email(
