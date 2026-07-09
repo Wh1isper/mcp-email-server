@@ -104,13 +104,16 @@ async def list_available_accounts() -> list[AccountAttributes]:
 @mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()
-    settings.add_email(email)
     try:
+        settings.add_email(email)
         settings.store()
     except Exception:
-        # settings.add_email() already mutated the cached instance above; if store()
-        # fails (e.g. a locked keychain in explicit keyring mode), discard the cache
-        # so later tool calls don't see a phantom account that isn't actually on disk.
+        # add_email() reassigns settings.emails, and pydantic's validate_assignment
+        # applies the new value BEFORE running the check_unique_account_names
+        # after-validator — so even a rejected duplicate-name add leaves the cached
+        # instance mutated. store() can also mutate-then-fail (e.g. a locked
+        # keychain in explicit keyring mode). Either way, discard the cache so later
+        # tool calls don't see a phantom/corrupted account that isn't actually on disk.
         clear_settings_cache()
         raise
     return f"Successfully added email account '{email.account_name}'"

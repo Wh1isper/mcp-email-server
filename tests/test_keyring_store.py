@@ -281,6 +281,40 @@ def test_reset_performs_zero_keyring_calls_in_plaintext_mode(tmp_path, monkeypat
     assert fake_keyring.calls == []
 
 
+def test_reset_mode_gate_falls_back_to_raw_toml_key_when_env_unset(tmp_path, monkeypatch, fake_keyring):
+    """With no env override, the reset gate must read credential_storage from the
+    TOML file itself — the real-world default path (no test here previously
+    exercised it, since every other reset test sets the env var explicitly).
+    """
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", cfg)
+
+    raw = _raw_email_toml("acct1", "cleartext")
+    raw["credential_storage"] = "plaintext"
+    cfg.write_text(tomli_w.dumps(raw))
+
+    delete_settings()
+    assert not cfg.exists()
+    assert fake_keyring.calls == []
+
+
+def test_reset_mode_gate_attempts_cleanup_when_toml_mode_is_not_plaintext(tmp_path, monkeypatch, fake_keyring):
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", cfg)
+
+    fake_keyring.set_password(SERVICE, "acct1:incoming", "secret1")
+    raw = _raw_email_toml("acct1", SENTINEL)
+    raw["credential_storage"] = "keyring"
+    cfg.write_text(tomli_w.dumps(raw))
+
+    delete_settings()
+    assert not cfg.exists()
+    assert (SERVICE, "acct1:incoming") not in fake_keyring._store
+    assert any(call[0] == "delete" for call in fake_keyring.calls)
+
+
 # 8. Sentinel value rejected everywhere
 def test_sentinel_value_rejected_at_creation_entry_points():
     with pytest.raises(ValueError, match="reserved"):
