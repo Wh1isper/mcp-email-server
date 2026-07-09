@@ -397,7 +397,18 @@ class Settings(BaseSettings):
     def store(self) -> None:
         toml_file = self.model_config["toml_file"]
         toml_file.parent.mkdir(parents=True, exist_ok=True)
-        toml_file.write_text(self._to_toml())
+        content = self._to_toml()
+        if os.name == "posix":
+            # Create with owner-only permissions from the start (contains cleartext
+            # IMAP/SMTP passwords), so there's no window where the file is world-readable.
+            # os.O_CREAT only applies the mode on creation, so chmod explicitly to also
+            # cover the case where the file already existed with looser permissions.
+            fd = os.open(toml_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            toml_file.chmod(0o600)
+        else:
+            toml_file.write_text(content)
         logger.info(f"Settings stored in {toml_file}")
 
 

@@ -1,3 +1,6 @@
+import stat
+import sys
+
 import pytest
 from pydantic import SecretStr, ValidationError
 
@@ -261,6 +264,44 @@ def test_report_blocked_mutations_from_toml(tmp_path, monkeypatch):
     config_module._settings = None
     try:
         assert config_module.get_settings(reload=True).report_blocked_mutations is True
+    finally:
+        config_module._settings = None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+def test_store_writes_owner_only_permissions(tmp_path, monkeypatch):
+    """The stored config contains cleartext credentials, so it must not be world/group readable."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        settings = config_module.get_settings(reload=True)
+        settings.store()
+        mode = stat.S_IMODE(cfg.stat().st_mode)
+        assert mode == 0o600
+    finally:
+        config_module._settings = None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+def test_store_tightens_preexisting_permissions(tmp_path, monkeypatch):
+    """A pre-existing world-readable file must be tightened, not left as-is."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("")
+    cfg.chmod(0o644)
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        settings = config_module.get_settings(reload=True)
+        settings.store()
+        mode = stat.S_IMODE(cfg.stat().st_mode)
+        assert mode == 0o600
     finally:
         config_module._settings = None
 
