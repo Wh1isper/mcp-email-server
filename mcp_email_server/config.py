@@ -3,14 +3,15 @@ from __future__ import annotations
 import datetime
 import fnmatch
 import os
+import sys
 from collections.abc import Iterable
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import tomli_w
-from pydantic import BaseModel, Field, SecretStr, field_serializer, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr, SerializationInfo, field_serializer, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -18,9 +19,21 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from mcp_email_server import keyring_store
 from mcp_email_server.log import logger
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 DEFAULT_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
+_VALID_CREDENTIAL_STORAGE_MODES = ("auto", "keyring", "plaintext")
+
+# Set by Settings.load_for_migration() around construction so __init__ can skip
+# env-composited state (override pickup, env-account injection, allowlist/bool env
+# reads) and always attempt keyring resolution regardless of credential_storage.
+_MIGRATION_LOAD = False
 
 
 def _parse_bool_env(value: str | None, default: bool = False) -> bool:
@@ -66,6 +79,22 @@ def _normalize_pattern_list(raw: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(p.strip().lower() for p in raw if p.strip()))
 
 
+def _reject_sentinel_secret(secret: SecretStr, label: str) -> None:
+    """Reject the reserved keyring sentinel as a literal secret value.
+
+    Cannot be enforced with a field validator on EmailServer/ProviderSettings:
+    those run during the TOML load itself, before any Settings-level code, and
+    would reject every legitimately keyring-stored config. Enforced instead at
+    creation entry points (EmailSettings.init, Settings.add_email/add_provider)
+    and as a defense-in-depth pre-write check in Settings.store().
+    """
+    if secret.get_secret_value() == keyring_store.SENTINEL:
+        raise ValueError(
+            f"{label} cannot be the reserved value {keyring_store.SENTINEL!r} "
+            "(used internally to mark keyring-stored credentials)"
+        )
+
+
 CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAULT_CONFIG_PATH)).expanduser().resolve()
 
 
@@ -79,7 +108,9 @@ class EmailServer(BaseModel):
     verify_ssl: bool = True  # Set to False for self-signed certificates (e.g., ProtonMail Bridge)
 
     @field_serializer("password")
-    def serialize_password(self, v: SecretStr) -> str:
+    def serialize_password(self, v: SecretStr, info: SerializationInfo) -> str:
+        if info.context and info.context.get("secrets") == "keyring":
+            return keyring_store.SENTINEL
         return v.get_secret_value()
 
     def masked(self) -> EmailServer:
@@ -152,6 +183,12 @@ class EmailSettings(AccountAttributes):
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
     ) -> EmailSettings:
+        for candidate in (password, imap_password, smtp_password):
+            if candidate == keyring_store.SENTINEL:
+                raise ValueError(
+                    f"Password value {keyring_store.SENTINEL!r} is reserved for keyring-stored "
+                    "credentials and cannot be used as an account password"
+                )
         return cls(
             account_name=account_name,
             full_name=full_name,
@@ -266,7 +303,9 @@ class ProviderSettings(AccountAttributes):
     api_key: SecretStr
 
     @field_serializer("api_key")
-    def serialize_api_key(self, v: SecretStr) -> str:
+    def serialize_api_key(self, v: SecretStr, info: SerializationInfo) -> str:
+        if info.context and info.context.get("secrets") == "keyring":
+            return keyring_store.SENTINEL
         return v.get_secret_value()
 
     def masked(self) -> AccountAttributes:
@@ -281,8 +320,23 @@ class Settings(BaseSettings):
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
     report_blocked_mutations: bool = False
+    credential_storage: Literal["auto", "keyring", "plaintext"] = "auto"
+
+    # Env-var override for credential_storage. Kept off the persisted field so a
+    # later store() never bakes a temporary override into the TOML (unlike the
+    # bool overrides below, which intentionally do persist).
+    _credential_storage_override: str | None = PrivateAttr(default=None)
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
+
+    @property
+    def effective_credential_storage(self) -> str:
+        """The mode that actually governs storage decisions: env override, else the field.
+
+        Returns the raw three-value literal — never probes the keyring. Only
+        store() maps "auto" to a concrete backend via keyring_store.keyring_usable().
+        """
+        return self._credential_storage_override or self.credential_storage
 
     def _apply_bool_env_override(self, attr: str, env_var: str) -> None:
         value = os.getenv(env_var)
@@ -290,56 +344,147 @@ class Settings(BaseSettings):
             setattr(self, attr, _parse_bool_env(value, False))
             logger.info(f"Set {attr}={getattr(self, attr)} from environment variable")
 
+    def _pickup_credential_storage_override(self) -> None:
+        override = os.getenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE")
+        if override is None:
+            return
+        if override not in _VALID_CREDENTIAL_STORAGE_MODES:
+            raise ValueError(
+                f"Invalid MCP_EMAIL_SERVER_CREDENTIAL_STORAGE={override!r}; "
+                f"must be one of {', '.join(_VALID_CREDENTIAL_STORAGE_MODES)}"
+            )
+        self._credential_storage_override = override
+
     def __init__(self, **data: Any) -> None:
         """Initialize Settings with support for environment variables."""
         super().__init__(**data)
 
-        self._apply_bool_env_override("enable_attachment_download", "MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD")
-        self._apply_bool_env_override("report_blocked_mutations", "MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS")
+        migration_load = _MIGRATION_LOAD
 
-        # Normalise allowed_recipients from TOML (bare, lowercased, de-duplicated)
+        # TOML normalisation is unconditional (safe during migration loads too): it
+        # only reshapes values already in the file, independent of env state.
         if self.allowed_recipients:
             self.allowed_recipients = _normalize_address_list(self.allowed_recipients)
+        if self.allowed_senders:
+            self.allowed_senders = _normalize_pattern_list(self.allowed_senders)
+
+        if not migration_load:
+            self._apply_env_overrides()
+
+        # Sentinel resolution always runs (including migration loads); only the
+        # plaintext-mode hard error is suppressed during migration (§2/§5/§7).
+        self._resolve_keyring_sentinels(migration_load=migration_load)
+
+    def _apply_env_overrides(self) -> None:
+        """Env-composited state, skipped entirely during migration loads (§7) so
+        migration transforms the stored config, not the env-composited view.
+        """
+        self._pickup_credential_storage_override()
+        self._apply_bool_env_override("enable_attachment_download", "MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD")
+        self._apply_bool_env_override("report_blocked_mutations", "MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS")
 
         # Environment variable overrides TOML (comma-separated); an empty string clears the allowlist.
         env_allowed = os.getenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS")
         if env_allowed is not None:
             self.allowed_recipients = _normalize_address_list(env_allowed.split(","))
 
-        # Normalise allowed_senders from TOML (lowercased, de-duplicated; globs preserved)
-        if self.allowed_senders:
-            self.allowed_senders = _normalize_pattern_list(self.allowed_senders)
-
-        # Environment variable overrides TOML (comma-separated); an empty string clears the allowlist.
         env_senders = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
         if env_senders is not None:
             self.allowed_senders = _normalize_pattern_list(env_senders.split(","))
 
-        # Check for email configuration from environment variables
-        env_email = EmailSettings.from_env()
-        if env_email:
-            # Check if this account already exists (from TOML)
-            existing_account = None
-            for i, email in enumerate(self.emails):
-                if email.account_name == env_email.account_name:
-                    existing_account = i
-                    break
+        self._inject_env_account()
 
-            if existing_account is not None:
-                # Replace existing account with env configuration
-                self.emails[existing_account] = env_email
-                logger.info(f"Overriding email account '{env_email.account_name}' with environment variables")
-            else:
-                # Add new account from env
-                self.emails.insert(0, env_email)
-                logger.info(f"Added email account '{env_email.account_name}' from environment variables")
+    def _inject_env_account(self) -> None:
+        env_email = EmailSettings.from_env()
+        if not env_email:
+            return
+
+        existing_account = None
+        for i, email in enumerate(self.emails):
+            if email.account_name == env_email.account_name:
+                existing_account = i
+                break
+
+        if existing_account is not None:
+            self.emails[existing_account] = env_email
+            logger.info(f"Overriding email account '{env_email.account_name}' with environment variables")
+        else:
+            self.emails.insert(0, env_email)
+            logger.info(f"Added email account '{env_email.account_name}' from environment variables")
+
+    def _pending_keyring_sentinels(self) -> list[tuple[str, str, EmailServer | ProviderSettings]]:
+        pending: list[tuple[str, str, EmailServer | ProviderSettings]] = []
+        for email in self.emails:
+            if email.incoming.password.get_secret_value() == keyring_store.SENTINEL:
+                pending.append((email.account_name, "incoming", email.incoming))
+            if email.outgoing and email.outgoing.password.get_secret_value() == keyring_store.SENTINEL:
+                pending.append((email.account_name, "outgoing", email.outgoing))
+        for provider in self.providers:
+            if provider.api_key.get_secret_value() == keyring_store.SENTINEL:
+                pending.append((provider.account_name, "api_key", provider))
+        return pending
+
+    def _resolve_keyring_sentinels(self, *, migration_load: bool) -> None:
+        pending = self._pending_keyring_sentinels()
+        if not pending:
+            return
+
+        if not migration_load and self.effective_credential_storage == "plaintext":
+            names = ", ".join(sorted({name for name, _role, _obj in pending}))
+            raise ValueError(
+                f"Account(s) {names} reference keyring-stored credentials but credential_storage "
+                "is 'plaintext'. Run `mcp-email-server migrate-credentials --to plaintext` to "
+                "convert them, or unset MCP_EMAIL_SERVER_CREDENTIAL_STORAGE / the credential_storage "
+                "setting."
+            )
+
+        for account_name, role, obj in pending:
+            self._resolve_one_sentinel(account_name, role, obj)
+
+    @staticmethod
+    def _resolve_one_sentinel(account_name: str, role: str, obj: EmailServer | ProviderSettings) -> None:
+        try:
+            value = keyring_store.get_secret(account_name, role)
+        except Exception:
+            value = None
+        if value is None:
+            raise ValueError(
+                f"Could not resolve credential for account '{account_name}' ({role}) from the OS "
+                f"keyring (service '{keyring_store.SERVICE}', entry '{account_name}:{role}'). Re-add "
+                "the account, restore access to your OS keyring, or check for a Keychain access "
+                "prompt/ACL denial if the server binary changed (e.g. uvx re-resolution)."
+            )
+        secret = SecretStr(value)
+        if role == "api_key":
+            obj.api_key = secret
+        else:
+            obj.password = secret
+
+    @classmethod
+    def load_for_migration(cls) -> Settings:
+        """Load ignoring env-composited state, so migration transforms the stored config only.
+
+        Skips the credential_storage env override, env-account injection, and the
+        bool/allowlist env reads; suppresses the plaintext-sentinel load error so
+        sentinels always resolve via keyring regardless of the file's mode.
+        """
+        global _MIGRATION_LOAD
+        _MIGRATION_LOAD = True
+        try:
+            return cls()
+        finally:
+            _MIGRATION_LOAD = False
 
     def add_email(self, email: EmailSettings) -> None:
         """Use re-assigned for validation to work."""
+        _reject_sentinel_secret(email.incoming.password, "incoming password")
+        if email.outgoing:
+            _reject_sentinel_secret(email.outgoing.password, "outgoing password")
         self.emails = [email, *self.emails]
 
     def add_provider(self, provider: ProviderSettings) -> None:
         """Use re-assigned for validation to work."""
+        _reject_sentinel_secret(provider.api_key, "api_key")
         self.providers = [provider, *self.providers]
 
     def delete_email(self, account_name: str) -> None:
@@ -390,26 +535,88 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (TomlConfigSettingsSource(settings_cls),)
 
-    def _to_toml(self) -> str:
-        data = self.model_dump(exclude_none=True)
+    def _to_toml(self, *, use_keyring: bool = False) -> str:
+        context = {"secrets": "keyring"} if use_keyring else None
+        data = self.model_dump(exclude_none=True, context=context)
         return tomli_w.dumps(data)
 
-    def store(self) -> None:
-        toml_file = self.model_config["toml_file"]
-        toml_file.parent.mkdir(parents=True, exist_ok=True)
-        content = self._to_toml()
+    def _reject_cleartext_sentinels(self) -> None:
+        """Defense-in-depth: catches sentinel values that bypassed add_email/add_provider
+        (e.g. direct ``settings.emails.append(...)``) before they'd be written as a literal
+        cleartext password.
+        """
+        for email in self.emails:
+            _reject_sentinel_secret(email.incoming.password, f"'{email.account_name}' incoming password")
+            if email.outgoing:
+                _reject_sentinel_secret(email.outgoing.password, f"'{email.account_name}' outgoing password")
+        for provider in self.providers:
+            _reject_sentinel_secret(provider.api_key, f"'{provider.account_name}' api_key")
+
+    def _store_secrets_to_keyring(self) -> list[tuple[str, str, str]]:
+        """Push every secret to the keyring; returns (account_name, role, error) for failures."""
+        failures: list[tuple[str, str, str]] = []
+        for email in self.emails:
+            for role, server in (("incoming", email.incoming), ("outgoing", email.outgoing)):
+                if server is None:
+                    continue
+                try:
+                    keyring_store.set_secret(email.account_name, role, server.password.get_secret_value())
+                except Exception as e:
+                    failures.append((email.account_name, role, str(e)))
+        for provider in self.providers:
+            try:
+                keyring_store.set_secret(provider.account_name, "api_key", provider.api_key.get_secret_value())
+            except Exception as e:
+                failures.append((provider.account_name, "api_key", str(e)))
+        return failures
+
+    @staticmethod
+    def _write_toml(toml_file: Path, content: str) -> None:
         if os.name == "posix":
             # Create with owner-only permissions from the start (contains cleartext
-            # IMAP/SMTP passwords), so there's no window where the file is world-readable.
-            # os.O_CREAT only applies the mode on creation, so chmod explicitly to also
-            # cover the case where the file already existed with looser permissions.
+            # IMAP/SMTP passwords in plaintext mode), so there's no window where the
+            # file is world-readable. os.O_CREAT only applies the mode on creation, so
+            # chmod explicitly to also cover the case where the file already existed
+            # with looser permissions.
             fd = os.open(toml_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 f.write(content)
             toml_file.chmod(0o600)
         else:
             toml_file.write_text(content)
-        logger.info(f"Settings stored in {toml_file}")
+
+    def store(self) -> None:
+        toml_file = self.model_config["toml_file"]
+        toml_file.parent.mkdir(parents=True, exist_ok=True)
+
+        effective = self.effective_credential_storage  # raw literal; never probes
+        auto_probe_usable = effective == "auto" and keyring_store.keyring_usable()
+        use_keyring = effective == "keyring" or auto_probe_usable
+
+        if use_keyring:
+            failures = self._store_secrets_to_keyring()
+            if failures:
+                if effective == "keyring":
+                    detail = "; ".join(f"{name}:{role} ({err})" for name, role, err in failures)
+                    raise ValueError(f"Failed to store credential(s) in the OS keyring: {detail}")
+                logger.warning(
+                    f"Keyring store failed for {len(failures)} credential(s) in auto mode; "
+                    "falling back to plaintext for this write"
+                )
+                use_keyring = False
+        elif effective == "auto":
+            logger.warning(
+                "No usable OS keyring backend detected; storing credentials in plaintext. Set "
+                "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE=keyring to require the keyring, or 'plaintext' "
+                "to silence this warning."
+            )
+
+        if not use_keyring:
+            self._reject_cleartext_sentinels()
+
+        content = self._to_toml(use_keyring=use_keyring)
+        self._write_toml(toml_file, content)
+        logger.info(f"Settings stored in {toml_file} ({'keyring' if use_keyring else 'plaintext'})")
 
 
 _settings = None
@@ -423,15 +630,74 @@ def get_settings(reload: bool = False) -> Settings:
     return _settings
 
 
+def clear_settings_cache() -> None:
+    """Discard the cached Settings instance.
+
+    Used after a failed store() to stop a divergent in-memory instance (one that
+    was mutated before the store raised) from being served by a later
+    get_settings() call. get_settings(reload=True) alone is NOT equivalent: if the
+    reload itself raises (e.g. a locked keychain plus a sentinel-bearing file — the
+    same failure that made store() raise), get_settings keeps the old divergent
+    instance rather than discarding it.
+    """
+    global _settings
+    _settings = None
+
+
 def store_settings(settings: Settings | None = None) -> None:
     if not settings:
         settings = get_settings()
     settings.store()
 
 
+def _reset_cleanup_mode(raw: dict[str, Any]) -> str:
+    override = os.getenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE")
+    if override is not None:
+        if override in _VALID_CREDENTIAL_STORAGE_MODES:
+            return override
+        logger.warning(
+            f"Invalid MCP_EMAIL_SERVER_CREDENTIAL_STORAGE={override!r} while cleaning up keyring "
+            "entries during reset; proceeding as if it were unset"
+        )
+    toml_mode = raw.get("credential_storage", "auto")
+    return toml_mode if toml_mode in _VALID_CREDENTIAL_STORAGE_MODES else "auto"
+
+
+def _cleanup_keyring_entries_for_reset() -> None:
+    """Best-effort keyring cleanup for delete_settings(); must never raise.
+
+    Deliberately does NOT construct Settings(): that would hard-fail on sentinel
+    resolution exactly when the user's keyring is broken (the scenario `reset` is
+    the escape hatch for) and would trigger unwanted side effects (env-account
+    injection, env overrides). Parses the raw TOML instead.
+    """
+    try:
+        raw = tomllib.loads(CONFIG_PATH.read_text())
+        if _reset_cleanup_mode(raw) == "plaintext":
+            return
+        for email in raw.get("emails", []):
+            name = email.get("account_name")
+            if not name:
+                continue
+            roles = ["incoming"]
+            if email.get("outgoing"):
+                roles.append("outgoing")
+            keyring_store.delete_account_credentials(name, roles)
+        for provider in raw.get("providers", []):
+            name = provider.get("account_name")
+            if name:
+                keyring_store.delete_account_credentials(name, ["api_key"])
+    except Exception as e:
+        logger.warning(
+            f"Could not clean up keyring entries for {CONFIG_PATH}: {e}; some entries may remain "
+            f"under service '{keyring_store.SERVICE}'"
+        )
+
+
 def delete_settings() -> None:
     if not CONFIG_PATH.exists():
         logger.info(f"Settings file {CONFIG_PATH} does not exist")
         return
+    _cleanup_keyring_entries_for_reset()
     CONFIG_PATH.unlink()
     logger.info(f"Deleted settings file {CONFIG_PATH}")

@@ -10,6 +10,7 @@ from mcp_email_server.config import (
     AccountAttributes,
     EmailSettings,
     ProviderSettings,
+    clear_settings_cache,
     get_settings,
     normalize_address,
 )
@@ -104,7 +105,14 @@ async def list_available_accounts() -> list[AccountAttributes]:
 async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()
     settings.add_email(email)
-    settings.store()
+    try:
+        settings.store()
+    except Exception:
+        # settings.add_email() already mutated the cached instance above; if store()
+        # fails (e.g. a locked keychain in explicit keyring mode), discard the cache
+        # so later tool calls don't see a phantom account that isn't actually on disk.
+        clear_settings_cache()
+        raise
     return f"Successfully added email account '{email.account_name}'"
 
 

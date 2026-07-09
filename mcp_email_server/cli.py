@@ -1,12 +1,20 @@
+import enum
 import os
 
 import typer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from mcp_email_server.app import mcp
-from mcp_email_server.config import delete_settings
+from mcp_email_server.config import Settings, delete_settings
+from mcp_email_server.keyring_store import delete_account_credentials
 
 app = typer.Typer()
+
+
+class CredentialStorageTarget(str, enum.Enum):
+    keyring = "keyring"
+    plaintext = "plaintext"
+
 
 LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
 LOOPBACK_ALLOWED_ORIGINS = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
@@ -147,6 +155,59 @@ def ui():
 def reset():
     delete_settings()
     typer.echo("✅ Config reset")
+
+
+@app.command(name="migrate-credentials")
+def migrate_credentials(
+    to: CredentialStorageTarget = typer.Option(  # noqa: B008 (standard typer idiom)
+        CredentialStorageTarget.keyring, "--to", help="Target credential storage mode."
+    ),
+) -> None:
+    """Move all stored credentials to the OS keyring or to the plaintext config file.
+
+    Loads the config bypassing env-composited state (env-var accounts, allowlist/bool
+    overrides), so migration transforms the stored config, not the env-overridden view.
+    """
+    target = to.value
+
+    env_override = os.environ.get("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE")
+    if env_override is not None and env_override != target:
+        typer.echo(
+            f"Warning: MCP_EMAIL_SERVER_CREDENTIAL_STORAGE={env_override!r} is set and differs "
+            f"from --to {target!r}. This migration will still write '{target}', but future runs "
+            "will keep obeying the environment variable until it's unset.",
+            err=True,
+        )
+
+    try:
+        settings = Settings.load_for_migration()
+    except Exception as e:
+        typer.echo(f"Error: could not load the current configuration: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    settings.credential_storage = target
+    settings._credential_storage_override = target
+
+    try:
+        settings.store()
+    except Exception as e:
+        typer.echo(f"Error: migration to '{target}' failed: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if target == "plaintext":
+        # Live secrets would otherwise sit in the keyring forever after a permanent
+        # migration away from it; this is the one sanctioned exception to "plaintext
+        # mode never touches the keyring" since it's explicit and user-invoked.
+        for email in settings.emails:
+            roles = ["incoming"]
+            if email.outgoing:
+                roles.append("outgoing")
+            delete_account_credentials(email.account_name, roles)
+        for provider in settings.providers:
+            delete_account_credentials(provider.account_name, ["api_key"])
+
+    total = len(settings.emails) + len(settings.providers)
+    typer.echo(f"✅ Migrated {total} account(s) to '{target}' storage")
 
 
 if __name__ == "__main__":

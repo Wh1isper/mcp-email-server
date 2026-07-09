@@ -269,19 +269,39 @@ def test_report_blocked_mutations_from_toml(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
-def test_store_writes_owner_only_permissions(tmp_path, monkeypatch):
-    """The stored config contains cleartext credentials, so it must not be world/group readable."""
+@pytest.mark.parametrize("storage_mode", ["plaintext", "keyring"])
+def test_store_writes_owner_only_permissions(tmp_path, monkeypatch, request, storage_mode):
+    """The stored config must not be world/group readable, whether it holds cleartext or sentinels."""
     import mcp_email_server.config as config_module
-    from mcp_email_server.config import Settings
+    from mcp_email_server.config import EmailSettings, Settings
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", storage_mode)
+    if storage_mode == "keyring":
+        # The keyring branch needs a real backend, and an empty Settings has no
+        # secrets to push to it — add an account so a sentinel is actually written.
+        request.getfixturevalue("fake_keyring")
 
     cfg = tmp_path / "config.toml"
     monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
     config_module._settings = None
     try:
         settings = config_module.get_settings(reload=True)
+        if storage_mode == "keyring":
+            settings.add_email(
+                EmailSettings.init(
+                    account_name="acct1",
+                    full_name="Test",
+                    email_address="a@example.com",
+                    user_name="a",
+                    password="hunter2",
+                    imap_host="imap.example.com",
+                )
+            )
         settings.store()
         mode = stat.S_IMODE(cfg.stat().st_mode)
         assert mode == 0o600
+        if storage_mode == "keyring":
+            assert "__KEYRING__" in cfg.read_text()
     finally:
         config_module._settings = None
 

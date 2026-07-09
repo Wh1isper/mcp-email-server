@@ -23,11 +23,13 @@ dependencies = [
     "beautifulsoup4>=4.14.3",
     "gradio>=6.0.1",
     "jinja2>=3.1.5",
+    "keyring>=25.0",
     "loguru>=0.7.3",
     "mcp[cli]>=1.23.0,<2",
     "pydantic>=2.11.0",
     "pydantic-settings[toml]>=2.11.0",
     "tomli-w>=1.2.0",
+    "tomli>=2.0.1; python_version < '3.11'",
     "typer>=0.15.1",
 ]
 

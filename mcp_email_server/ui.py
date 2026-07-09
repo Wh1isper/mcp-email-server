@@ -1,6 +1,7 @@
 import gradio as gr
 
-from mcp_email_server.config import EmailSettings, get_settings, store_settings
+from mcp_email_server.config import EmailSettings, clear_settings_cache, get_settings, store_settings
+from mcp_email_server.keyring_store import delete_account_credentials
 from mcp_email_server.tools.installer import install_claude_desktop, is_installed, need_update, uninstall_claude_desktop
 
 
@@ -11,13 +12,26 @@ def create_ui():  # noqa: C901
 
         # Function to get current accounts
         def get_current_accounts():
-            settings = get_settings(reload=True)
+            try:
+                settings = get_settings(reload=True)
+            except Exception:
+                return []
             email_accounts = [email.account_name for email in settings.emails]
             return email_accounts
 
         # Function to update account list display
         def update_account_list():
-            settings = get_settings(reload=True)
+            try:
+                settings = get_settings(reload=True)
+            except Exception as e:
+                # A sentinel-bearing config with a broken/locked keyring (or a
+                # lingering plaintext override) would otherwise crash the UI at
+                # exactly the moment a user reaches for it to fix their accounts.
+                return (
+                    f"## Error loading accounts\n\n{e!s}",
+                    gr.update(choices=[], value=None),
+                    gr.update(visible=False),
+                )
             email_accounts = [email.account_name for email in settings.emails]
 
             if email_accounts:
@@ -78,15 +92,37 @@ def create_ui():  # noqa: C901
                     # Get current settings
                     settings = get_settings()
 
+                    # Capture which keyring roles this account may have used before it's gone
+                    deleted = settings.get_account(account_name)
+                    roles = []
+                    if deleted is not None and hasattr(deleted, "incoming"):
+                        roles.append("incoming")
+                        if deleted.outgoing:
+                            roles.append("outgoing")
+                    elif deleted is not None:
+                        roles.append("api_key")
+
                     # Delete the account
                     settings.delete_email(account_name)
 
                     # Store settings
                     store_settings(settings)
 
+                    # Best-effort keyring cleanup now that the file no longer references it.
+                    # Gated on the effective mode: plaintext mode must never touch the keyring,
+                    # even if a real backend happens to be available on this machine.
+                    if settings.effective_credential_storage != "plaintext":
+                        delete_account_credentials(account_name, roles)
+
                     # Return success message and update the UI
                     return f"Success: Email account '{account_name}' has been deleted.", *update_account_list()
                 except Exception as e:
+                    # store_settings() may have already mutated the cached Settings before
+                    # raising (e.g. a locked keychain in explicit keyring mode); clear the
+                    # cache so a stale, divergent instance isn't served afterwards. A plain
+                    # reload isn't enough — if the reload itself raises too, get_settings()
+                    # would keep the old divergent instance.
+                    clear_settings_cache()
                     return f"Error: {e!s}", *update_account_list()
 
             # Connect the delete button to the delete function
@@ -311,6 +347,11 @@ def create_ui():  # noqa: C901
                         "",  # Clear smtp_password
                     )
                 except Exception as e:
+                    # store_settings() may have already mutated the cached Settings before
+                    # raising; clear it so a divergent instance isn't served afterwards (a
+                    # plain reload isn't enough if the reload itself also raises).
+                    clear_settings_cache()
+
                     # Get account list update
                     account_md, account_choices, btn_visible = update_account_list()
                     return (

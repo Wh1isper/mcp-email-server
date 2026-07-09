@@ -35,6 +35,63 @@ This package is available on PyPI, so you can install it using `pip install mcp-
 
 After that, configure your email server using the ui: `mcp-email-server ui`
 
+### Credential Storage
+
+Accounts added via the UI or the `add_email_account` tool are persisted to a TOML
+file at `~/.config/zerolib/mcp_email_server/config.toml`. Where the actual
+passwords/API keys live depends on `credential_storage` (also settable via
+`MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`), one of:
+
+- **`auto`** (default): store credentials in the OS keyring — macOS Keychain,
+  Linux Secret Service (GNOME Keyring / KWallet) — when a usable backend is
+  detected; otherwise fall back to the plaintext TOML file (`0o600`
+  permissions, owner-only). Falls back automatically on headless Linux,
+  Docker, or any environment without a D-Bus session.
+- **`keyring`**: require the OS keyring; fail loudly instead of silently
+  falling back if no backend is usable.
+- **`plaintext`**: never touch the keyring. Useful for containers, CI, or if
+  you simply prefer a portable config file.
+
+When credentials are keyring-backed, the TOML file stores only a placeholder
+(`__KEYRING__`) and non-secret metadata — the real secret lives in the OS
+keyring under service `mcp-email-server`, one entry per
+`<account_name>:<incoming|outgoing|api_key>` (viewable in Keychain Access on
+macOS, or Seahorse on Linux).
+
+**Migrating an existing config** between storage modes:
+
+```sh
+mcp-email-server migrate-credentials --to keyring    # move plaintext secrets into the OS keyring
+mcp-email-server migrate-credentials --to plaintext  # move keyring secrets back into the TOML file
+```
+
+Migration also happens implicitly: any time you add/edit an account while
+`credential_storage` is `auto` or `keyring` with a usable backend, that
+account's secrets move into the keyring on the next save.
+
+#### Failure modes & troubleshooting
+
+- **Server won't start / UI won't load accounts, keychain-related error**: the
+  OS keyring is locked or unreachable. This is expected if credentials are
+  keyring-backed — the secret simply isn't in the config file. Unlock your
+  keychain, or run `mcp-email-server migrate-credentials --to plaintext` if
+  you'd rather not depend on it.
+- **`credential_storage` is 'plaintext' but the config references
+  keyring-stored credentials**: run `migrate-credentials --to plaintext`, or
+  unset `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE` / the `credential_storage`
+  setting so the config can resolve them from the keyring instead.
+- **macOS Keychain access prompt, or the server can't read a secret it wrote
+  earlier**: Keychain ACLs are per-application. If the server is spawned via
+  `uvx` (as in the Claude Desktop config above), a fresh `uvx` resolution can
+  present a different binary path than the one that stored the secret,
+  triggering a "Keychain wants to use a password" prompt. Choose "Always
+  Allow" the first time this happens.
+- **A migration seems to have had no effect**: if
+  `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE` is set in your environment, it takes
+  precedence over whatever `migrate-credentials --to ...` just wrote to the
+  file on every subsequent run. Unset it, or keep it in sync with your
+  intended mode.
+
 ### Environment Variable Configuration
 
 You can also configure the email server using environment variables, which is particularly useful for CI/CD environments like Jenkins. zerolib-email supports both UI configuration (via TOML file) and environment variables, with environment variables taking precedence.
@@ -86,6 +143,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all           | -             | No       |
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all        | -             | No       |
 | `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | Report blocked mutations as failures (default: silent no-op) | `false`       | No       |
+| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | Credential storage mode: `auto`, `keyring`, or `plaintext`   | `auto`        | No       |
 
 ### Read-only IMAP mode
 
