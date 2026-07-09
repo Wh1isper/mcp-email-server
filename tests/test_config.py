@@ -306,6 +306,23 @@ def test_store_tightens_preexisting_permissions(tmp_path, monkeypatch):
         config_module._settings = None
 
 
+def test_store_non_posix_falls_back_to_plain_write(tmp_path, monkeypatch):
+    """On non-POSIX platforms store() writes via write_text (no fd-level permissions)."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        settings = config_module.get_settings(reload=True)
+        monkeypatch.setattr(config_module.os, "name", "nt")
+        settings.store()
+        assert cfg.read_text() == settings._to_toml()
+    finally:
+        config_module._settings = None
+
+
 def test_report_blocked_mutations_env_overrides_toml(tmp_path, monkeypatch):
     import tomli_w
 
