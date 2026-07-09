@@ -56,6 +56,7 @@ class TestClassicEmailHandler:
         assert handler.incoming_client.email_server == email_settings.incoming
         assert handler.outgoing_client.email_server == email_settings.outgoing
         assert handler.outgoing_client.sender == f"{email_settings.full_name} <{email_settings.email_address}>"
+        assert handler.incoming_client.sender == f"{email_settings.full_name} <{email_settings.email_address}>"
 
     def test_init_read_only_account(self):
         """Read-only accounts initialize without an outgoing SMTP client."""

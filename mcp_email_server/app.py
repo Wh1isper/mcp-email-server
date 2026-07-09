@@ -234,8 +234,8 @@ async def get_emails_content(
 
 @mcp.tool(
     description=(
-        "List the configured outbound recipient allowlist — the addresses that send_email and "
-        "save_to_mailbox are permitted to send to. Only available when an allowlist is configured."
+        "List the configured recipient allowlist — the addresses that send_email is permitted to "
+        "send to and save_to_mailbox is permitted to address. Only available when an allowlist is configured."
     ),
     visible_if=_has_allowed_recipients,
 )

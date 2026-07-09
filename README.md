@@ -75,7 +75,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                              | `true`        | No       |
 | `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                         | `false`       | No       |
 | `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed)       | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for read-only mode                    | -             | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for IMAP-only mode (no sending)       | -             | No       |
 | `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                             | `465`         | No       |
 | `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                              | `true`        | No       |
 | `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                              | `false`       | No       |
@@ -87,9 +87,9 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all        | -             | No       |
 | `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | Report blocked mutations as failures (default: silent no-op) | `false`       | No       |
 
-### Read-only IMAP mode
+### IMAP-only mode (no SMTP)
 
-SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only IMAP-backed tools. `send_email` is hidden when every configured email account is read-only; `save_to_mailbox` remains available since saving drafts/templates is a pure IMAP APPEND operation.
+SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in IMAP-only mode: `send_email` is hidden (when every configured email account lacks SMTP) and no mail can leave the server. Note that IMAP-only is not strictly read-only — IMAP-backed write tools such as `save_to_mailbox` (which composes a message and stores it in a folder via IMAP APPEND), `delete_emails`, `move_emails`, and `archive_emails` remain available.
 
 ```json
 {
