@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 import tomli_w
+from keyring.backend import KeyringBackend
 from loguru import logger as loguru_logger
 from pydantic import SecretStr
 from typer.testing import CliRunner
@@ -51,7 +52,8 @@ def _raw_email_toml(account_name: str, password: str, *, host: str = "imap.examp
     }
 
 
-# 1. Round-trip [mode=keyring, fake]
+# 1. Round-trip [mode=keyring, fake] — covers both EmailSettings (incoming+outgoing)
+# and ProviderSettings (api_key) keyring paths.
 def test_round_trip_keyring_mode(tmp_path, monkeypatch, fake_keyring):
     monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "keyring")
     cfg = _bind(tmp_path, monkeypatch)
@@ -69,20 +71,190 @@ def test_round_trip_keyring_mode(tmp_path, monkeypatch, fake_keyring):
             smtp_password="smtp-secret",
         )
     )
+    settings.add_provider(ProviderSettings(account_name="prov1", provider_name="openai", api_key="sk-secret"))
     settings.store()
 
     content = cfg.read_text()
     assert SENTINEL in content
     assert "hunter2" not in content
     assert "smtp-secret" not in content
+    assert "sk-secret" not in content
 
     config_module._settings = None
     reloaded = Settings()
     assert reloaded == settings
     assert isinstance(reloaded.emails[0].incoming.password, SecretStr)
     assert isinstance(reloaded.emails[0].outgoing.password, SecretStr)
+    assert isinstance(reloaded.providers[0].api_key, SecretStr)
     assert reloaded.emails[0].incoming.password.get_secret_value() == "hunter2"
     assert reloaded.emails[0].outgoing.password.get_secret_value() == "smtp-secret"
+    assert reloaded.providers[0].api_key.get_secret_value() == "sk-secret"
+
+
+# Partial keyring failure in auto mode: the probe succeeds (so use_keyring starts
+# True), but the actual account's set_password call fails — distinct from
+# test_auto_mode_falls_back_to_plaintext_on_broken_backend, where the probe itself
+# fails and use_keyring is False from the start.
+class _ProbeOnlyKeyring(KeyringBackend):
+    """Succeeds for the probe's own key, fails for every real account key."""
+
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self._probe_store: dict[tuple[str, str], str] = {}
+
+    def set_password(self, service, username, password):
+        if username.startswith("__probe__"):
+            self._probe_store[(service, username)] = password
+            return
+        from keyring.errors import PasswordSetError
+
+        raise PasswordSetError("simulated failure storing a real credential")
+
+    def get_password(self, service, username):
+        return self._probe_store.get((service, username))
+
+    def delete_password(self, service, username):
+        key = (service, username)
+        if key in self._probe_store:
+            del self._probe_store[key]
+
+
+def test_auto_mode_falls_back_to_plaintext_on_partial_keyring_failure(tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "auto")
+    cfg = _bind(tmp_path, monkeypatch)
+
+    previous = keyring.get_keyring()
+    keyring.set_keyring(_ProbeOnlyKeyring())
+    keyring_store.keyring_usable.cache_clear()
+    try:
+        settings = Settings()
+        settings.add_email(
+            EmailSettings.init(
+                account_name="acct1",
+                full_name="Test",
+                email_address="a@example.com",
+                user_name="a",
+                password="hunter2",
+                imap_host="imap.example.com",
+            )
+        )
+        # A provider account too, so the provider-side set_secret failure branch
+        # (distinct from the email-side one) is also exercised.
+        settings.add_provider(ProviderSettings(account_name="prov1", provider_name="openai", api_key="sk-secret"))
+
+        messages: list[str] = []
+        sink_id = loguru_logger.add(lambda msg: messages.append(str(msg)), level="WARNING")
+        try:
+            settings.store()  # must not raise despite the probe reporting "usable"
+        finally:
+            loguru_logger.remove(sink_id)
+    finally:
+        keyring.set_keyring(previous)
+        keyring_store.keyring_usable.cache_clear()
+
+    content = cfg.read_text()
+    assert "hunter2" in content
+    assert "sk-secret" in content
+    assert SENTINEL not in content
+    assert any("falling back to plaintext" in m for m in messages)
+
+
+# auto mode with a genuinely usable backend must actually use it (exercises the
+# keyring_usable() probe's success path, not just its failure path).
+def test_auto_mode_uses_keyring_when_backend_usable(tmp_path, monkeypatch, fake_keyring):
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "auto")
+    cfg = _bind(tmp_path, monkeypatch)
+
+    settings = Settings()
+    settings.add_email(
+        EmailSettings.init(
+            account_name="acct1",
+            full_name="Test",
+            email_address="a@example.com",
+            user_name="a",
+            password="hunter2",
+            imap_host="imap.example.com",
+        )
+    )
+    settings.store()
+
+    content = cfg.read_text()
+    assert SENTINEL in content
+    assert "hunter2" not in content
+    assert fake_keyring._store[(SERVICE, "acct1:incoming")] == "hunter2"
+    # The probe's own set/get/delete round-trip must have happened.
+    assert any(call[0] == "delete" and call[2].startswith("__probe__") for call in fake_keyring.calls)
+
+
+class _WrongValueProbeKeyring(KeyringBackend):
+    """set/get/delete all succeed without raising, but get returns the wrong
+    value for the probe key — usability must be decided by set/get, not just
+    the absence of an exception.
+    """
+
+    priority = 1
+
+    def set_password(self, service, username, password):
+        pass
+
+    def get_password(self, service, username):
+        return "not-ok"
+
+    def delete_password(self, service, username):
+        pass
+
+
+def test_keyring_usable_false_when_probe_value_mismatches_without_raising(monkeypatch):
+    import keyring
+
+    previous = keyring.get_keyring()
+    keyring.set_keyring(_WrongValueProbeKeyring())
+    keyring_store.keyring_usable.cache_clear()
+    try:
+        assert keyring_store.keyring_usable() is False
+    finally:
+        keyring.set_keyring(previous)
+        keyring_store.keyring_usable.cache_clear()
+
+
+class _DeleteFailsProbeKeyring(KeyringBackend):
+    """set/get succeed normally, but delete (the probe's own cleanup) raises —
+    a working backend must not be misclassified as unusable because of this.
+    """
+
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self._store: dict[tuple[str, str], str] = {}
+
+    def set_password(self, service, username, password):
+        self._store[(service, username)] = password
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def delete_password(self, service, username):
+        from keyring.errors import PasswordDeleteError
+
+        raise PasswordDeleteError("simulated cleanup failure")
+
+
+def test_keyring_usable_true_despite_probe_cleanup_failure(monkeypatch):
+    import keyring
+
+    previous = keyring.get_keyring()
+    keyring.set_keyring(_DeleteFailsProbeKeyring())
+    keyring_store.keyring_usable.cache_clear()
+    try:
+        assert keyring_store.keyring_usable() is True
+    finally:
+        keyring.set_keyring(previous)
+        keyring_store.keyring_usable.cache_clear()
 
 
 # 2. Auto fallback [mode=auto, broken]
@@ -161,6 +333,17 @@ def test_missing_keyring_entry_raises_on_load(tmp_path, monkeypatch, fake_keyrin
         Settings()
 
 
+# 4b. get_secret() raising (not just returning None) must also raise on load.
+def test_broken_backend_raises_on_load_when_sentinel_present(tmp_path, monkeypatch, broken_keyring):
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "keyring")
+    cfg = _bind(tmp_path, monkeypatch)
+    cfg.write_text(tomli_w.dumps(_raw_email_toml("acct1", SENTINEL)))
+
+    config_module._settings = None
+    with pytest.raises(ValueError, match="acct1"):
+        Settings()
+
+
 # 5. Mixed file [mode=auto, fake holding the sentinel account's secret]
 def test_mixed_sentinel_and_cleartext_accounts_load(tmp_path, monkeypatch, fake_keyring):
     monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "auto")
@@ -182,8 +365,62 @@ def test_mixed_sentinel_and_cleartext_accounts_load(tmp_path, monkeypatch, fake_
     assert by_name["acct2"].incoming.password.get_secret_value() == "cleartext2"
 
 
-# 6. Migration both directions [fake; env override unset]
+# 6. Migration both directions [fake; env override unset]. Uses an account with
+# both incoming+outgoing plus a provider, so the --to plaintext cleanup loop
+# exercises both the outgoing-role branch and the provider branch.
 def test_migration_round_trip_both_directions(tmp_path, monkeypatch, fake_keyring):
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "plaintext")
+    settings = Settings()
+    settings.add_email(
+        EmailSettings.init(
+            account_name="acct1",
+            full_name="Test",
+            email_address="a@example.com",
+            user_name="a",
+            password="hunter2",
+            imap_host="imap.example.com",
+            smtp_host="smtp.example.com",
+            smtp_password="smtp-secret",
+        )
+    )
+    settings.add_provider(ProviderSettings(account_name="prov1", provider_name="openai", api_key="sk-secret"))
+    settings.store()
+    assert "hunter2" in cfg.read_text()
+    assert "sk-secret" in cfg.read_text()
+
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["migrate-credentials", "--to", "keyring"])
+    assert result.exit_code == 0, result.output
+
+    content = cfg.read_text()
+    assert SENTINEL in content
+    assert "hunter2" not in content
+    assert "smtp-secret" not in content
+    assert "sk-secret" not in content
+    assert 'credential_storage = "keyring"' in content
+    assert fake_keyring._store[(SERVICE, "acct1:incoming")] == "hunter2"
+    assert fake_keyring._store[(SERVICE, "acct1:outgoing")] == "smtp-secret"
+    assert fake_keyring._store[(SERVICE, "prov1:api_key")] == "sk-secret"
+
+    result2 = runner.invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
+    assert result2.exit_code == 0, result2.output
+
+    content2 = cfg.read_text()
+    assert "hunter2" in content2
+    assert "smtp-secret" in content2
+    assert "sk-secret" in content2
+    assert SENTINEL not in content2
+    assert 'credential_storage = "plaintext"' in content2
+    assert (SERVICE, "acct1:incoming") not in fake_keyring._store
+    assert (SERVICE, "acct1:outgoing") not in fake_keyring._store
+    assert (SERVICE, "prov1:api_key") not in fake_keyring._store
+
+
+def test_migrate_credentials_warns_on_env_override_conflict(tmp_path, monkeypatch, fake_keyring):
     cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
 
     monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "plaintext")
@@ -201,26 +438,73 @@ def test_migration_round_trip_both_directions(tmp_path, monkeypatch, fake_keyrin
     settings.store()
     assert "hunter2" in cfg.read_text()
 
-    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
-
+    # Deliberately conflicting: env says "plaintext", --to says "keyring".
     runner = CliRunner()
     result = runner.invoke(cli_app, ["migrate-credentials", "--to", "keyring"])
     assert result.exit_code == 0, result.output
+    assert "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE" in result.output
+    assert "differs" in result.output
+
+
+def test_migrate_credentials_to_plaintext_skips_outgoing_cleanup_for_incoming_only_account(
+    tmp_path, monkeypatch, fake_keyring
+):
+    """The --to plaintext cleanup loop's outgoing-role branch must be skipped
+    (not attempted) for an account that never had outgoing configured.
+    """
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+
+    settings = Settings()
+    settings.add_email(
+        EmailSettings.init(
+            account_name="acct1",
+            full_name="Test",
+            email_address="a@example.com",
+            user_name="a",
+            password="hunter2",
+            imap_host="imap.example.com",
+        )
+    )
+    settings.add_provider(ProviderSettings(account_name="prov1", provider_name="openai", api_key="sk-secret"))
+    settings.credential_storage = "keyring"
+    settings._credential_storage_override = "keyring"
+    settings.store()
+    assert cfg.read_text().count(SENTINEL) == 2  # incoming password + api_key, no outgoing
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
+    assert result.exit_code == 0, result.output
 
     content = cfg.read_text()
-    assert SENTINEL in content
-    assert "hunter2" not in content
-    assert 'credential_storage = "keyring"' in content
-    assert fake_keyring._store[(SERVICE, "acct1:incoming")] == "hunter2"
-
-    result2 = runner.invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
-    assert result2.exit_code == 0, result2.output
-
-    content2 = cfg.read_text()
-    assert "hunter2" in content2
-    assert SENTINEL not in content2
-    assert 'credential_storage = "plaintext"' in content2
+    assert "hunter2" in content
+    assert "sk-secret" in content
     assert (SERVICE, "acct1:incoming") not in fake_keyring._store
+    assert (SERVICE, "prov1:api_key") not in fake_keyring._store
+    assert (SERVICE, "acct1:outgoing") not in fake_keyring._store  # never existed; delete is a no-op
+
+
+def test_migrate_credentials_load_failure_exits_cleanly(tmp_path, monkeypatch, broken_keyring):
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    cfg.write_text(tomli_w.dumps(_raw_email_toml("acct1", SENTINEL)))
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
+    assert result.exit_code == 1
+    assert "could not load" in result.output
+    assert not isinstance(result.exception, ValueError)  # typer.Exit, not a raw traceback
+
+
+def test_migrate_credentials_store_failure_exits_cleanly(tmp_path, monkeypatch, broken_keyring):
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    cfg.write_text(tomli_w.dumps(_raw_email_toml("acct1", "cleartext")))
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["migrate-credentials", "--to", "keyring"])
+    assert result.exit_code == 1
+    assert "failed" in result.output
 
 
 # 6b. Migration ignores env-account shadowing (flag (c), §7)
@@ -313,6 +597,45 @@ def test_reset_mode_gate_attempts_cleanup_when_toml_mode_is_not_plaintext(tmp_pa
     assert not cfg.exists()
     assert (SERVICE, "acct1:incoming") not in fake_keyring._store
     assert any(call[0] == "delete" for call in fake_keyring.calls)
+
+
+def test_reset_cleans_up_outgoing_role_provider_and_skips_malformed_entries(tmp_path, monkeypatch, fake_keyring):
+    """Covers the reset cleanup's outgoing-role branch, provider loop, and the
+    defensive skip for an email entry with no account_name.
+    """
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", cfg)
+
+    fake_keyring.set_password(SERVICE, "acct1:incoming", "secret1")
+    fake_keyring.set_password(SERVICE, "acct1:outgoing", "secret2")
+    fake_keyring.set_password(SERVICE, "prov1:api_key", "secret3")
+
+    raw = _raw_email_toml("acct1", SENTINEL)
+    raw["emails"][0]["outgoing"] = dict(raw["emails"][0]["incoming"], password=SENTINEL)
+    raw["emails"].append({"full_name": "No account name", "email_address": "x@example.com"})  # malformed
+    raw["providers"] = [
+        {"account_name": "prov1", "provider_name": "openai", "api_key": SENTINEL},
+        {"provider_name": "no-name-provider", "api_key": SENTINEL},  # malformed: no account_name
+    ]
+    raw["credential_storage"] = "keyring"
+    cfg.write_text(tomli_w.dumps(raw))
+
+    delete_settings()  # must not raise despite the malformed email/provider entries
+    assert not cfg.exists()
+    assert (SERVICE, "acct1:incoming") not in fake_keyring._store
+    assert (SERVICE, "acct1:outgoing") not in fake_keyring._store
+    assert (SERVICE, "prov1:api_key") not in fake_keyring._store
+
+
+def test_reset_unparseable_toml_still_unlinks(tmp_path, monkeypatch):
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", cfg)
+    cfg.write_text("this is not [ valid toml =::")
+
+    delete_settings()  # must not raise; warns and unlinks anyway
+    assert not cfg.exists()
 
 
 # 8. Sentinel value rejected everywhere

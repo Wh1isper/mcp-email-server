@@ -25,7 +25,7 @@ from mcp_email_server.log import logger
 if sys.version_info >= (3, 11):
     import tomllib
 else:
-    import tomli as tomllib
+    import tomli as tomllib  # pragma: no cover (coverage is uploaded from the 3.12 job)
 
 DEFAULT_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
 _VALID_CREDENTIAL_STORAGE_MODES = ("auto", "keyring", "plaintext")

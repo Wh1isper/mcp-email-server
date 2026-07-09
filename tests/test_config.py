@@ -8,6 +8,7 @@ from mcp_email_server.config import (
     EmailServer,
     EmailSettings,
     ProviderSettings,
+    Settings,
     get_settings,
     normalize_address,
     sender_allowed,
@@ -146,6 +147,157 @@ def test_config():
                 ),
             )
         )
+
+
+def test_add_provider_appends_to_providers():
+    # A bare, uncached Settings() instance — not get_settings() — so this test
+    # can't be affected by, or leak state into, other tests via the module cache.
+    settings = Settings()
+    assert settings.providers == []
+    settings.add_provider(ProviderSettings(account_name="new_provider", provider_name="openai", api_key="sk-test"))
+    assert len(settings.providers) == 1
+    assert settings.providers[0].account_name == "new_provider"
+
+
+def test_duplicate_provider_account_name_rejected():
+    settings = Settings()
+    settings.add_provider(ProviderSettings(account_name="dup_provider", provider_name="a", api_key="k1"))
+    with pytest.raises(ValidationError, match="Duplicate account name"):
+        settings.add_provider(ProviderSettings(account_name="dup_provider", provider_name="b", api_key="k2"))
+
+
+def test_delete_email_and_delete_provider():
+    settings = Settings()
+    settings.add_email(
+        EmailSettings(
+            account_name="to_delete_email",
+            full_name="Test",
+            email_address="del@example.com",
+            incoming=EmailServer(user_name="u", password="p", host="imap.example.com", port=993),
+        )
+    )
+    settings.add_provider(ProviderSettings(account_name="to_delete_provider", provider_name="p", api_key="k"))
+
+    settings.delete_email("to_delete_email")
+    settings.delete_provider("to_delete_provider")
+
+    assert "to_delete_email" not in [e.account_name for e in settings.emails]
+    assert "to_delete_provider" not in [p.account_name for p in settings.providers]
+
+
+def test_get_account_and_get_accounts():
+    settings = Settings()
+    settings.add_email(
+        EmailSettings(
+            account_name="lookup_email",
+            full_name="Test",
+            email_address="lookup@example.com",
+            incoming=EmailServer(user_name="u", password="secret_pw", host="imap.example.com", port=993),
+        )
+    )
+    settings.add_provider(ProviderSettings(account_name="lookup_provider", provider_name="p", api_key="secret_key"))
+
+    email = settings.get_account("lookup_email")
+    assert email.incoming.password.get_secret_value() == "secret_pw"
+
+    masked_email = settings.get_account("lookup_email", masked=True)
+    assert masked_email.incoming.password.get_secret_value() == "********"
+
+    provider = settings.get_account("lookup_provider")
+    assert provider.api_key.get_secret_value() == "secret_key"
+
+    assert settings.get_account("does_not_exist") is None
+
+    all_accounts = settings.get_accounts()
+    assert any(a.account_name == "lookup_email" for a in all_accounts)
+    assert any(a.account_name == "lookup_provider" for a in all_accounts)
+
+    masked_accounts = settings.get_accounts(masked=True)
+    provider_masked = next(a for a in masked_accounts if a.account_name == "lookup_provider")
+    assert provider_masked.api_key.get_secret_value() == "********"
+
+
+def test_store_settings_defaults_to_cached_instance(tmp_path, monkeypatch):
+    """store_settings() with no argument must fetch and store the cached Settings."""
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+    try:
+        config_module.get_settings().add_email(
+            EmailSettings(
+                account_name="no_arg_store",
+                full_name="Test",
+                email_address="a@example.com",
+                incoming=EmailServer(user_name="u", password="p", host="imap.example.com", port=993),
+            )
+        )
+        store_settings()  # no argument
+        assert "no_arg_store" in cfg.read_text()
+    finally:
+        config_module._settings = None
+
+
+def test_env_account_replaces_second_of_multiple_toml_accounts(tmp_path, monkeypatch):
+    """The env-account-injection loop must find a match beyond the first TOML entry."""
+    import tomli_w
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    raw = {
+        "emails": [
+            {
+                "account_name": "first",
+                "full_name": "First",
+                "email_address": "first@example.com",
+                "incoming": {
+                    "user_name": "first",
+                    "password": "first_pw",
+                    "host": "imap.first.com",
+                    "port": 993,
+                    "use_ssl": True,
+                    "start_ssl": False,
+                    "verify_ssl": True,
+                },
+            },
+            {
+                "account_name": "second",
+                "full_name": "Second",
+                "email_address": "second@example.com",
+                "incoming": {
+                    "user_name": "second",
+                    "password": "second_pw",
+                    "host": "imap.second.com",
+                    "port": 993,
+                    "use_ssl": True,
+                    "start_ssl": False,
+                    "verify_ssl": True,
+                },
+            },
+        ]
+    }
+    cfg = tmp_path / "config.toml"
+    cfg.write_bytes(tomli_w.dumps(raw).encode())
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ACCOUNT_NAME", "second")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "env@example.com")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "env_pw")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.env.com")
+
+    config_module._settings = None
+    try:
+        settings = config_module.get_settings(reload=True)
+        assert len(settings.emails) == 2
+        second = next(e for e in settings.emails if e.account_name == "second")
+        assert second.incoming.password.get_secret_value() == "env_pw"
+        first = next(e for e in settings.emails if e.account_name == "first")
+        assert first.incoming.password.get_secret_value() == "first_pw"
+    finally:
+        config_module._settings = None
 
 
 @pytest.mark.parametrize(
