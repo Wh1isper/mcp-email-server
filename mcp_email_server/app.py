@@ -329,8 +329,8 @@ async def send_email(
 @mcp.tool(
     description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
     "Same parameters as send_email, but saves instead of sending. "
-    "Default folder is Drafts with \\Draft and \\Seen flags.",
-    visible_if=_has_send_capable_account,
+    "Default folder is Drafts with \\Draft and \\Seen flags. "
+    "Pure IMAP operation — works without SMTP configuration.",
 )
 async def save_to_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],

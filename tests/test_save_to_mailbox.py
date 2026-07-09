@@ -353,8 +353,8 @@ class TestClassicEmailHandlerSaveToMailbox:
         mock_compose["Message-Id"] = "<test-id@example.com>"
         mock_append = AsyncMock(return_value="42")
 
-        with patch.object(handler.outgoing_client, "compose_message", return_value=mock_compose):
-            with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+        with patch.object(handler.incoming_client, "compose_message", return_value=mock_compose):
+            with patch.object(handler.incoming_client, "append_to_mailbox", mock_append):
                 result = await handler.save_to_mailbox(
                     recipients=["r@example.com"],
                     subject="Draft",
@@ -377,8 +377,8 @@ class TestClassicEmailHandlerSaveToMailbox:
         mock_compose["Message-Id"] = "<test-id@example.com>"
         mock_append = AsyncMock(return_value="99")
 
-        with patch.object(handler.outgoing_client, "compose_message", return_value=mock_compose):
-            with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+        with patch.object(handler.incoming_client, "compose_message", return_value=mock_compose):
+            with patch.object(handler.incoming_client, "append_to_mailbox", mock_append):
                 await handler.save_to_mailbox(
                     recipients=["r@example.com"],
                     subject="Template",
@@ -400,8 +400,8 @@ class TestClassicEmailHandlerSaveToMailbox:
         mock_compose = MIMEText("body")
         mock_append = AsyncMock(return_value=None)
 
-        with patch.object(handler.outgoing_client, "compose_message", return_value=mock_compose):
-            with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+        with patch.object(handler.incoming_client, "compose_message", return_value=mock_compose):
+            with patch.object(handler.incoming_client, "append_to_mailbox", mock_append):
                 with pytest.raises(RuntimeError, match="Failed to save email"):
                     await handler.save_to_mailbox(
                         recipients=["r@example.com"],
@@ -422,6 +422,33 @@ class TestClassicEmailHandlerSaveToMailbox:
             )
 
 
+class TestSaveToMailboxWithoutSmtp:
+    """save_to_mailbox is a pure IMAP operation — no SMTP configuration required."""
+
+    @pytest.mark.asyncio
+    async def test_imap_only_account_saves_successfully(self, mock_imap):
+        imap_only_settings = EmailSettings(
+            account_name="imap_only",
+            full_name="Imap Only",
+            email_address="imap-only@example.com",
+            incoming=EmailServer(**_INCOMING_SERVER),
+        )
+        handler = ClassicEmailHandler(imap_only_settings)
+        assert handler.outgoing_client is None
+
+        mock_imap.append = AsyncMock(return_value=("OK", [b"[APPENDUID 1234567890 7] APPEND completed"]))
+        with patch("mcp_email_server.emails.classic.aioimaplib") as mock_lib:
+            mock_lib.IMAP4_SSL.return_value = mock_imap
+            result = await handler.save_to_mailbox(
+                recipients=["r@example.com"],
+                subject="Draft",
+                body="draft body",
+            )
+
+        assert "uid:7" in result
+        mock_imap.select.assert_called_with('"Drafts"')
+
+
 class TestSaveToMailboxBcc:
     """Tests that save_to_mailbox preserves BCC in the saved message."""
 
@@ -432,7 +459,7 @@ class TestSaveToMailboxBcc:
 
         # Don't mock compose_message — let it run for real so we verify
         # include_bcc_header=True is actually passed and produces a Bcc header
-        with patch.object(handler.outgoing_client, "append_to_mailbox", mock_append):
+        with patch.object(handler.incoming_client, "append_to_mailbox", mock_append):
             await handler.save_to_mailbox(
                 recipients=["r@example.com"],
                 subject="Draft",

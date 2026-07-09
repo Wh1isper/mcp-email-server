@@ -89,7 +89,7 @@ You can also configure the email server using environment variables, which is pa
 
 ### Read-only IMAP mode
 
-SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only read/mailbox-management tools. Outbound compose tools such as `send_email` and `save_to_mailbox` are hidden when every configured email account is read-only.
+SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, the account runs in read-only mode and exposes only IMAP-backed tools. `send_email` is hidden when every configured email account is read-only; `save_to_mailbox` remains available since saving drafts/templates is a pure IMAP APPEND operation.
 
 ```json
 {

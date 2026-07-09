@@ -376,7 +376,7 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_tool_visibility_hides_outbound_tools_for_read_only_accounts(self):
-        """Read-only deployments should hide outbound tools from MCP clients."""
+        """Read-only deployments hide send_email but keep IMAP-only tools like save_to_mailbox."""
         read_only_account = EmailSettings(
             account_name="read_only",
             full_name="Read Only",
@@ -396,7 +396,7 @@ class TestMcpTools:
             tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
 
         assert "send_email" not in tool_names
-        assert "save_to_mailbox" not in tool_names
+        assert "save_to_mailbox" in tool_names
         assert "list_emails_metadata" in tool_names
         assert "get_emails_content" in tool_names
 
