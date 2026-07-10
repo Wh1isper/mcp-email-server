@@ -33,9 +33,15 @@ uvx mcp-email-server@latest ui
 }
 ```
 
+For the [Claude Code](https://claude.com/claude-code) CLI, register it in one command (after `uv tool install mcp-email-server`):
+
+```bash
+claude mcp add zerolib-email --scope user -- mcp-email-server stdio
+```
+
 The package is also on PyPI (`pip install mcp-email-server`), as a Docker image (`ghcr.io/ai-zerolab/mcp-email-server`), and on [Smithery](https://smithery.ai/server/@ai-zerolab/mcp-email-server).
 
-**See the full [Installation & Configuration guide](https://ai-zerolab.github.io/mcp-email-server/installation/)** ([docs/installation.md](docs/installation.md)) for environment-variable configuration, credential storage (OS keyring), HTTP transport security, attachment downloads, allowlists, and self-signed certificate setups.
+**See the full [Installation & Configuration guide](https://ai-zerolab.github.io/mcp-email-server/installation/)** ([docs/installation.md](docs/installation.md)) for uv/pip/Docker/Claude Code install, updating, environment-variable configuration, credential storage (OS keyring), HTTP transport security, attachment downloads, allowlists, and self-signed certificate setups.
 
 ## Permissions
 

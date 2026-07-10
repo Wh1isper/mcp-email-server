@@ -29,9 +29,46 @@ Then point your MCP client at the server:
 
 ## Installation methods
 
+### uv (recommended)
+
+Install as a persistent tool so `mcp-email-server` is on your `PATH`:
+
+```bash
+uv tool install mcp-email-server
+mcp-email-server ui   # configure your account
+```
+
+Alternatively, the Quick start above uses `uvx mcp-email-server@latest stdio`, which runs the server without installing it — uv fetches and caches it on first use. Use `uv tool install` when you want a stable command (e.g. for the Claude Code CLI example below); use `uvx` for a zero-install setup.
+
+### Claude Code (CLI)
+
+If you use the [Claude Code](https://claude.com/claude-code) CLI, register the server with `claude mcp add` instead of hand-editing JSON. With uv tool install (above) putting `mcp-email-server` on your `PATH`:
+
+```bash
+claude mcp add zerolib-email --scope user -- mcp-email-server stdio
+```
+
+`--scope user` makes it available across all your projects (drop it for the current project only). To run without installing first, use `uvx` as the command:
+
+```bash
+claude mcp add zerolib-email --scope user -- uvx mcp-email-server@latest stdio
+```
+
+Pass configuration with `-e KEY=value` before the `--`:
+
+```bash
+claude mcp add zerolib-email --scope user \
+  -e MCP_EMAIL_SERVER_EMAIL_ADDRESS=you@example.com \
+  -e MCP_EMAIL_SERVER_PASSWORD=your_password \
+  -e MCP_EMAIL_SERVER_IMAP_HOST=imap.gmail.com \
+  -- mcp-email-server stdio
+```
+
+Verify with `claude mcp list` (or `/mcp` inside Claude Code); remove with `claude mcp remove zerolib-email`.
+
 ### pip
 
-The package is on PyPI:
+If you prefer pip:
 
 ```bash
 pip install mcp-email-server
@@ -73,6 +110,19 @@ To install for Claude Desktop automatically via [Smithery](https://smithery.ai/s
 ```bash
 npx -y @smithery/cli install @ai-zerolab/mcp-email-server --client claude
 ```
+
+## Updating
+
+How you update depends on how you installed. Restart your MCP client (Claude Desktop, Claude Code, etc.) afterward so it picks up the new version.
+
+| Installed with    | Update command                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `uv tool install` | `uv tool upgrade mcp-email-server`                                                          |
+| `uvx ...@latest`  | Re-resolves on each run; force a refresh with `uvx --refresh mcp-email-server@latest stdio` |
+| `pip`             | `pip install --upgrade mcp-email-server`                                                    |
+| Docker            | `docker pull ghcr.io/ai-zerolab/mcp-email-server:latest`                                    |
+
+For the Claude Code CLI: if you registered the `uvx ...@latest` form it updates automatically on the next launch; if you registered the installed `mcp-email-server` command, run `uv tool upgrade mcp-email-server` first.
 
 ## Configuration overview
 
