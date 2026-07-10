@@ -1,6 +1,9 @@
+import os
+import re
 from collections.abc import Callable
 from datetime import datetime
 from email.utils import getaddresses
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -36,6 +39,30 @@ def _has_allowed_recipients() -> bool:
 
 def _has_allowed_senders() -> bool:
     return bool(get_settings().allowed_senders)
+
+
+def _resolve_download_path(save_path: str, root: Path) -> Path:
+    """Resolve save_path and confine it within root, resolving symlinks.
+
+    Relative paths resolve under root; absolute paths must already be within it.
+    A symlink component pointing outside root is caught because the parent is
+    canonicalised with realpath before the containment check. Raises
+    PermissionError on any path that escapes root.
+    """
+    candidate = Path(save_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    # The target file need not exist yet (write happens later), so canonicalise the
+    # parent — which resolves any symlinks along the existing prefix — then re-attach
+    # the final component and check containment against the canonical root.
+    resolved = Path(os.path.realpath(candidate.parent)) / candidate.name
+    if not resolved.is_relative_to(root):
+        raise PermissionError(
+            f"Attachment save_path {save_path!r} resolves outside the permitted download "
+            f"directory {root}. Set 'attachment_download_dir' (or "
+            "MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR) to permit it."
+        )
+    return resolved
 
 
 def _enforce_recipient_allowlist(
@@ -522,7 +549,9 @@ async def list_mailboxes(
 
 
 @mcp.tool(
-    description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+    description="Download an email attachment and save it under the permitted download directory. This "
+    "feature must be explicitly enabled in settings (enable_attachment_download=true). The save_path is "
+    "confined to attachment_download_dir (default ~/Downloads); paths resolving outside it are rejected.",
 )
 async def download_attachment(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -532,7 +561,13 @@ async def download_attachment(
     attachment_name: Annotated[
         str, Field(description="The name of the attachment to download (as shown in the attachments list).")
     ],
-    save_path: Annotated[str, Field(description="The absolute path where the attachment should be saved.")],
+    save_path: Annotated[
+        str,
+        Field(
+            description="Where to save the attachment. Must resolve within the configured "
+            "attachment_download_dir (default ~/Downloads); a relative path is taken relative to it."
+        ),
+    ],
     mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
 ) -> AttachmentDownloadResponse:
     settings = get_settings()
@@ -542,5 +577,6 @@ async def download_attachment(
         )
         raise PermissionError(msg)
 
+    confined_path = _resolve_download_path(save_path, settings.attachment_download_root)
     handler = dispatch_handler(account_name)
-    return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+    return await handler.download_attachment(email_id, attachment_name, str(confined_path), mailbox)

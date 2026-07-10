@@ -1,4 +1,6 @@
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -630,18 +632,20 @@ class TestMcpTools:
             assert "Attachment download is disabled" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_download_attachment_enabled(self):
+    async def test_download_attachment_enabled(self, tmp_path):
         """Test download_attachment MCP tool when feature is enabled."""
+        save_target = tmp_path / "document.pdf"
         attachment_response = AttachmentDownloadResponse(
             email_id="12345",
             attachment_name="document.pdf",
             mime_type="application/pdf",
             size=1024,
-            saved_path="/var/downloads/document.pdf",
+            saved_path=str(save_target),
         )
 
         mock_settings = MagicMock()
         mock_settings.enable_attachment_download = True
+        mock_settings.attachment_download_root = Path(os.path.realpath(tmp_path))
 
         mock_handler = AsyncMock()
         mock_handler.download_attachment.return_value = attachment_response
@@ -652,7 +656,7 @@ class TestMcpTools:
                     account_name="test_account",
                     email_id="12345",
                     attachment_name="document.pdf",
-                    save_path="/var/downloads/document.pdf",
+                    save_path=str(save_target),
                 )
 
                 assert result == attachment_response
@@ -662,7 +666,7 @@ class TestMcpTools:
                 assert result.size == 1024
 
                 mock_handler.download_attachment.assert_called_once_with(
-                    "12345", "document.pdf", "/var/downloads/document.pdf", "INBOX"
+                    "12345", "document.pdf", str(Path(os.path.realpath(save_target))), "INBOX"
                 )
 
     @pytest.mark.asyncio
