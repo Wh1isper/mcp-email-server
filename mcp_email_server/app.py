@@ -65,6 +65,19 @@ def _resolve_download_path(save_path: str, root: Path) -> Path:
     return resolved
 
 
+def _reject_crlf(values: list[str | None], label: str) -> None:
+    """Raise ValueError if any value contains a CR or LF.
+
+    Header CRLF is caught by the stdlib email serializer, but SMTP-envelope
+    recipients (notably bcc, which is never placed in a header) are passed
+    straight to aiosmtplib, which writes RCPT TO raw without a CRLF check — so a
+    newline there injects extra SMTP commands/recipients. Reject at the boundary.
+    """
+    for value in values:
+        if value is not None and ("\r" in value or "\n" in value):
+            raise ValueError(f"{label} must not contain newline characters: {value!r}")
+
+
 def _enforce_recipient_allowlist(
     recipients: list[str],
     cc: list[str] | None,
@@ -345,6 +358,9 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
+    _reject_crlf([*recipients, *(cc or []), *(bcc or [])], "Recipient address")
+    _reject_crlf([in_reply_to, references, reply_to], "Header value")
+    _reject_crlf(attachments or [], "Attachment path")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     await handler.send_email(
@@ -423,6 +439,9 @@ async def save_to_mailbox(
         ),
     ] = None,
 ) -> str:
+    _reject_crlf([*recipients, *(cc or []), *(bcc or [])], "Recipient address")
+    _reject_crlf([in_reply_to, references], "Header value")
+    _reject_crlf(attachments or [], "Attachment path")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     result = await handler.save_to_mailbox(
