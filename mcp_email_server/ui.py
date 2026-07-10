@@ -135,7 +135,10 @@ def create_ui():  # noqa: C901
                 # SMTP settings
                 with gr.Column():
                     gr.Markdown("### SMTP Settings")
-                    smtp_host = gr.Textbox(label="SMTP Host", placeholder="e.g. smtp.example.com")
+                    smtp_host = gr.Textbox(
+                        label="SMTP Host (optional)",
+                        placeholder="e.g. smtp.example.com — leave empty for a read-only IMAP account",
+                    )
                     smtp_port = gr.Number(label="SMTP Port", value=465)
                     smtp_ssl = gr.Checkbox(label="Use SSL", value=True)
                     smtp_start_ssl = gr.Checkbox(label="Start SSL", value=False)
@@ -201,11 +204,11 @@ def create_ui():  # noqa: C901
                             smtp_password,
                         )
 
-                    if not imap_host or not smtp_host:
+                    if not imap_host:
                         # Get account list update
                         account_md, account_choices, btn_visible = update_account_list()
                         return (
-                            "Error: IMAP and SMTP hosts are required.",
+                            "Error: IMAP host is required.",
                             account_md,
                             account_choices,
                             btn_visible,
