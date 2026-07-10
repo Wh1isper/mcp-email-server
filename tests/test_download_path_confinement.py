@@ -38,16 +38,37 @@ class TestResolveDownloadPath:
         with pytest.raises(PermissionError, match="outside the permitted download"):
             _resolve_download_path("../escape.txt", root)
 
-    def test_symlink_escape_rejected(self, tmp_path):
+    def test_intermediate_symlink_escape_rejected(self, tmp_path):
         real = Path(os.path.realpath(tmp_path))
         root = real / "downloads"
         root.mkdir()
         outside = real / "outside"
         outside.mkdir()
-        # A symlink inside root pointing outside must not become a write channel.
+        # A symlink DIR inside root pointing outside must not become a write channel.
         (root / "link").symlink_to(outside)
         with pytest.raises(PermissionError, match="outside the permitted download"):
             _resolve_download_path(str(root / "link" / "pwned.txt"), root)
+
+    def test_final_component_symlink_escape_rejected(self, tmp_path):
+        # Regression: a symlink AT the target path (final component) pointing outside
+        # root previously slipped through because only the parent was canonicalised.
+        real = Path(os.path.realpath(tmp_path))
+        root = real / "downloads"
+        root.mkdir()
+        secret = real / "secret"
+        secret.mkdir()
+        (root / "authorized_keys").symlink_to(secret / "authorized_keys")
+        with pytest.raises(PermissionError, match="outside the permitted download"):
+            _resolve_download_path(str(root / "authorized_keys"), root)
+
+    def test_final_component_symlink_within_root_allowed(self, tmp_path):
+        # A symlink whose target stays inside root is fine; it resolves in-bounds.
+        real = Path(os.path.realpath(tmp_path))
+        root = real / "downloads"
+        (root / "sub").mkdir(parents=True)
+        (root / "alias").symlink_to(root / "sub" / "real.bin")
+        resolved = _resolve_download_path(str(root / "alias"), root)
+        assert resolved == root / "sub" / "real.bin"
 
     def test_symlinked_root_itself_is_canonicalised(self, tmp_path):
         # If the root is reached via a symlink, a save under it still validates.
@@ -57,9 +78,18 @@ class TestResolveDownloadPath:
         result = _resolve_download_path(str(actual / "a.bin"), actual)
         assert result == actual / "a.bin"
 
-    def test_root_itself_allowed(self, tmp_path):
+    def test_root_itself_rejected(self, tmp_path):
+        # save_path must name a file, not the download directory itself (avoids a
+        # later IsADirectoryError on write).
         root = Path(os.path.realpath(tmp_path))
-        assert _resolve_download_path(str(root), root) == root
+        with pytest.raises(PermissionError, match="must name a file"):
+            _resolve_download_path(str(root), root)
+
+    @pytest.mark.parametrize("empty", ["", ".", "./"])
+    def test_empty_or_dot_path_rejected(self, tmp_path, empty):
+        root = Path(os.path.realpath(tmp_path))
+        with pytest.raises(PermissionError, match="must name a file"):
+            _resolve_download_path(empty, root)
 
 
 class TestAttachmentDownloadRootConfig:

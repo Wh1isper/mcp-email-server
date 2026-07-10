@@ -6,7 +6,12 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp_email_server import app as app_module
 from mcp_email_server.app import MAX_EMAIL_IDS_PER_CALL, MAX_PAGE_SIZE
 from mcp_email_server.config import EmailServer
-from mcp_email_server.emails.classic import MAX_ATTACHMENT_BYTES, EmailClient
+from mcp_email_server.emails.classic import (
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_COUNT,
+    MAX_TOTAL_ATTACHMENT_BYTES,
+    EmailClient,
+)
 
 
 class TestToolInputCeilings:
@@ -67,5 +72,39 @@ class TestAttachmentSizeCap:
         ok.write_bytes(b"x" * 16)
         assert email_client._validate_attachment(str(ok)).name == "ok.bin"
 
-    def test_default_cap_is_25_mib(self):
+    def test_default_caps(self):
         assert MAX_ATTACHMENT_BYTES == 25 * 1024 * 1024
+        assert MAX_TOTAL_ATTACHMENT_BYTES == 50 * 1024 * 1024
+        assert MAX_ATTACHMENT_COUNT == 50
+
+
+class TestAggregateAttachmentCaps:
+    def test_too_many_attachments_rejected(self, email_client, tmp_path, monkeypatch):
+        monkeypatch.setattr("mcp_email_server.emails.classic.MAX_ATTACHMENT_COUNT", 3)
+        files = []
+        for i in range(4):
+            f = tmp_path / f"f{i}.bin"
+            f.write_bytes(b"x")
+            files.append(str(f))
+        with pytest.raises(ValueError, match="Too many attachments"):
+            email_client._create_message_with_attachments("body", False, files)
+
+    def test_total_size_over_limit_rejected(self, email_client, tmp_path, monkeypatch):
+        monkeypatch.setattr("mcp_email_server.emails.classic.MAX_TOTAL_ATTACHMENT_BYTES", 1000)
+        files = []
+        for i in range(3):
+            f = tmp_path / f"f{i}.bin"
+            f.write_bytes(b"x" * 600)  # 3 * 600 = 1800 > 1000
+            files.append(str(f))
+        with pytest.raises(ValueError, match="Total attachment size"):
+            email_client._create_message_with_attachments("body", False, files)
+
+    def test_within_aggregate_limits_ok(self, email_client, tmp_path):
+        files = []
+        for i in range(2):
+            f = tmp_path / f"f{i}.bin"
+            f.write_bytes(b"x" * 16)
+            files.append(str(f))
+        msg = email_client._create_message_with_attachments("body", False, files)
+        # text part + 2 attachments
+        assert len(msg.get_payload()) == 3

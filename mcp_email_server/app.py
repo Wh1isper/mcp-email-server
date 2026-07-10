@@ -49,23 +49,26 @@ def _resolve_download_path(save_path: str, root: Path) -> Path:
     """Resolve save_path and confine it within root, resolving symlinks.
 
     Relative paths resolve under root; absolute paths must already be within it.
-    A symlink component pointing outside root is caught because the parent is
-    canonicalised with realpath before the containment check. Raises
-    PermissionError on any path that escapes root.
+    The FULL candidate is canonicalised with realpath — including the final
+    component — so a symlink planted at the target path can't redirect the write
+    outside root. Raises PermissionError on any path that escapes root, or on a
+    path with no filename component.
     """
     candidate = Path(save_path).expanduser()
     if not candidate.is_absolute():
         candidate = root / candidate
-    # The target file need not exist yet (write happens later), so canonicalise the
-    # parent — which resolves any symlinks along the existing prefix — then re-attach
-    # the final component and check containment against the canonical root.
-    resolved = Path(os.path.realpath(candidate.parent)) / candidate.name
+    # realpath resolves symlinks in every component (the final one too); a
+    # non-existent trailing name is simply normalised, so a not-yet-created target
+    # still validates. This is what closes final-component symlink escapes.
+    resolved = Path(os.path.realpath(candidate))
     if not resolved.is_relative_to(root):
         raise PermissionError(
             f"Attachment save_path {save_path!r} resolves outside the permitted download "
             f"directory {root}. Set 'attachment_download_dir' (or "
             "MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR) to permit it."
         )
+    if resolved == root or not resolved.name:
+        raise PermissionError(f"Attachment save_path {save_path!r} must name a file, not the download directory.")
     return resolved
 
 
@@ -369,7 +372,7 @@ async def send_email(
     ] = None,
 ) -> str:
     _reject_crlf([*recipients, *(cc or []), *(bcc or [])], "Recipient address")
-    _reject_crlf([in_reply_to, references, reply_to], "Header value")
+    _reject_crlf([subject, in_reply_to, references, reply_to], "Header value")
     _reject_crlf(attachments or [], "Attachment path")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
@@ -450,7 +453,7 @@ async def save_to_mailbox(
     ] = None,
 ) -> str:
     _reject_crlf([*recipients, *(cc or []), *(bcc or [])], "Recipient address")
-    _reject_crlf([in_reply_to, references], "Header value")
+    _reject_crlf([subject, in_reply_to, references], "Header value")
     _reject_crlf(attachments or [], "Attachment path")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)

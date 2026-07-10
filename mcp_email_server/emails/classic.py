@@ -3,6 +3,7 @@ import base64
 import binascii
 import email.utils
 import mimetypes
+import os
 import re
 import ssl
 import time
@@ -36,9 +37,15 @@ from mcp_email_server.log import logger
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
 
-# Maximum size of a single attachment, inbound (download) or outbound (send),
-# in bytes. Guards against reading a multi-GB file fully into memory.
+# Maximum size of a single attachment, in bytes. On the outbound (send) path the
+# file is stat'd before it is read, so this genuinely caps memory. On the inbound
+# (download) path the message is already fetched, so this bounds what is written to
+# disk (it does not prevent the fetch itself from loading the message into memory).
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+# Aggregate cap across all attachments on a single outbound message.
+MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024
+MAX_ATTACHMENT_COUNT = 50
 
 # Common Archive folder names, used as a fallback when no RFC 6154 \Archive flag is found.
 _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
@@ -1222,10 +1229,16 @@ class EmailClient:
                 logger.error(msg)
                 raise ValueError(msg)
 
-            # Save to disk
+            # Save to disk. save_path is already confined to the download root by
+            # app._resolve_download_path; O_NOFOLLOW additionally refuses to follow a
+            # symlink swapped into the final component after that check (TOCTOU), and
+            # the attachment lands owner-only.
             save_file = Path(save_path)
             save_file.parent.mkdir(parents=True, exist_ok=True)
-            save_file.write_bytes(attachment_data)
+            open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(save_file, open_flags, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(attachment_data)
 
             logger.info(f"Attachment '{attachment_name}' saved to {save_path}")
 
@@ -1284,16 +1297,31 @@ class EmailClient:
 
     def _create_message_with_attachments(self, body: str, html: bool, attachments: list[str]) -> MIMEMultipart:
         """Create multipart message with attachments."""
+        if len(attachments) > MAX_ATTACHMENT_COUNT:
+            msg = f"Too many attachments: {len(attachments)} (max {MAX_ATTACHMENT_COUNT})"
+            logger.error(msg)
+            raise ValueError(msg)
+
         msg = MIMEMultipart()
         content_type = "html" if html else "plain"
         text_part = MIMEText(body, content_type, "utf-8")
         msg.attach(text_part)
 
+        total_bytes = 0
         for file_path in attachments:
             try:
                 path = self._validate_attachment(file_path)
-                attachment_part = self._create_attachment_part(path)
-                msg.attach(attachment_part)
+                size = path.stat().st_size
+            except Exception as e:
+                logger.error(f"Failed to attach file {file_path}: {e}")
+                raise
+            total_bytes += size
+            if total_bytes > MAX_TOTAL_ATTACHMENT_BYTES:
+                # Checked via stat before the file is read, so an over-limit set is
+                # rejected without loading the offending file into memory.
+                raise ValueError(f"Total attachment size exceeds the {MAX_TOTAL_ATTACHMENT_BYTES}-byte limit")
+            try:
+                msg.attach(self._create_attachment_part(path))
             except Exception as e:
                 logger.error(f"Failed to attach file {file_path}: {e}")
                 raise

@@ -48,6 +48,17 @@ class TestSendEmailCrlf:
         handler.send_email.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_email_rejects_crlf_subject(self):
+        handler = AsyncMock()
+        with (
+            patch("mcp_email_server.app.get_settings", return_value=_mock_send_settings()),
+            patch("mcp_email_server.app.dispatch_handler", return_value=handler),
+        ):
+            with pytest.raises(ValueError, match="must not contain newline"):
+                await send_email(account_name="a", recipients=["a@b.com"], subject="Hi\r\nBcc: evil@x.com", body="b")
+        handler.send_email.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_send_email_clean_passes(self):
         handler = AsyncMock()
         with (
