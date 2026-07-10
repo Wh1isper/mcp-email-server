@@ -598,7 +598,13 @@ class Settings(BaseSettings):
             if failures:
                 if effective == "keyring":
                     detail = "; ".join(f"{name}:{role} ({err})" for name, role, err in failures)
-                    raise ValueError(f"Failed to store credential(s) in the OS keyring: {detail}")
+                    raise ValueError(
+                        f"Failed to store credential(s) in the OS keyring: {detail}. "
+                        "An entry may already exist but be owned by a different application "
+                        "(e.g. a previous install path). Remove the stale entries — on macOS: "
+                        f"`security delete-generic-password -s {keyring_store.SERVICE}` — and retry, "
+                        "or set credential_storage to 'auto' (falls back to plaintext) or 'plaintext'."
+                    )
                 logger.warning(
                     f"Keyring store failed for {len(failures)} credential(s) in auto mode; "
                     "falling back to plaintext for this write"

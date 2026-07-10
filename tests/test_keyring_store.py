@@ -755,3 +755,131 @@ def test_invalid_credential_storage_env_value_reset_still_unlinks(tmp_path, monk
 
     delete_settings()  # must not raise; warns and proceeds as non-plaintext
     assert not cfg.exists()
+
+
+# --- Recreate-on-owner-conflict: a keychain item created by a different install
+# (uvx vs `uv tool install`) is foreign-owned; macOS blocks modifying it
+# (errSecInvalidOwnerEdit, -25244). set_secret must delete + recreate it. ---
+class _ForeignOwnedThenOkKeyring(KeyringBackend):
+    """Modifying a pre-existing 'foreign-owned' key raises PasswordSetError; once
+    the key is deleted, a fresh set succeeds. Records set/delete calls."""
+
+    priority = 1
+
+    def __init__(self, foreign_keys):
+        super().__init__()
+        self._store: dict[tuple[str, str], str] = {}
+        self._foreign: set[tuple[str, str]] = set(foreign_keys)
+        self.set_calls: list[tuple[str, str]] = []
+        self.delete_calls: list[tuple[str, str]] = []
+
+    def set_password(self, service, username, password):
+        self.set_calls.append((service, username))
+        key = (service, username)
+        if key in self._foreign:
+            from keyring.errors import PasswordSetError
+
+            raise PasswordSetError("Can't store password on keychain: (-25244, 'Unknown Error')")
+        self._store[key] = password
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def delete_password(self, service, username):
+        self.delete_calls.append((service, username))
+        key = (service, username)
+        self._foreign.discard(key)  # deleting clears the foreign-owned lock
+        self._store.pop(key, None)
+
+
+def _install_backend(backend):
+    import keyring
+
+    previous = keyring.get_keyring()
+    keyring.set_keyring(backend)
+    keyring_store.keyring_usable.cache_clear()
+    return previous
+
+
+def _restore_backend(previous):
+    import keyring
+
+    keyring.set_keyring(previous)
+    keyring_store.keyring_usable.cache_clear()
+
+
+def test_set_secret_recreates_foreign_owned_entry():
+    backend = _ForeignOwnedThenOkKeyring({(SERVICE, "acct1:incoming")})
+    previous = _install_backend(backend)
+    try:
+        keyring_store.set_secret("acct1", "incoming", "hunter2")
+    finally:
+        _restore_backend(previous)
+    assert backend.get_password(SERVICE, "acct1:incoming") == "hunter2"
+    assert (SERVICE, "acct1:incoming") in backend.delete_calls
+    assert len(backend.set_calls) == 2  # failed modify + successful recreate
+
+
+def test_set_secret_recovers_even_when_delete_raises():
+    from keyring.errors import PasswordDeleteError
+
+    class _DeleteRaisesThenOk(_ForeignOwnedThenOkKeyring):
+        def delete_password(self, service, username):
+            self.delete_calls.append((service, username))
+            self._foreign.discard((service, username))
+            raise PasswordDeleteError("nothing to delete")
+
+    backend = _DeleteRaisesThenOk({(SERVICE, "acct1:incoming")})
+    previous = _install_backend(backend)
+    try:
+        keyring_store.set_secret("acct1", "incoming", "hunter2")
+    finally:
+        _restore_backend(previous)
+    assert backend.get_password(SERVICE, "acct1:incoming") == "hunter2"
+
+
+def test_set_secret_propagates_when_recreate_still_fails():
+    from keyring.errors import PasswordSetError
+
+    class _AlwaysForeign(_ForeignOwnedThenOkKeyring):
+        def delete_password(self, service, username):  # never clears the foreign lock
+            self.delete_calls.append((service, username))
+
+    backend = _AlwaysForeign({(SERVICE, "acct1:incoming")})
+    previous = _install_backend(backend)
+    try:
+        with pytest.raises(PasswordSetError):
+            keyring_store.set_secret("acct1", "incoming", "hunter2")
+    finally:
+        _restore_backend(previous)
+    assert len(backend.set_calls) == 2  # tried twice, still failed
+
+
+def test_keyring_mode_error_message_is_actionable(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "keyring")
+    cfg = _bind(tmp_path, monkeypatch)
+
+    class _AlwaysForeign(_ForeignOwnedThenOkKeyring):
+        def delete_password(self, service, username):
+            self.delete_calls.append((service, username))
+
+    backend = _AlwaysForeign({(SERVICE, "acct1:incoming")})
+    previous = _install_backend(backend)
+    try:
+        settings = Settings()
+        settings.add_email(
+            EmailSettings.init(
+                account_name="acct1",
+                full_name="Test",
+                email_address="a@example.com",
+                user_name="a",
+                password="hunter2",
+                imap_host="imap.example.com",
+            )
+        )
+        with pytest.raises(ValueError, match="security delete-generic-password"):
+            settings.store()
+        # Keyring mode raises before falling back, so no plaintext secret is written.
+        assert not cfg.exists() or "hunter2" not in cfg.read_text()
+    finally:
+        _restore_backend(previous)

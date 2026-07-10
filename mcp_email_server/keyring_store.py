@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Iterable
 from functools import lru_cache
@@ -44,8 +45,27 @@ def keyring_usable() -> bool:
 
 def set_secret(account_name: str, role: str, value: str) -> None:
     import keyring
+    from keyring.errors import PasswordDeleteError, PasswordSetError
 
-    keyring.set_password(SERVICE, _entry_key(account_name, role), value)
+    key = _entry_key(account_name, role)
+    try:
+        keyring.set_password(SERVICE, key, value)
+    except PasswordSetError:
+        # The entry may already exist but be owned by a *different* application —
+        # e.g. an earlier install at another path (`uvx` vs `uv tool install`), or a
+        # differently-signed interpreter. macOS refuses to modify a foreign-owned
+        # item (errSecInvalidOwnerEdit, -25244). Delete the stale item so we can
+        # recreate one owned by the current process, then retry once. If the retry
+        # still fails (or the delete was itself blocked), the error propagates to the
+        # caller, which records it as a store failure.
+        logger.warning(
+            f"Keyring set for '{key}' failed; deleting any pre-existing entry and retrying "
+            "(it was likely created by a different install of this tool)."
+        )
+        # nothing to delete, or delete itself blocked — let the retry surface any error
+        with contextlib.suppress(PasswordDeleteError):
+            keyring.delete_password(SERVICE, key)
+        keyring.set_password(SERVICE, key, value)
 
 
 def get_secret(account_name: str, role: str) -> str | None:
