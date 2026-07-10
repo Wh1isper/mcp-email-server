@@ -202,19 +202,61 @@ Every MCP tool is gated behind a capability scope. **The default is `read`: a fr
 | `manage`   | `add_email_account` — writes credentials to disk/keyring, so treat it as server administration                                                 |
 | `full`     | Everything above, including `manage`                                                                                                           |
 
-Scopes are independent — grant any combination. For example, an assistant that reads mail, drafts replies, and sends them, but can never delete or move anything:
+Scopes are independent — grant any combination. For example, an assistant that reads mail, drafts replies, and sends them, but can never delete or move anything, is `["read", "draft", "send"]`.
+
+### Setting and changing scopes
+
+Scopes come from one of two places. If both are set, the **environment variable wins**.
+
+**1. Config file — persistent (recommended).** Edit the `permissions` line in your config TOML (`~/.config/zerolib/mcp_email_server/config.toml`, or wherever `MCP_EMAIL_SERVER_CONFIG_PATH` points):
 
 ```toml
 permissions = ["read", "draft", "send"]
 ```
 
-Or via environment variable (comma-separated, overrides the TOML at runtime and is **never** persisted back to the file):
+Save the file, then **restart your MCP client** — scopes are read when the server starts. To change them later, edit this same line and restart again. (If you configured the account entirely through environment variables and have no TOML file, use method 2 instead.)
 
-```
-MCP_EMAIL_SERVER_PERMISSIONS="read,draft,send"
-```
+**2. `MCP_EMAIL_SERVER_PERMISSIONS` environment variable — overrides the file.** Comma-separated (e.g. `read,draft,send`). It overrides whatever the TOML says and is **never written back** to the file, so it's the right choice for per-client or throwaway setups. Set it wherever your client defines the server's environment:
 
-Setting the environment variable to an empty string resets to the read-only default. Unknown scope names are rejected at startup.
+- **Claude Code CLI** — pass `-e` when adding the server:
+
+  ```bash
+  claude mcp add zerolib-email --scope user \
+    -e MCP_EMAIL_SERVER_PERMISSIONS=read,draft,send \
+    -- mcp-email-server stdio
+  ```
+
+  To change it later, remove and re-add with the new value (or edit the entry in your Claude config), then reconnect:
+
+  ```bash
+  claude mcp remove zerolib-email
+  claude mcp add zerolib-email --scope user \
+    -e MCP_EMAIL_SERVER_PERMISSIONS=read,organize \
+    -- mcp-email-server stdio
+  ```
+
+- **JSON `mcpServers` config** (Claude Desktop and similar) — add or edit it in the server's `env` block, then restart the app:
+
+  ```json
+  {
+    "mcpServers": {
+      "zerolib-email": {
+        "command": "uvx",
+        "args": ["mcp-email-server@latest", "stdio"],
+        "env": { "MCP_EMAIL_SERVER_PERMISSIONS": "read,draft,send" }
+      }
+    }
+  }
+  ```
+
+- **Docker** — add it under `environment:` (Compose) or `-e MCP_EMAIL_SERVER_PERMISSIONS=...` (`docker run`).
+
+Setting the variable to an empty string resets to the read-only default. Unknown scope names are rejected at startup.
+
+### After you change scopes
+
+- **Restart / reconnect the MCP client.** The server reads scopes once at startup, so a change only takes effect on the next launch.
+- **Verify what's active by the tools your client shows.** A scope you didn't grant hides its tools — e.g. without `delete`, `delete_emails` won't appear in the tool list — and calling a hidden tool anyway is rejected server-side, so visibility and enforcement always agree.
 
 > **Upgrade note:** versions without permission scopes exposed every tool unconditionally. To restore that behavior, set `permissions = ["full"]` (or `MCP_EMAIL_SERVER_PERMISSIONS=full`).
 
