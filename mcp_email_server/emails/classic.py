@@ -36,6 +36,10 @@ from mcp_email_server.log import logger
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
 
+# Maximum size of a single attachment, inbound (download) or outbound (send),
+# in bytes. Guards against reading a multi-GB file fully into memory.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
 # Common Archive folder names, used as a fallback when no RFC 6154 \Archive flag is found.
 _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
 
@@ -1058,6 +1062,23 @@ class EmailClient:
                 return bytes(item) if isinstance(item, bytearray) else item
         return None
 
+    def _find_attachment_in_message(self, email_message, attachment_name: str) -> tuple[bytes | None, str | None]:
+        """Return (data, mime_type) for the named attachment, or (None, None) if absent."""
+        normalized = self._normalize_attachment_name(attachment_name)
+        if not email_message.is_multipart():
+            return None, None
+        for part in email_message.walk():
+            # Match attachments listed by ``_parse_email_data`` — this includes
+            # inline-disposition parts with a filename (e.g. iOS Mail photos).
+            if not self._is_attachment_part(part):
+                continue
+            filename = part.get_filename()
+            if not isinstance(filename, str):
+                continue
+            if self._normalize_attachment_name(filename) == normalized:
+                return part.get_payload(decode=True), part.get_content_type()
+        return None, None
+
     async def _fetch_email_with_formats(self, imap, email_id: str) -> list | None:
         """Try non-mutating fetch formats to get email data."""
         fetch_formats = ["BODY.PEEK[]", "(BODY.PEEK[])"]
@@ -1186,27 +1207,18 @@ class EmailClient:
             parser = BytesParser(policy=default)
             email_message = parser.parsebytes(raw_email)
 
-            # Find the attachment
-            attachment_data = None
-            mime_type = None
-            normalized_attachment_name = self._normalize_attachment_name(attachment_name)
-
-            if email_message.is_multipart():
-                for part in email_message.walk():
-                    # Match attachments listed by ``_parse_email_data`` — this includes
-                    # inline-disposition parts with a filename (e.g. iOS Mail photos).
-                    if not self._is_attachment_part(part):
-                        continue
-                    filename = part.get_filename()
-                    if not isinstance(filename, str):
-                        continue
-                    if self._normalize_attachment_name(filename) == normalized_attachment_name:
-                        attachment_data = part.get_payload(decode=True)
-                        mime_type = part.get_content_type()
-                        break
+            attachment_data, mime_type = self._find_attachment_in_message(email_message, attachment_name)
 
             if attachment_data is None:
                 msg = f"Attachment '{attachment_name}' not found in email {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+            if len(attachment_data) > MAX_ATTACHMENT_BYTES:
+                msg = (
+                    f"Attachment '{attachment_name}' is {len(attachment_data)} bytes, "
+                    f"exceeding the {MAX_ATTACHMENT_BYTES}-byte limit"
+                )
                 logger.error(msg)
                 raise ValueError(msg)
 
@@ -1241,6 +1253,12 @@ class EmailClient:
 
         if not path.is_file():
             msg = f"Attachment path is not a file: {file_path}"
+            logger.error(msg)
+            raise ValueError(msg)
+
+        size = path.stat().st_size
+        if size > MAX_ATTACHMENT_BYTES:
+            msg = f"Attachment {file_path} is {size} bytes, exceeding the {MAX_ATTACHMENT_BYTES}-byte limit"
             logger.error(msg)
             raise ValueError(msg)
 

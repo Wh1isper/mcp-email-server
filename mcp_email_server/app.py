@@ -27,6 +27,10 @@ from mcp_email_server.emails.models import (
 
 ToolVisibilityPredicate = Callable[[], bool]
 
+# Resource-exhaustion ceilings on tool inputs (self-DoS guards).
+MAX_PAGE_SIZE = 500
+MAX_EMAIL_IDS_PER_CALL = 100
+
 
 def _has_send_capable_account() -> bool:
     settings = get_settings()
@@ -166,9 +170,12 @@ async def list_emails_metadata(
     account_name: Annotated[str, Field(description="The name of the email account.")],
     page: Annotated[
         int,
-        Field(default=1, description="The page number to retrieve (starting from 1)."),
+        Field(default=1, ge=1, description="The page number to retrieve (starting from 1)."),
     ] = 1,
-    page_size: Annotated[int, Field(default=10, description="The number of emails to retrieve per page.")] = 10,
+    page_size: Annotated[
+        int,
+        Field(default=10, ge=1, le=MAX_PAGE_SIZE, description="The number of emails to retrieve per page (max 500)."),
+    ] = 10,
     before: Annotated[
         datetime | None,
         Field(default=None, description="Retrieve emails before this datetime (UTC)."),
@@ -246,7 +253,10 @@ async def get_emails_content(
     email_ids: Annotated[
         list[str],
         Field(
-            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids."
+            min_length=1,
+            max_length=MAX_EMAIL_IDS_PER_CALL,
+            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single "
+            "email_id or multiple email_ids (max 100 per call).",
         ),
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
