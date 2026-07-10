@@ -335,6 +335,32 @@ If `docker` is avaliable, you can try use docker image, but you may need to conf
 }
 ```
 
+### Troubleshooting: `'ascii' codec can't encode characters` under GUI-launched MCP clients
+
+If every call to `send_email` (or other outgoing-mail tools) fails with an error like:
+
+```
+'ascii' codec can't encode characters in position 1-3: ordinal not in range(128)
+```
+
+Fix it by forcing a UTF-8 locale for the server process in your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "zerolib-email": {
+      "command": "uvx",
+      "args": ["mcp-email-server@latest", "stdio"],
+      "env": {
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+        "PYTHONIOENCODING": "UTF-8"
+      }
+    }
+  }
+}
+```
+
 ### Installing via Smithery
 
 To install Email Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@ai-zerolab/mcp-email-server):
