@@ -13,7 +13,16 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import tomli_w
-from pydantic import BaseModel, Field, PrivateAttr, SecretStr, SerializationInfo, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -31,6 +40,7 @@ else:
 
 DEFAULT_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
 _VALID_CREDENTIAL_STORAGE_MODES = ("auto", "keyring", "plaintext")
+_VALID_PERMISSION_SCOPES = ("read", "draft", "organize", "delete", "send", "manage", "full")
 
 # Set by Settings.load_for_migration() around construction so __init__ can skip
 # env-composited state (override pickup, env-account injection, allowlist/bool env
@@ -79,6 +89,17 @@ def _normalize_address_list(raw: Iterable[str]) -> list[str]:
 def _normalize_pattern_list(raw: Iterable[str]) -> list[str]:
     """Lowercase, strip, de-duplicate (order-preserving). Glob characters are preserved."""
     return list(dict.fromkeys(p.strip().lower() for p in raw if p.strip()))
+
+
+def _normalize_scope_list(raw: Iterable[str]) -> list[str]:
+    """Lowercase, strip, de-duplicate (order-preserving); reject unknown scope names."""
+    scopes = list(dict.fromkeys(s.strip().lower() for s in raw if s.strip()))
+    unknown = [s for s in scopes if s not in _VALID_PERMISSION_SCOPES]
+    if unknown:
+        raise ValueError(
+            f"Unknown permission scope(s): {', '.join(unknown)}; valid scopes are {', '.join(_VALID_PERMISSION_SCOPES)}"
+        )
+    return scopes
 
 
 def _reject_sentinel_secret(secret: SecretStr, label: str) -> None:
@@ -321,14 +342,21 @@ class Settings(BaseSettings):
     enable_attachment_download: bool = False
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
+    # Capability scopes gating which MCP tools are exposed/callable. Default is
+    # read-only; "full" grants everything. See Settings.has_scope for semantics.
+    permissions: list[str] = ["read"]
     report_blocked_mutations: bool = False
     credential_storage: Literal["auto", "keyring", "plaintext"] = "auto"
 
-    # Env-var override for credential_storage. Kept separate from the loaded field
-    # so environment precedence is explicit. A later store serializes the effective
-    # value because the override controls the credential representation written to
-    # that same file; persisting the old mode would make the file self-contradictory.
+    # Env-var overrides kept off the persisted fields so a later store() never
+    # bakes a temporary override into the TOML (unlike the bool overrides below,
+    # which intentionally do persist). For permissions this matters doubly:
+    # persisting an env-granted "full" would silently escalate the on-disk config.
+    # _credential_storage_override controls the credential representation written
+    # to the file, so store() serializes the effective value rather than the old
+    # mode, which would otherwise make the file self-contradictory.
     _credential_storage_override: str | None = PrivateAttr(default=None)
+    _permissions_override: list[str] | None = PrivateAttr(default=None)
     _loaded_keyring_references: set[tuple[str, str]] = PrivateAttr(default_factory=set)
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
@@ -341,6 +369,27 @@ class Settings(BaseSettings):
         store() maps "auto" to a concrete backend via keyring_store.keyring_usable().
         """
         return self._credential_storage_override or self.credential_storage
+
+    @field_validator("permissions")
+    @classmethod
+    def _validate_permissions(cls, v: list[str]) -> list[str]:
+        """Normalize and reject unknown scopes on TOML load and on assignment."""
+        return _normalize_scope_list(v)
+
+    @property
+    def effective_permissions(self) -> list[str]:
+        """The scopes that actually govern tool access: env override, else the field."""
+        return self._permissions_override or self.permissions
+
+    def has_scope(self, scope: str) -> bool:
+        """Return True if the given capability scope is granted.
+
+        "read" is always granted; "full" grants every scope (including "manage").
+        """
+        granted = self.effective_permissions
+        if scope == "read" or "full" in granted:
+            return True
+        return scope in granted
 
     def _apply_bool_env_override(self, attr: str, env_var: str) -> None:
         value = os.getenv(env_var)
@@ -402,6 +451,13 @@ class Settings(BaseSettings):
         env_senders = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
         if env_senders is not None:
             self.allowed_senders = _normalize_pattern_list(env_senders.split(","))
+
+        # Environment variable overrides TOML (comma-separated); an empty string
+        # resets to the read-only default. Held in a PrivateAttr (not the field)
+        # so store() never persists the override.
+        env_permissions = os.getenv("MCP_EMAIL_SERVER_PERMISSIONS")
+        if env_permissions is not None:
+            self._permissions_override = _normalize_scope_list(env_permissions.split(",")) or ["read"]
 
         self._inject_env_account()
 

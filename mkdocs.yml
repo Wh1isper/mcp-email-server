@@ -9,6 +9,7 @@ copyright: Maintained by <a href="https://ai-zerolab.com">ai-zerolab</a>.
 
 nav:
   - Home: index.md
+  - Installation & Configuration: installation.md
   - Modules: modules.md
 plugins:
   - search

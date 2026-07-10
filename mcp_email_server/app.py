@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 from datetime import datetime
 from email.utils import getaddresses
@@ -36,6 +37,34 @@ def _has_allowed_recipients() -> bool:
 
 def _has_allowed_senders() -> bool:
     return bool(get_settings().allowed_senders)
+
+
+def _scope_granted(scope: str) -> bool:
+    return get_settings().has_scope(scope)
+
+
+def _scope_visible(scope: str) -> ToolVisibilityPredicate:
+    return lambda: _scope_granted(scope)
+
+
+def _require_scope(scope: str) -> None:
+    """Call-time enforcement backing the visibility predicates.
+
+    Hiding a tool from list_tools() is cosmetic — a client can still invoke it by
+    name — so every scoped tool re-checks its scope here.
+    """
+    if not _scope_granted(scope):
+        raise PermissionError(
+            f"Permission scope '{scope}' is not granted. Add '{scope}' (or 'full') to the "
+            "'permissions' list in the config file or the MCP_EMAIL_SERVER_PERMISSIONS "
+            "environment variable."
+        )
+
+
+def _is_drafts_mailbox(mailbox: str) -> bool:
+    """True if the mailbox's leaf name is a drafts folder (e.g. Drafts, INBOX.Drafts, [Gmail]/Drafts)."""
+    leaf = re.split(r"[./]", mailbox)[-1].strip().strip('"').lower()
+    return leaf in ("draft", "drafts")
 
 
 def _enforce_recipient_allowlist(
@@ -101,8 +130,12 @@ async def list_available_accounts() -> list[AccountAttributes]:
     return [account.masked() for account in settings.get_accounts()]
 
 
-@mcp.tool(description="Add a new email account configuration to the settings.")
+@mcp.tool(
+    description="Add a new email account configuration to the settings. Requires the 'manage' permission scope.",
+    visible_if=_scope_visible("manage"),
+)
 async def add_email_account(email: EmailSettings) -> str:
+    _require_scope("manage")
     settings = get_settings()
     try:
         settings.add_email(email)
@@ -239,6 +272,10 @@ async def get_emails_content(
         ),
     ] = 20000,
 ) -> EmailContentBatchResponse:
+    # mark_as_read is a flag mutation smuggled into a read tool; hold it to the
+    # same scope as mark_emails_as_read.
+    if mark_as_read:
+        _require_scope("organize")
     handler = dispatch_handler(account_name)
     return await handler.get_emails_content(email_ids, mailbox, mark_as_read, body_offset, max_body_length)
 
@@ -270,7 +307,7 @@ async def list_allowed_senders() -> list[str]:
 
 @mcp.tool(
     description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
-    visible_if=_has_send_capable_account,
+    visible_if=lambda: _scope_granted("send") and _has_send_capable_account(),
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -318,6 +355,7 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
+    _require_scope("send")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     await handler.send_email(
@@ -341,7 +379,10 @@ async def send_email(
     description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
     "Same parameters as send_email, but saves instead of sending. "
     "Default folder is Drafts with \\Draft and \\Seen flags. "
-    "Pure IMAP operation — works without SMTP configuration.",
+    "Pure IMAP operation — works without SMTP configuration. "
+    "With only the 'draft' permission scope, the target folder is restricted to drafts-type "
+    "folders; the 'organize' scope lifts that restriction.",
+    visible_if=lambda: _scope_granted("draft"),
 )
 async def save_to_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -396,6 +437,12 @@ async def save_to_mailbox(
         ),
     ] = None,
 ) -> str:
+    _require_scope("draft")
+    if not _scope_granted("organize") and not _is_drafts_mailbox(mailbox):
+        raise PermissionError(
+            f"With only the 'draft' scope, save_to_mailbox may target only drafts-type folders, "
+            f"not '{mailbox}'. Grant the 'organize' scope to save to arbitrary folders."
+        )
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     result = await handler.save_to_mailbox(
@@ -419,7 +466,8 @@ async def save_to_mailbox(
 
 
 @mcp.tool(
-    description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
+    description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id.",
+    visible_if=_scope_visible("delete"),
 )
 async def delete_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -429,6 +477,7 @@ async def delete_emails(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to delete emails from.")] = "INBOX",
 ) -> str:
+    _require_scope("delete")
     handler = dispatch_handler(account_name)
     deleted_ids, failed_ids = await handler.delete_emails(email_ids, mailbox)
 
@@ -439,7 +488,8 @@ async def delete_emails(
 
 
 @mcp.tool(
-    description="Mark one or more emails as read by their email_id. Use list_emails_metadata first to get the email_id."
+    description="Mark one or more emails as read by their email_id. Use list_emails_metadata first to get the email_id.",
+    visible_if=_scope_visible("organize"),
 )
 async def mark_emails_as_read(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -449,6 +499,7 @@ async def mark_emails_as_read(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
 ) -> str:
+    _require_scope("organize")
     handler = dispatch_handler(account_name)
     marked_ids, failed_ids = await handler.mark_emails_as_read(email_ids, mailbox)
 
@@ -459,7 +510,8 @@ async def mark_emails_as_read(
 
 
 @mcp.tool(
-    description="Move one or more emails between IMAP folders by their email_id. Use list_emails_metadata first to get the email_id and list_mailboxes to discover available folders."
+    description="Move one or more emails between IMAP folders by their email_id. Use list_emails_metadata first to get the email_id and list_mailboxes to discover available folders.",
+    visible_if=_scope_visible("organize"),
 )
 async def move_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -472,6 +524,7 @@ async def move_emails(
         str, Field(default="INBOX", description="The source mailbox containing the emails.")
     ] = "INBOX",
 ) -> str:
+    _require_scope("organize")
     handler = dispatch_handler(account_name)
     moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
 
@@ -484,7 +537,8 @@ async def move_emails(
 @mcp.tool(
     description="Archive one or more emails by moving them to the account's Archive folder, "
     "auto-detected via the RFC 6154 \\Archive flag (falling back to common names like Archive or "
-    "[Gmail]/All Mail). Use list_emails_metadata first to get the email_id."
+    "[Gmail]/All Mail). Use list_emails_metadata first to get the email_id.",
+    visible_if=_scope_visible("organize"),
 )
 async def archive_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -494,6 +548,7 @@ async def archive_emails(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox containing the emails.")] = "INBOX",
 ) -> str:
+    _require_scope("organize")
     handler = dispatch_handler(account_name)
     archived_ids, failed_ids, archive_folder = await handler.archive_emails(email_ids, mailbox)
 
