@@ -137,7 +137,7 @@ def create_ui():  # noqa: C901
                     gr.Markdown("### SMTP Settings")
                     smtp_host = gr.Textbox(
                         label="SMTP Host (optional)",
-                        placeholder="e.g. smtp.example.com — leave empty for a read-only IMAP account",
+                        placeholder="e.g. smtp.example.com — leave empty for an IMAP-only account",
                     )
                     smtp_port = gr.Number(label="SMTP Port", value=465)
                     smtp_ssl = gr.Checkbox(label="Use SSL", value=True)
