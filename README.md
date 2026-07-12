@@ -105,10 +105,10 @@ account's secrets move into the keyring on the next save.
   (`keyring --list-backends`) stores secrets securely.
 - **Keyring and TOML writes are not transactional**: a save pushes secrets to
   the keyring and then rewrites the TOML. The TOML rewrite is atomic on its own
-  (temp file + `os.replace`), but a crash *between* the two steps can leave a
+  (temp file + `os.replace`), but a crash _between_ the two steps can leave a
   keyring entry with no matching config reference (an orphaned secret), or a
   config reference whose keyring write partly failed. `migrate-credentials --to
-  plaintext` reports keyring entries it could not remove so you can clean them
+plaintext` reports keyring entries it could not remove so you can clean them
   up manually.
 
 ### Environment Variable Configuration
