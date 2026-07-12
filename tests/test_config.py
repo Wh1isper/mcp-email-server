@@ -1,5 +1,6 @@
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -476,6 +477,88 @@ def test_store_tightens_preexisting_permissions(tmp_path, monkeypatch):
         assert mode == 0o600
     finally:
         config_module._settings = None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+def test_store_never_exposes_new_content_in_world_readable_file(tmp_path, monkeypatch):
+    """Regression for the permission-window blocker: the *new* credentials must
+    never exist in a world-readable file, not even transiently. Verifies the
+    write ORDER (temp file is 0600 before the atomic swap; the destination still
+    holds the OLD content at swap time) rather than only the final mode.
+    """
+    import os
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("report_blocked_mutations = false\n")  # pre-existing content...
+    cfg.chmod(0o644)  # ...in a world-readable file
+
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+
+    observations = {}
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        # At swap time: the temp source must already be owner-only, and the
+        # destination must still be the old (world-readable) file untouched.
+        observations["src_mode"] = stat.S_IMODE(os.stat(src).st_mode)
+        observations["dst_mode"] = stat.S_IMODE(os.stat(dst).st_mode)
+        observations["dst_content"] = Path(dst).read_text()
+        observations["src_content"] = Path(src).read_text()
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(config_module.os, "replace", spy_replace)
+    try:
+        settings = config_module.get_settings(reload=True)
+        settings.report_blocked_mutations = True  # make the new content differ from the old
+        settings.store()
+    finally:
+        config_module._settings = None
+
+    # The temp file the new content was written to was 0600 from the start...
+    assert observations["src_mode"] == 0o600
+    assert "report_blocked_mutations = true" in observations["src_content"]
+    # ...while the destination still held the OLD 0644 content up to the swap.
+    assert observations["dst_mode"] == 0o644
+    assert observations["dst_content"] == "report_blocked_mutations = false\n"
+    # Final state: atomically replaced, owner-only.
+    assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+def test_store_failed_write_leaves_original_intact(tmp_path, monkeypatch):
+    """If the write fails mid-way, the atomic-replace approach must leave the
+    previous config (and its permissions) untouched, with no temp file left behind.
+    """
+
+    import mcp_email_server.config as config_module
+    from mcp_email_server.config import Settings
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("report_blocked_mutations = false\n")
+    cfg.chmod(0o600)
+    monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    config_module._settings = None
+
+    def boom(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(config_module.os, "replace", boom)
+    try:
+        settings = config_module.get_settings(reload=True)
+        with pytest.raises(OSError, match="simulated replace failure"):
+            settings.store()
+    finally:
+        config_module._settings = None
+
+    # Original file untouched; no stray temp files left in the directory.
+    assert cfg.read_text() == "report_blocked_mutations = false\n"
+    assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+    leftover = [p.name for p in tmp_path.iterdir() if p.name != "config.toml"]
+    assert leftover == [], f"temp files left behind: {leftover}"
 
 
 def test_store_non_posix_falls_back_to_plain_write(tmp_path, monkeypatch):

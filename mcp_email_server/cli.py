@@ -4,9 +4,9 @@ import os
 import typer
 from mcp.server.transport_security import TransportSecuritySettings
 
+from mcp_email_server import keyring_store
 from mcp_email_server.app import mcp
 from mcp_email_server.config import Settings, delete_settings
-from mcp_email_server.keyring_store import delete_account_credentials
 
 app = typer.Typer()
 
@@ -157,6 +157,40 @@ def reset():
     typer.echo("✅ Config reset")
 
 
+def _purge_keyring_after_plaintext_migration(settings: Settings) -> list[str]:
+    """Delete every account's keyring entries after migrating them to plaintext.
+
+    Live secrets would otherwise sit in the keyring forever after a permanent
+    migration away from it; this is the one sanctioned exception to "plaintext mode
+    never touches the keyring" since it's explicit and user-invoked. Deletion is
+    best-effort and backend-dependent, so each entry is confirmed gone: a
+    still-readable entry means a live secret was left behind, and its
+    ``account:role`` id is returned so the caller can report it rather than hide it
+    under the success message.
+    """
+    orphaned: list[str] = []
+
+    def _purge(account_name: str, role: str) -> None:
+        keyring_store.delete_secret(account_name, role)
+        try:
+            still_present = keyring_store.get_secret(account_name, role) is not None
+        except Exception:
+            # No usable backend (e.g. NoKeyringError) or the entry is unreadable —
+            # there is nothing we can positively confirm is still stored, so don't
+            # cry wolf. Only a definitely-still-readable secret is a real orphan.
+            still_present = False
+        if still_present:
+            orphaned.append(f"{account_name}:{role}")
+
+    for email in settings.emails:
+        _purge(email.account_name, "incoming")
+        if email.outgoing:
+            _purge(email.account_name, "outgoing")
+    for provider in settings.providers:
+        _purge(provider.account_name, "api_key")
+    return orphaned
+
+
 @app.command(name="migrate-credentials")
 def migrate_credentials(
     to: CredentialStorageTarget = typer.Option(  # noqa: B008 (standard typer idiom)
@@ -194,20 +228,17 @@ def migrate_credentials(
         typer.echo(f"Error: migration to '{target}' failed: {e}", err=True)
         raise typer.Exit(code=1) from e
 
-    if target == "plaintext":
-        # Live secrets would otherwise sit in the keyring forever after a permanent
-        # migration away from it; this is the one sanctioned exception to "plaintext
-        # mode never touches the keyring" since it's explicit and user-invoked.
-        for email in settings.emails:
-            roles = ["incoming"]
-            if email.outgoing:
-                roles.append("outgoing")
-            delete_account_credentials(email.account_name, roles)
-        for provider in settings.providers:
-            delete_account_credentials(provider.account_name, ["api_key"])
+    orphaned = _purge_keyring_after_plaintext_migration(settings) if target == "plaintext" else []
 
     total = len(settings.emails) + len(settings.providers)
     typer.echo(f"✅ Migrated {total} account(s) to '{target}' storage")
+    if orphaned:
+        typer.echo(
+            "Warning: the plaintext copy was written, but these keyring entries could not be "
+            f"confirmed removed and may still hold live secrets: {', '.join(orphaned)}. Remove "
+            f"them manually — on macOS: `security delete-generic-password -s {keyring_store.SERVICE}`.",
+            err=True,
+        )
 
 
 if __name__ == "__main__":

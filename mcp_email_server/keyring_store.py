@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 from collections.abc import Iterable
 from functools import lru_cache
 
@@ -43,6 +44,29 @@ def keyring_usable() -> bool:
     return ok
 
 
+# macOS Keychain OSStatus errSecInvalidOwnerEdit: the item exists but is owned by
+# a *different* application, so the current process may read it but not overwrite
+# it. The macOS keyring backend embeds this raw status in the PasswordSetError
+# message (e.g. "Can't store password on keychain: (-25244, 'Unknown Error')").
+_OWNER_EDIT_STATUS = "-25244"
+# Match the status as a standalone integer token, not a bare substring: guards
+# against false positives from a longer number (e.g. -252440), an account name or
+# byte count that happens to contain the digits, etc. Any such misclassification
+# would trigger the destructive delete-and-recreate path on an unrelated failure.
+_OWNER_EDIT_RE = re.compile(rf"(?<!\d){_OWNER_EDIT_STATUS}(?!\d)")
+
+
+def _is_owner_edit_conflict(error: Exception) -> bool:
+    """True only for the macOS foreign-owner conflict (errSecInvalidOwnerEdit).
+
+    Only this specific status justifies the destructive delete-and-recreate
+    recovery below. Any other ``PasswordSetError`` (locked keychain, quota, disk
+    error, an arbitrary third-party backend failure) must NOT trigger it: deleting
+    on a transient or unrelated failure can destroy a still-valid credential.
+    """
+    return _OWNER_EDIT_RE.search(str(error)) is not None
+
+
 def set_secret(account_name: str, role: str, value: str) -> None:
     import keyring
     from keyring.errors import PasswordDeleteError, PasswordSetError
@@ -50,22 +74,52 @@ def set_secret(account_name: str, role: str, value: str) -> None:
     key = _entry_key(account_name, role)
     try:
         keyring.set_password(SERVICE, key, value)
-    except PasswordSetError:
-        # The entry may already exist but be owned by a *different* application —
-        # e.g. an earlier install at another path (`uvx` vs `uv tool install`), or a
-        # differently-signed interpreter. macOS refuses to modify a foreign-owned
-        # item (errSecInvalidOwnerEdit, -25244). Delete the stale item so we can
-        # recreate one owned by the current process, then retry once. If the retry
-        # still fails (or the delete was itself blocked), the error propagates to the
-        # caller, which records it as a store failure.
-        logger.warning(
-            f"Keyring set for '{key}' failed; deleting any pre-existing entry and retrying "
-            "(it was likely created by a different install of this tool)."
-        )
-        # nothing to delete, or delete itself blocked — let the retry surface any error
-        with contextlib.suppress(PasswordDeleteError):
-            keyring.delete_password(SERVICE, key)
+        return
+    except PasswordSetError as exc:
+        if not _is_owner_edit_conflict(exc):
+            # Not the recoverable foreign-owner case. Propagate untouched — the
+            # existing entry (if any) is left intact rather than deleted on a
+            # failure we don't understand.
+            raise
+
+    # errSecInvalidOwnerEdit (-25244): the entry was created by a *different*
+    # install (`uvx` vs `uv tool install`, or a differently-signed interpreter).
+    # macOS refuses to modify a foreign-owned item, so delete it and recreate one
+    # owned by the current process. Back the current value up first so a failed
+    # recreate can be rolled back instead of losing the credential.
+    logger.warning(
+        f"Keyring set for '{key}' hit errSecInvalidOwnerEdit ({_OWNER_EDIT_STATUS}); the entry is "
+        "owned by a different install of this tool. Deleting and recreating it under the current process."
+    )
+    try:
+        previous = keyring.get_password(SERVICE, key)
+    except Exception:
+        # Can't read the old value (locked/denied) — proceed without a rollback
+        # copy; the delete below may still be blocked, leaving the entry intact.
+        previous = None
+
+    # nothing to delete, or delete itself blocked — let the retry surface any error
+    with contextlib.suppress(PasswordDeleteError):
+        keyring.delete_password(SERVICE, key)
+
+    try:
         keyring.set_password(SERVICE, key, value)
+    except PasswordSetError:
+        # Recreate still failed. If we managed to read the old value, restore it so
+        # the caller is not left with a missing credential, then re-raise so the
+        # caller records this as a store failure. (On genuine macOS foreign
+        # ownership the delete above is itself blocked, so the old item is still
+        # present and this restore is belt-and-suspenders; it matters only if the
+        # delete succeeded and the recreate then failed transiently.)
+        if previous is not None:
+            try:
+                keyring.set_password(SERVICE, key, previous)
+            except Exception:
+                logger.error(
+                    f"Keyring recreate for '{key}' failed AND restoring the previous value also "
+                    "failed; this credential may no longer be stored. Re-add the account."
+                )
+        raise
 
 
 def get_secret(account_name: str, role: str) -> str | None:

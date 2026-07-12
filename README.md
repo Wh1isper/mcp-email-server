@@ -92,6 +92,25 @@ account's secrets move into the keyring on the next save.
   file on every subsequent run. Unset it, or keep it in sync with your
   intended mode.
 
+#### Known limitations
+
+- **Non-POSIX (Windows) file permissions**: the `0o600` owner-only guarantee on
+  the plaintext TOML is enforced only on POSIX systems. On Windows the file is
+  written without an owner-restricted ACL, so prefer `keyring` mode (Windows
+  Credential Locker) there when secrets must not be readable by other accounts.
+- **`auto`/`keyring` trusts whatever `keyring` backend is active**: usability is
+  decided by a live set/get round-trip, not by the backend's storage guarantees.
+  A third-party `keyring` plugin that persists secrets in plaintext would pass
+  that probe. If you install custom `keyring` backends, verify the active one
+  (`keyring --list-backends`) stores secrets securely.
+- **Keyring and TOML writes are not transactional**: a save pushes secrets to
+  the keyring and then rewrites the TOML. The TOML rewrite is atomic on its own
+  (temp file + `os.replace`), but a crash *between* the two steps can leave a
+  keyring entry with no matching config reference (an orphaned secret), or a
+  config reference whose keyring write partly failed. `migrate-credentials --to
+  plaintext` reports keyring entries it could not remove so you can clean them
+  up manually.
+
 ### Environment Variable Configuration
 
 You can also configure the email server using environment variables, which is particularly useful for CI/CD environments like Jenkins. zerolib-email supports both UI configuration (via TOML file) and environment variables, with environment variables taking precedence.

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import fnmatch
 import os
 import sys
+import tempfile
 from collections.abc import Iterable
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
@@ -572,18 +574,38 @@ class Settings(BaseSettings):
 
     @staticmethod
     def _write_toml(toml_file: Path, content: str) -> None:
-        if os.name == "posix":
-            # Create with owner-only permissions from the start (contains cleartext
-            # IMAP/SMTP passwords in plaintext mode), so there's no window where the
-            # file is world-readable. os.O_CREAT only applies the mode on creation, so
-            # chmod explicitly to also cover the case where the file already existed
-            # with looser permissions.
-            fd = os.open(toml_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if os.name != "posix":
+            toml_file.write_text(content)
+            return
+        # Atomic, owner-only write. The file may hold cleartext IMAP/SMTP passwords
+        # (plaintext mode), so the new content must never exist in a world-readable
+        # file — not even transiently. Writing 0600 onto an *existing* 0644 file and
+        # chmod'ing afterwards leaves such a window (and a permanent leak if the
+        # chmod fails). Instead: write to a same-directory temp file that is 0600
+        # from its first byte (tempfile.mkstemp opens it 0600), fsync it, then
+        # os.replace() it over the destination. os.replace is atomic within a
+        # filesystem, so a reader sees either the old file or the fully-written new
+        # one (already 0600), never a partial or permissive intermediate.
+        directory = toml_file.parent
+        fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{toml_file.name}.", suffix=".tmp")
+        try:
             with os.fdopen(fd, "w") as f:
                 f.write(content)
-            toml_file.chmod(0o600)
-        else:
-            toml_file.write_text(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_name, toml_file)
+            # fsync the directory so the rename itself (not just the file bytes)
+            # survives a crash; best-effort, never fatal to a successful write.
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_name)
+            raise
 
     def store(self) -> None:
         toml_file = self.model_config["toml_file"]

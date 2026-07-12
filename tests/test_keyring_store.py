@@ -484,6 +484,55 @@ def test_migrate_credentials_to_plaintext_skips_outgoing_cleanup_for_incoming_on
     assert (SERVICE, "acct1:outgoing") not in fake_keyring._store  # never existed; delete is a no-op
 
 
+def test_migrate_credentials_to_plaintext_warns_on_undeletable_keyring_entry(tmp_path, monkeypatch, fake_keyring):
+    """If a keyring entry can't be removed during --to plaintext, the leftover live
+    secret must be reported, not hidden under the success message."""
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "keyring")
+
+    settings = Settings()
+    settings.add_email(
+        EmailSettings.init(
+            account_name="acct1",
+            full_name="Test",
+            email_address="a@example.com",
+            user_name="a",
+            password="hunter2",
+            imap_host="imap.example.com",
+        )
+    )
+    settings.store()
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+
+    # Make keyring deletion a no-op so the entry survives (get still returns it).
+    monkeypatch.setattr(fake_keyring, "delete_password", lambda service, username: None)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
+    assert result.exit_code == 0, result.output
+    assert "hunter2" in cfg.read_text()  # plaintext copy written
+    assert "acct1:incoming" in result.output  # leftover secret reported
+    assert fake_keyring._store[(SERVICE, "acct1:incoming")] == "hunter2"  # still in keyring
+
+
+def test_migrate_credentials_to_plaintext_no_backend_does_not_report_false_orphans(
+    tmp_path, monkeypatch, broken_keyring
+):
+    """With no usable keyring backend, --to plaintext on an already-plaintext config
+    is an idempotent no-op and must NOT falsely warn about orphaned secrets."""
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    # Cleartext config (no sentinels) so load succeeds without touching the keyring.
+    cfg.write_text(tomli_w.dumps(_raw_email_toml("acct1", "cleartext")))
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
+    assert result.exit_code == 0, result.output
+    assert "orphan" not in result.output.lower()
+    assert "could not be confirmed removed" not in result.output
+    assert "cleartext" in cfg.read_text()
+
+
 def test_migrate_credentials_load_failure_exits_cleanly(tmp_path, monkeypatch, broken_keyring):
     cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
     monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
@@ -853,6 +902,207 @@ def test_set_secret_propagates_when_recreate_still_fails():
     finally:
         _restore_backend(previous)
     assert len(backend.set_calls) == 2  # tried twice, still failed
+
+
+# --- The delete-and-recreate recovery must be reserved for the -25244 owner
+# conflict ONLY. An ordinary PasswordSetError (locked keychain, quota, an
+# arbitrary backend failure) must never delete a still-valid credential. ---
+class _ExistingThenSetError(KeyringBackend):
+    """Holds an existing value; every set_password raises the given
+    PasswordSetError. Records whether delete_password was ever called."""
+
+    priority = 1
+
+    def __init__(self, existing: dict[tuple[str, str], str], message: str):
+        super().__init__()
+        self._store = dict(existing)
+        self._message = message
+        self.delete_calls: list[tuple[str, str]] = []
+
+    def set_password(self, service, username, password):
+        from keyring.errors import PasswordSetError
+
+        raise PasswordSetError(self._message)
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def delete_password(self, service, username):
+        self.delete_calls.append((service, username))
+        self._store.pop((service, username), None)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Can't store password on keychain: (-25244, 'Unknown Error')", True),
+        ("errSecInvalidOwnerEdit -25244", True),
+        ("failed for account -25244:incoming", True),  # exact token still counts
+        ("Can't store password on keychain: (-252440, 'Unknown Error')", False),  # longer number
+        ("Can't store password on keychain: (-25300, 'Item not found')", False),
+        ("byte offset 4252244 unreadable", False),  # digits around the token
+        ("locked keychain", False),
+    ],
+)
+def test_is_owner_edit_conflict_matches_only_the_exact_status_token(message, expected):
+    from keyring.errors import PasswordSetError
+
+    assert keyring_store._is_owner_edit_conflict(PasswordSetError(message)) is expected
+
+
+def test_set_secret_does_not_delete_on_ordinary_set_error():
+    """An ordinary (non -25244) PasswordSetError must propagate without deleting
+    the pre-existing credential, which stays readable."""
+    from keyring.errors import PasswordSetError
+
+    backend = _ExistingThenSetError(
+        {(SERVICE, "acct1:incoming"): "old-secret"},
+        message="Can't store password on keychain: (-25300, 'quota exceeded')",
+    )
+    previous = _install_backend(backend)
+    try:
+        with pytest.raises(PasswordSetError):
+            keyring_store.set_secret("acct1", "incoming", "new-secret")
+    finally:
+        _restore_backend(previous)
+    assert backend.delete_calls == []  # never deleted
+    assert backend.get_password(SERVICE, "acct1:incoming") == "old-secret"  # still readable
+
+
+def test_set_secret_failed_recovery_leaves_old_credential_readable():
+    """When the -25244 recovery is attempted but the recreate keeps failing and
+    the delete is blocked, the previous credential must remain readable."""
+    from keyring.errors import PasswordDeleteError, PasswordSetError
+
+    class _ForeignDeleteBlocked(KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self._store = {(SERVICE, "acct1:incoming"): "old-secret"}
+            self.delete_calls: list[tuple[str, str]] = []
+
+        def set_password(self, service, username, password):
+            # Foreign-owned: edits always blocked with the -25244 status.
+            raise PasswordSetError("Can't store password on keychain: (-25244, 'Unknown Error')")
+
+        def get_password(self, service, username):
+            return self._store.get((service, username))
+
+        def delete_password(self, service, username):
+            # Deleting a foreign-owned item is itself blocked, so the old value
+            # is never removed.
+            self.delete_calls.append((service, username))
+            raise PasswordDeleteError("delete blocked for foreign-owned item")
+
+    backend = _ForeignDeleteBlocked()
+    previous = _install_backend(backend)
+    try:
+        with pytest.raises(PasswordSetError):
+            keyring_store.set_secret("acct1", "incoming", "new-secret")
+    finally:
+        _restore_backend(previous)
+    assert backend.delete_calls == [(SERVICE, "acct1:incoming")]  # recovery was attempted
+    assert backend.get_password(SERVICE, "acct1:incoming") == "old-secret"  # but old value survives
+
+
+def test_set_secret_rollback_restores_previous_value_when_recreate_fails():
+    """The rollback path proper: delete succeeds (old value gone), the recreate of
+    the NEW value fails transiently, and the previous value is restored so no
+    credential is lost."""
+    from keyring.errors import PasswordSetError
+
+    class _RecreateFailsRollbackSucceeds(KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self._store = {(SERVICE, "acct1:incoming"): "old-secret"}
+            self._foreign = {(SERVICE, "acct1:incoming")}
+
+        def set_password(self, service, username, password):
+            key = (service, username)
+            if key in self._foreign:
+                raise PasswordSetError("Can't store password on keychain: (-25244, 'Unknown Error')")
+            if password == "new-secret":  # noqa: S105 (test literal, not a real credential)
+                raise PasswordSetError("transient store failure recreating the new value")
+            self._store[key] = password  # restoring the old value succeeds
+
+        def get_password(self, service, username):
+            return self._store.get((service, username))
+
+        def delete_password(self, service, username):
+            key = (service, username)
+            self._foreign.discard(key)  # delete clears the foreign lock...
+            self._store.pop(key, None)  # ...and removes the stored value
+
+    backend = _RecreateFailsRollbackSucceeds()
+    previous = _install_backend(backend)
+    try:
+        with pytest.raises(PasswordSetError, match="transient"):
+            keyring_store.set_secret("acct1", "incoming", "new-secret")
+    finally:
+        _restore_backend(previous)
+    # The new value never landed, but the previous value was restored by rollback.
+    assert backend.get_password(SERVICE, "acct1:incoming") == "old-secret"
+
+
+def test_set_secret_recovers_when_backup_read_fails():
+    """If reading the old value for backup fails (locked/denied), recovery still
+    proceeds: delete + recreate under the current process succeeds."""
+
+    class _BackupReadRaises(_ForeignOwnedThenOkKeyring):
+        def get_password(self, service, username):
+            from keyring.errors import KeyringError
+
+            raise KeyringError("read blocked")
+
+    backend = _BackupReadRaises({(SERVICE, "acct1:incoming")})
+    previous = _install_backend(backend)
+    try:
+        keyring_store.set_secret("acct1", "incoming", "hunter2")
+    finally:
+        _restore_backend(previous)
+    assert backend._store[(SERVICE, "acct1:incoming")] == "hunter2"
+
+
+def test_set_secret_logs_when_both_recreate_and_rollback_fail():
+    """The genuine data-loss corner (delete succeeds, recreate fails, restore of
+    the old value also fails) must be logged loudly rather than swallowed."""
+    from keyring.errors import PasswordSetError
+
+    class _EverySetFailsAfterDelete(KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self._store = {(SERVICE, "acct1:incoming"): "old-secret"}
+            self._foreign = {(SERVICE, "acct1:incoming")}
+
+        def set_password(self, service, username, password):
+            if (service, username) in self._foreign:
+                raise PasswordSetError("Can't store password on keychain: (-25244, 'Unknown Error')")
+            raise PasswordSetError("every write fails after the delete")  # recreate AND rollback fail
+
+        def get_password(self, service, username):
+            return self._store.get((service, username))
+
+        def delete_password(self, service, username):
+            key = (service, username)
+            self._foreign.discard(key)
+            self._store.pop(key, None)
+
+    backend = _EverySetFailsAfterDelete()
+    previous = _install_backend(backend)
+    messages: list[str] = []
+    sink_id = loguru_logger.add(lambda msg: messages.append(str(msg)), level="ERROR")
+    try:
+        with pytest.raises(PasswordSetError):
+            keyring_store.set_secret("acct1", "incoming", "new-secret")
+    finally:
+        loguru_logger.remove(sink_id)
+        _restore_backend(previous)
+    assert any("may no longer be stored" in m for m in messages)
 
 
 def test_keyring_mode_error_message_is_actionable(tmp_path, monkeypatch):
