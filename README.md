@@ -67,7 +67,10 @@ mcp-email-server migrate-credentials --to plaintext  # move keyring secrets back
 
 Migration also happens implicitly: any time you add/edit an account while
 `credential_storage` is `auto` or `keyring` with a usable backend, that
-account's secrets move into the keyring on the next save.
+account's secrets move into the keyring on the next save. If
+`MCP_EMAIL_SERVER_CREDENTIAL_STORAGE` is active during a save, its effective
+mode is persisted too, keeping the mode marker consistent with the credential
+representation written to the same file.
 
 #### Failure modes & troubleshooting
 
@@ -107,9 +110,8 @@ account's secrets move into the keyring on the next save.
   the keyring and then rewrites the TOML. The TOML rewrite is atomic on its own
   (temp file + `os.replace`), but a crash _between_ the two steps can leave a
   keyring entry with no matching config reference (an orphaned secret), or a
-  config reference whose keyring write partly failed. `migrate-credentials --to
-plaintext` reports keyring entries it could not remove so you can clean them
-  up manually.
+  config reference whose keyring write partly failed. A plaintext migration
+  reports keyring entries it could not remove so you can clean them up manually.
 
 ### Environment Variable Configuration
 

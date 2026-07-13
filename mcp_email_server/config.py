@@ -324,10 +324,12 @@ class Settings(BaseSettings):
     report_blocked_mutations: bool = False
     credential_storage: Literal["auto", "keyring", "plaintext"] = "auto"
 
-    # Env-var override for credential_storage. Kept off the persisted field so a
-    # later store() never bakes a temporary override into the TOML (unlike the
-    # bool overrides below, which intentionally do persist).
+    # Env-var override for credential_storage. Kept separate from the loaded field
+    # so environment precedence is explicit. A later store serializes the effective
+    # value because the override controls the credential representation written to
+    # that same file; persisting the old mode would make the file self-contradictory.
     _credential_storage_override: str | None = PrivateAttr(default=None)
+    _loaded_keyring_references: set[tuple[str, str]] = PrivateAttr(default_factory=set)
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
@@ -373,9 +375,16 @@ class Settings(BaseSettings):
         if not migration_load:
             self._apply_env_overrides()
 
+        # Preserve which entries were keyring references before replacing their
+        # sentinels with live secrets. Plaintext migration uses this provenance to
+        # clean up only entries that the file actually referenced.
+        pending = self._pending_keyring_sentinels()
+        if migration_load:
+            self._loaded_keyring_references = {(name, role) for name, role, _obj in pending}
+
         # Sentinel resolution always runs (including migration loads); only the
         # plaintext-mode hard error is suppressed during migration (§2/§5/§7).
-        self._resolve_keyring_sentinels(migration_load=migration_load)
+        self._resolve_keyring_sentinels(migration_load=migration_load, pending=pending)
 
     def _apply_env_overrides(self) -> None:
         """Env-composited state, skipped entirely during migration loads (§7) so
@@ -426,8 +435,13 @@ class Settings(BaseSettings):
                 pending.append((provider.account_name, "api_key", provider))
         return pending
 
-    def _resolve_keyring_sentinels(self, *, migration_load: bool) -> None:
-        pending = self._pending_keyring_sentinels()
+    def _resolve_keyring_sentinels(
+        self,
+        *,
+        migration_load: bool,
+        pending: list[tuple[str, str, EmailServer | ProviderSettings]] | None = None,
+    ) -> None:
+        pending = self._pending_keyring_sentinels() if pending is None else pending
         if not pending:
             return
 
@@ -461,6 +475,11 @@ class Settings(BaseSettings):
             obj.api_key = secret
         else:
             obj.password = secret
+
+    @property
+    def loaded_keyring_references(self) -> frozenset[tuple[str, str]]:
+        """Keyring entries referenced by sentinels in the file at load time."""
+        return frozenset(self._loaded_keyring_references)
 
     @classmethod
     def load_for_migration(cls) -> Settings:
@@ -537,9 +556,11 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (TomlConfigSettingsSource(settings_cls),)
 
-    def _to_toml(self, *, use_keyring: bool = False) -> str:
+    def _to_toml(self, *, use_keyring: bool = False, credential_storage: str | None = None) -> str:
         context = {"secrets": "keyring"} if use_keyring else None
         data = self.model_dump(exclude_none=True, context=context)
+        if credential_storage is not None:
+            data["credential_storage"] = credential_storage
         return tomli_w.dumps(data)
 
     def _reject_cleartext_sentinels(self) -> None:
@@ -642,8 +663,15 @@ class Settings(BaseSettings):
         if not use_keyring:
             self._reject_cleartext_sentinels()
 
-        content = self._to_toml(use_keyring=use_keyring)
+        # The environment override determines the representation written above,
+        # so persist that effective mode too. Otherwise a plaintext-config + keyring
+        # override would produce plaintext mode alongside __KEYRING__ sentinels and
+        # become unloadable as soon as the override was removed.
+        persisted_storage = effective if self._credential_storage_override is not None else self.credential_storage
+        content = self._to_toml(use_keyring=use_keyring, credential_storage=persisted_storage)
         self._write_toml(toml_file, content)
+        if self._credential_storage_override is not None:
+            self.credential_storage = effective
         logger.info(f"Settings stored in {toml_file} ({'keyring' if use_keyring else 'plaintext'})")
 
 
