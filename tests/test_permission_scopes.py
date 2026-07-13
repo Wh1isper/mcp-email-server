@@ -168,9 +168,12 @@ class TestToolVisibility:
 
     @pytest.mark.asyncio
     async def test_send_scope_still_requires_send_capable_account(self, monkeypatch):
+        # send_email needs an SMTP-capable account. save_to_mailbox is a pure IMAP
+        # operation (decoupled from SMTP in #194) and stays visible on the draft
+        # scope alone, independent of send capability.
         tools = await visible_tools(make_settings(monkeypatch, ["send", "draft"]))
         assert "send_email" not in tools
-        assert "save_to_mailbox" not in tools
+        assert "save_to_mailbox" in tools
 
     @pytest.mark.asyncio
     async def test_manage_gates_add_email_account(self, monkeypatch):
