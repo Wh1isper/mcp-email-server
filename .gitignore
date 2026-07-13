@@ -143,3 +143,6 @@ tests/config.toml
 local/
 config.toml
 .worktrees/
+
+# macOS
+.DS_Store
