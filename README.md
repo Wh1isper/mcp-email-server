@@ -52,10 +52,10 @@ The server is **read-only by default**. Every tool is gated behind a capability 
 | `read`     | Always granted: list/read mail, mailboxes, attachments                          |
 | `draft`    | `save_to_mailbox` (drafts-type folders only, unless `organize` is also granted) |
 | `organize` | `move_emails`, `archive_emails`, `mark_emails_as_read`                          |
-| `delete`   | `delete_emails`                                                                  |
-| `send`     | `send_email`                                                                     |
-| `manage`   | `add_email_account`                                                              |
-| `full`     | Everything above                                                                 |
+| `delete`   | `delete_emails`                                                                 |
+| `send`     | `send_email`                                                                    |
+| `manage`   | `add_email_account`                                                             |
+| `full`     | Everything above                                                                |
 
 ```toml
 permissions = ["read", "draft", "send"]  # reads, drafts, and sends — can never delete or move mail

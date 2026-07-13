@@ -157,31 +157,31 @@ Example environment-variable account configuration:
 
 ### Available environment variables
 
-| Variable                                      | Description                                                                              | Default       | Required |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------- | -------- |
-| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                                                       | `"default"`   | No       |
-| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                                                             | Email prefix  | No       |
-| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                                                            | -             | Yes      |
-| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                                                           | Same as email | No       |
-| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                                                           | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                                                         | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                                                         | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                                                          | `true`        | No       |
-| `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                                                     | `false`       | No       |
-| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed)                                   | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for read-only mode                                                | -             | No       |
-| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                                                         | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                                                          | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                                                          | `false`       | No       |
-| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)                                        | `true`        | No       |
+| Variable                                      | Description                                                                                          | Default       | Required |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------- | -------- |
+| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                                                                                   | `"default"`   | No       |
+| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                                                                         | Email prefix  | No       |
+| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                                                                        | -             | Yes      |
+| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                                                                       | Same as email | No       |
+| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                                                                       | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                                                                     | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                                                                     | `993`         | No       |
+| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                                                                      | `true`        | No       |
+| `MCP_EMAIL_SERVER_IMAP_START_SSL`             | Enable IMAP STARTTLS                                                                                 | `false`       | No       |
+| `MCP_EMAIL_SERVER_IMAP_VERIFY_SSL`            | Verify IMAP SSL certificates (disable for self-signed)                                               | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host; omit for read-only mode                                                            | -             | No       |
+| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                                                                     | `465`         | No       |
+| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                                                                      | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                                                                      | `false`       | No       |
+| `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)                                                    | `true`        | No       |
 | `MCP_EMAIL_SERVER_PERMISSIONS`                | Permission scopes (comma-separated): `read`, `draft`, `organize`, `delete`, `send`, `manage`, `full` | `read`        | No       |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                                                               | `false`       | No       |
-| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                                                     | `true`        | No       |
-| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)                                         | -             | No       |
-| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all                                       | -             | No       |
-| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all                                    | -             | No       |
-| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | Report blocked mutations as failures (default: silent no-op)                             | `false`       | No       |
-| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | Credential storage mode: `auto`, `keyring`, or `plaintext`                               | `auto`        | No       |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                                                                           | `false`       | No       |
+| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                                                                 | `true`        | No       |
+| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)                                                     | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all                                                   | -             | No       |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Sender allowlist (comma-separated globs); empty = all                                                | -             | No       |
+| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | Report blocked mutations as failures (default: silent no-op)                                         | `false`       | No       |
+| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | Credential storage mode: `auto`, `keyring`, or `plaintext`                                           | `auto`        | No       |
 
 For separate IMAP/SMTP credentials, you can also use:
 
@@ -190,17 +190,17 @@ For separate IMAP/SMTP credentials, you can also use:
 
 ## Permission scopes
 
-Every MCP tool is gated behind a capability scope. **The default is `read`: a fresh install is read-only** — the server can list and read mail but cannot modify, delete, or send anything until you grant more scopes. Tools outside the granted scopes are hidden from the client's tool list *and* rejected at call time.
+Every MCP tool is gated behind a capability scope. **The default is `read`: a fresh install is read-only** — the server can list and read mail but cannot modify, delete, or send anything until you grant more scopes. Tools outside the granted scopes are hidden from the client's tool list _and_ rejected at call time.
 
-| Scope      | Grants                                                                                                                                       |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope      | Grants                                                                                                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `read`     | Always granted. `list_available_accounts`, `list_emails_metadata`, `get_emails_content`, `list_mailboxes`, `download_attachment` (which also requires `enable_attachment_download`) |
-| `draft`    | `save_to_mailbox`, restricted to drafts-type folders (`Drafts`, `INBOX.Drafts`, `[Gmail]/Drafts`, …). Combine with `organize` to save to arbitrary folders. |
-| `organize` | `move_emails`, `archive_emails`, `mark_emails_as_read` — and the `mark_as_read` parameter of `get_emails_content`                              |
-| `delete`   | `delete_emails`                                                                                                                                |
-| `send`     | `send_email` (the tool also requires at least one SMTP-configured account)                                                                     |
-| `manage`   | `add_email_account` — writes credentials to disk/keyring, so treat it as server administration                                                 |
-| `full`     | Everything above, including `manage`                                                                                                           |
+| `draft`    | `save_to_mailbox`, restricted to drafts-type folders (`Drafts`, `INBOX.Drafts`, `[Gmail]/Drafts`, …). Combine with `organize` to save to arbitrary folders.                         |
+| `organize` | `move_emails`, `archive_emails`, `mark_emails_as_read` — and the `mark_as_read` parameter of `get_emails_content`                                                                   |
+| `delete`   | `delete_emails`                                                                                                                                                                     |
+| `send`     | `send_email` (the tool also requires at least one SMTP-configured account)                                                                                                          |
+| `manage`   | `add_email_account` — writes credentials to disk/keyring, so treat it as server administration                                                                                      |
+| `full`     | Everything above, including `manage`                                                                                                                                                |
 
 Scopes are independent — grant any combination. For example, an assistant that reads mail, drafts replies, and sends them, but can never delete or move anything, is `["read", "draft", "send"]`.
 
