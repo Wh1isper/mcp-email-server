@@ -159,6 +159,7 @@ You can also configure the email server using environment variables, which is pa
 | `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                              | `false`       | No       |
 | `MCP_EMAIL_SERVER_SMTP_VERIFY_SSL`            | Verify SSL certificates (disable for self-signed)            | `true`        | No       |
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                                   | `false`       | No       |
+| `MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR`    | Directory that `download_attachment` save paths must resolve within | `~/Downloads` | No       |
 | `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder                         | `true`        | No       |
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set)             | -             | No       |
 | `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Recipient allowlist (comma-separated); empty = all           | -             | No       |
@@ -188,6 +189,12 @@ SMTP configuration is optional. When `MCP_EMAIL_SERVER_SMTP_HOST` is omitted, th
 
 ### HTTP Transport Security
 
+> **⚠️ The HTTP transports have no authentication. Do not expose them to an untrusted network.**
+>
+> `sse` and `streamable-http` ship **no bearer token, API key, or any auth layer** — the only gate is `Host`/`Origin` validation, which defends against browser-driven DNS rebinding, **not** against a direct network attacker. The `Host` header is attacker-supplied: when the server is bound to a wildcard address (`0.0.0.0`/`::`), the allowlist falls back to loopback names, so anyone who can reach the port simply sends `Host: localhost` and passes. When bound to a concrete LAN IP, that IP is auto-allowed, so `Host: <lan-ip>` passes too. **Either way, once past `Host` validation every email tool — read, send, delete — is fully accessible with zero authentication.**
+>
+> Treat any non-loopback bind (`MCP_HOST=0.0.0.0`, a LAN IP, or a container published to the host) as publishing an **unauthenticated email gateway**. Only do it on a trusted, isolated network, and put your own authentication in front of it (a reverse proxy requiring a token, mTLS, or a private network / VPN). The safe default is the `localhost` bind below.
+
 HTTP transports (`sse` and `streamable-http`) validate request `Host` and `Origin` headers to protect against DNS rebinding attacks. Localhost is allowed by default. For Docker networks or reverse proxies, configure the expected service names explicitly.
 
 | Variable                              | Description                                                      | Default           |
@@ -212,7 +219,9 @@ services:
       MCP_ALLOWED_ORIGINS: http://mcp-email-server:*,http://localhost:*,http://127.0.0.1:*
 ```
 
-Bare host entries such as `MCP_ALLOWED_HOSTS=mcp-email-server` also allow any port on that host. `MCP_ENABLE_DNS_REBINDING_PROTECTION=false`, `MCP_ALLOWED_HOSTS=*`, or `MCP_ALLOWED_ORIGINS=*` disables Host and Origin validation entirely. Use those options only in isolated local development environments.
+The Compose example above binds `0.0.0.0` and therefore exposes the unauthenticated gateway described at the top of this section to everything that can route to the container — keep it on an internal Docker network and/or gate it behind an authenticating reverse proxy.
+
+Bare host entries such as `MCP_ALLOWED_HOSTS=mcp-email-server` also allow any port on that host. `MCP_ENABLE_DNS_REBINDING_PROTECTION=false`, `MCP_ALLOWED_HOSTS=*`, or `MCP_ALLOWED_ORIGINS=*` disables Host and Origin validation entirely — which, per the warning above, removes the _only_ request-level check the server has. Use those options only in isolated local development environments.
 
 IPv6 literals in allowlists should use bracketed notation, such as `[::1]:*` and `http://[::1]:*`.
 
@@ -247,7 +256,16 @@ enable_attachment_download = true
 # ... your email configuration
 ```
 
-Once enabled, you can use the `download_attachment` tool to save email attachments to a specified path.
+Once enabled, you can use the `download_attachment` tool to save email attachments.
+
+**Save paths are confined to a download directory.** Because attachment bytes are attacker-controlled (anyone can email you a file), `download_attachment` will only write within `attachment_download_dir` — default `~/Downloads`. A `save_path` that resolves outside it (including via `..` or a symlink) is rejected, so the tool can't be steered into overwriting `~/.ssh/authorized_keys`, a crontab, or the config file. Relative save paths resolve under the directory. Change it with:
+
+```toml
+enable_attachment_download = true
+attachment_download_dir = "/home/me/mail-attachments"
+```
+
+or `MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR=/home/me/mail-attachments` (empty string resets to the `~/Downloads` default).
 
 ### Saving Sent Emails to IMAP Sent Folder
 
