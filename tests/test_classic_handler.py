@@ -222,6 +222,248 @@ class TestClassicEmailHandler:
             )
 
     @pytest.mark.asyncio
+    async def test_forward_email(self, classic_handler):
+        """forward_email fetches the original, builds a Fwd subject, re-attaches attachments, and sends."""
+        original = {
+            "subject": "Quarterly report",
+            "from": "boss@example.com",
+            "to": ["me@example.com"],
+            "date": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            "body": "Please review.",
+            "attachments": ["report.pdf"],
+        }
+        mock_get_body = AsyncMock(return_value=original)
+        mock_extract = AsyncMock(return_value=[("report.pdf", "application/pdf", b"PDFDATA")])
+        mock_send = AsyncMock(return_value=None)
+
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get_body),
+            patch.object(classic_handler.incoming_client, "extract_attachments", mock_extract),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+        ):
+            await classic_handler.forward_email(
+                email_id="42",
+                mailbox="INBOX",
+                recipients=["friend@example.com"],
+                body="FYI",
+            )
+
+        # The configured allowlist is threaded into both reads.
+        mock_get_body.assert_called_once_with("42", "INBOX", allowed_senders=[])
+        mock_extract.assert_called_once_with("42", "INBOX", allowed_senders=[])
+        mock_send.assert_called_once()
+        # send_email(recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references, reply_to, extra_parts)
+        args = mock_send.call_args.args
+        assert args[0] == ["friend@example.com"]
+        assert args[1] == "Fwd: Quarterly report"
+        assert "FYI" in args[2]
+        assert "Forwarded message" in args[2]
+        assert "Please review." in args[2]
+        extra_parts = args[10]
+        assert len(extra_parts) == 1
+        assert extra_parts[0].get_filename() == "report.pdf"
+
+    @pytest.mark.asyncio
+    async def test_forward_email_preserves_attachment_mime_type(self, classic_handler):
+        """A re-attached image/png keeps its type instead of collapsing to application/png."""
+        original = {
+            "subject": "Photo",
+            "from": "boss@example.com",
+            "to": ["me@example.com"],
+            "date": None,
+            "body": "See photo.",
+            "attachments": ["photo.png"],
+        }
+        png_bytes = b"\x89PNG\r\n\x1a\nrealbytes"
+        mock_extract = AsyncMock(return_value=[("photo.png", "image/png", png_bytes)])
+        mock_send = AsyncMock(return_value=None)
+
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)),
+            patch.object(classic_handler.incoming_client, "extract_attachments", mock_extract),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+        ):
+            await classic_handler.forward_email(email_id="7", mailbox="INBOX", recipients=["x@example.com"])
+
+        part = mock_send.call_args.args[10][0]
+        assert part.get_content_type() == "image/png"
+        assert part.get_filename() == "photo.png"
+        # Payload round-trips through the base64 transfer encoding.
+        assert part.get_payload(decode=True) == png_bytes
+
+    @pytest.mark.asyncio
+    async def test_forward_email_slashless_mime_falls_back_to_octet_stream(self, classic_handler):
+        """A malformed attachment MIME type (no '/') falls back to application/octet-stream."""
+        original = {
+            "subject": "x",
+            "from": "a@example.com",
+            "to": [],
+            "date": None,
+            "body": "b",
+            "attachments": ["blob"],
+        }
+        mock_extract = AsyncMock(return_value=[("blob.bin", "weird", b"data")])
+        mock_send = AsyncMock(return_value=None)
+
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)),
+            patch.object(classic_handler.incoming_client, "extract_attachments", mock_extract),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+        ):
+            await classic_handler.forward_email(email_id="1", mailbox="INBOX", recipients=["x@example.com"])
+
+        part = mock_send.call_args.args[10][0]
+        assert part.get_content_type() == "application/octet-stream"
+        assert part.get_filename() == "blob.bin"
+
+    @pytest.mark.asyncio
+    async def test_forward_email_keeps_existing_fwd_prefix(self, classic_handler):
+        """A subject already prefixed with Fwd: is not double-prefixed."""
+        original = {
+            "subject": "Fwd: Already forwarded",
+            "from": "a@example.com",
+            "to": [],
+            "date": None,
+            "body": "body",
+            "attachments": [],
+        }
+        mock_send = AsyncMock(return_value=None)
+
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)),
+            patch.object(classic_handler.incoming_client, "extract_attachments", AsyncMock(return_value=[])),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+        ):
+            await classic_handler.forward_email(email_id="1", mailbox="INBOX", recipients=["x@example.com"])
+
+        assert mock_send.call_args.args[1] == "Fwd: Already forwarded"
+
+    @pytest.mark.asyncio
+    async def test_forward_email_raises_when_not_found(self, classic_handler):
+        """A missing original email raises ValueError."""
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=None)),
+        ):
+            with pytest.raises(ValueError, match="not found"):
+                await classic_handler.forward_email(email_id="404", mailbox="INBOX", recipients=["x@example.com"])
+
+    @pytest.mark.asyncio
+    async def test_forward_email_blocked_sender_is_not_read_or_sent(self, classic_handler):
+        """A sender blocked by the allowlist (get_email_body_by_id -> None) raises and never reads
+        attachments or sends — indistinguishable from a missing email."""
+        mock_get_body = AsyncMock(return_value=None)
+        mock_extract = AsyncMock()
+        mock_send = AsyncMock()
+
+        with (
+            patch(
+                "mcp_email_server.emails.classic.get_settings",
+                return_value=MagicMock(allowed_senders=["*@allowed.com"]),
+            ),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get_body),
+            patch.object(classic_handler.incoming_client, "extract_attachments", mock_extract),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+        ):
+            with pytest.raises(ValueError, match="not found"):
+                await classic_handler.forward_email(email_id="9", mailbox="INBOX", recipients=["x@example.com"])
+
+        mock_get_body.assert_called_once_with("9", "INBOX", allowed_senders=["*@allowed.com"])
+        mock_extract.assert_not_called()
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forward_email_saves_to_sent_and_adds_bcc_header(self, classic_handler):
+        """When save_to_sent is enabled and the send returns a message, the forward is appended to
+        Sent; a Bcc header is added to the saved copy when bcc recipients are provided."""
+        original = {
+            "subject": "Report",
+            "from": "boss@example.com",
+            "to": ["me@example.com"],
+            "date": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            "body": "Body.",
+            "attachments": [],
+        }
+        sent_msg = EmailMessage()
+        sent_msg["Subject"] = "Fwd: Report"
+        mock_send = AsyncMock(return_value=sent_msg)
+        mock_append = AsyncMock(return_value=True)
+
+        assert classic_handler.save_to_sent is True  # default; the Sent-save branch is reachable
+
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)),
+            patch.object(classic_handler.incoming_client, "extract_attachments", AsyncMock(return_value=[])),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+            patch.object(classic_handler.outgoing_client, "append_to_sent", mock_append),
+        ):
+            await classic_handler.forward_email(
+                email_id="42",
+                mailbox="INBOX",
+                recipients=["friend@example.com"],
+                bcc=["hidden@example.com"],
+            )
+
+        # The Bcc header was absent on the sent message and is added for the archived copy.
+        assert sent_msg["Bcc"] == "hidden@example.com"
+        mock_append.assert_called_once_with(
+            sent_msg, classic_handler.email_settings.incoming, classic_handler.sent_folder_name
+        )
+
+    @pytest.mark.asyncio
+    async def test_forward_email_raises_without_outgoing_client(self):
+        """Forwarding from a read-only account (no SMTP configured) raises RuntimeError."""
+        read_only = EmailSettings(
+            account_name="read_only",
+            full_name="Read Only",
+            email_address="read-only@example.com",
+            incoming=EmailServer(
+                user_name="reader",
+                password="secret",
+                host="imap.example.com",
+                port=993,
+                use_ssl=True,
+            ),
+        )
+        handler = ClassicEmailHandler(read_only)
+
+        with pytest.raises(RuntimeError, match="SMTP is not configured"):
+            await handler.forward_email(email_id="1", mailbox="INBOX", recipients=["x@example.com"])
+
+    @pytest.mark.asyncio
+    async def test_forward_email_swallows_sent_save_failure(self, classic_handler):
+        """A failure appending the forward to Sent is logged, not raised (no bcc: Bcc branch skipped)."""
+        original = {
+            "subject": "Report",
+            "from": "boss@example.com",
+            "to": ["me@example.com"],
+            "date": None,
+            "body": "Body.",
+            "attachments": [],
+        }
+        sent_msg = EmailMessage()
+        sent_msg["Subject"] = "Fwd: Report"
+        mock_send = AsyncMock(return_value=sent_msg)
+        mock_append = AsyncMock(side_effect=RuntimeError("IMAP down"))
+
+        with (
+            patch("mcp_email_server.emails.classic.get_settings", return_value=MagicMock(allowed_senders=[])),
+            patch.object(classic_handler.incoming_client, "get_email_body_by_id", AsyncMock(return_value=original)),
+            patch.object(classic_handler.incoming_client, "extract_attachments", AsyncMock(return_value=[])),
+            patch.object(classic_handler.outgoing_client, "send_email", mock_send),
+            patch.object(classic_handler.outgoing_client, "append_to_sent", mock_append),
+        ):
+            # Should complete without raising despite the Sent-save failure.
+            await classic_handler.forward_email(email_id="42", mailbox="INBOX", recipients=["friend@example.com"])
+
+        mock_append.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_send_email_with_attachments(self, classic_handler, tmp_path):
         """Test send_email method with attachments."""
         # Create a temporary test file
