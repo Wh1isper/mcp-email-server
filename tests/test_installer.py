@@ -231,7 +231,7 @@ def test_need_update_returns_true_when_not_installed(monkeypatch):
     assert installer.need_update() is True
 
 
-def test_need_update_returns_true_when_platform_is_unsupported(monkeypatch):
+def test_need_update_returns_true_when_config_path_is_missing_after_install_check(monkeypatch):
     monkeypatch.setattr(installer, "is_installed", lambda: True)
     monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", None)
 

@@ -85,6 +85,7 @@ async def test_send_imap_id_handles_missing_protocol():
     with patch("mcp_email_server.emails.classic.logger.warning") as mock_warning:
         await _send_imap_id(imap)
 
+    imap.id.assert_awaited_once_with(name="mcp-email-server", version="1.0.0")
     mock_warning.assert_called_once_with("IMAP ID command failed: IMAP protocol is not connected")
 
 
@@ -135,6 +136,9 @@ async def test_imap_starttls_requires_upgraded_transport():
 
         with pytest.raises(ConnectionError, match="IMAP STARTTLS did not return a transport"):
             await _imap_starttls(imap, ssl.create_default_context(), "127.0.0.1")
+
+    mock_loop.start_tls.assert_awaited_once()
+    imap.protocol.capability.assert_not_awaited()
 
 
 @pytest.mark.asyncio
