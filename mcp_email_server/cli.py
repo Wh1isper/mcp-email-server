@@ -11,7 +11,7 @@ from mcp_email_server.config import Settings, delete_settings
 app = typer.Typer()
 
 
-class CredentialStorageTarget(str, enum.Enum):
+class CredentialStorageTarget(enum.StrEnum):
     keyring = "keyring"
     plaintext = "plaintext"
 

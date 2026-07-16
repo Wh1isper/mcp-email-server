@@ -10,7 +10,7 @@ def _write_template(path: Path) -> None:
     path.write_text(
         json.dumps({
             "mcpServers": {
-                "zerolib-email": {
+                "mcp-email-server": {
                     "command": "{{ ENTRYPOINT }}",
                     "args": ["stdio"],
                     "env": {"MCP_EMAIL_SERVER_LOG_LEVEL": "INFO"},
@@ -75,7 +75,7 @@ def test_install_claude_desktop_creates_config(monkeypatch, tmp_path):
     config = _read_json(config_path)
     assert config == {
         "mcpServers": {
-            "zerolib-email": {
+            "mcp-email-server": {
                 "command": "/usr/local/bin/mcp-email-server",
                 "args": ["stdio"],
                 "env": {"MCP_EMAIL_SERVER_LOG_LEVEL": "INFO"},
@@ -109,7 +109,35 @@ def test_install_claude_desktop_merges_existing_config(monkeypatch, tmp_path):
     config = _read_json(config_path)
     assert config["globalShortcut"] == "Ctrl+Space"
     assert config["mcpServers"]["other-server"] == {"command": "other-command", "args": []}
-    assert config["mcpServers"]["zerolib-email"]["command"] == "/opt/bin/mcp-email-server"
+    assert config["mcpServers"]["mcp-email-server"]["command"] == "/opt/bin/mcp-email-server"
+
+
+def test_install_claude_desktop_replaces_legacy_server(monkeypatch, tmp_path):
+    config_path = tmp_path / "claude_desktop_config.json"
+    config_path.write_text(
+        json.dumps({
+            "mcpServers": {
+                "mcp-email-server": {"command": "stale-new-command"},
+                "mcp_email_server": {"command": "old-underscore-command"},
+                "zerolib-email": {"command": "old-brand-command"},
+                "other-server": {"command": "other-command"},
+            }
+        })
+    )
+    template_path = tmp_path / "claude_desktop_config_template.json"
+    _write_template(template_path)
+
+    monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_TEMPLATE", template_path)
+    monkeypatch.setattr(installer, "get_endpoint_path", lambda: "/opt/bin/mcp-email-server")
+
+    installer.install_claude_desktop()
+
+    servers = _read_json(config_path)["mcpServers"]
+    assert "mcp_email_server" not in servers
+    assert "zerolib-email" not in servers
+    assert servers["mcp-email-server"]["command"] == "/opt/bin/mcp-email-server"
+    assert servers["other-server"] == {"command": "other-command"}
 
 
 def test_install_claude_desktop_raises_when_platform_is_unsupported(monkeypatch):
@@ -124,7 +152,9 @@ def test_uninstall_claude_desktop_removes_email_server(monkeypatch, tmp_path):
     config_path.write_text(
         json.dumps({
             "mcpServers": {
-                "zerolib-email": {"command": "mcp-email-server"},
+                "mcp-email-server": {"command": "mcp-email-server"},
+                "mcp_email_server": {"command": "legacy-underscore-command"},
+                "zerolib-email": {"command": "legacy-brand-command"},
                 "other-server": {"command": "other-command"},
             }
         })
@@ -164,7 +194,7 @@ def test_uninstall_claude_desktop_raises_when_platform_is_unsupported(monkeypatc
 
 def test_is_installed_returns_true_when_email_server_exists(monkeypatch, tmp_path):
     config_path = tmp_path / "claude_desktop_config.json"
-    config_path.write_text(json.dumps({"mcpServers": {"zerolib-email": {"command": "mcp-email-server"}}}))
+    config_path.write_text(json.dumps({"mcpServers": {"mcp-email-server": {"command": "mcp-email-server"}}}))
     monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", str(config_path))
 
     assert installer.is_installed() is True
@@ -180,6 +210,15 @@ def test_is_installed_returns_false_for_missing_invalid_or_unrelated_config(monk
     assert installer.is_installed() is False
 
 
+@pytest.mark.parametrize("server_name", installer.LEGACY_SERVER_NAMES)
+def test_is_installed_recognizes_legacy_server(monkeypatch, tmp_path, server_name):
+    config_path = tmp_path / "claude_desktop_config.json"
+    config_path.write_text(json.dumps({"mcpServers": {server_name: {"command": "mcp-email-server"}}}))
+    monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", str(config_path))
+
+    assert installer.is_installed() is True
+
+
 def test_is_installed_returns_false_when_platform_is_unsupported(monkeypatch):
     monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", None)
 
@@ -192,6 +231,20 @@ def test_need_update_returns_true_when_not_installed(monkeypatch):
     assert installer.need_update() is True
 
 
+@pytest.mark.parametrize("server_name", installer.LEGACY_SERVER_NAMES)
+def test_need_update_returns_true_for_legacy_server(monkeypatch, tmp_path, server_name):
+    config_path = tmp_path / "claude_desktop_config.json"
+    template_path = tmp_path / "claude_desktop_config_template.json"
+    _write_template(template_path)
+    config_path.write_text(json.dumps({"mcpServers": {server_name: {"command": "mcp-email-server"}}}))
+
+    monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_TEMPLATE", template_path)
+    monkeypatch.setattr(installer, "is_installed", lambda: True)
+
+    assert installer.need_update() is True
+
+
 def test_need_update_returns_false_when_installed_config_matches_template(monkeypatch, tmp_path):
     config_path = tmp_path / "claude_desktop_config.json"
     template_path = tmp_path / "claude_desktop_config_template.json"
@@ -199,7 +252,7 @@ def test_need_update_returns_false_when_installed_config_matches_template(monkey
     config_path.write_text(
         json.dumps({
             "mcpServers": {
-                "zerolib-email": {
+                "mcp-email-server": {
                     "command": "/usr/local/bin/mcp-email-server",
                     "args": ["stdio"],
                     "env": {"MCP_EMAIL_SERVER_LOG_LEVEL": "INFO"},
@@ -232,7 +285,7 @@ def test_need_update_returns_true_when_installed_config_differs(monkeypatch, tmp
     config_path = tmp_path / "claude_desktop_config.json"
     template_path = tmp_path / "claude_desktop_config_template.json"
     _write_template(template_path)
-    config_path.write_text(json.dumps({"mcpServers": {"zerolib-email": installed_server}}))
+    config_path.write_text(json.dumps({"mcpServers": {"mcp-email-server": installed_server}}))
 
     monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", str(config_path))
     monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_TEMPLATE", template_path)

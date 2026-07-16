@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,7 +173,7 @@ class TestMcpTools:
     async def test_list_emails_metadata(self):
         """Test list_emails_metadata MCP tool."""
         # Create test data
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_metadata = EmailMetadata(
             email_id="12345",
             subject="Test Subject",
@@ -242,7 +242,7 @@ class TestMcpTools:
     @pytest.mark.asyncio
     async def test_list_emails_metadata_with_mailbox(self):
         """Test list_emails_metadata MCP tool with custom mailbox."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_metadata = EmailMetadata(
             email_id="12345",
             subject="Sent Subject",
@@ -294,7 +294,7 @@ class TestMcpTools:
     async def test_get_emails_content_single(self):
         """Test get_emails_content MCP tool with single email."""
         # Create test data
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_body = EmailBodyResponse(
             email_id="12345",
             subject="Test Subject",
@@ -339,7 +339,7 @@ class TestMcpTools:
     async def test_get_emails_content_batch(self):
         """Test get_emails_content MCP tool with multiple emails."""
         # Create test data
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email1 = EmailBodyResponse(
             email_id="12345",
             subject="Test Subject 1",
@@ -396,7 +396,7 @@ class TestMcpTools:
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
         """Test get_emails_content MCP tool with custom mailbox."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_body = EmailBodyResponse(
             email_id="12345",
             subject="Sent Subject",
@@ -693,7 +693,7 @@ class TestMcpTools:
     @pytest.mark.asyncio
     async def test_get_emails_content_includes_message_id(self):
         """Test that get_emails_content returns message_id."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         mock_handler = AsyncMock()
         mock_handler.get_emails_content = AsyncMock(
@@ -705,7 +705,7 @@ class TestMcpTools:
                         subject="Test",
                         sender="sender@example.com",
                         recipients=["recipient@example.com"],
-                        date=datetime.now(timezone.utc),
+                        date=datetime.now(UTC),
                         body="Test body",
                         attachments=[],
                     )

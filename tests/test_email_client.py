@@ -1,7 +1,7 @@
 import asyncio
 import email
 import ssl
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.mime.text import MIMEText
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -305,12 +305,12 @@ class TestEmailClient:
         assert criteria == ["ALL"]
 
         # Test with before date
-        before_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
+        before_date = datetime(2023, 1, 1, tzinfo=UTC)
         criteria = EmailClient._build_search_criteria(before=before_date)
         assert criteria == ["BEFORE", "01-JAN-2023"]
 
         # Test with since date
-        since_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
+        since_date = datetime(2023, 1, 1, tzinfo=UTC)
         criteria = EmailClient._build_search_criteria(since=since_date)
         assert criteria == ["SINCE", "01-JAN-2023"]
 
@@ -336,7 +336,7 @@ class TestEmailClient:
 
         # Test with multiple criteria
         criteria = EmailClient._build_search_criteria(
-            subject="Test", from_address="test@example.com", since=datetime(2023, 1, 1, tzinfo=timezone.utc)
+            subject="Test", from_address="test@example.com", since=datetime(2023, 1, 1, tzinfo=UTC)
         )
         assert criteria == ["SINCE", "01-JAN-2023", "SUBJECT", "Test", "FROM", "test@example.com"]
 
@@ -436,9 +436,9 @@ class TestEmailClient:
 
         # Mock at the helper level - test behavior, not implementation
         mock_dates = {
-            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "2": datetime(2024, 1, 2, tzinfo=timezone.utc),
-            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
+            "1": datetime(2024, 1, 1, tzinfo=UTC),
+            "2": datetime(2024, 1, 2, tzinfo=UTC),
+            "3": datetime(2024, 1, 3, tzinfo=UTC),
         }
         mock_metadata = {
             "1": {
@@ -446,7 +446,7 @@ class TestEmailClient:
                 "subject": "Subject 1",
                 "from": "a@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 1, tzinfo=UTC),
                 "attachments": [],
             },
             "2": {
@@ -454,7 +454,7 @@ class TestEmailClient:
                 "subject": "Subject 2",
                 "from": "b@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 2, tzinfo=UTC),
                 "attachments": [],
             },
             "3": {
@@ -462,7 +462,7 @@ class TestEmailClient:
                 "subject": "Subject 3",
                 "from": "c@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 3, tzinfo=UTC),
                 "attachments": [],
             },
         }
@@ -600,7 +600,7 @@ class TestEmailClient:
                 "subject": "Subject 1",
                 "from": "a@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 1, tzinfo=UTC),
                 "attachments": [],
             },
             "2": {
@@ -608,7 +608,7 @@ class TestEmailClient:
                 "subject": "Subject 2",
                 "from": "b@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 2, tzinfo=UTC),
                 "attachments": [],
             },
             "3": {
@@ -616,7 +616,7 @@ class TestEmailClient:
                 "subject": "Subject 3",
                 "from": "c@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 3, tzinfo=UTC),
                 "attachments": [],
             },
         }
@@ -1051,7 +1051,7 @@ class TestBatchFetchDates:
 
         result = await email_client._batch_fetch_dates(mock_imap, [b"100"])
 
-        assert result["100"] == datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert result["100"] == datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 
     @pytest.mark.asyncio
     async def test_batch_fetch_dates_chunks_large_uid_lists(self, email_client):
@@ -1063,7 +1063,7 @@ class TestBatchFetchDates:
         with >1000 responses in a single buffer, this exceeds Python's default
         recursion limit and causes a RecursionError / infinite hang.
 
-        See: https://github.com/ai-zerolab/mcp-email-server/pull/155
+        See: https://github.com/wh1isper/mcp-email-server/pull/155
         """
         # Simulate a mailbox with 1500 UIDs — must result in multiple chunks
         num_uids = 1500
@@ -1217,8 +1217,8 @@ class TestGetEmailsMetadataSenderFilter:
 
         mock_senders = {"1": "alice@example.com", "2": "bob@evil.com", "3": "alice@example.com"}
         mock_dates = {
-            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
+            "1": datetime(2024, 1, 1, tzinfo=UTC),
+            "3": datetime(2024, 1, 3, tzinfo=UTC),
         }
         mock_metadata = {
             "3": {
@@ -1226,7 +1226,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S3",
                 "from": "alice@example.com",
                 "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 3, tzinfo=UTC),
                 "attachments": [],
             },
             "1": {
@@ -1234,7 +1234,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S1",
                 "from": "alice@example.com",
                 "to": [],
-                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 1, tzinfo=UTC),
                 "attachments": [],
             },
         }
@@ -1271,9 +1271,9 @@ class TestGetEmailsMetadataSenderFilter:
             "4": "alice@example.com",
         }
         mock_dates = {
-            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
-            "4": datetime(2024, 1, 4, tzinfo=timezone.utc),
+            "1": datetime(2024, 1, 1, tzinfo=UTC),
+            "3": datetime(2024, 1, 3, tzinfo=UTC),
+            "4": datetime(2024, 1, 4, tzinfo=UTC),
         }
         mock_metadata = {
             "4": {
@@ -1281,7 +1281,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S4",
                 "from": "alice@example.com",
                 "to": [],
-                "date": datetime(2024, 1, 4, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 4, tzinfo=UTC),
                 "attachments": [],
             },
             "3": {
@@ -1289,7 +1289,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S3",
                 "from": "alice@example.com",
                 "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 3, tzinfo=UTC),
                 "attachments": [],
             },
         }
@@ -1317,9 +1317,9 @@ class TestGetEmailsMetadataSenderFilter:
         mock_imap.logout = AsyncMock()
 
         mock_dates = {
-            "1": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "2": datetime(2024, 1, 2, tzinfo=timezone.utc),
-            "3": datetime(2024, 1, 3, tzinfo=timezone.utc),
+            "1": datetime(2024, 1, 1, tzinfo=UTC),
+            "2": datetime(2024, 1, 2, tzinfo=UTC),
+            "3": datetime(2024, 1, 3, tzinfo=UTC),
         }
         mock_metadata = {
             "3": {
@@ -1327,7 +1327,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S3",
                 "from": "c@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 3, tzinfo=UTC),
                 "attachments": [],
             },
             "2": {
@@ -1335,7 +1335,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S2",
                 "from": "b@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 2, tzinfo=UTC),
                 "attachments": [],
             },
             "1": {
@@ -1343,7 +1343,7 @@ class TestGetEmailsMetadataSenderFilter:
                 "subject": "S1",
                 "from": "a@test.com",
                 "to": [],
-                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "date": datetime(2024, 1, 1, tzinfo=UTC),
                 "attachments": [],
             },
         }

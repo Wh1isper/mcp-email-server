@@ -1,6 +1,5 @@
 """Tests for the save_to_mailbox feature — IMAP APPEND to arbitrary folders."""
 
-import asyncio
 from email.mime.text import MIMEText
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -57,10 +56,9 @@ def email_settings():
 
 
 @pytest.fixture
-def mock_imap():
+def mock_imap(completed_awaitable):
     mock = AsyncMock()
-    mock._client_task = asyncio.Future()
-    mock._client_task.set_result(None)
+    mock._client_task = completed_awaitable
     mock.wait_hello_from_server = AsyncMock()
     mock.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
     mock.select = AsyncMock(return_value=("OK", []))

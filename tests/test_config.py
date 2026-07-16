@@ -1,3 +1,4 @@
+import os
 import stat
 import sys
 from pathlib import Path
@@ -5,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from mcp_email_server import config as config_module
 from mcp_email_server.config import (
     EmailServer,
     EmailSettings,
@@ -29,6 +31,100 @@ from mcp_email_server.config import (
 )
 def test_normalize_address(raw, expected):
     assert normalize_address(raw) == expected
+
+
+def test_resolve_config_path_migrates_legacy_default(monkeypatch, tmp_path):
+    legacy_path = tmp_path / "legacy" / "config.toml"
+    config_path = tmp_path / "current" / "config.toml"
+    legacy_path.parent.mkdir()
+    legacy_path.write_text('credential_storage = "plaintext"\n')
+    legacy_path.chmod(0o644)
+
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", str(legacy_path))
+    original_copyfileobj = config_module.shutil.copyfileobj
+
+    def assert_private_copy(source, destination):
+        assert stat.S_IMODE(os.fstat(destination.fileno()).st_mode) == 0o600
+        original_copyfileobj(source, destination)
+
+    monkeypatch.setattr(config_module.shutil, "copyfileobj", assert_private_copy)
+
+    assert config_module._resolve_config_path() == config_path
+    assert config_path.read_text() == legacy_path.read_text()
+    assert legacy_path.exists()
+    if sys.platform != "win32":
+        assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_resolve_config_path_does_not_overwrite_current_config(monkeypatch, tmp_path):
+    legacy_path = tmp_path / "legacy.toml"
+    config_path = tmp_path / "current.toml"
+    legacy_path.write_text('source = "legacy"\n')
+    config_path.write_text('source = "current"\n')
+
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", str(legacy_path))
+
+    assert config_module._resolve_config_path() == config_path
+    assert config_path.read_text() == 'source = "current"\n'
+
+
+def test_resolve_config_path_preserves_concurrent_current_config(monkeypatch, tmp_path):
+    legacy_path = tmp_path / "legacy.toml"
+    config_path = tmp_path / "current" / "config.toml"
+    legacy_path.write_text('source = "legacy"\n')
+
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", str(legacy_path))
+    original_link = config_module.os.link
+
+    def create_current_then_link(source, destination):
+        config_path.write_text('source = "current"\n')
+        original_link(source, destination)
+
+    monkeypatch.setattr(config_module.os, "link", create_current_then_link)
+
+    assert config_module._resolve_config_path() == config_path
+    assert config_path.read_text() == 'source = "current"\n'
+    assert list(config_path.parent.iterdir()) == [config_path]
+
+
+def test_resolve_config_path_honors_explicit_override(monkeypatch, tmp_path):
+    legacy_path = tmp_path / "legacy.toml"
+    config_path = tmp_path / "current.toml"
+    override_path = tmp_path / "override.toml"
+    legacy_path.write_text('source = "legacy"\n')
+
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(override_path))
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", str(legacy_path))
+
+    assert config_module._resolve_config_path() == override_path
+    assert not config_path.exists()
+
+
+def test_resolve_config_path_falls_back_when_copy_fails(monkeypatch, tmp_path):
+    legacy_path = tmp_path / "legacy.toml"
+    config_path = tmp_path / "current" / "config.toml"
+    legacy_path.write_text('source = "legacy"\n')
+
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", str(legacy_path))
+
+    def fail_copy(_source, _destination):
+        config_path.write_text('source = "current"\n')
+        raise PermissionError
+
+    monkeypatch.setattr(config_module.shutil, "copyfileobj", fail_copy)
+
+    assert config_module._resolve_config_path() == config_path
+    assert config_path.read_text() == 'source = "current"\n'
+    assert list(config_path.parent.iterdir()) == [config_path]
 
 
 def test_sensitive_fields_excluded_from_repr():

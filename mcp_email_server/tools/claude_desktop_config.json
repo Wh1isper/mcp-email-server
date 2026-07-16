@@ -1,6 +1,6 @@
 {
     "mcpServers": {
-        "zerolib-email": {
+        "mcp-email-server": {
             "command": "{{ ENTRYPOINT }}",
             "args": ["stdio"]
         }

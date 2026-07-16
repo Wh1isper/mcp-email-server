@@ -7,7 +7,7 @@ import re
 import ssl
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.header import Header
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -216,8 +216,8 @@ def _quote_mailbox(mailbox: str) -> str:
     Mailbox names with non-ASCII characters are encoded using Modified UTF-7
     as required by RFC 3501 Section 5.1.3.
 
-    See: https://github.com/ai-zerolab/mcp-email-server/issues/87
-    See: https://github.com/ai-zerolab/mcp-email-server/issues/172
+    See: https://github.com/wh1isper/mcp-email-server/issues/87
+    See: https://github.com/wh1isper/mcp-email-server/issues/172
     See: https://www.rfc-editor.org/rfc/rfc3501#section-9
     """
     encoded = encode_mailbox_name(mailbox)
@@ -309,7 +309,7 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
     This function first tries the standard id() method, and if it fails,
     falls back to sending a raw command with correct format.
 
-    See: https://github.com/ai-zerolab/mcp-email-server/issues/85
+    See: https://github.com/wh1isper/mcp-email-server/issues/85
     """
     try:
         response = await imap.id(name="mcp-email-server", version="1.0.0")
@@ -498,10 +498,10 @@ class EmailClient:
         try:
             date_tuple = email.utils.parsedate_tz(date_str)
             if date_tuple:
-                return datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=timezone.utc)
-            return datetime.now(timezone.utc)
+                return datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=UTC)
+            return datetime.now(UTC)
         except Exception:
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
 
     @staticmethod
     def _normalize_attachment_name(name: str) -> str:
@@ -989,7 +989,7 @@ class EmailClient:
                     (uid.decode() for uid in email_ids),
                     key=lambda uid: (
                         uid_dates.get(uid) is not None,
-                        uid_dates.get(uid) or datetime.min.replace(tzinfo=timezone.utc),
+                        uid_dates.get(uid) or datetime.min.replace(tzinfo=UTC),
                         _uid_sort_key(uid),
                     ),
                     reverse=True,
@@ -999,7 +999,7 @@ class EmailClient:
                     (uid.decode() for uid in email_ids),
                     key=lambda uid: (
                         uid_dates.get(uid) is None,
-                        uid_dates.get(uid) or datetime.max.replace(tzinfo=timezone.utc),
+                        uid_dates.get(uid) or datetime.max.replace(tzinfo=UTC),
                         _uid_sort_key(uid),
                     ),
                 )

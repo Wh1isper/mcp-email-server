@@ -4,8 +4,9 @@ import contextlib
 import datetime
 import fnmatch
 import os
-import sys
+import shutil
 import tempfile
+import tomllib
 from collections.abc import Iterable
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
@@ -24,12 +25,8 @@ from pydantic_settings import (
 from mcp_email_server import keyring_store
 from mcp_email_server.log import logger
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # pragma: no cover (coverage is uploaded from the 3.12 job)
-
-DEFAULT_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
+DEFAULT_CONFIG_PATH = "~/.config/mcp-email-server/config.toml"
+LEGACY_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
 _VALID_CREDENTIAL_STORAGE_MODES = ("auto", "keyring", "plaintext")
 
 # Set by Settings.load_for_migration() around construction so __init__ can skip
@@ -97,7 +94,53 @@ def _reject_sentinel_secret(secret: SecretStr, label: str) -> None:
         )
 
 
-CONFIG_PATH = Path(os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH", DEFAULT_CONFIG_PATH)).expanduser().resolve()
+def _resolve_config_path() -> Path:
+    """Resolve the config path and copy the legacy default on first use."""
+    configured_path = os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH")
+    if configured_path:
+        return Path(configured_path).expanduser().resolve()
+
+    config_path = Path(DEFAULT_CONFIG_PATH).expanduser().resolve()
+    legacy_path = Path(LEGACY_CONFIG_PATH).expanduser().resolve()
+    if config_path.exists() or not legacy_path.is_file():
+        return config_path
+
+    temporary_path: Path | None = None
+    try:
+        config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (
+            legacy_path.open("rb") as source,
+            tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{config_path.name}.",
+                dir=config_path.parent,
+                delete=False,
+            ) as destination,
+        ):
+            temporary_path = Path(destination.name)
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+
+        try:
+            os.link(temporary_path, config_path)
+        except FileExistsError:
+            return config_path
+    except OSError as exc:
+        if config_path.exists():
+            return config_path
+        logger.warning(f"Could not migrate config from {legacy_path} to {config_path}: {exc}")
+        return legacy_path
+    finally:
+        if temporary_path is not None:
+            with contextlib.suppress(OSError):
+                temporary_path.unlink()
+
+    logger.info(f"Migrated config from {legacy_path} to {config_path}")
+    return config_path
+
+
+CONFIG_PATH = _resolve_config_path()
 
 
 class EmailServer(BaseModel):

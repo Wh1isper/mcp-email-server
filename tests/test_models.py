@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mcp_email_server.emails.models import (
     EmailBodyResponse,
@@ -16,7 +16,7 @@ class TestEmailMetadata:
             subject="Test Subject",
             sender="test@example.com",
             recipients=["recipient@example.com"],
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             attachments=["file1.txt", "file2.pdf"],
         )
 
@@ -28,7 +28,7 @@ class TestEmailMetadata:
 
     def test_from_email(self):
         """Test from_email class method."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_dict = {
             "email_id": "123",
             "subject": "Test Subject",
@@ -48,7 +48,7 @@ class TestEmailMetadata:
 
     def test_from_email_with_message_id(self):
         """Test from_email extracts message_id when present."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_dict = {
             "email_id": "123",
             "message_id": "<test@example.com>",
@@ -63,7 +63,7 @@ class TestEmailMetadata:
 
     def test_from_email_without_message_id(self):
         """Test from_email handles missing message_id."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_dict = {
             "email_id": "123",
             "subject": "Test Subject",
@@ -79,7 +79,7 @@ class TestEmailMetadata:
 class TestEmailMetadataPageResponse:
     def test_init(self):
         """Test initialization with valid data."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = EmailMetadata(
             email_id="123",
             message_id=None,
@@ -135,7 +135,7 @@ def test_email_metadata_includes_message_id():
         subject="Test",
         sender="sender@example.com",
         recipients=["recipient@example.com"],
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         attachments=[],
     )
     assert metadata.message_id == "<abc123@example.com>"
@@ -149,7 +149,7 @@ def test_email_metadata_message_id_optional():
         subject="Test",
         sender="sender@example.com",
         recipients=["recipient@example.com"],
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         attachments=[],
     )
     assert metadata.message_id is None
@@ -163,7 +163,7 @@ def test_email_body_response_includes_message_id():
         subject="Test",
         sender="sender@example.com",
         recipients=["recipient@example.com"],
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         body="Test body",
         attachments=[],
     )

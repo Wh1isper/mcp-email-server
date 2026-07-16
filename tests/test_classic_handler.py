@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -82,7 +82,7 @@ class TestClassicEmailHandler:
     async def test_get_emails(self, classic_handler):
         """Test get_emails method."""
         # Create test data
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "123",
             "subject": "Test Subject",
@@ -147,7 +147,7 @@ class TestClassicEmailHandler:
     @pytest.mark.asyncio
     async def test_get_emails_with_mailbox(self, classic_handler):
         """Test get_emails method with custom mailbox."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "456",
             "subject": "Sent Mail Subject",
@@ -484,7 +484,7 @@ class TestClassicEmailHandler:
     @pytest.mark.asyncio
     async def test_get_emails_content_includes_message_id(self, classic_handler):
         """Test that get_emails_content returns message_id from parsed email data."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "123",
             "message_id": "<test-message-id@example.com>",
@@ -523,7 +523,7 @@ class TestClassicEmailHandler:
     @pytest.mark.asyncio
     async def test_get_emails_content_mark_as_read_true(self, classic_handler):
         """Test that get_emails_content passes mark_as_read=True to the underlying client."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "123",
             "message_id": "<test@example.com>",
@@ -552,7 +552,7 @@ class TestClassicEmailHandler:
     @pytest.mark.asyncio
     async def test_get_emails_content_mark_as_read_default_false(self, classic_handler):
         """Test that get_emails_content defaults mark_as_read to False."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "456",
             "message_id": None,
@@ -605,7 +605,7 @@ class TestClassicEmailHandler:
     @pytest.mark.asyncio
     async def test_get_emails_content_passes_allowed_senders_to_client(self, classic_handler):
         """The handler forwards the configured allowlist to the read path, which enforces it."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "1",
             "message_id": None,
@@ -627,7 +627,7 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_get_emails_content_no_allowlist_passes_mark_through(self, classic_handler):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         alice = {
             "email_id": "1",
             "message_id": None,
@@ -1032,7 +1032,7 @@ class TestGetEmailsContentEdgeCases:
     @pytest.mark.asyncio
     async def test_get_emails_content_passes_mark_as_read(self, classic_handler):
         """mark_as_read is forwarded to the read path (which marks only allowed messages)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         email_data = {
             "email_id": "1",
             "message_id": None,

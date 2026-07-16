@@ -16,7 +16,6 @@ os.environ["MCP_EMAIL_SERVER_LOG_LEVEL"] = "DEBUG"
 # Individual tests override this via monkeypatch.setenv(...).
 os.environ["MCP_EMAIL_SERVER_CREDENTIAL_STORAGE"] = "plaintext"
 
-import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -82,12 +81,22 @@ def provider_settings():
     )
 
 
+class _CompletedAwaitable:
+    def __await__(self):
+        yield from ()
+
+
 @pytest.fixture
-def mock_imap():
+def completed_awaitable():
+    """Return a reusable awaitable that is not bound to an event loop."""
+    return _CompletedAwaitable()
+
+
+@pytest.fixture
+def mock_imap(completed_awaitable):
     """Fixture for a mocked IMAP client."""
     mock_imap = AsyncMock()
-    mock_imap._client_task = asyncio.Future()
-    mock_imap._client_task.set_result(None)
+    mock_imap._client_task = completed_awaitable
     mock_imap.wait_hello_from_server = AsyncMock()
     mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
     mock_imap.select = AsyncMock(return_value=("OK", []))

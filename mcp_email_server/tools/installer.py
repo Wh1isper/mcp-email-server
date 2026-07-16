@@ -9,6 +9,8 @@ from jinja2 import Template
 
 _HERE = Path(__file__).parent
 CLAUDE_DESKTOP_CONFIG_TEMPLATE = _HERE / "claude_desktop_config.json"
+SERVER_NAME = "mcp-email-server"
+LEGACY_SERVER_NAMES = ("mcp_email_server", "zerolib-email")
 
 system = platform.system()
 if system == "Darwin":
@@ -66,6 +68,8 @@ def install_claude_desktop():
     # Merge the template config into the existing config
     if "mcpServers" not in existing_config:
         existing_config["mcpServers"] = {}
+    for server_name in LEGACY_SERVER_NAMES:
+        existing_config["mcpServers"].pop(server_name, None)
     existing_config["mcpServers"].update(template_config["mcpServers"])
 
     # Write the merged config back to the Claude config file
@@ -86,8 +90,8 @@ def uninstall_claude_desktop():
     if "mcpServers" not in existing_config:
         return
 
-    if "zerolib-email" in existing_config["mcpServers"]:
-        del existing_config["mcpServers"]["zerolib-email"]
+    for server_name in (SERVER_NAME, *LEGACY_SERVER_NAMES):
+        existing_config["mcpServers"].pop(server_name, None)
 
     with open(CLAUDE_DESKTOP_CONFIG_PATH, "w") as f:
         json.dump(existing_config, f, indent=4)
@@ -107,7 +111,9 @@ def is_installed() -> bool:
         with open(CLAUDE_DESKTOP_CONFIG_PATH) as f:
             config = json.load(f)
 
-        return "mcpServers" in config and "zerolib-email" in config["mcpServers"]
+        return "mcpServers" in config and any(
+            server_name in config["mcpServers"] for server_name in (SERVER_NAME, *LEGACY_SERVER_NAMES)
+        )
     except (FileNotFoundError, json.JSONDecodeError):
         return False
 
@@ -133,8 +139,11 @@ def need_update() -> bool:
             installed_config = json.load(f)
 
         # Compare the relevant parts of the configs
-        template_server = template_config["mcpServers"]["zerolib-email"]
-        installed_server = installed_config["mcpServers"]["zerolib-email"]
+        if any(server_name in installed_config["mcpServers"] for server_name in LEGACY_SERVER_NAMES):
+            return True
+
+        template_server = template_config["mcpServers"][SERVER_NAME]
+        installed_server = installed_config["mcpServers"][SERVER_NAME]
 
         # Check if any key configuration elements differ
         return (

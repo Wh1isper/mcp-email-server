@@ -1,11 +1,11 @@
 site_name: mcp-email-server
-repo_url: https://github.com/ai-zerolab/mcp-email-server
-site_url: https://ai-zerolab.github.io/mcp-email-server
+repo_url: https://github.com/wh1isper/mcp-email-server
+site_url: https://mcp-email-server.wh1isper.top
 site_description: IMAP and SMTP via MCP Server
-site_author: ai-zerolab
+site_author: wh1isper
 edit_uri: edit/main/docs/
-repo_name: ai-zerolab/mcp-email-server
-copyright: Maintained by <a href="https://ai-zerolab.com">ai-zerolab</a>.
+repo_name: wh1isper/mcp-email-server
+copyright: Maintained by <a href="https://github.com/wh1isper">wh1isper</a>.
 
 nav:
   - Home: index.md
@@ -41,7 +41,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/ai-zerolab/mcp-email-server
+      link: https://github.com/wh1isper/mcp-email-server
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/mcp-email-server
 

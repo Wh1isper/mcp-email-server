@@ -263,11 +263,10 @@ class TestEmailClientAppendToSent:
         )
 
     @pytest.fixture
-    def mock_imap_for_append(self):
+    def mock_imap_for_append(self, completed_awaitable):
         """Create a mock IMAP client for append testing."""
         mock = AsyncMock()
-        mock._client_task = asyncio.Future()
-        mock._client_task.set_result(None)
+        mock._client_task = completed_awaitable
         mock.wait_hello_from_server = AsyncMock()
         mock.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock.select = AsyncMock(return_value=("OK", []))
