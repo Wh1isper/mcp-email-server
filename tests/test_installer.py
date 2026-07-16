@@ -231,6 +231,13 @@ def test_need_update_returns_true_when_not_installed(monkeypatch):
     assert installer.need_update() is True
 
 
+def test_need_update_returns_true_when_platform_is_unsupported(monkeypatch):
+    monkeypatch.setattr(installer, "is_installed", lambda: True)
+    monkeypatch.setattr(installer, "CLAUDE_DESKTOP_CONFIG_PATH", None)
+
+    assert installer.need_update() is True
+
+
 @pytest.mark.parametrize("server_name", installer.LEGACY_SERVER_NAMES)
 def test_need_update_returns_true_for_legacy_server(monkeypatch, tmp_path, server_name):
     config_path = tmp_path / "claude_desktop_config.json"

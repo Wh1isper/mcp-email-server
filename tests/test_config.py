@@ -327,6 +327,24 @@ def test_get_account_and_get_accounts():
     assert provider_masked.api_key.get_secret_value() == "********"
 
 
+def test_store_accepts_string_toml_file(tmp_path, monkeypatch):
+    settings = Settings()
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setitem(Settings.model_config, "toml_file", str(config_path))
+
+    settings.store()
+
+    assert config_path.exists()
+
+
+def test_store_rejects_invalid_toml_file_setting(monkeypatch):
+    settings = Settings()
+    monkeypatch.setitem(Settings.model_config, "toml_file", None)
+
+    with pytest.raises(TypeError, match="toml_file must identify exactly one file"):
+        settings.store()
+
+
 def test_store_settings_defaults_to_cached_instance(tmp_path, monkeypatch):
     """store_settings() with no argument must fetch and store the cached Settings."""
     import mcp_email_server.config as config_module

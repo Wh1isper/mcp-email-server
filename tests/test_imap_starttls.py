@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings
-from mcp_email_server.emails.classic import EmailClient, _create_starttls_ssl_context, _imap_starttls
+from mcp_email_server.emails.classic import (
+    EmailClient,
+    _create_starttls_ssl_context,
+    _imap_starttls,
+    _send_imap_id,
+)
 
 
 class Response:
@@ -72,6 +77,18 @@ def test_create_starttls_ssl_context_verify_false_is_permissive():
 
 
 @pytest.mark.asyncio
+async def test_send_imap_id_handles_missing_protocol():
+    imap = AsyncMock()
+    imap.id.return_value = Response("BAD")
+    imap.protocol = None
+
+    with patch("mcp_email_server.emails.classic.logger.warning") as mock_warning:
+        await _send_imap_id(imap)
+
+    mock_warning.assert_called_once_with("IMAP ID command failed: IMAP protocol is not connected")
+
+
+@pytest.mark.asyncio
 async def test_imap_starttls_upgrades_transport_and_refreshes_capabilities():
     imap = _make_imap()
     tls_transport = MagicMock()
@@ -87,6 +104,37 @@ async def test_imap_starttls_upgrades_transport_and_refreshes_capabilities():
     mock_loop.start_tls.assert_awaited_once()
     assert imap.protocol.transport is tls_transport
     imap.protocol.capability.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_imap_starttls_requires_connected_protocol():
+    imap = _make_imap()
+    imap.protocol = None
+
+    with pytest.raises(ConnectionError, match="IMAP protocol is not connected"):
+        await _imap_starttls(imap, ssl.create_default_context(), "127.0.0.1")
+
+
+@pytest.mark.asyncio
+async def test_imap_starttls_requires_connected_transport():
+    imap = _make_imap()
+    imap.protocol.transport = None
+
+    with pytest.raises(ConnectionError, match="IMAP transport is not connected"):
+        await _imap_starttls(imap, ssl.create_default_context(), "127.0.0.1")
+
+
+@pytest.mark.asyncio
+async def test_imap_starttls_requires_upgraded_transport():
+    imap = _make_imap()
+
+    with patch("asyncio.get_running_loop") as mock_get_loop:
+        mock_loop = MagicMock()
+        mock_loop.start_tls = AsyncMock(return_value=None)
+        mock_get_loop.return_value = mock_loop
+
+        with pytest.raises(ConnectionError, match="IMAP STARTTLS did not return a transport"):
+            await _imap_starttls(imap, ssl.create_default_context(), "127.0.0.1")
 
 
 @pytest.mark.asyncio
@@ -125,6 +173,29 @@ async def test_connect_imap_uses_implicit_tls_when_use_ssl_true():
     mock_ssl.assert_called_once()
     assert mock_ssl.call_args.kwargs["ssl_context"].verify_mode == ssl.CERT_NONE
     mock_imap.wait_hello_from_server.assert_awaited_once()
+
+
+def test_imap_connect_uses_custom_context_when_verification_disabled():
+    server = EmailServer(
+        user_name="user",
+        password="secret",
+        host="imap.example.com",
+        port=993,
+        use_ssl=True,
+        verify_ssl=False,
+    )
+    client = EmailClient(server)
+    mock_imap_class = MagicMock()
+    client.imap_class = mock_imap_class
+
+    result = client._imap_connect()
+
+    ssl_context = mock_imap_class.call_args.kwargs["ssl_context"]
+    assert result is mock_imap_class.return_value
+    mock_imap_class.assert_called_once_with("imap.example.com", 993, ssl_context=ssl_context)
+    assert isinstance(ssl_context, ssl.SSLContext)
+    assert ssl_context.check_hostname is False
+    assert ssl_context.verify_mode == ssl.CERT_NONE
 
 
 @pytest.mark.asyncio
