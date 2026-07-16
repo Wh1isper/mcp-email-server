@@ -44,14 +44,13 @@ def create_ui():  # noqa: C901
                         f"**Email Address:** {email.email_address}",
                     ]
 
-                    if hasattr(email, "description") and email.description:
+                    if email.description:
                         details.append(f"**Description:** {email.description}")
 
                     # Add IMAP/SMTP provider info if available
-                    if hasattr(email, "incoming") and hasattr(email.incoming, "host"):
-                        details.append(f"**IMAP Provider:** {email.incoming.host}")
+                    details.append(f"**IMAP Provider:** {email.incoming.host}")
 
-                    if hasattr(email, "outgoing") and hasattr(email.outgoing, "host"):
+                    if email.outgoing is not None:
                         details.append(f"**SMTP Provider:** {email.outgoing.host}")
 
                     accounts_details.append("### " + email.account_name + "\n" + "\n".join(details) + "\n")
@@ -95,7 +94,7 @@ def create_ui():  # noqa: C901
                     # Capture which keyring roles this account may have used before it's gone
                     deleted = settings.get_account(account_name)
                     roles = []
-                    if deleted is not None and hasattr(deleted, "incoming"):
+                    if isinstance(deleted, EmailSettings):
                         roles.append("incoming")
                         if deleted.outgoing:
                             roles.append("outgoing")

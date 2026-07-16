@@ -84,7 +84,7 @@ Now you can make your changes locally.
 
 6. Don't forget to add test cases for your added functionality to the `tests` directory.
 
-7. When you're done making changes, check that your changes pass the formatting tests.
+7. When you're done making changes, run the formatting, linting, type, lockfile, and dependency checks.
 
 ```bash
 make check

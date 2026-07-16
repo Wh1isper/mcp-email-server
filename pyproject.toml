@@ -46,6 +46,7 @@ dev = [
     "pytest-asyncio>=0.25.3",
     "pre-commit>=2.20.0",
     "deptry>=0.22.0",
+    "pyright>=1.1.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.9.2",
     "mkdocs>=1.4.2",
@@ -59,6 +60,12 @@ build-backend = "hatchling.build"
 
 [tool.setuptools]
 py-modules = ["mcp_email_server"]
+
+[tool.pyright]
+include = ["mcp_email_server"]
+exclude = ["**/__pycache__", "**/.*", ".venv"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

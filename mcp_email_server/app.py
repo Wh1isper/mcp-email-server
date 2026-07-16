@@ -4,6 +4,7 @@ from email.utils import getaddresses
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import Icon, ToolAnnotations
 from pydantic import Field
 
 from mcp_email_server.config import (
@@ -22,6 +23,7 @@ from mcp_email_server.emails.models import (
     MailboxInfo,
 )
 
+AnyFunction = Callable[..., Any]
 ToolVisibilityPredicate = Callable[[], bool]
 
 
@@ -67,13 +69,26 @@ class VisibilityAwareFastMCP(FastMCP):
     def tool(
         self,
         name: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        annotations: ToolAnnotations | None = None,
+        icons: list[Icon] | None = None,
+        meta: dict[str, Any] | None = None,
+        structured_output: bool | None = None,
         *,
         visible_if: ToolVisibilityPredicate | None = None,
-        **kwargs: Any,
-    ) -> Callable[[Any], Any]:
-        decorator = super().tool(name=name, **kwargs)
+    ) -> Callable[[AnyFunction], AnyFunction]:
+        decorator = super().tool(
+            name=name,
+            title=title,
+            description=description,
+            annotations=annotations,
+            icons=icons,
+            meta=meta,
+            structured_output=structured_output,
+        )
 
-        def wrapped(fn: Any) -> Any:
+        def wrapped(fn: AnyFunction) -> AnyFunction:
             registered = decorator(fn)
             if visible_if is not None:
                 self._tool_visibility[name or fn.__name__] = visible_if

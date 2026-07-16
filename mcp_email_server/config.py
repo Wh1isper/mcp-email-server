@@ -10,7 +10,7 @@ import tomllib
 from collections.abc import Iterable
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeGuard
 from zoneinfo import ZoneInfo
 
 import tomli_w
@@ -27,7 +27,13 @@ from mcp_email_server.log import logger
 
 DEFAULT_CONFIG_PATH = "~/.config/mcp-email-server/config.toml"
 LEGACY_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
-_VALID_CREDENTIAL_STORAGE_MODES = ("auto", "keyring", "plaintext")
+CredentialStorage = Literal["auto", "keyring", "plaintext"]
+_VALID_CREDENTIAL_STORAGE_MODES: tuple[CredentialStorage, ...] = ("auto", "keyring", "plaintext")
+
+
+def _is_credential_storage_mode(value: str) -> TypeGuard[CredentialStorage]:
+    return value in _VALID_CREDENTIAL_STORAGE_MODES
+
 
 # Set by Settings.load_for_migration() around construction so __init__ can skip
 # env-composited state (override pickup, env-account injection, allowlist/bool env
@@ -234,13 +240,15 @@ class EmailSettings(AccountAttributes):
                     f"Password value {keyring_store.SENTINEL!r} is reserved for keyring-stored "
                     "credentials and cannot be used as an account password"
                 )
+        # Pass raw strings through so Pydantic retains runtime validation before
+        # converting them to SecretStr. Its generated constructor type omits this coercion.
         return cls(
             account_name=account_name,
             full_name=full_name,
             email_address=email_address,
             incoming=EmailServer(
                 user_name=imap_user_name or user_name,
-                password=imap_password or password,
+                password=imap_password or password,  # pyright: ignore[reportArgumentType]
                 host=imap_host,
                 port=imap_port,
                 use_ssl=imap_ssl,
@@ -250,7 +258,7 @@ class EmailSettings(AccountAttributes):
             outgoing=(
                 EmailServer(
                     user_name=smtp_user_name or user_name,
-                    password=smtp_password or password,
+                    password=smtp_password or password,  # pyright: ignore[reportArgumentType]
                     host=smtp_host,
                     port=smtp_port,
                     use_ssl=smtp_ssl,
@@ -353,7 +361,7 @@ class ProviderSettings(AccountAttributes):
             return keyring_store.SENTINEL
         return v.get_secret_value()
 
-    def masked(self) -> AccountAttributes:
+    def masked(self) -> ProviderSettings:
         return self.model_copy(update={"api_key": SecretStr("********")})
 
 
@@ -365,19 +373,19 @@ class Settings(BaseSettings):
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
     report_blocked_mutations: bool = False
-    credential_storage: Literal["auto", "keyring", "plaintext"] = "auto"
+    credential_storage: CredentialStorage = "auto"
 
     # Env-var override for credential_storage. Kept separate from the loaded field
     # so environment precedence is explicit. A later store serializes the effective
     # value because the override controls the credential representation written to
     # that same file; persisting the old mode would make the file self-contradictory.
-    _credential_storage_override: str | None = PrivateAttr(default=None)
+    _credential_storage_override: CredentialStorage | None = PrivateAttr(default=None)
     _loaded_keyring_references: set[tuple[str, str]] = PrivateAttr(default_factory=set)
 
     model_config = SettingsConfigDict(toml_file=CONFIG_PATH, validate_assignment=True, revalidate_instances="always")
 
     @property
-    def effective_credential_storage(self) -> str:
+    def effective_credential_storage(self) -> CredentialStorage:
         """The mode that actually governs storage decisions: env override, else the field.
 
         Returns the raw three-value literal — never probes the keyring. Only
@@ -395,7 +403,7 @@ class Settings(BaseSettings):
         override = os.getenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE")
         if override is None:
             return
-        if override not in _VALID_CREDENTIAL_STORAGE_MODES:
+        if not _is_credential_storage_mode(override):
             raise ValueError(
                 f"Invalid MCP_EMAIL_SERVER_CREDENTIAL_STORAGE={override!r}; "
                 f"must be one of {', '.join(_VALID_CREDENTIAL_STORAGE_MODES)}"
@@ -514,7 +522,7 @@ class Settings(BaseSettings):
                 "prompt/ACL denial if the server binary changed (e.g. uvx re-resolution)."
             )
         secret = SecretStr(value)
-        if role == "api_key":
+        if isinstance(obj, ProviderSettings):
             obj.api_key = secret
         else:
             obj.password = secret
@@ -569,7 +577,7 @@ class Settings(BaseSettings):
         return None
 
     def get_accounts(self, masked: bool = False) -> list[EmailSettings | ProviderSettings]:
-        accounts = self.emails + self.providers
+        accounts: list[EmailSettings | ProviderSettings] = [*self.emails, *self.providers]
         if masked:
             return [account.masked() for account in accounts]
         return accounts
@@ -599,7 +607,7 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (TomlConfigSettingsSource(settings_cls),)
 
-    def _to_toml(self, *, use_keyring: bool = False, credential_storage: str | None = None) -> str:
+    def _to_toml(self, *, use_keyring: bool = False, credential_storage: CredentialStorage | None = None) -> str:
         context = {"secrets": "keyring"} if use_keyring else None
         data = self.model_dump(exclude_none=True, context=context)
         if credential_storage is not None:
@@ -672,7 +680,13 @@ class Settings(BaseSettings):
             raise
 
     def store(self) -> None:
-        toml_file = self.model_config["toml_file"]
+        toml_file_setting = self.model_config.get("toml_file")
+        if isinstance(toml_file_setting, Path):
+            toml_file = toml_file_setting
+        elif isinstance(toml_file_setting, str):
+            toml_file = Path(toml_file_setting)
+        else:
+            raise TypeError("Settings model_config.toml_file must identify exactly one file")
         toml_file.parent.mkdir(parents=True, exist_ok=True)
 
         effective = self.effective_credential_storage  # raw literal; never probes
@@ -749,17 +763,17 @@ def store_settings(settings: Settings | None = None) -> None:
     settings.store()
 
 
-def _reset_cleanup_mode(raw: dict[str, Any]) -> str:
+def _reset_cleanup_mode(raw: dict[str, Any]) -> CredentialStorage:
     override = os.getenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE")
     if override is not None:
-        if override in _VALID_CREDENTIAL_STORAGE_MODES:
+        if _is_credential_storage_mode(override):
             return override
         logger.warning(
             f"Invalid MCP_EMAIL_SERVER_CREDENTIAL_STORAGE={override!r} while cleaning up keyring "
             "entries during reset; proceeding as if it were unset"
         )
     toml_mode = raw.get("credential_storage", "auto")
-    return toml_mode if toml_mode in _VALID_CREDENTIAL_STORAGE_MODES else "auto"
+    return toml_mode if isinstance(toml_mode, str) and _is_credential_storage_mode(toml_mode) else "auto"
 
 
 def _cleanup_keyring_entries_for_reset() -> None:

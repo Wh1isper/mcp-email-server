@@ -2,6 +2,7 @@ import asyncio
 import base64
 import binascii
 import email.utils
+import inspect
 import mimetypes
 import re
 import ssl
@@ -9,13 +10,14 @@ import time
 import unicodedata
 from datetime import UTC, datetime
 from email.header import Header
+from email.message import Message
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aioimaplib
 import aiosmtplib
@@ -276,6 +278,12 @@ def _raise_for_imap_command_failure(response: Any, operation: str) -> None:
         raise RuntimeError(msg)
 
 
+def _decoded_payload(message: Message) -> bytes | None:
+    """Return a decoded MIME payload when the email API produced bytes."""
+    payload = message.get_payload(decode=True)
+    return payload if isinstance(payload, bytes) else None
+
+
 def _html_to_text(html: str) -> str:
     """Convert an HTML email body to readable plain text."""
     soup = BeautifulSoup(html, "html.parser")
@@ -316,10 +324,16 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
         if response.result != "OK":
             # Fallback for strict servers (e.g., 163.com)
             # Send raw command with correct parenthesis format
-            new_tag = imap.protocol.new_tag()
-            if hasattr(new_tag, "__await__"):
+            protocol = imap.protocol
+            if protocol is None:
+                logger.warning("IMAP ID command failed: IMAP protocol is not connected")
+                return
+            new_tag = protocol.new_tag()
+            # aioimaplib 2.x returns str; retain compatibility with releases or
+            # test doubles that expose an awaitable tag generator.
+            if inspect.isawaitable(new_tag):
                 new_tag = await new_tag
-            await imap.protocol.execute(
+            await protocol.execute(
                 aioimaplib.Command(
                     "ID",
                     new_tag,
@@ -398,29 +412,39 @@ def _imap_capabilities(imap: aioimaplib.IMAP4) -> set[str]:
 
 async def _imap_starttls(imap: aioimaplib.IMAP4, ssl_context: ssl.SSLContext, host: str) -> None:
     """Upgrade an IMAP connection to TLS via STARTTLS."""
+    protocol = imap.protocol
+    if protocol is None:
+        raise ConnectionError("IMAP protocol is not connected")
+
     capabilities = _imap_capabilities(imap)
     if "STARTTLS" not in capabilities:
-        await imap.protocol.capability()
+        await protocol.capability()
         capabilities = _imap_capabilities(imap)
     if "STARTTLS" not in capabilities:
         raise OSError("IMAP server does not advertise STARTTLS capability")
 
-    response = await imap.protocol.execute(
-        aioimaplib.Command("STARTTLS", imap.protocol.new_tag(), loop=imap.protocol.loop)
-    )
+    loop = asyncio.get_running_loop()
+    response = await protocol.execute(aioimaplib.Command("STARTTLS", protocol.new_tag(), loop=loop))
     status = _imap_status(response)
     if status != "OK":
         raise OSError(f"STARTTLS command failed: {status}")
 
-    loop = asyncio.get_running_loop()
+    transport = protocol.transport
+    if transport is None:
+        raise ConnectionError("IMAP transport is not connected")
+    # aioimaplib declares BaseTransport but immediately calls write() on it;
+    # an active asyncio IMAP connection necessarily has a writable transport.
+    write_transport = cast(asyncio.WriteTransport, transport)
     tls_transport = await loop.start_tls(
-        imap.protocol.transport,
-        imap.protocol,
+        write_transport,
+        protocol,
         ssl_context,
         server_hostname=host,
     )
-    imap.protocol.transport = tls_transport
-    await imap.protocol.capability()
+    if tls_transport is None:
+        raise ConnectionError("IMAP STARTTLS did not return a transport")
+    protocol.transport = tls_transport
+    await protocol.capability()
 
 
 # Backwards-compatible alias
@@ -442,7 +466,12 @@ class EmailClient:
         """Create a new IMAP connection with the configured SSL context."""
         if self.email_server.use_ssl:
             imap_ssl_context = _create_ssl_context(self.email_server.verify_ssl)
-            return self.imap_class(self.email_server.host, self.email_server.port, ssl_context=imap_ssl_context)
+            if imap_ssl_context is not None:
+                return self.imap_class(
+                    self.email_server.host,
+                    self.email_server.port,
+                    ssl_context=imap_ssl_context,
+                )
         return self.imap_class(self.email_server.host, self.email_server.port)
 
     async def _connect_imap(self) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
@@ -470,7 +499,10 @@ class EmailClient:
         """Create, greet, and optionally STARTTLS-upgrade an IMAP connection."""
         if server.use_ssl:
             imap_ssl_context = _create_ssl_context(server.verify_ssl)
-            imap = aioimaplib.IMAP4_SSL(server.host, server.port, ssl_context=imap_ssl_context)
+            if imap_ssl_context is None:
+                imap = aioimaplib.IMAP4_SSL(server.host, server.port)
+            else:
+                imap = aioimaplib.IMAP4_SSL(server.host, server.port, ssl_context=imap_ssl_context)
         else:
             imap = aioimaplib.IMAP4(server.host, server.port)
 
@@ -575,7 +607,7 @@ class EmailClient:
                         attachments.append(filename)
                 # Handle text parts - prefer text/plain
                 elif content_type == "text/plain":
-                    body_part = part.get_payload(decode=True)
+                    body_part = _decoded_payload(part)
                     if body_part:
                         charset = part.get_content_charset("utf-8")
                         try:
@@ -584,7 +616,7 @@ class EmailClient:
                             body += body_part.decode("utf-8", errors="replace")
                 # Collect HTML as fallback
                 elif content_type == "text/html" and not body:
-                    html_part = part.get_payload(decode=True)
+                    html_part = _decoded_payload(part)
                     if html_part:
                         charset = part.get_content_charset("utf-8")
                         try:
@@ -598,7 +630,7 @@ class EmailClient:
         else:
             # Handle single-part emails
             content_type = email_message.get_content_type()
-            payload = email_message.get_payload(decode=True)
+            payload = _decoded_payload(email_message)
             if payload:
                 charset = email_message.get_content_charset("utf-8")
                 try:
@@ -1187,7 +1219,7 @@ class EmailClient:
             email_message = parser.parsebytes(raw_email)
 
             # Find the attachment
-            attachment_data = None
+            attachment_data: bytes | None = None
             mime_type = None
             normalized_attachment_name = self._normalize_attachment_name(attachment_name)
 
@@ -1201,7 +1233,7 @@ class EmailClient:
                     if not isinstance(filename, str):
                         continue
                     if self._normalize_attachment_name(filename) == normalized_attachment_name:
-                        attachment_data = part.get_payload(decode=True)
+                        attachment_data = _decoded_payload(part)
                         mime_type = part.get_content_type()
                         break
 
@@ -1315,7 +1347,7 @@ class EmailClient:
 
         # Handle subject with special characters
         if any(ord(c) > 127 for c in subject):
-            msg["Subject"] = Header(subject, "utf-8")
+            msg["Subject"] = str(Header(subject, "utf-8"))
         else:
             msg["Subject"] = subject
 
@@ -1326,7 +1358,7 @@ class EmailClient:
         if sender_address:
             msg["From"] = email.utils.formataddr((str(Header(sender_name, "utf-8")), sender_address))
         elif any(ord(c) > 127 for c in self.sender):
-            msg["From"] = Header(self.sender, "utf-8")
+            msg["From"] = str(Header(self.sender, "utf-8"))
         else:
             msg["From"] = self.sender
 
@@ -1736,7 +1768,9 @@ class EmailClient:
 
             quoted_ref = _quote_mailbox(reference) if reference else '""'
             quoted_pattern = _quote_mailbox(pattern)
-            response = await imap.list(quoted_ref, quoted_pattern)
+            # aioimaplib annotates mailbox_pattern as re.Pattern, but its wire
+            # implementation and public API expect a preformatted IMAP string.
+            response = await imap.list(quoted_ref, quoted_pattern)  # pyright: ignore[reportArgumentType]
             _raise_for_imap_error(response, f"LIST mailboxes with pattern {pattern}")
             _, data = response
 

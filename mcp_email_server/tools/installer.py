@@ -128,6 +128,10 @@ def need_update() -> bool:
     if not is_installed():
         return True
 
+    config_path = CLAUDE_DESKTOP_CONFIG_PATH
+    if config_path is None:
+        return True
+
     try:
         # Get the template config
         template_content = CLAUDE_DESKTOP_CONFIG_TEMPLATE.read_text()
@@ -135,7 +139,7 @@ def need_update() -> bool:
         template_config = json.loads(rendered_content)
 
         # Get the installed config
-        with open(CLAUDE_DESKTOP_CONFIG_PATH) as f:
+        with open(config_path) as f:
             installed_config = json.load(f)
 
         # Compare the relevant parts of the configs

@@ -160,6 +160,19 @@ def test_password_is_secret_type():
     assert server.password.get_secret_value() == "s3cret"
 
 
+def test_email_settings_init_validates_password_type():
+    """EmailSettings.init must preserve Pydantic validation of raw passwords."""
+    with pytest.raises(ValidationError, match="password"):
+        EmailSettings.init(
+            account_name="test",
+            full_name="Test User",
+            email_address="test@example.com",
+            user_name="test@example.com",
+            password=123,  # type: ignore[arg-type]
+            imap_host="imap.example.com",
+        )
+
+
 def test_api_key_is_secret_type():
     """API key field must be SecretStr."""
     provider = ProviderSettings(

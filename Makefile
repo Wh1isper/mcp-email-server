@@ -10,6 +10,8 @@ check: ## Run code quality tools.
 	@uv lock --locked
 	@echo "🚀 Linting code: Running pre-commit"
 	@uv run pre-commit run -a
+	@echo "🚀 Checking types: Running pyright"
+	@uv run python -m pyright
 	@echo "🚀 Checking for obsolete dependencies: Running deptry"
 	@uv run deptry .
 
