@@ -90,10 +90,11 @@ Now you can make your changes locally.
 make check
 ```
 
-8. Validate that all unit tests are passing:
+8. Validate that all unit tests and documentation checks are passing:
 
 ```bash
 make test
+make docs-test
 ```
 
 The CI pipeline runs the test suite against every supported Python version.
@@ -114,5 +115,16 @@ Before you submit a pull request, check that it meets these guidelines:
 
 1. The pull request should include tests.
 
-2. If the pull request adds functionality, the docs should be updated.
-   Put your new functionality into a function with a docstring, and add the feature to the list in `README.md`.
+2. If the pull request adds or changes user-facing functionality, update the relevant page in `docs/`.
+   Keep `README.md` focused on the quick-start path.
+
+# Releasing a New Version
+
+This section is for project maintainers.
+
+1. Create an API token on [PyPI](https://pypi.org/).
+2. Add it to the repository's GitHub Actions secrets as `PYPI_TOKEN`.
+3. Create a [GitHub release](https://github.com/wh1isper/mcp-email-server/releases/new).
+4. Create a version tag in the form `X.Y.Z` as part of the release.
+
+The release workflow publishes the package associated with the tagged release.

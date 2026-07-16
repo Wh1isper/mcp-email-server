@@ -308,7 +308,7 @@ async def send_email(
         list[str] | None,
         Field(
             default=None,
-            description="A list of absolute file paths to attach to the email. Supports common file types (documents, images, archives, etc.).",
+            description="A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
         ),
     ] = None,
     in_reply_to: Annotated[
@@ -354,7 +354,8 @@ async def send_email(
 
 @mcp.tool(
     description="Compose an email and save it to an IMAP folder (e.g., Drafts). "
-    "Same parameters as send_email, but saves instead of sending. "
+    "Shares recipient, body, attachment, and threading parameters with send_email; "
+    "adds mailbox and flags, and does not support reply_to. "
     "Default folder is Drafts with \\Draft and \\Seen flags. "
     "Pure IMAP operation — works without SMTP configuration.",
 )
@@ -386,7 +387,7 @@ async def save_to_mailbox(
         list[str] | None,
         Field(
             default=None,
-            description="A list of absolute file paths to attach to the email.",
+            description="A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
         ),
     ] = None,
     in_reply_to: Annotated[
@@ -407,7 +408,7 @@ async def save_to_mailbox(
         list[str] | None,
         Field(
             default=None,
-            description=r"IMAP flags to set on the message. Defaults to ['\\Draft', '\\Seen']. Common flags: '\\Draft', '\\Seen', '\\Flagged'.",
+            description=r"IMAP flags to set on the message. Defaults to ['\Draft', '\Seen']. Common flags: '\Draft', '\Seen', '\Flagged'.",
         ),
     ] = None,
 ) -> str:
@@ -547,7 +548,12 @@ async def download_attachment(
     attachment_name: Annotated[
         str, Field(description="The name of the attachment to download (as shown in the attachments list).")
     ],
-    save_path: Annotated[str, Field(description="The absolute path where the attachment should be saved.")],
+    save_path: Annotated[
+        str,
+        Field(
+            description="The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended."
+        ),
+    ],
     mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
 ) -> AttachmentDownloadResponse:
     settings = get_settings()
