@@ -29,6 +29,22 @@ jobs:
       - name: Run checks
         run: make check
 
+  greenmail-e2e:
+    name: GreenMail E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+
+      - name: Run GreenMail E2E baseline
+        run: make test-e2e
+
   tests-and-type-check:
     runs-on: ubuntu-latest
     strategy:

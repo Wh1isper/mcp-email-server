@@ -32,6 +32,17 @@ Docker:
 make test
 ```
 
+## Continuous integration
+
+The main GitHub Actions workflow runs `make test-e2e` once on `ubuntu-latest`
+with Python 3.13 for every pull request and push to `main`. The job has a
+10-minute outer timeout in addition to the per-request MCP deadline. The regular
+Python 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail
+is not repeated for every interpreter version.
+
+Run the baseline locally before pushing relevant mail or stdio changes; the
+shared CI check is not a replacement for local diagnosis.
+
 ## Tested boundary
 
 ```mermaid

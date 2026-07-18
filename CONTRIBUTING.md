@@ -109,9 +109,10 @@ to loopback, and removes it after the test. See the
 [validation guide](https://mcp-email-server.wh1isper.top/validation/) for the
 covered flows and limitations.
 
-The CI pipeline runs the unit test suite against every supported Python version.
-The GreenMail baseline is currently an explicit local check rather than a
-required CI job.
+The CI pipeline runs the unit test suite against every supported Python version
+and runs the GreenMail baseline once on Python 3.13 for pull requests and pushes
+to `main`. Relevant changes should still run `make test-e2e` locally before they
+are pushed so failures can be diagnosed without waiting for CI.
 
 9. Commit your changes and push your branch to GitHub:
 

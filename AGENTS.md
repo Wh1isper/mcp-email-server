@@ -120,7 +120,7 @@ anycap feedback --type feature -m "describe the use case"
 
 - Add or update tests for every behavior change and regression fix.
 - Keep unit tests deterministic and independent of live IMAP, SMTP, or keyring services.
-- Run `make test-e2e` for changes to IMAP, SMTP, MCP stdio, configuration loading, attachment handling, or mailbox mutations. This uses synthetic accounts on a loopback-only GreenMail container.
+- Run `make test-e2e` for changes to IMAP, SMTP, MCP stdio, configuration loading, attachment handling, or mailbox mutations. This uses synthetic accounts on a loopback-only GreenMail container, and CI runs it once on the default Python version.
 - Cover both successful operations and security or failure boundaries.
 - When changing configuration, test TOML loading, supported environment overrides, persistence, and migration behavior as applicable.
 - When changing MCP tools, test schemas, responses, conditional visibility, and account-specific error paths.
