@@ -113,7 +113,7 @@ or protocol clients.
 | Legacy account configuration | TOML compatibility adapter           | Base config stays in TOML; SQLite stores only non-secret source-to-operational-ID mapping and index data |
 | Environment overrides        | Process environment                  | Read-only runtime config; SQLite may retain only non-secret source identity and index data               |
 | Passwords and tokens         | Selected `SecretStore`               | Opaque backend and locator only                                                                          |
-| Mailbox and message state    | IMAP server                          | Rebuildable local index and cache                                                                        |
+| Mailbox and message state    | IMAP server                          | Rebuildable, freshness-qualified last-observed projection and cache                                      |
 | SMTP delivery acceptance     | SMTP server response                 | Operation evidence and reconciliation state                                                              |
 | Raw MIME and attachments     | IMAP server or explicit local export | Metadata only by default                                                                                 |
 
@@ -154,13 +154,42 @@ not import FastMCP, Typer, sqlite3, keyring, aioimaplib, or aiosmtplib.
 - Network calls and secret-store calls never run inside SQLite transactions.
 - A message placement is identified by account, mailbox, UIDVALIDITY, and UID;
   an IMAP UID alone is not durable.
+- An indexed placement is a timestamped observation, not proof of current remote
+  existence. IMAP remains authoritative for mailbox membership.
+- Absence proves removal only from matching-UIDVALIDITY `VANISHED` or equivalent
+  provider evidence, a confirmed local mutation, or a complete UID-set
+  reconciliation. Partial refresh never deletes by absence.
+- A message-scoped delete or move fallback never issues bare mailbox-wide
+  `EXPUNGE`; without UID EXPUNGE or another proven scoped primitive it returns a
+  non-expunged partial outcome or rejects hard deletion according to policy.
+- Remote disappearance removes a placement, not necessarily the logical message;
+  when no active placement remains, cached body and body-derived FTS content are
+  purged by default and no implicit deleted-mail archive is exposed.
 - SMTP results preserve per-recipient acceptance, rejection, and uncertainty;
   accepted or unknown recipients are never automatically resubmitted.
 - SMTP success is not rolled back when saving the sent copy fails, and an unknown
   sent-copy APPEND is reconciled before retry.
 - Provider-effect operations atomically verify claim ownership and catalog
-  generation while persisting each effect boundary; a stale post-boundary claim
-  becomes unknown rather than being replayed.
+  generation while persisting each effect boundary. Placement-scoped operations
+  also verify the expected active placement and UIDVALIDITY and advance the
+  mailbox revision before provider access; membership-affecting operations mark
+  source targets stale, while flag-only operations mark only the flag projection
+  stale, both with attempt ownership. Post-boundary stale claims become unknown
+  rather than being replayed.
+- Unknown operation evidence is never silently evicted. Rebuildable message
+  metadata may be compacted into bounded target evidence, but every unresolved
+  placement identity remains an enforceable effect-boundary fence. Mailbox IDs
+  referenced by unreleased fences survive full index rebuild or are rebound only
+  with identity evidence; rediscovery reconstructs operation-owned uncertainty
+  rather than enabling a competing mutation. Only reconciliation or explicit acknowledgment releases the fence.
+  Exhausted evidence capacity blocks new provider-effect mutations without
+  inventing an outcome or allowing replay.
+- A `CONFIRMED` flag projection contains one canonical, complete provider-observed
+  flag set. A requested flag delta or prior cache plus delta never proves the
+  resulting set when another client could have changed unrelated flags.
+- Finite operation-evidence byte and unresolved-count ceilings apply in managed,
+  legacy, and environment-only modes; later policy sources may tighten but never
+  widen the bootstrap safety ceiling.
 - Body reads use IMAP PEEK unless the user explicitly requests a read mutation.
 - Legacy and environment accounts may reuse stable SQLite operational identities,
   but their endpoints, policies, and secrets are never copied into managed

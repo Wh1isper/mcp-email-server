@@ -142,3 +142,4 @@ tests/config.toml
 local/
 config.toml
 .worktrees/
+local-reference/

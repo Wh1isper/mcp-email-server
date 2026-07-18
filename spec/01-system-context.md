@@ -184,7 +184,9 @@ SQLite is shared by local processes, not by tenants or remote users.
 - IMAP, SMTP, keyring, and large filesystem operations occur outside database
   transactions.
 - Synchronization writes use idempotent upserts and compare the cursor revision
-  before advancing it.
+  before advancing it. Placement-scoped effect boundaries advance the same
+  revision before provider access so an older refresh cannot resurrect
+  pre-effect state.
 - A stale or conflicting refresh may discard its cursor advancement and retry
   reconciliation; it does not hold a database lock during network access.
 - Provider-effect operations use fenced attempt records. The conditional effect
@@ -208,6 +210,10 @@ The app supports three explicit data states:
 
 A local result never silently claims complete mailbox coverage when only a
 partial index exists. Exact counts are returned only when they are known.
+Metadata coverage, recent addition synchronization, flag synchronization, and
+complete mailbox-membership reconciliation are reported independently: finding
+recent additions does not refresh flags or prove that every older indexed
+placement still exists.
 
 ## Trust Boundaries
 
@@ -238,6 +244,22 @@ showed an approval dialog. Detailed tool and file controls are defined in
   backend.
 - Mail reads do not mutate remote state unless the operation explicitly requests
   a mutation.
+- An indexed placement is last-observed state. Only explicit provider removal
+  evidence or a complete UID-set reconciliation under unchanged UIDVALIDITY may
+  remove it by absence; partial refresh performs upserts only.
+- A message-scoped operation never uses bare mailbox-wide EXPUNGE. Flag projection
+  uncertainty is tracked independently from mailbox membership so an unknown
+  STORE neither hides the message nor supports exact flag-derived results. A
+  confirmed flag projection always contains a complete provider-observed set, not
+  a locally inferred delta result.
+- An effect-boundary target fence survives rebuildable index compaction and full
+  index rebuild. A mailbox identity referenced by an unreleased fence is retained
+  or evidence-backed rebound without changing its local ID. Matching provider
+  rediscovery reconstructs operation-owned uncertainty, and a competing mutation
+  is rejected until reconciliation or explicit unknown acknowledgment.
+- External removals are eventually consistent because no daemon is present.
+  Confirmed-removed and stale placements are excluded from normal search, and
+  cached body content is purged by default when no active placement remains.
 - Every response reports whether it came from indexed, refreshed, or partial
   state when that distinction affects correctness.
 

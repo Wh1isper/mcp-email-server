@@ -111,7 +111,8 @@ Used by MCP read tools and optional CLI diagnostics:
 - refresh a bounded metadata range when requested;
 - read bounded message body sections;
 - list attachment metadata;
-- report freshness and index coverage.
+- report metadata coverage, addition freshness, flag freshness, and
+  complete-membership freshness independently.
 
 #### `MailCommandService`
 
@@ -120,6 +121,10 @@ Owns externally visible mutations:
 - send a message;
 - save a draft or message to a mailbox;
 - mark, move, archive, and delete messages;
+- revalidate placement identity and mailbox revision at each remote-effect
+  boundary;
+- require a target-scoped delete primitive or return a non-expunged partial or
+  policy rejection; never escalate a scoped command to bare mailbox-wide EXPUNGE;
 - reconcile confirmed remote outcomes into SQLite;
 - distinguish complete, partial, uncertain, and failed outcomes.
 
@@ -127,12 +132,17 @@ Owns externally visible mutations:
 
 Owns explicit and on-demand metadata maintenance:
 
-- discover mailbox changes;
+- discover additions, flag changes, and membership changes with independent
+  freshness evidence;
 - upsert metadata and placements;
-- advance cursors transactionally;
+- apply QRESYNC/VANISHED evidence or complete UID-set membership reconciliation;
+- ensure partial observations never infer removal by absence;
+- advance metadata and membership cursor evidence transactionally;
 - invalidate a mailbox on UIDVALIDITY change;
+- fence older refreshes when a placement-scoped operation crosses its effect
+  boundary;
 - rebuild FTS projections;
-- purge expired body cache and stale metadata.
+- purge expired body cache, orphaned message data, and stale metadata.
 
 #### `ArtifactService`
 
@@ -183,11 +193,14 @@ Ports are narrow and use application or domain types.
   settings, revisions, and tombstones.
 - `CredentialChangeRepository`: active, candidate, and pending-cleanup bindings
   plus persisted secret-change saga states.
-- `MailIndexRepository`: mailboxes, messages, placements, addresses, body cache,
-  attachments, search projections, and sync cursors.
-- `OperationRepository`: durable per-recipient and compound-step evidence plus
-  fenced pre-effect and remote-effect-possible attempt transitions for send and
-  other mutations.
+- `MailIndexRepository`: stable mailbox identity shells required by operation
+  fences plus rebuildable mailbox metadata, messages, placements, addresses, body
+  cache, attachments, search projections, and sync cursors.
+- `OperationRepository`: durable per-recipient, target, and compound-step
+  evidence; target fences that remain enforceable across mail-index compaction;
+  fenced pre-effect and remote-effect-possible transitions; explicit unknown
+  acknowledgment; and base-mode-independent evidence-capacity accounting for send
+  and other mutations.
 - `UnitOfWork`: one short SQLite transaction across repositories when an
   application invariant requires atomic local state.
 

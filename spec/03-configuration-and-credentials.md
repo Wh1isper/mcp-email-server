@@ -29,7 +29,19 @@ only values needed to locate and safely initialize the local runtime:
 - selected base mode, when explicitly configured;
 - migration and lock timeouts;
 - process-level logging settings;
+- base-mode-independent hard ceilings for operation-evidence bytes and unresolved
+  operation count;
 - emergency read-only or maintenance flags.
+
+The operation-evidence ceilings have documented built-in defaults and are
+available before opening SQLite or selecting managed, legacy, or environment-only
+configuration. An implementation-level maximum bounds those defaults and any
+local bootstrap override. Managed policy, legacy TOML policy, and process
+environment values may only tighten the effective ceiling; they cannot raise it.
+A source requesting a higher value is invalid and is reported with attribution
+rather than silently widening or clipping policy. The claim transaction uses the
+minimum applicable valid limit and therefore has a non-optional admission bound
+in every base mode.
 
 The existing `db_location` value and default location remain compatible inputs.
 An environment or CLI override may select a different database path. Database
@@ -61,6 +73,7 @@ flowchart LR
     ENV --> SOURCE
     SOURCE -->|managed ID or source key and fingerprint| IDENTITY
     SOURCE -->|config and policy provenance| SNAPSHOT
+    BOOT -->|hard capacity ceilings| SNAPSHOT
     IDENTITY -->|stable account_id| SNAPSHOT
     SNAPSHOT --> SECRETS
     SECRETS --> RUNTIME
@@ -85,7 +98,9 @@ explicit schema ownership as defined in
 Legacy mode preserves current file location, path migration, model validation,
 credential mode, and serialization behavior behind a compatibility adapter. The
 adapter distinguishes stored state from the environment-composited effective
-view even when a facade must preserve current whole-view writes.
+view even when a facade must preserve current whole-view writes. A supported
+legacy operation-evidence policy may set lower byte or unresolved-count limits;
+absence inherits the bootstrap ceiling rather than making capacity unlimited.
 
 ### Environment overlay
 
@@ -101,6 +116,11 @@ Environment-derived accounts and overrides are:
 - never imported or persisted by an unrelated account update;
 - eligible for mail operations after normal validation;
 - clearly marked as `environment` source in account summaries.
+
+A documented process environment override for operation-evidence capacity may
+only lower the applicable bootstrap, managed, or legacy limit. Environment-only
+account operation therefore retains the same finite admission and backpressure
+contract as every other mode.
 
 ### Operational identity in every mode
 
@@ -137,6 +157,21 @@ or `FAILED_IMPORT` catalog does not imply a completed managed import. A managed
 catalog stores lifecycle state, catalog generation, policy version, and
 revision. `ACTIVE` selects the managed base; `MAINTENANCE` deliberately disables
 mail access until another generation transition.
+
+### Open decision: durable managed selection after storage loss
+
+The current mode-selection order cannot distinguish a never-activated install
+from one whose previously active managed database is missing, corrupt, replaced,
+or reached through the wrong path. In the latter cases, selecting retained TOML
+would violate the rule that managed mode never silently falls back to legacy.
+
+Before this proposal can be accepted or managed activation implemented, it must
+define a durable selection signal outside the database being located and a
+crash-safe activation sequence for updating that signal and the catalog. An
+explicit required bootstrap mode or a small fail-closed activation marker are
+possible designs, but neither is selected here. Once managed selection has been
+committed, missing or invalid managed storage must enter maintenance or return a
+configuration error rather than selecting legacy mail access.
 
 ## Explicit Legacy Import
 
@@ -195,6 +230,12 @@ Import rules:
 
 After managed mode is active, TOML is not also writable as a base catalog.
 Re-import requires a deliberate merge operation with conflict reporting.
+Retained legacy mutators, including whole-file credential migration, reset,
+Gradio callbacks, and MCP account mutation, must either route through managed
+application services under an explicit compatibility decision or fail before
+changing TOML or keyring state. An explicit legacy-source maintenance operation
+must prove that no active or pending managed binding references a locator before
+deleting it.
 
 ### Mode-transition visibility
 
@@ -378,8 +419,10 @@ The target CLI management surface includes commands equivalent to:
   `credential repair`;
 - `index status`, `index sync`, `index rebuild`, `index purge`, and explicit
   operational-identity list/rebind/retire actions for legacy source conflicts;
+- `operation list`, `operation reconcile`, and `operation acknowledge` for
+  unresolved provider effects and evidence-capacity recovery;
 - `doctor` for database, migration, source identity, secret, filesystem, IMAP,
-  and SMTP checks.
+  SMTP, and operation-evidence capacity checks.
 
 Exact command spelling may follow existing Typer conventions, but the ownership
 rules are normative:
@@ -391,6 +434,9 @@ rules are normative:
   consent;
 - imports, migrations, and destructive maintenance support dry-run where a
   preview is meaningful;
+- operation acknowledgment requires the exact operation identity and explicit
+  confirmation that the remote outcome remains unknown; it never reports success
+  or failure, authorizes replay, or suppresses the retained warning silently;
 - output identifies whether values are managed, legacy, environment, or
   shadowed without exposing secret locators.
 
@@ -433,7 +479,12 @@ Managed mode deliberately improves these behaviors:
 
 Tests cover:
 
-- deterministic mode selection and database path resolution;
+- deterministic mode selection and database path resolution, including the
+  accepted durable-selection mechanism, activation crash points, and fail-closed
+  behavior for missing, corrupt, replaced, or misresolved managed storage;
+- finite bootstrap operation-evidence ceilings and managed, legacy, and
+  environment-only admission/backpressure, including proof that every override
+  can only tighten the applicable byte and unresolved-count limits;
 - current and legacy TOML loading;
 - every documented environment override and replacement rule, including present
   empty allowlists and durable deny precedence;
@@ -443,8 +494,10 @@ Tests cover:
 - managed account and policy revisions, mandatory global rule-set completeness,
   account absence/inherit behavior, rule-set merge semantics, complete source
   attribution, and cross-process conflicts;
-- atomic mode-generation/effect-boundary ordering and `RESTART_REQUIRED` before
-  each independent provider side effect;
+- generation rejection at admission for every stale-process mail read or command,
+  again before provider or filesystem access, and atomic
+  mode-generation/effect-boundary ordering before each independent provider side
+  effect;
 - dry-run, staging lifecycle, failed-import rollback, and candidate repair;
 - each secret backend's explicit capabilities;
 - keyring failure plus secret-change crashes before and after every saga boundary;
@@ -452,10 +505,15 @@ Tests cover:
   secret;
 - pending cleanup, account soft removal, explicit guarded hard-purge ordering,
   orphan reporting limitations, and repair without backend enumeration;
+- operation listing, reconciliation, evidence-capacity diagnostics, and explicit
+  unknown acknowledgment without outcome invention or replay authorization;
 - no secret values in SQLite, logs, MCP results, exception strings, or test
   snapshots;
 - atomic owner-only plaintext compatibility writes;
-- managed versus legacy reset and backup behavior.
+- managed versus legacy reset and backup behavior;
+- retained legacy credential/configuration mutators in managed and maintenance
+  modes, proving that they fail before TOML/keyring writes or route through the
+  managed saga and never delete a locator referenced by a managed binding.
 
 SQLite tables and constraints are defined in
 [`05-sqlite-persistence-and-data-model.md`](05-sqlite-persistence-and-data-model.md).

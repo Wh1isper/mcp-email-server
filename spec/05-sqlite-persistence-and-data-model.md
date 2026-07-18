@@ -17,17 +17,17 @@ evidence from rebuildable mail indexes and caches.
 
 ## Storage Classes
 
-| Class                         | Examples                                                  | Rebuildable                    | Default persistence            |
-| ----------------------------- | --------------------------------------------------------- | ------------------------------ | ------------------------------ |
-| Managed configuration         | Accounts, endpoints, policies, secret bindings            | No                             | Yes                            |
-| Operational identity          | Stable IDs and legacy/environment source mappings         | No, when evidence refers to it | Yes in every base mode         |
-| Operation evidence            | SMTP acceptance, uncertain outcome, reconciliation state  | No                             | Yes, bounded retention         |
-| Mail index                    | Mailboxes, message metadata, placements, flags, addresses | Yes, from IMAP                 | Yes                            |
-| Search projection             | FTS subject, addresses, preview, permitted cached text    | Yes                            | Yes when available             |
-| Body cache                    | Normalized plain-text prefixes                            | Yes                            | Bounded and policy-controlled  |
-| Attachment metadata           | Filename, MIME type, part locator, size                   | Yes                            | Yes                            |
-| Raw MIME and attachment bytes | Provider payloads                                         | Yes                            | No by default                  |
-| Temporary artifacts           | Explicit local materialization                            | Yes                            | Private filesystem with expiry |
+| Class                         | Examples                                                 | Rebuildable                                 | Default persistence                                   |
+| ----------------------------- | -------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------- |
+| Managed configuration         | Accounts, endpoints, policies, secret bindings           | No                                          | Yes                                                   |
+| Operational identity          | Stable IDs and legacy/environment source mappings        | No, when evidence refers to it              | Yes in every base mode                                |
+| Operation evidence            | SMTP acceptance, uncertain outcome, reconciliation state | No                                          | Yes; unresolved is capacity-bounded with backpressure |
+| Mail index                    | Mailbox identity/metadata, messages, placements, flags   | Yes, except a fenced mailbox identity shell | Yes                                                   |
+| Search projection             | FTS subject, addresses, preview, permitted cached text   | Yes                                         | Yes when available                                    |
+| Body cache                    | Normalized plain-text prefixes                           | Yes                                         | Bounded and policy-controlled                         |
+| Attachment metadata           | Filename, MIME type, part locator, size                  | Yes                                         | Yes                                                   |
+| Raw MIME and attachment bytes | Provider payloads                                        | Yes                                         | No by default                                         |
+| Temporary artifacts           | Explicit local materialization                           | Yes                                         | Private filesystem with expiry                        |
 
 ## Sources of Truth
 
@@ -39,7 +39,8 @@ evidence from rebuildable mail indexes and caches.
 - The selected `SecretStore` is authoritative for secret values. SQLite stores
   `SecretRef` metadata only.
 - IMAP is authoritative for remote mailboxes, placements, flags, bodies, and
-  attachments.
+  attachments. An index row is a timestamped observation, not proof of current
+  remote existence.
 - SMTP response evidence is authoritative for known delivery acceptance.
 - SQLite operation records are authoritative for what the local application
   observed and which reconciliation steps remain.
@@ -64,6 +65,7 @@ erDiagram
     ACCOUNT_IDENTITY ||--o{ OPERATION : records
     MAILBOX ||--o{ MESSAGE_PLACEMENT : contains
     MESSAGE ||--o{ MESSAGE_PLACEMENT : placed_as
+    OPERATION_ATTEMPT o|--o{ MESSAGE_PLACEMENT : fences
     MESSAGE ||--o{ MESSAGE_ADDRESS : addresses
     MESSAGE ||--o{ MESSAGE_BODY : caches
     MESSAGE ||--o{ ATTACHMENT : describes
@@ -107,6 +109,8 @@ erDiagram
         integer attachment_download_enabled
         integer metadata_quota_bytes
         integer body_cache_quota_bytes
+        integer operation_evidence_quota_bytes
+        integer unresolved_operation_limit
         integer artifact_quota_bytes
     }
     MANAGED_ACCOUNT {
@@ -205,9 +209,17 @@ erDiagram
         text message_id FK
         integer uidvalidity
         integer uid
+        text membership_state
         text flags_json
+        text flags_state
         integer modseq
-        datetime observed_at
+        datetime flags_confirmed_at
+        datetime flags_stale_at
+        text flags_stale_attempt_id FK
+        datetime last_confirmed_at
+        datetime stale_at
+        text stale_reason
+        text stale_attempt_id FK
     }
     MESSAGE_ADDRESS {
         text message_id FK
@@ -242,8 +254,12 @@ erDiagram
         integer uidvalidity
         integer highest_uid
         integer highest_modseq
-        text coverage_state
-        datetime coverage_start
+        text metadata_coverage_state
+        datetime metadata_coverage_start
+        text membership_coverage_state
+        datetime last_addition_sync_at
+        datetime last_flag_sync_at
+        datetime last_complete_membership_at
         integer revision
         datetime updated_at
     }
@@ -254,6 +270,7 @@ erDiagram
         text idempotency_key
         text payload_hash
         text state
+        text target_json
         text result_json
         datetime created_at
         datetime updated_at
@@ -402,11 +419,22 @@ compound side-effect substep checks generation again.
 ### Scalar and rule policy
 
 `GLOBAL_POLICY` owns typed scalar settings, including blocked-mutation reporting,
-attachment enablement, and cache or artifact quotas. `ACCOUNT_POLICY` owns typed
-per-account overrides such as freshness, mutation, and body-cache policy. For
-scalar fields, an explicitly set account value replaces the global value, and a
+attachment enablement, and cache or artifact quotas. Its operation-evidence quota
+and unresolved-operation limit are managed-mode operating thresholds, not the
+sole safety limit. Base-mode-independent hard byte and unresolved-count ceilings
+are resolved from documented built-in and bootstrap settings before SQLite opens.
+Managed policy may tighten those ceilings; legacy TOML may supply lower operating
+thresholds; an environment override may only tighten the result. A configured
+value above its parent ceiling is invalid and reported with source attribution;
+it is not silently clipped or treated as permission to widen capacity. The
+effective admission limit in every mode is the minimum applicable valid value and
+can never be unbounded or exceed the bootstrap ceiling. `ACCOUNT_POLICY` owns
+typed per-account overrides such as freshness, mutation, and body-cache policy.
+For ordinary scalar
+fields, an explicitly set account value replaces the global value, and a
 supported process environment override replaces that result using current
-compatibility semantics. Every effective scalar carries its final source.
+compatibility semantics. Capacity limits are the narrowing-only exception. Every
+effective scalar carries its final source.
 
 `POLICY_RULE_SET` makes absence, inheritance, unrestricted access, and an
 explicit empty restriction distinguishable. Each global or account scope has at
@@ -574,8 +602,27 @@ active. A database constraint cannot prove that an external value exists, so
   exist per managed account and purpose.
 - Account removal does not cascade to operation evidence, credential cleanup,
   operational identity, or the managed tombstone.
-- Rebuildable mailbox, message, body, attachment, and FTS rows may be purged by
-  an explicit index cleanup after soft removal.
+- Rebuildable mailbox metadata, message, placement, body, attachment, and FTS rows
+  may be purged by explicit index cleanup after soft removal. A `MAILBOX` identity
+  shell and its local ID cannot be purged or re-keyed while an unreleased
+  operation target fence refers to it.
+- Placement membership state is constrained to `ACTIVE` or `STALE`; `ACTIVE`
+  requires a non-null `last_confirmed_at` and null membership-stale fields, while
+  `STALE` requires non-null `stale_at` and `stale_reason`. An operation-owned
+  stale row also requires the owning `stale_attempt_id`. Confirmed disappearance
+  uses explicit removal rather than a user-visible deleted-mail row.
+- Flag projection state is independently constrained to `CONFIRMED` or `STALE`;
+  `CONFIRMED` requires non-null `flags_confirmed_at`, non-null canonical
+  `flags_json` containing the complete provider-observed flag set, and null
+  flag-stale fields. `STALE` requires non-null `flags_stale_at`; an
+  operation-owned stale flag projection also requires
+  `flags_stale_attempt_id`. The last known `flags_json` may remain stored but is
+  not authoritative while flags are stale. A requested delta, or prior cached
+  set plus that delta, cannot satisfy the `CONFIRMED` constraint.
+- `COMPLETE` membership coverage requires a non-null
+  `last_complete_membership_at`. A later incomplete observation or continuity
+  gap downgrades coverage without erasing the timestamp of the last successful
+  complete reconciliation.
 - Every account-graph foreign key uses `RESTRICT` unless a narrow rebuildable
   child relation documents otherwise. Hard purge follows the enumerated guarded
   deletion order and never relies on a blind cascade.
@@ -584,22 +631,111 @@ active. A database constraint cannot prove that an external value exists, so
 
 ### Mailboxes and placements
 
-A mailbox is unique on `(account_id, remote_name)`. A placement is unique on:
+A mailbox is unique on `(account_id, remote_name)`. Its `id` is an opaque local
+operational identity. Full index rebuild may clear its attributes, cursor, and
+placements, but it retains an identity shell and ID while an unreleased operation
+target fence refers to that ID. Rediscovery of the same canonical remote name
+reuses the shell. A rename backed by provider identity evidence updates
+`remote_name` without changing `id`; when continuity cannot be proven, the
+adapter records a mailbox-identity conflict and blocks affected provider effects
+until operation reconciliation, acknowledgment, or explicit rebind. It never
+silently attaches a fenced ID to a merely similar mailbox.
+
+A placement is unique on:
 
 ```text
 (mailbox_id, uidvalidity, uid)
 ```
 
-`MESSAGE_PLACEMENT` also has an index on `(message_id, mailbox_id)`. When
-UIDVALIDITY changes, old placements for that mailbox become invalid and are
-replaced through controlled rebuild. They are never matched to new UIDs by UID
-alone.
+`MESSAGE_PLACEMENT` also has an index on `(message_id, mailbox_id)`. Its
+`membership_state` is `ACTIVE` or `STALE`. `ACTIVE` means the provider last
+confirmed the placement at
+`last_confirmed_at`; it does not claim that no later remote change occurred.
+`STALE` means an ambiguous operation or provider result requires reconciliation,
+and `stale_at` records when that uncertainty began. Stale placements are excluded
+from ordinary indexed results and cannot authorize a mutation.
+
+Confirmed disappearance physically removes the placement in the same short
+transaction that updates the applicable mailbox cursor state. A durable
+placement tombstone is unnecessary because a UID is not reused within one
+UIDVALIDITY namespace; operation evidence that must survive owns its own bounded
+identifiers. Every placement-scoped provider-effect transition conditionally
+verifies its expected `ACTIVE` placement, UIDVALIDITY, and mailbox cursor revision,
+checks that no other unresolved operation has a matching durable target fence,
+and advances the affected mailbox revision in the same transaction that crosses
+the effect boundary. The fence match uses account, mailbox, UIDVALIDITY, and UID
+from schema-validated `target_json`, so it remains enforceable after rebuildable
+placement metadata is compacted. A membership-affecting transition additionally
+marks each source target `STALE` with the attempt as owner before provider access,
+without pretending one mutation was a complete membership scan. This serializes
+competing membership effects and prevents an older refresh from committing and
+resurrecting pre-effect state.
+
+A flag-only transition does not change placement membership state or trigger
+orphan cache cleanup. It requires `flags_state = CONFIRMED`, then marks it
+`STALE` with `flags_stale_attempt_id` before provider access. The provider command
+changes only the requested flags. Confirmed remote success returns the projection
+to `CONFIRMED` only when the response explicitly contains the canonical complete
+resulting flag set or a complete follow-up FETCH observes it after the mutation
+interval. A STORE delta or prior `flags_json` plus the requested delta is not a
+complete observation and leaves the projection stale for reconciliation, because
+a concurrent client may have changed unrelated flags. A definitive no-effect
+result may conditionally restore the prior confirmed projection; unknown outcome
+leaves the flags operation-owned and stale. Flag-independent queries may retain
+the placement, but flag-dependent filters, sorting, and exact totals treat the
+projection as unresolved and expose bounded reconciliation warnings.
+
+A normal sync may observe an operation-owned stale membership or flag projection
+but does not resolve it while its attempt may still be in flight or unknown. It
+may reconcile unrelated projections and advance the mailbox revision.
+Authoritative existence, removal, or flag evidence for an owned projection is
+persisted as bounded reconciliation evidence on the owning operation rather than
+discarded. Confirmed provider success removes or updates the owned projection. A
+definitive no-effect result may restore its prior confirmed state only with a
+conditional write that verifies the attempt token, ownership marker, and absence
+of newer contradictory provider evidence; it does not require an unchanged
+mailbox revision and therefore tolerates unrelated synchronization. Unknown
+outcome keeps the ownership marker until an operation-aware reconciliation
+resolves it. If quota maintenance compacted the placement itself, ordinary sync
+must consult unresolved target fences before applying rediscovery. A matching
+rediscovered identity reconstructs the applicable membership or flag projection
+as operation-owned `STALE`, linked to the retained attempt, rather than creating
+an ordinary fully active and confirmed target. Only operation-aware
+reconciliation or explicit acknowledgment releases the durable fence; ordinary
+sync cannot do so.
+
+Reconciliation evidence records its bounded provider-observation interval. Local
+response-completion order across separate connections is not a remote
+linearization order. Evidence overlapping the attempt's effect interval cannot
+resolve ownership by itself; conflicting evidence requires a new post-attempt
+observation.
+
+When UIDVALIDITY changes, all placements in the old namespace become invalid and
+are replaced through controlled rebuild. They are never matched to new UIDs by
+UID alone. Old rows are excluded immediately and may be deleted as the rebuild
+commits; unrelated mailboxes are unaffected.
+
+Removal by absence is legal only for a complete provider UID set under matching
+UIDVALIDITY. QRESYNC `VANISHED` evidence and confirmed local provider operations
+may remove specifically identified placements. A partial, interrupted, bounded,
+or failed scan performs upserts only. These behavior rules are defined in
+[`04-mail-workflows-and-consistency.md`](04-mail-workflows-and-consistency.md).
 
 ### Messages
 
 `MESSAGE.id` is local and opaque. `rfc_message_id` is nullable and indexed but
 not unique. Message coalescing across mailboxes must use provider evidence or a
 conservative reconciliation rule; matching only the RFC header is insufficient.
+A placement disappearing from one mailbox does not prove that the logical
+message was globally deleted or identify a destination placement.
+
+When a message has no `ACTIVE` membership placement, it is excluded from ordinary
+search. A stale flag projection alone does not hide it. If only stale membership
+placements remain, its cached body and body-derived FTS content are
+purged by default while reconciliation proceeds. When no placement remains, its
+addresses, attachment metadata, remaining FTS rows, and message row are deleted
+unless bounded unresolved operation evidence independently retains the minimum
+facts it needs. The target defines no implicit local deleted-mail archive.
 
 Useful indexes include:
 
@@ -671,21 +807,77 @@ not imply full-message search when only metadata coverage exists.
 ## Synchronization Cursors
 
 `SYNC_CURSOR` is mailbox-scoped. It stores UIDVALIDITY, highest observed UID,
-optional highest MODSEQ, coverage state, coverage boundary, and a monotonic
-revision.
+optional highest MODSEQ, independent metadata and membership coverage state,
+separate synchronization timestamps, and a monotonic revision.
+
+The fields have distinct meanings:
+
+- `metadata_coverage_state` is `NONE`, `PARTIAL`, or `COMPLETE` for indexed
+  metadata, and `metadata_coverage_start` identifies the oldest covered boundary
+  when coverage is range-based;
+- `membership_coverage_state` is `UNKNOWN`, `PARTIAL`, or `COMPLETE` for the most
+  recent remote UID-set observation. `COMPLETE` does not make the observation
+  timeless; freshness policy still evaluates its timestamp;
+- `last_addition_sync_at` advances after a successful, completely processed
+  addition-discovery check over its declared mailbox scope, including a valid
+  empty or no-change result. It says nothing by itself about flag changes or older
+  UID removal;
+- `last_flag_sync_at` advances after a successful, completely processed flag
+  delta check over its declared mailbox scope, including a valid no-change
+  result. An additions-only UID check never advances it;
+- partial, interrupted, cancelled, truncated, or budget-exhausted checks advance
+  neither applicable timestamp;
+- `last_complete_membership_at` advances only after a completely parsed UID-set
+  reconciliation, or after a continuous QRESYNC baseline and all subsequent
+  changes have been committed without a gap;
+- `revision` fences concurrent sync and placement-scoped effect boundaries.
 
 A synchronization batch follows this order:
 
-1. read cursor and revision;
-2. perform bounded IMAP discovery outside a transaction;
-3. begin a short write transaction;
-4. verify the cursor revision still matches;
-5. upsert mailboxes, messages, addresses, placements, and attachments;
-6. update search projections;
-7. advance cursor and coverage in the same commit.
+1. read the cursor, revision, known placements, and current coverage;
+2. select the mailbox and obtain UIDVALIDITY and capabilities;
+3. perform bounded IMAP discovery outside a transaction and classify each result
+   by covered scope: addition discovery, flag delta, QRESYNC-continuous change
+   set, complete membership snapshot, or incomplete observation;
+4. begin a short write transaction and verify both cursor revision and
+   UIDVALIDITY still match;
+5. upsert observed mailboxes, messages, addresses, placements, and attachments;
+6. apply specifically identified `VANISHED` removals, or diff local placements
+   against the remote UID set only when the membership snapshot is complete;
+7. resolve ordinary stale membership and flag projections from the new evidence,
+   attach relevant evidence for operation-owned projections to their owning
+   operation, remove other confirmed placements, and apply orphan cache/index
+   cleanup;
+8. update search projections and only the timestamps and coverage fields whose
+   declared scopes completed successfully, even when their valid result was empty;
+9. advance the cursor revision in the same commit.
 
-If the revision changed, the process re-evaluates or safely repeats idempotent
-upserts. It never commits a cursor that skips metadata it did not persist.
+A complete UID set may be compared through a bounded in-memory representation or
+a connection-local temporary table; it is not interpolated into one unbounded
+SQL statement. The set is trusted for absence only when the IMAP command
+completed, the full response was parsed within declared time/item/byte budgets,
+and UIDVALIDITY matches. Otherwise the transaction performs observed upserts but
+no absence-based delete and does not advance `last_complete_membership_at` or any
+addition/flag timestamp whose declared check did not complete.
+
+QRESYNC may remove specifically known placements from matching-UIDVALIDITY
+`VANISHED` evidence even when overall metadata coverage is partial. A completely
+processed continuity-preserving QRESYNC check advances both addition and flag
+freshness even when it reports no changes; it advances complete membership
+evidence only when the prior baseline was complete and no MODSEQ or known-UID
+continuity gap exists. A complete CONDSTORE flag check may advance flag freshness
+but not addition or membership freshness. UIDNEXT/highest-UID discovery may
+advance addition freshness but not flag or complete-membership freshness. A
+message count alone advances none of them. Complete
+membership evidence does not clear operation-owned stale rows or make their
+user-visible projection complete; affected queries remain partial or
+reconciliation-pending until the owning operation is resolved.
+
+If the cursor revision changed, the process re-evaluates the provider evidence
+against the new local state or safely repeats idempotent discovery. It never
+commits a cursor that skips metadata it did not persist, applies absence against
+partial coverage, or resurrects a placement removed by a concurrent confirmed
+mutation.
 
 ## Operation Journal
 
@@ -697,17 +889,53 @@ Required constraints:
 - unique `(account_id, kind, idempotency_key)` when a key is present;
 - the same key may be reused only with the same payload hash;
 - unique `(operation_id, attempt_number)`;
+- bounded, schema-validated `target_json` persists every placement identity,
+  uncertainty scope, and expected revision needed for crash recovery without
+  depending on rebuildable placement or message rows; it contains no body, MIME,
+  attachment bytes, or secret. Its `mailbox_id` remains reserved by a minimal
+  identity shell until the fence is released. From the effect-boundary transition
+  through in-flight,
+  unknown, pending-compound-substep, or known-but-unreconciled states, it is also
+  a durable target fence over account, mailbox, UIDVALIDITY, and UID, not merely
+  diagnostic evidence. Definite no-effect, completed reconciliation, or eligible
+  explicit unknown acknowledgment releases the fence;
 - one active attempt claim per operation, protected by a random claim token,
   conditional transitions, and a bounded stale deadline;
+- creating a new journaled operation atomically reserves its bounded target and
+  evidence capacity and checks the unresolved-operation count in the claim
+  transaction; `OPERATION_EVIDENCE_CAPACITY` fails before any effect boundary;
 - an attempt phase that distinguishes `CLAIMED_PRE_EFFECT` from
   `REMOTE_EFFECT_POSSIBLE` before any provider side-effect call;
 - the effect-boundary transition conditionally verifies both claim token and
   startup catalog generation in the same transaction; a mismatch produces
   `RESTART_REQUIRED` without advancing the attempt;
+- a placement-scoped effect boundary also receives the expected mailbox revision
+  and full placement identities, verifies that each remains `ACTIVE` under the
+  same UIDVALIDITY, rejects any identity matching another effect-possible
+  unresolved operation's target fence, and advances affected mailbox revisions
+  in that transaction; this target-fence check and the other preconditions are
+  one atomic query/update boundary and therefore survive index compaction. A
+  membership-affecting boundary additionally marks each source target `STALE`
+  with that attempt as owner; a flag-only boundary leaves membership active but
+  requires `flags_state = CONFIRMED` and marks that projection stale with the
+  attempt as owner. A mismatch produces a stale-reference or reconciliation
+  result before provider access;
+- definite no-effect restoration verifies the attempt token, applicable stale
+  ownership marker, and absence of newer contradictory provider evidence;
+  confirmed effects reconcile owned membership or flag projections, while unknown
+  outcomes preserve ownership and bounded provider evidence for operation-aware
+  reconciliation;
+- an attempt referenced by an operation-owned membership or flag-stale marker
+  cannot be purged. Safe compaction may remove the rebuildable marker only after
+  the unresolved operation, attempt, uncertainty scope, and durable target fence
+  are retained; neither operation nor attempt becomes purge-eligible while that
+  fence remains. Reconciliation or acknowledgment releases the fence before
+  normal attempt retention applies;
 - per-recipient SMTP acceptance, rejection, and unknown evidence in bounded
   typed result data;
 - explicit sent-copy and compound-IMAP substep outcomes;
-- result JSON never contains full bodies, MIME, attachment bytes, or secrets.
+- target and result JSON never contain full bodies, MIME, attachment bytes, or
+  secrets.
 
 A stale `CLAIMED_PRE_EFFECT` attempt may be fenced and reclaimed because it did
 not cross a remote-effect boundary. A stale `REMOTE_EFFECT_POSSIBLE` attempt is
@@ -720,6 +948,16 @@ rows. They retain their `ACCOUNT_IDENTITY` foreign key; a removed managed accoun
 also retains its tombstone until guarded hard purge. Purging evidence requires an
 explicit policy and must not make the application claim stronger idempotency
 guarantees.
+
+Explicit acknowledgment may transition only an eligible unknown state, such as
+`OUTCOME_UNKNOWN` or `SENT_COPY_OUTCOME_UNKNOWN`, to `ACKNOWLEDGED_UNKNOWN`. It
+records acknowledgment time and the warning shown, releases operation ownership
+without promoting an uncertain membership or flag
+projection to confirmed state, and makes rebuildable target metadata
+purge-eligible. Bounded `target_json` and idempotency evidence remain for the
+configured evidence-retention period. Acknowledgment never records remote success
+or failure, enables replay, or interprets later rediscovery as retroactive proof
+of the historical outcome.
 
 ## SQLite Runtime Rules
 
@@ -770,7 +1008,8 @@ Independent limits apply to:
 
 - indexed message age or count per account;
 - body cache bytes and age;
-- operation evidence age by state;
+- operation evidence bytes, count, and age by state;
+- unresolved or operation-owned evidence count;
 - temporary artifact bytes and expiry;
 - synchronization batch items, bytes, and time.
 
@@ -780,12 +1019,37 @@ Default policy principles:
 - cache bodies only on demand and under an explicit bound;
 - do not cache attachment bytes by default;
 - retain unresolved or uncertain operation evidence until resolved or explicitly
-  acknowledged;
+  acknowledged; never evict it automatically by age or ordinary quota pressure;
+- permit quota maintenance to compact an operation-owned stale projection only
+  after bounded `target_json`, idempotency data, ownership, uncertainty scope,
+  and reconciliation evidence are durable. Compaction removes or invalidates
+  rebuildable placement, message, address, and attachment metadata but retains
+  the fenced mailbox identity shell and ID. It does not change the operation's
+  unknown state or release its target fence, and it downgrades affected index
+  coverage;
+- after compaction, provider rediscovery matching an unresolved target fence
+  reconstructs operation-owned stale membership or flags and cannot authorize a
+  competing provider effect. Operation-aware reconciliation may resolve the
+  historical operation; explicit acknowledgment may release the fence without
+  inventing its outcome. Rediscovery after acknowledgment may create ordinary
+  index state but is not retroactive proof of that outcome;
+- when unresolved evidence reaches its configured count or byte ceiling, reject
+  new provider-effect mutations that require journal capacity with
+  `OPERATION_EVIDENCE_CAPACITY`; reads, diagnostics, reconciliation, and explicit
+  acknowledgment remain available. Never silently delete unknown evidence merely
+  to admit another mutation;
+- purge cached body and body-derived FTS content when no active membership
+  placement remains;
+- do not retain an implicit user-visible archive of remotely removed messages;
 - purge derived FTS rows with their source cache rows;
-- report partial index coverage after quota eviction.
+- downgrade metadata or membership coverage after any quota eviction that makes
+  the corresponding projection incomplete.
 
-Concrete numeric defaults remain a product configuration decision and must be
-specified with implementation benchmarks rather than guessed in this proposal.
+Concrete numeric defaults and implementation maxima remain a product
+configuration decision and must be benchmarked and documented before
+implementation. Their values are unresolved here, but their presence before mode
+selection, finite narrowing-only precedence, and admission semantics are
+normative.
 
 ## Backup, Restore, and Rebuild
 
@@ -801,9 +1065,27 @@ include keyring secret values or temporary artifacts.
 - Missing secret bindings disable affected accounts and produce CLI remediation;
   they do not trigger plaintext fallback.
 - Missing temporary artifacts are reported as expired and can be fetched again.
-- `index rebuild` preserves operational identities, source mappings, managed
-  accounts, credential bindings, and operation evidence while replacing only
-  rebuildable mail data.
+- `index rebuild` preserves operational account identities, source mappings,
+  managed accounts, credential bindings, operation evidence, and every mailbox
+  identity shell referenced by an unreleased target fence. It may replace
+  rebuildable mail data, but rediscovery reuses those mailbox IDs; a proven rename
+  rebinds the existing ID atomically, and ambiguous continuity remains blocked.
+
+### Open decision: operation-evidence continuity after restore
+
+Schema and secret-binding validation are not sufficient to re-enable provider
+effects after restoring an older backup. A backup may predate a later send, move,
+delete, unknown outcome, or target fence. Restoring it would erase the local
+evidence for that effect and could allow an idempotency key or placement target
+to be acted on again.
+
+Before this proposal can be accepted or restore implemented, it must choose a
+continuity contract. Candidate designs include proof that the backup was taken
+and restored from a quiesced operation epoch, an explicit evidence-continuity
+break that creates a new epoch only after user acknowledgment, or separate
+preservation of append-only operation evidence. No candidate is selected here.
+A restored database remains in maintenance and cannot perform provider effects
+until the accepted continuity check or explicit break procedure completes.
 
 ## Validation
 
@@ -814,6 +1096,20 @@ Persistence tests cover:
 - concurrent readers, writer contention, and bounded busy behavior;
 - sync revision conflicts and atomic cursor advancement;
 - UIDVALIDITY invalidation;
+- QRESYNC/VANISHED application, complete UID-set comparison, distinct addition,
+  flag, and membership timestamps, successful empty/no-change checks, and proof
+  that CONDSTORE/UIDNEXT/count evidence advances only its valid scope;
+- timeout, cancellation, parse failure, response truncation, and every budget
+  boundary proving that partial observation cannot delete by absence or advance
+  complete-membership evidence;
+- effect-boundary stale ownership for membership and flags, flag-independent
+  visibility versus flag-filter/count uncertainty, competing membership commands,
+  an in-flight operation racing new and old syncs, overlapping evidence that
+  requires a post-attempt observation, confirmed local deletion, conditional
+  no-effect restoration after unrelated mailbox updates, mark-as-read racing an
+  unrelated concurrent flag change and remaining stale until a complete
+  provider-observed flag set, stale placement exclusion, external move semantics,
+  orphan cache/FTS cleanup, and no implicit deleted-mail archive;
 - legacy and environment identity reuse across restart; exact v1 canonical
   tuples; address, IDNA host, username, TLS, path, case, symlink, and default-path
   normalization; fingerprint-version migration; conflict behavior; source
@@ -832,10 +1128,24 @@ Persistence tests cover:
   cleanup repair, and proof that the active locator is never deleted;
 - FTS enabled and unavailable paths;
 - body and artifact quota eviction;
+- unresolved-operation metadata compaction or full index rebuild retaining the
+  fenced mailbox identity shell and ID, rediscovery reconstructing operation-owned
+  stale state, a competing mutation rejected by the retained target fence before
+  provider access, `ACKNOWLEDGED_UNKNOWN` releasing that fence without outcome
+  invention, evidence
+  capacity backpressure, and proof that unknown evidence is never silently
+  evicted to admit a new mutation;
+- operation-evidence admission under managed, legacy, and environment-only modes,
+  finite bootstrap byte/count ceilings, and proof that managed, TOML, or
+  environment policy can tighten but never widen those ceilings;
 - operation idempotency, atomic generation/effect-boundary ordering for each
-  compound substep, stale pre-effect claim recovery, stale post-boundary
-  conversion to unknown, partial SMTP acceptance, and uncertain-outcome retention;
+  compound substep, atomic placement revision/UIDVALIDITY checks, stale pre-effect
+  claim recovery, stale post-boundary conversion to unknown, scoped delete
+  without bare EXPUNGE, partial SMTP acceptance, and uncertain-outcome retention;
 - database, WAL, and artifact permissions;
-- online backup, restore, index rebuild, and missing-secret recovery;
+- online backup, index rebuild, and missing-secret recovery;
+- restore from current and older operation epochs, proving that schema/secret
+  validation alone never re-enables provider effects across an unresolved
+  evidence-continuity gap;
 - proof that resolved secret values never reach database pages through normal
   application writes.

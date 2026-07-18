@@ -231,8 +231,13 @@ Metadata search returns a bounded set of:
 - stable message reference;
 - mailbox placement reference required by compatibility tools;
 - subject, normalized sender, selected recipients, and dates;
-- flags, size, short preview, and attachment count when known;
-- freshness, coverage, `has_more`, and opaque `next_cursor`.
+- flags with confirmed/stale projection state, size, short preview, and
+  attachment count when known;
+- metadata observation time, last addition sync, last flag sync, last complete
+  membership reconciliation, and their independent coverage states;
+- bounded reconciliation warnings when stale placements suppress items or stale
+  flags prevent definitive filters, sorting, or exact totals;
+- `has_more` and opaque `next_cursor`.
 
 Defaults are small and hard limits are enforced. The application cursor binds
 filters and ordering; it is unrelated to MCP capability-list cursors.
@@ -246,6 +251,12 @@ known, truncation state, and the next continuation.
 A body must never be fetched merely because metadata was listed. The target API
 should prefer one selected message per call; any compatibility batch path has a
 strict aggregate character budget.
+
+An indexed reference whose provider lookup proves the placement disappeared
+returns a bounded `STALE_MESSAGE_REFERENCE` or `MESSAGE_NOT_FOUND` result and
+triggers local reconciliation. A cache-satisfied result reports its observation
+age; a caller may require fresh remote-existence validation before cached content
+is served.
 
 ### Layer 4: attachment bytes
 
@@ -287,6 +298,20 @@ not require a prompt.
 - Secrets and arbitrary configuration models never appear in schemas.
 - A schema change is additive when possible. Removing or changing a required
   field is treated as a public compatibility event.
+
+### Open decision: send idempotency input
+
+The operation contract requires an idempotency key, but the current public
+`send_email` schema has no such field. Generating a new key for every repeated
+call cannot protect a caller retry after a lost result, while deriving the key
+only from the payload would incorrectly suppress deliberate identical messages.
+
+Before this proposal can be accepted or the journaled send path exposed, it must
+define the public input and absent-key behavior. An additive optional
+`idempotency_key` plus a durable operation ID in every result is the leading
+option: the same key and payload resolves the existing operation, a payload
+mismatch is rejected, and absence starts a new operation. This paragraph records
+the unresolved compatibility decision rather than selecting that option.
 
 ### Account reference compatibility
 
@@ -354,6 +379,9 @@ Annotations help clients apply sensible approval behavior:
   read-only unless the behavior is split or the annotation remains conservative;
 - send, save, mark, move, archive, delete, account mutation, and local file writes
   are non-read-only;
+- message-scoped delete and move approvals never authorize bare mailbox-wide
+  EXPUNGE. Any future mailbox-wide expunge action is separately named and exposes
+  the mailbox-wide scope directly in its arguments and approval text;
 - destructive and idempotent hints reflect actual semantics, including ambiguous
   provider outcomes;
 - open-world hints reflect IMAP/SMTP or filesystem interaction accurately.
@@ -429,9 +457,25 @@ MCP validation covers:
   substeps, and `RESTART_REQUIRED` before side effects after a base-mode change;
 - complete text semantics with and without structured output;
 - bounded metadata pages, body batches, warnings, and errors;
+- distinct metadata, addition-sync, flag-sync, and complete-membership freshness,
+  including successful no-change checks and without presenting a partial refresh
+  as proof against remote deletion;
+- stale indexed references and fresh-validation requests with and without a body
+  cache hit;
+- unknown flag mutation followed by flag-independent output and partial
+  flag-dependent filters or totals, plus a mark-as-read race where an unrelated
+  concurrent flag change prevents confirmation until a complete provider flag
+  set is observed;
+- scoped delete and move fallback proving an unrelated pre-existing `\Deleted`
+  message is never expunged;
+- operation-evidence capacity errors and safe CLI remediation without outcome
+  invention or replay;
 - cursor continuity and stale-cursor errors;
 - resource and prompt enhancements disabled without affecting tools;
 - client-approval-visible arguments for every mutation;
+- the accepted send-idempotency contract, including lost-result retry,
+  same-key/different-payload rejection, and deliberate identical sends as
+  distinct operations;
 - no credentials, secret references, unapproved paths, SQL, or raw provider
   errors in results;
 - message-content prompt-injection boundaries;
