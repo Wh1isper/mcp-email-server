@@ -14,7 +14,7 @@ The recommended product shape is:
 
 1. **An embedded React local Web UI is the primary graphical management
    surface.** It is started explicitly with
-   `uvx mcp-email-server@latest webui`, binds only to a loopback address, uses an
+   `uvx mcp-email-server@latest ui`, binds only to a loopback address, uses an
    ephemeral port, one-time browser bootstrap, and process session, and exits
    with its CLI process. It
    manages accounts, credentials, policy, migration, diagnostics, index state,
@@ -26,10 +26,12 @@ The recommended product shape is:
    plane.** It can improve mailbox exploration, review, selection, and other
    non-secret interactions inside capable hosts. Core tools must retain complete
    bounded text results for every other host.
-4. **The current Gradio UI remains a compatibility bridge, not the target UI
-   architecture.** A React/Vite frontend can be built during release, packaged
-   into the Python wheel, and run by `uvx` without requiring Node.js on the
-   user's machine.
+4. **The current Gradio implementation remains a compatibility bridge, not the
+   target UI architecture.** The existing `ui` command remains the sole public
+   graphical entry point and switches to the React implementation only after the
+   replacement reaches its release gate. No separate `webui` command is added.
+   The React/Vite frontend is built during release, packaged into the Python
+   wheel, and runs through `uvx` without requiring Node.js on the user's machine.
 
 One frontend workspace can serve both graphical surfaces, but it should produce
 **two entry points and two bundles**. Shared React components, view models,
@@ -128,7 +130,7 @@ important. These behaviors are documented in the official
 This gives the desired product experience without a permanent installation:
 
 ```bash
-uvx mcp-email-server@latest webui
+uvx mcp-email-server@latest ui
 ```
 
 It also preserves an existing caveat: disposable or refreshed executable paths
@@ -398,9 +400,9 @@ frontend/
     adapters/
       loopback-web/
       mcp-app/
-    webui.tsx
+    ui.tsx
     mcp-app.tsx
-  webui.html
+  ui.html
   mcp-app.html
   vite.config.ts
   package.json
@@ -412,15 +414,16 @@ Eventual build outputs:
 ```text
 mcp_email_server/
   static/
-    webui/
+    ui/
       index.html
       assets/...
     mcp-app/
       mcp-app.html
 ```
 
-The first implementation should create and package only `webui`. Add the MCP
-entry point, browser SDK dependency, single-file bundle, and wheel assertion
+The first implementation should create and package only the local `ui` frontend
+entry point. Add the MCP entry point, browser SDK dependency, single-file bundle,
+and wheel assertion
 when the read-only MCP App prototype starts and its actual shared DTOs and
 components are known. At that point the MCP App should normally be a
 self-contained single HTML resource. The local Web UI may use a conventional
@@ -510,7 +513,7 @@ There is deliberately no edge from the MCP App iframe to the local Web UI.
 Adding `http://127.0.0.1:*` to an MCP App's `connectDomains` would merge an
 untrusted host iframe into the management API's CORS, CSRF, and authorization
 boundary. The MCP App should use host-mediated non-secret tools only. If
-management is required, it displays the `webui` or CLI command.
+management is required, it displays the `ui` or CLI command.
 
 ## Local Web UI Security Contract
 
@@ -646,7 +649,7 @@ they do not return to React or an MCP App after the callback completes.
 Recommended canonical command:
 
 ```bash
-uvx mcp-email-server@latest webui
+uvx mcp-email-server@latest ui
 ```
 
 Recommended options:
@@ -675,10 +678,12 @@ that whoever uses it first can establish the browser session. A normal reload
 continues through the process-scoped session cookie. If that cookie is cleared,
 the user restarts the foreground command to obtain a new bootstrap capability.
 
-Keep `mcp-email-server ui` as a compatibility alias during migration. Once the
-new adapter reaches feature parity, `ui` can delegate to `webui`; removal or
-semantic redirection must follow the project's versioned compatibility and
-published-documentation rules.
+`mcp-email-server ui` remains the sole canonical graphical command throughout
+the migration. Before the replacement release it starts Gradio; once the React
+adapter reaches the accepted parity, security, packaging, and documentation
+gates, the same command starts React instead. The project does not add a
+`webui` command. This semantic replacement still follows the project's versioned
+compatibility and published-documentation rules.
 
 ## Route Comparison
 
@@ -707,8 +712,8 @@ is accepted, a low-risk sequence is:
 3. Implement the loopback Web UI adapter and security contract.
 4. Package the built Web UI in both sdist and wheel, then add from-sdist,
    isolated-wheel, and `uvx` smoke tests that run without Node.js.
-5. Redirect the legacy `ui` command only after account-management parity and
-   migration documentation exist.
+5. Switch the implementation behind the existing `ui` command only after
+   account-management parity and migration documentation exist.
 6. After the Python SDK Apps API is stable and a read-only workflow is accepted,
    add the MCP App entry point, browser SDK dependency, single-file bundle, and
    host-specific validation for current VS Code, Cursor, and Claude Desktop.
@@ -722,13 +727,13 @@ mcp_email_server/
   interfaces/
     cli.py
     mcp.py
-    webui/
+    ui/
       app.py
       auth.py
       routes.py
       schemas.py
   static/
-    webui/
+    ui/
     mcp-app/  # added only when the optional MCP App ships
 ```
 
@@ -748,7 +753,7 @@ the product needs them.
 - Inspect both sdist and wheel contents. The sdist must carry the prebuilt assets
   so its PEP 517 build does not require Node.js.
 - In an environment without Node.js, build a wheel from the sdist, inspect it,
-  install it in isolation, and start `webui`.
+  install it in isolation, and start `ui`.
 - Assert only the frontend outputs shipped by that release. Add the MCP App HTML
   assertion and verify its single-resource/CSP contract when the optional App
   adapter is introduced.
@@ -917,19 +922,24 @@ This should own contracts that would otherwise be scattered:
 It should be an architecture contract, not a screen-by-screen design or release
 plan.
 
+## Product Decision: Canonical UI Command
+
+The existing `ui` command remains the sole public graphical management command.
+The React implementation replaces Gradio behind that command after the accepted
+release gates; the product does not add a `webui` command. If the UI direction is
+accepted, the owning specifications must record this command contract before the
+replacement ships.
+
 ## Open Decisions Before Spec Acceptance
 
-1. Whether `webui` becomes canonical immediately or after the first React parity
-   release. The recommendation is canonical `webui` with `ui` retained as an
-   alias.
-2. The exact ASGI implementation. The recommendation is a small explicit
+1. The exact ASGI implementation. The recommendation is a small explicit
    Starlette/Uvicorn adapter, not a generic network API framework.
-3. Whether the first Web UI release includes only account and credential
+2. Whether the first Web UI release includes only account and credential
    management or also index/cache diagnostics. Account parity and secure secret
    handling are the minimum useful release.
-4. The first MCP App workflow. The recommendation is bounded account health and
+3. The first MCP App workflow. The recommendation is bounded account health and
    metadata exploration, not compose/send or raw HTML mail rendering.
-5. The Python SDK adoption threshold. The recommendation is stable v2 plus host
+4. The Python SDK adoption threshold. The recommendation is stable v2 plus host
    conformance tests, rather than beta adoption.
 
 ## Limitations
@@ -957,6 +967,8 @@ Adopt the following product decision:
 > application services. It may additionally expose negotiated MCP Apps for
 > non-secret agent-facing workflows over the existing stdio MCP connection.
 > MCP Apps never own account credentials or replace complete text tool results.
+> The existing `ui` command is the sole graphical management entry point and the
+> React implementation replaces Gradio behind it.
 
 This gives users a first-class graphical product through the command they
 already know how to run with `uvx`, while using MCP Apps where they are strongest:
