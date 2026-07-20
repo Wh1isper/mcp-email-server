@@ -223,6 +223,10 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
         "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
         "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE": "plaintext",
         "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+        # download_attachment confines save paths to attachment_download_dir
+        # (default ~/Downloads); point it at the test's tmp dir so the roundtrip
+        # download below is permitted instead of rejected.
+        "MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR": str(tmp_path),
     })
     console_script = Path(sys.executable).with_name("mcp-email-server")
     assert console_script.is_file(), f"Installed console script not found: {console_script}"
