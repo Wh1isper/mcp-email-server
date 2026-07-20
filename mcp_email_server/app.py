@@ -1,6 +1,8 @@
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from email.utils import getaddresses
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -26,6 +28,10 @@ from mcp_email_server.emails.models import (
 AnyFunction = Callable[..., Any]
 ToolVisibilityPredicate = Callable[[], bool]
 
+# Resource-exhaustion ceilings on tool inputs (self-DoS guards).
+MAX_PAGE_SIZE = 500
+MAX_EMAIL_IDS_PER_CALL = 100
+
 
 def _has_send_capable_account() -> bool:
     settings = get_settings()
@@ -38,6 +44,46 @@ def _has_allowed_recipients() -> bool:
 
 def _has_allowed_senders() -> bool:
     return bool(get_settings().allowed_senders)
+
+
+def _resolve_download_path(save_path: str, root: Path) -> Path:
+    """Resolve save_path and confine it within root, resolving symlinks.
+
+    Relative paths resolve under root; absolute paths must already be within it.
+    The FULL candidate is canonicalised with realpath — including the final
+    component — so a symlink planted at the target path can't redirect the write
+    outside root. Raises PermissionError on any path that escapes root, or on a
+    path with no filename component.
+    """
+    candidate = Path(save_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    # realpath resolves symlinks in every component (the final one too); a
+    # non-existent trailing name is simply normalised, so a not-yet-created target
+    # still validates. This is what closes final-component symlink escapes.
+    resolved = Path(os.path.realpath(candidate))
+    if not resolved.is_relative_to(root):
+        raise PermissionError(
+            f"Attachment save_path {save_path!r} resolves outside the permitted download "
+            f"directory {root}. Set 'attachment_download_dir' (or "
+            "MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR) to permit it."
+        )
+    if resolved == root or not resolved.name:
+        raise PermissionError(f"Attachment save_path {save_path!r} must name a file, not the download directory.")
+    return resolved
+
+
+def _reject_crlf(values: Iterable[str | None], label: str) -> None:
+    """Raise ValueError if any value contains a CR or LF.
+
+    Header CRLF is caught by the stdlib email serializer, but SMTP-envelope
+    recipients (notably bcc, which is never placed in a header) are passed
+    straight to aiosmtplib, which writes RCPT TO raw without a CRLF check — so a
+    newline there injects extra SMTP commands/recipients. Reject at the boundary.
+    """
+    for value in values:
+        if value is not None and ("\r" in value or "\n" in value):
+            raise ValueError(f"{label} must not contain newline characters: {value!r}")
 
 
 def _enforce_recipient_allowlist(
@@ -141,9 +187,12 @@ async def list_emails_metadata(
     account_name: Annotated[str, Field(description="The name of the email account.")],
     page: Annotated[
         int,
-        Field(default=1, description="The page number to retrieve (starting from 1)."),
+        Field(default=1, ge=1, description="The page number to retrieve (starting from 1)."),
     ] = 1,
-    page_size: Annotated[int, Field(default=10, description="The number of emails to retrieve per page.")] = 10,
+    page_size: Annotated[
+        int,
+        Field(default=10, ge=1, le=MAX_PAGE_SIZE, description="The number of emails to retrieve per page (max 500)."),
+    ] = 10,
     before: Annotated[
         datetime | None,
         Field(default=None, description="Retrieve emails before this datetime (UTC)."),
@@ -221,7 +270,10 @@ async def get_emails_content(
     email_ids: Annotated[
         list[str],
         Field(
-            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids."
+            min_length=1,
+            max_length=MAX_EMAIL_IDS_PER_CALL,
+            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single "
+            "email_id or multiple email_ids (max 100 per call).",
         ),
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
@@ -333,6 +385,9 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
+    _reject_crlf([*recipients, *(cc or []), *(bcc or [])], "Recipient address")
+    _reject_crlf([subject, in_reply_to, references, reply_to], "Header value")
+    _reject_crlf(attachments or [], "Attachment path")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     await handler.send_email(
@@ -412,6 +467,9 @@ async def save_to_mailbox(
         ),
     ] = None,
 ) -> str:
+    _reject_crlf([*recipients, *(cc or []), *(bcc or [])], "Recipient address")
+    _reject_crlf([subject, in_reply_to, references], "Header value")
+    _reject_crlf(attachments or [], "Attachment path")
     _enforce_recipient_allowlist(recipients, cc, bcc)
     handler = dispatch_handler(account_name)
     result = await handler.save_to_mailbox(
@@ -538,7 +596,9 @@ async def list_mailboxes(
 
 
 @mcp.tool(
-    description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+    description="Download an email attachment and save it under the permitted download directory. This "
+    "feature must be explicitly enabled in settings (enable_attachment_download=true). The save_path is "
+    "confined to attachment_download_dir (default ~/Downloads); paths resolving outside it are rejected.",
 )
 async def download_attachment(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -551,7 +611,8 @@ async def download_attachment(
     save_path: Annotated[
         str,
         Field(
-            description="The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended."
+            description="Where to save the attachment. Must resolve within the configured "
+            "attachment_download_dir (default ~/Downloads); a relative path is taken relative to it."
         ),
     ],
     mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
@@ -563,5 +624,6 @@ async def download_attachment(
         )
         raise PermissionError(msg)
 
+    confined_path = _resolve_download_path(save_path, settings.attachment_download_root)
     handler = dispatch_handler(account_name)
-    return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+    return await handler.download_attachment(email_id, attachment_name, str(confined_path), mailbox)

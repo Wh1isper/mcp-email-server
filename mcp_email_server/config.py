@@ -370,6 +370,10 @@ class Settings(BaseSettings):
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
+    # Directory that download_attachment save paths must resolve within. Confines
+    # the arbitrary-filesystem-write primitive that enable_attachment_download opens
+    # up. Unset => defaults to ~/Downloads (see Settings.attachment_download_root).
+    attachment_download_dir: str | None = None
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
     report_blocked_mutations: bool = False
@@ -392,6 +396,16 @@ class Settings(BaseSettings):
         store() maps "auto" to a concrete backend via keyring_store.keyring_usable().
         """
         return self._credential_storage_override or self.credential_storage
+
+    @property
+    def attachment_download_root(self) -> Path:
+        """Directory that download_attachment save paths must resolve within.
+
+        Defaults to ~/Downloads when unset. Fully resolved (symlinks included) so
+        callers can containment-check candidate paths against a canonical root.
+        """
+        raw = self.attachment_download_dir or "~/Downloads"
+        return Path(os.path.realpath(Path(raw).expanduser()))
 
     def _apply_bool_env_override(self, attr: str, env_var: str) -> None:
         value = os.getenv(env_var)
@@ -453,6 +467,11 @@ class Settings(BaseSettings):
         env_senders = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
         if env_senders is not None:
             self.allowed_senders = _normalize_pattern_list(env_senders.split(","))
+
+        env_download_dir = os.getenv("MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR")
+        if env_download_dir is not None:
+            # An empty string resets to the default (~/Downloads) rather than "".
+            self.attachment_download_dir = env_download_dir.strip() or None
 
         self._inject_env_account()
 
