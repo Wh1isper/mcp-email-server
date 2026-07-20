@@ -778,3 +778,63 @@ class TestDownloadAttachmentSenderAllowlist:
             )
         assert result["attachment_name"] == "ausflug.png"
         mock_senders.assert_not_called()
+
+
+class TestFindAttachmentInMessage:
+    """Direct coverage for the attachment lookup used by download_attachment."""
+
+    @staticmethod
+    def _multipart_with_attachment() -> MIMEMultipart:
+        msg = MIMEMultipart()
+        msg.attach(MIMEText("body text"))
+        # An attachment-disposition part with no filename — must be walked past
+        # (exercises the filename guard) before the named attachment is found.
+        noname = MIMEApplication(b"noname-bytes", _subtype="octet-stream")
+        noname.add_header("Content-Disposition", "attachment")
+        msg.attach(noname)
+        part = MIMEApplication(b"PDF-BYTES", _subtype="pdf")
+        part.add_header("Content-Disposition", "attachment", filename="doc.pdf")
+        msg.attach(part)
+        return msg
+
+    def test_finds_named_attachment(self, email_client):
+        data, mime_type = email_client._find_attachment_in_message(self._multipart_with_attachment(), "doc.pdf")
+        assert data == b"PDF-BYTES"
+        assert mime_type == "application/pdf"
+
+    def test_missing_attachment_returns_none(self, email_client):
+        data, mime_type = email_client._find_attachment_in_message(self._multipart_with_attachment(), "absent.pdf")
+        assert data is None
+        assert mime_type is None
+
+    def test_non_multipart_returns_none(self, email_client):
+        data, mime_type = email_client._find_attachment_in_message(MIMEText("plain text"), "anything")
+        assert data is None
+        assert mime_type is None
+
+    @pytest.mark.asyncio
+    async def test_download_rejects_oversized_attachment(self, email_client, tmp_path, monkeypatch):
+        """download_attachment refuses an attachment above the size ceiling."""
+        import asyncio
+
+        monkeypatch.setattr("mcp_email_server.emails.classic.MAX_ATTACHMENT_BYTES", 8)
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
+        mock_imap.logout = AsyncMock()
+
+        with (
+            patch.object(email_client, "_fetch_email_with_formats", return_value=[b"data"]),
+            patch.object(email_client, "_extract_raw_email", return_value=b"raw"),
+            patch.object(email_client, "_find_attachment_in_message", return_value=(b"X" * 100, "application/pdf")),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match="exceeding"):
+                await email_client.download_attachment(
+                    email_id="123",
+                    attachment_name="big.pdf",
+                    save_path=str(tmp_path / "big.pdf"),
+                )
