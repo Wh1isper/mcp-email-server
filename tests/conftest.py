@@ -15,6 +15,10 @@ os.environ["MCP_EMAIL_SERVER_LOG_LEVEL"] = "DEBUG"
 # performs best-effort keyring cleanup — a fixture-based guard could apply too late.
 # Individual tests override this via monkeypatch.setenv(...).
 os.environ["MCP_EMAIL_SERVER_CREDENTIAL_STORAGE"] = "plaintext"
+# The server defaults to read-only permissions; the pre-existing suite exercises
+# every tool, so grant everything at import time (same rationale as above).
+# Scope-specific tests override this via monkeypatch.setenv(...).
+os.environ["MCP_EMAIL_SERVER_PERMISSIONS"] = "full"
 
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
