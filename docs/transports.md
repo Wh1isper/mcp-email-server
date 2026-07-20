@@ -99,6 +99,16 @@ Explicit `--host` and `--port` options override those defaults.
 Both HTTP transports validate `Host` and `Origin` headers by default. Loopback
 hosts and origins are allowed for local use.
 
+> **`Host`/`Origin` validation is not authentication.** It defends against
+> browser-driven DNS rebinding, not a direct network attacker. The `Host` header
+> is attacker-supplied: with a wildcard bind (`0.0.0.0`/`::`) the allowlist falls
+> back to loopback names, so anyone who reaches the port can send `Host: localhost`
+> and pass; a concrete LAN-IP bind auto-allows that IP, so `Host: <lan-ip>` passes
+> too. Once past the check, every email tool — read, send, delete — is reachable
+> with no credentials. Treat any non-loopback bind as an unauthenticated email
+> gateway and put real authentication (a token-checking reverse proxy, mTLS, or a
+> private network) in front of it.
+
 When binding to a named non-loopback host, that host is included in the derived
 allowlist. When binding to a wildcard address such as `0.0.0.0` or `::`, the
 server cannot infer the public hostname. Configure the expected service names

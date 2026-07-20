@@ -197,13 +197,14 @@ environment equivalents are `MCP_EMAIL_SERVER_SAVE_TO_SENT` and
 
 ## Global settings
 
-| Setting                      | Default  | Description                                                                |
-| ---------------------------- | -------- | -------------------------------------------------------------------------- |
-| `credential_storage`         | `"auto"` | Select `auto`, `keyring`, or `plaintext` credential storage.               |
-| `enable_attachment_download` | `false`  | Allow `download_attachment` to write files.                                |
-| `allowed_recipients`         | `[]`     | Restrict recipients used by `send_email` and `save_to_mailbox`.            |
-| `allowed_senders`            | `[]`     | Restrict incoming messages by `From` address pattern.                      |
-| `report_blocked_mutations`   | `false`  | Report blocked message IDs instead of returning privacy-preserving no-ops. |
+| Setting                      | Default       | Description                                                                                                                  |
+| ---------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `credential_storage`         | `"auto"`      | Select `auto`, `keyring`, or `plaintext` credential storage.                                                                 |
+| `enable_attachment_download` | `false`       | Allow `download_attachment` to write files.                                                                                  |
+| `attachment_download_dir`    | `~/Downloads` | Directory that `download_attachment` save paths must resolve within. See [Attachment access](security.md#attachment-access). |
+| `allowed_recipients`         | `[]`          | Restrict recipients used by `send_email` and `save_to_mailbox`.                                                              |
+| `allowed_senders`            | `[]`          | Restrict incoming messages by `From` address pattern.                                                                        |
+| `report_blocked_mutations`   | `false`       | Report blocked message IDs instead of returning privacy-preserving no-ops.                                                   |
 
 See [Security](security.md) before enabling attachment downloads or applying
 allowlists.
@@ -241,15 +242,16 @@ values are treated as false. Do not add surrounding whitespace to these values.
 
 ### Global variables
 
-| Variable                                      | Default                                  | Description                                                               |
-| --------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------- |
-| `MCP_EMAIL_SERVER_CONFIG_PATH`                | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                   |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment download access.                                      |
-| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Empty                                    | Comma-separated recipient addresses; an empty value clears the TOML list. |
-| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Empty                                    | Comma-separated sender globs; an empty value clears the TOML list.        |
-| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | `false`                                  | Override blocked mutation reporting.                                      |
-| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.       |
-| `MCP_EMAIL_SERVER_LOG_LEVEL`                  | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.               |
+| Variable                                      | Default                                  | Description                                                                              |
+| --------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `MCP_EMAIL_SERVER_CONFIG_PATH`                | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                  |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment download access.                                                     |
+| `MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR`    | `~/Downloads`                            | Directory `download_attachment` save paths must resolve within; empty resets to default. |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Empty                                    | Comma-separated recipient addresses; an empty value clears the TOML list.                |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Empty                                    | Comma-separated sender globs; an empty value clears the TOML list.                       |
+| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | `false`                                  | Override blocked mutation reporting.                                                     |
+| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                      |
+| `MCP_EMAIL_SERVER_LOG_LEVEL`                  | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                              |
 
 HTTP transport variables are documented separately in
 [Transports](transports.md#streamable-http).

@@ -164,9 +164,10 @@ blocked IDs.
 
 ### `download_attachment`
 
-Downloads one named attachment from a message and writes it to a path on the
-server host. Use an absolute path when possible. A relative path is resolved
-against the server process's working directory.
+Downloads one named attachment from a message and writes it inside
+`attachment_download_dir` (default `~/Downloads`). A relative `save_path`
+resolves under that directory, and a path that escapes it — via `..` or a
+symlink — is rejected. See [Attachment access](security.md#attachment-access).
 
 The tool is registered even when downloading is disabled, but calling it then
 raises a permission error. Enable it explicitly with:

@@ -218,16 +218,34 @@ Or:
 MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 ```
 
-Use an absolute destination path with `download_attachment` so the target is
-unambiguous. The implementation also accepts relative paths and resolves them
-against the server process's working directory. Run the server with filesystem
-permissions that limit where it can write, and do not assume attachments are
-safe to open or execute.
+`download_attachment` writes only inside `attachment_download_dir` (default
+`~/Downloads`). Because attachment bytes are attacker-controlled — anyone can
+email you a file — a `save_path` that resolves outside that directory, including
+through `..` or a symlink, is rejected. This prevents the tool from being steered
+into overwriting files such as `~/.ssh/authorized_keys`, a crontab, or the
+configuration file. A relative `save_path` resolves under the directory. Set the
+directory with `attachment_download_dir` or
+`MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR`; an empty value resets to the default.
+Still run the server with filesystem permissions appropriate to that directory,
+and do not assume attachments are safe to open or execute.
 
 The separate `attachments` parameter on `send_email` and `save_to_mailbox`
 reads local file paths. Relative paths are likewise resolved against the server
 process's working directory. Only connect clients that should be trusted to
 request access to files visible to that process.
+
+## Message and input limits
+
+Carriage-return and line-feed characters are rejected in recipient addresses,
+header values, and attachment paths. This closes SMTP-envelope and header
+injection — including through `bcc`, which is handed to the SMTP layer without
+being placed in a header and would otherwise let a newline inject extra
+commands or recipients.
+
+Tool inputs are bounded so a single call cannot exhaust memory:
+`list_emails_metadata` caps `page_size` at 500, batch tools accept at most 100
+`email_ids` per call, and `download_attachment` rejects attachments larger than
+25 MB.
 
 ## TLS certificate verification
 
@@ -256,9 +274,13 @@ Limit this exception to the specific local connection. See
 ## HTTP transport security
 
 SSE and Streamable HTTP validate `Host` and `Origin` headers by default to
-reduce DNS rebinding risk. Network exposure still requires appropriate
-authentication, authorization, TLS termination, and firewall policy around the
-server.
+reduce DNS rebinding risk. That validation is **not authentication**: the
+transports ship no token or auth layer, so any non-loopback bind
+(`MCP_HOST=0.0.0.0`, a LAN IP, or a published container) exposes every email
+tool — read, send, delete — to whatever can reach the port. Put your own
+authentication in front of it (an authenticating reverse proxy, mTLS, or a
+private network) and terminate TLS there.
 
-See [Transports](transports.md#dns-rebinding-protection) for allowed host and
-origin settings.
+See [DNS rebinding protection](transports.md#dns-rebinding-protection) for why
+`Host`/`Origin` checks are not a substitute for authentication, plus allowed
+host and origin settings.

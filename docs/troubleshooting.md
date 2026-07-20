@@ -186,9 +186,11 @@ Or:
 MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 ```
 
-Use an absolute `save_path` when possible and ensure the server process can
-write to its parent directory. A relative path is resolved against the server
-process's working directory.
+The `save_path` must resolve within `attachment_download_dir` (default
+`~/Downloads`); a path outside it is rejected with a `PermissionError`. Set
+`attachment_download_dir` or `MCP_EMAIL_SERVER_ATTACHMENT_DOWNLOAD_DIR` to permit
+another location, and ensure the server process can write there. A relative
+`save_path` resolves under that directory.
 
 ## A message mutation reports success but nothing changed
 
