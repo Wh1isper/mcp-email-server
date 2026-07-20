@@ -223,6 +223,10 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
         "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
         "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE": "plaintext",
         "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+        # The server is read-only by default; grant every capability scope so the
+        # end-to-end run can see and exercise the full tool surface (send, save,
+        # delete, move, ...).
+        "MCP_EMAIL_SERVER_PERMISSIONS": "full",
     })
     console_script = Path(sys.executable).with_name("mcp-email-server")
     assert console_script.is_file(), f"Installed console script not found: {console_script}"
