@@ -132,9 +132,12 @@ account supplied solely through environment variables.
 
 ## `send_email` is missing
 
-`send_email` is advertised only when at least one configured account contains
-an SMTP `outgoing` section or `MCP_EMAIL_SERVER_SMTP_HOST` is set for the
-environment account.
+`send_email` is advertised only when the `send` scope is granted _and_ at least
+one configured account contains an SMTP `outgoing` section or
+`MCP_EMAIL_SERVER_SMTP_HOST` is set for the environment account. Because the
+server is read-only by default, the most common cause is a missing scope: add
+`send` (or `full`) to `permissions` or `MCP_EMAIL_SERVER_PERMISSIONS`. See
+[Permission scopes](security.md#permission-scopes).
 
 If the tool is visible but sending fails for one account, confirm that the
 selected `account_name` itself has SMTP settings. Visibility is based on all

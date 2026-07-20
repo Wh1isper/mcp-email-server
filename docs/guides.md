@@ -44,9 +44,11 @@ Or configure one through environment variables without
 ```
 
 If no configured account has SMTP, `send_email` is omitted from the MCP tool
-list. IMAP mutation tools remain available, so this is not a strict read-only
-mode. To limit mutations, also constrain which MCP tools the client may call or
-run the server with an account whose provider permissions are read-only.
+list. IMAP mutation tools such as `move_emails` and `delete_emails` are still
+governed by [permission scopes](security.md#permission-scopes): under the
+read-only default they stay hidden until you grant `organize`, `delete`, or
+`draft`, so an IMAP-only account is read-only unless you opt in. Provider-side
+read-only credentials remain a useful defense in depth.
 
 ## ProtonMail Bridge and self-signed TLS
 

@@ -191,6 +191,11 @@ The tool list adapts to the active configuration:
 `download_attachment` is not hidden when disabled; it checks permission when
 called.
 
+Tool visibility is also gated by [permission scopes](security.md#permission-scopes).
+The server is read-only by default, so `save_to_mailbox` and the mutation and send
+tools appear only when their scope (`draft`, `organize`, `delete`, or `send`) is
+granted — in addition to any condition in the table above.
+
 ## Reply threading
 
 To preserve conversation threading:

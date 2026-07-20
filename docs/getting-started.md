@@ -75,8 +75,10 @@ After restarting the client:
    `list_available_accounts`.
 2. Ask it to list recent messages for the configured account. This calls
    `list_emails_metadata`.
-3. If SMTP is configured, ask which email tools are available and confirm that
-   `send_email` is present.
+3. Ask which email tools are available. The server is **read-only by default**,
+   so only read tools appear until you grant
+   [permission scopes](security.md#permission-scopes). With the `send` scope and
+   an SMTP-configured account, `send_email` also appears.
 
 If the account is listed but a mail operation fails, check the IMAP or SMTP
 host, port, TLS mode, username, and password. See
@@ -151,5 +153,6 @@ effective environment settings is intended.
 
 - [Configure multiple accounts or advanced TLS settings](configuration.md)
 - [Review the available MCP tools](tools.md)
+- [Grant permission scopes to organize, delete, or send mail](security.md#permission-scopes)
 - [Apply recipient or sender allowlists](security.md)
 - [Run an HTTP transport](transports.md)

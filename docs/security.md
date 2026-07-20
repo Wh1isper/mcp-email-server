@@ -4,6 +4,44 @@ An email MCP server can read private messages, modify mailboxes, send messages,
 and access local files. Review the controls on this page before exposing it to
 an MCP client or network.
 
+## Permission scopes
+
+The server is **read-only by default**. Every mutating tool is gated behind a
+capability scope: a fresh install can list and read mail, mailboxes, and
+attachments, but cannot organize, delete, or send until you grant more. Tools
+outside the granted scopes are hidden from the tool list _and_ rejected if a
+client calls them anyway.
+
+| Scope      | Grants                                                                                  |
+| ---------- | --------------------------------------------------------------------------------------- |
+| `read`     | Always granted: list and read mail, mailboxes, and attachments.                         |
+| `draft`    | `save_to_mailbox`, restricted to drafts-type folders unless `organize` is also granted. |
+| `organize` | `move_emails`, `archive_emails`, `mark_emails_as_read`.                                 |
+| `delete`   | `delete_emails`.                                                                        |
+| `send`     | `send_email`.                                                                           |
+| `manage`   | `add_email_account`.                                                                    |
+| `full`     | Every scope above.                                                                      |
+
+Set scopes with the `permissions` setting:
+
+```toml
+permissions = ["read", "draft", "send"]  # read, draft, and send; never delete or move
+```
+
+Or with the `MCP_EMAIL_SERVER_PERMISSIONS` environment variable (comma-separated),
+which overrides the TOML value:
+
+```bash
+MCP_EMAIL_SERVER_PERMISSIONS=read,organize,delete
+```
+
+An empty value resets to the read-only default, and unknown scope names are
+rejected at startup. Scopes compose with the feature-based visibility gates: a
+tool appears only when its scope is granted _and_ any other condition is met (for
+example, `send_email` also needs an SMTP-configured account). Upgrading from a
+version without scopes? Set `permissions = ["full"]` to restore the previous
+always-on behavior.
+
 ## Credential storage
 
 Persistent configuration is stored in
