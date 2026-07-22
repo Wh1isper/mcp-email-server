@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from click import Command, Group, Option
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from mcp_email_server.bootstrap import read_bootstrap
@@ -102,15 +104,19 @@ def test_select_managed_rejects_missing_active_secret(monkeypatch, tmp_path, fak
     assert read_bootstrap(config_path).mode == "legacy"
 
 
-def test_account_add_has_no_secret_argv_option():
-    runner = CliRunner()
+def test_account_add_has_no_secret_argv_option() -> None:
+    root = get_command(app)
+    assert isinstance(root, Group)
+    account = root.commands["account"]
+    assert isinstance(account, Group)
+    add = account.commands["add"]
+    assert isinstance(add, Command)
+    option_names = {option for parameter in add.params if isinstance(parameter, Option) for option in parameter.opts}
 
-    help_result = runner.invoke(app, ["account", "add", "--help"])
-    rejected = runner.invoke(app, [*_base_account_args()[:-1], "--password", "secret"])
+    rejected = CliRunner().invoke(app, [*_base_account_args()[:-1], "--password", "secret"])
 
-    assert help_result.exit_code == 0
-    assert "--password-stdin" in help_result.output
-    assert "--password " not in help_result.output
+    assert "--password-stdin" in option_names
+    assert "--password" not in option_names
     assert rejected.exit_code != 0
     assert "No such option" in rejected.output
 

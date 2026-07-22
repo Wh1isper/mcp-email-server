@@ -2,6 +2,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -698,7 +699,7 @@ def test_store_non_posix_falls_back_to_plain_write(tmp_path, monkeypatch):
     config_module._settings = None
     try:
         settings = config_module.get_settings(reload=True)
-        monkeypatch.setattr(config_module.os, "name", "nt")
+        monkeypatch.setattr(config_module, "os", SimpleNamespace(name="nt"))
         settings.store()
         assert cfg.read_text() == settings._to_toml()
     finally:
