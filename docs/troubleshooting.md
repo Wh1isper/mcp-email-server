@@ -213,6 +213,17 @@ mutation tool.
 Call `list_mailboxes` to discover the actual folder and use `move_emails` with
 an explicit destination when the provider uses another name.
 
+## Delete or move reports failures on an older IMAP server
+
+Message-scoped delete requires IMAP `UIDPLUS` and uses target-scoped
+`UID EXPUNGE`. It deliberately never falls back to mailbox-wide `EXPUNGE`,
+because that could remove unrelated messages already marked `\Deleted` by
+another client.
+
+When a server lacks both native `MOVE` and `UIDPLUS`, `move_emails` also rejects
+the COPY-and-delete fallback before copying. Use the provider's native client or
+upgrade/configure the server to support `MOVE` or `UIDPLUS`.
+
 ## HTTP requests are rejected by `Host` or `Origin` validation
 
 For a container, proxy, or non-loopback hostname, configure the names seen by

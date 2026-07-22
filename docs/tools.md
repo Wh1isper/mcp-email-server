@@ -143,17 +143,24 @@ Marks one or more message IDs as read in the selected mailbox.
 ### `move_emails`
 
 Moves messages from `source_mailbox`, which defaults to `INBOX`, to a required
-`destination_mailbox`.
+`destination_mailbox`. Native IMAP `MOVE` is preferred. The COPY-and-delete
+fallback is available only when the server advertises `UIDPLUS`, allowing the
+source to be removed with target-scoped `UID EXPUNGE`; otherwise the operation
+fails before copying a message.
 
 ### `archive_emails`
 
 Moves messages to the account's archive mailbox. The server first uses the RFC
 6154 `\Archive` mailbox flag and then falls back to `Archive`, `Archives`, or
-`[Gmail]/All Mail`.
+`[Gmail]/All Mail`. Archive uses the same native-MOVE or safe UIDPLUS fallback
+rules as `move_emails`.
 
 ### `delete_emails`
 
-Deletes one or more messages from the selected mailbox.
+Deletes one or more messages from the selected mailbox. The provider must
+advertise `UIDPLUS`: the server flags and expunges only the requested UIDs with
+`UID EXPUNGE` and never sends mailbox-wide `EXPUNGE`. Without `UIDPLUS`, the
+operation fails before adding the `\Deleted` flag.
 
 Mutation tools return successful and failed counts. When a sender allowlist is
 active, blocked messages are never changed. See

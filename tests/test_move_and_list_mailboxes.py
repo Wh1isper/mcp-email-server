@@ -65,6 +65,7 @@ def classic_handler(email_settings):
 
 def _make_mock_imap(**overrides):
     """Helper to build an AsyncMock IMAP client with sensible defaults."""
+    capabilities = overrides.pop("capabilities", ("IMAP4rev1", "UIDPLUS"))
     mock = AsyncMock()
     mock._client_task = asyncio.Future()
     mock._client_task.set_result(None)
@@ -75,6 +76,8 @@ def _make_mock_imap(**overrides):
     mock.expunge = AsyncMock(return_value=("OK", []))
     mock.logout = AsyncMock()
     mock.list = AsyncMock(return_value=("OK", []))
+    mock.protocol = MagicMock(capabilities=capabilities)
+    mock.protocol.capability = AsyncMock()
     for k, v in overrides.items():
         setattr(mock, k, v)
     return mock
@@ -83,6 +86,60 @@ def _make_mock_imap(**overrides):
 # ===========================================================================
 # EmailClient.move_emails
 # ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_move_without_uidplus_rejects_fallback_before_copy(email_client):
+    mock_imap = _make_mock_imap(capabilities=("IMAP4rev1",))
+
+    with patch.object(email_client, "imap_class", return_value=mock_imap):
+        moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
+
+    assert moved_ids == []
+    assert failed_ids == ["100"]
+    mock_imap.uid.assert_not_called()
+    mock_imap.expunge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_move_uses_post_auth_capabilities_and_rejects_fallback_before_copy(email_client):
+    mock_imap = _make_mock_imap(capabilities=("IMAP4rev1", "MOVE", "UIDPLUS"))
+
+    async def refresh_capabilities():
+        mock_imap.protocol.capabilities = ("IMAP4rev1",)
+
+    mock_imap.protocol.capability = AsyncMock(side_effect=refresh_capabilities)
+    with patch.object(email_client, "imap_class", return_value=mock_imap):
+        result = await email_client.move_emails(["100"], "INBOX", "Archive")
+
+    assert result == ([], ["100"])
+    mock_imap.uid.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_move_normalizes_post_auth_move_for_check_and_command(email_client):
+    mock_imap = _make_mock_imap(capabilities=("IMAP4rev1",))
+
+    async def refresh_capabilities():
+        mock_imap.protocol.capabilities = ("imap4rev1", "move")
+
+    mock_imap.protocol.capability = AsyncMock(side_effect=refresh_capabilities)
+    with patch.object(email_client, "imap_class", return_value=mock_imap):
+        result = await email_client.move_emails(["100"], "INBOX", "Archive")
+
+    assert result == (["100"], [])
+    assert mock_imap.protocol.capabilities == {"IMAP4REV1", "MOVE"}
+    mock_imap.uid.assert_awaited_once_with("move", "100", '"Archive"')
+
+
+@pytest.mark.asyncio
+async def test_move_duplicate_uids_have_one_provider_effect_and_consistent_results(email_client):
+    mock_imap = _make_mock_imap(capabilities=("IMAP4rev1", "MOVE"))
+    with patch.object(email_client, "imap_class", return_value=mock_imap):
+        result = await email_client.move_emails(["100", "100"], "INBOX", "Archive")
+
+    assert result == (["100", "100"], [])
+    mock_imap.uid.assert_awaited_once_with("move", "100", '"Archive"')
 
 
 class TestEmailClientMoveEmails:
@@ -119,24 +176,22 @@ class TestEmailClientMoveEmails:
         mock_imap.login.assert_called_once()
         mock_imap.select.assert_called_once_with('"INBOX"')
 
-        # Verify COPY + STORE for each email
-        assert mock_imap.uid.call_count == 4  # 2 copies + 2 stores
+        # Verify COPY + STORE for each email, followed by target-scoped UID EXPUNGE.
+        assert mock_imap.uid.call_count == 5
         calls = mock_imap.uid.call_args_list
         assert calls[0].args == ("copy", "100", '"Archive"')
         assert calls[1].args == ("store", "100", "+FLAGS", r"(\Deleted)")
         assert calls[2].args == ("copy", "200", '"Archive"')
         assert calls[3].args == ("store", "200", "+FLAGS", r"(\Deleted)")
-
-        # EXPUNGE should be called because has_move is False and moved_ids is non-empty
-        mock_imap.expunge.assert_called_once()
+        assert calls[4].args == ("expunge", "100,200")
+        mock_imap.expunge.assert_not_called()
         mock_imap.logout.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_move_emails_with_move_capability(self, email_client):
         """When MOVE capability is present, should use UID MOVE directly."""
-        mock_imap = _make_mock_imap()
-        mock_imap.move = AsyncMock()  # has "move" attribute
-        mock_imap.capabilities = ("IMAP4rev1", "MOVE", "IDLE")  # MOVE in capabilities
+        mock_imap = _make_mock_imap(capabilities=("IMAP4rev1", "MOVE", "IDLE"))
+        mock_imap.move = AsyncMock()  # retained compatibility test double
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
             moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Trash")
@@ -160,6 +215,7 @@ class TestEmailClientMoveEmails:
             Response("OK", [b"copied"]),  # copy "100" succeeds
             Response("OK", [b"stored"]),  # store "100" succeeds
             Exception("IMAP error"),  # copy "200" fails
+            Response("OK", [b"expunged"]),  # scoped expunge for "100"
         ]
         mock_imap.uid = AsyncMock(side_effect=side_effects)
 
@@ -168,8 +224,8 @@ class TestEmailClientMoveEmails:
 
         assert moved_ids == ["100"]
         assert failed_ids == ["200"]
-        # EXPUNGE still called because there are moved_ids
-        mock_imap.expunge.assert_called_once()
+        assert mock_imap.uid.call_args_list[-1].args == ("expunge", "100")
+        mock_imap.expunge.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_move_emails_all_fail_no_expunge(self, email_client):
@@ -216,10 +272,7 @@ class TestEmailClientMoveEmails:
     @pytest.mark.asyncio
     async def test_move_emails_move_capability_with_failure(self, email_client):
         """Test failure when using native MOVE command."""
-        mock_imap = _make_mock_imap()
-        mock_imap.move = AsyncMock()
-        mock_imap.capabilities = ("IMAP4rev1", "MOVE")
-
+        mock_imap = _make_mock_imap(capabilities=("IMAP4rev1", "MOVE"))
         mock_imap.uid = AsyncMock(side_effect=Exception("MOVE failed"))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -266,9 +319,7 @@ class TestEmailClientMoveEmails:
     @pytest.mark.asyncio
     async def test_move_emails_move_no_response_marks_failed(self, email_client):
         """A native MOVE NO response should be reported as a failed move."""
-        mock_imap = _make_mock_imap()
-        mock_imap.move = AsyncMock()
-        mock_imap.capabilities = ("IMAP4rev1", "MOVE")
+        mock_imap = _make_mock_imap(capabilities=("IMAP4rev1", "MOVE"))
         mock_imap.uid = AsyncMock(return_value=Response("NO", [b"move failed"]))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -301,16 +352,17 @@ class TestEmailClientMoveEmails:
             side_effect=[
                 Response("OK", [b"copied"]),
                 Response("OK", [b"stored"]),
+                Response("NO", [b"expunge failed"]),
             ]
         )
-        mock_imap.expunge = AsyncMock(return_value=Response("NO", [b"expunge failed"]))
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
             moved_ids, failed_ids = await email_client.move_emails(["100"], "INBOX", "Archive")
 
         assert moved_ids == []
         assert failed_ids == ["100"]
-        mock_imap.expunge.assert_called_once()
+        assert mock_imap.uid.call_args_list[-1].args == ("expunge", "100")
+        mock_imap.expunge.assert_not_called()
 
 
 # ===========================================================================

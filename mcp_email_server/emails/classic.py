@@ -38,6 +38,9 @@ from mcp_email_server.log import logger
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
 
+# aioimaplib's protocol-level CAPABILITY command has no built-in timeout.
+_IMAP_CAPABILITY_TIMEOUT_SECONDS = 30.0
+
 # Common Archive folder names, used as a fallback when no RFC 6154 \Archive flag is found.
 _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
 
@@ -400,14 +403,52 @@ def _create_starttls_ssl_context(verify_ssl: bool) -> ssl.SSLContext:
     return ctx
 
 
-def _imap_capabilities(imap: aioimaplib.IMAP4) -> set[str]:
-    """Return normalized capabilities from an aioimaplib protocol."""
+def _imap_capabilities(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> set[str]:
+    """Return normalized capabilities advertised by the connected IMAP protocol."""
+    protocol = imap.protocol
+    if protocol is None:
+        return set()
     return {
         capability.decode("utf-8", errors="replace").upper()
         if isinstance(capability, bytes)
         else str(capability).upper()
-        for capability in getattr(imap.protocol, "capabilities", ())
+        for capability in protocol.capabilities
     }
+
+
+async def _refresh_imap_capabilities(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> set[str]:
+    """Refresh and normalize the authoritative post-authentication capabilities.
+
+    aioimaplib checks its protocol capability set again before sending UID
+    EXPUNGE or MOVE. Persisting the same normalized snapshot used by our safety
+    checks prevents case or authentication-phase drift between those decisions.
+    """
+    protocol = imap.protocol
+    if protocol is None:
+        raise ConnectionError("IMAP protocol is not connected")
+    await asyncio.wait_for(protocol.capability(), timeout=_IMAP_CAPABILITY_TIMEOUT_SECONDS)
+    capabilities = _imap_capabilities(imap)
+    protocol.capabilities = capabilities
+    return capabilities
+
+
+def _supports_uid_expunge(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> bool:
+    """Return whether RFC 4315 target-scoped expunge is available."""
+    return "UIDPLUS" in _imap_capabilities(imap)
+
+
+async def _uid_expunge(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    email_ids: list[str],
+    operation: str,
+) -> None:
+    """Expunge exactly *email_ids*; never fall back to mailbox-wide EXPUNGE."""
+    if not email_ids:
+        return
+    if not _supports_uid_expunge(imap):
+        raise RuntimeError(f"{operation} requires the IMAP UIDPLUS capability for safe UID EXPUNGE")
+    response = await imap.uid("expunge", ",".join(email_ids))
+    _raise_for_imap_error(response, operation)
 
 
 async def _imap_starttls(imap: aioimaplib.IMAP4, ssl_context: ssl.SSLContext, host: str) -> None:
@@ -1618,39 +1659,54 @@ class EmailClient:
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
+            await _refresh_imap_capabilities(imap)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
-            blocked = await self._blocked_uids(imap, email_ids, allowed_senders)
-            deleted_any = False
-            for email_id in email_ids:
-                if email_id in blocked:
-                    (failed_ids if report_blocked_mutations else deleted_ids).append(email_id)
-                    continue
-                try:
-                    store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
-                    _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
-                    deleted_ids.append(email_id)
-                    deleted_any = True
-                except Exception as e:
-                    logger.error(f"Failed to delete email {email_id}: {e}")
-                    failed_ids.append(email_id)
+            unique_email_ids = list(dict.fromkeys(email_ids))
+            blocked = await self._blocked_uids(imap, unique_email_ids, allowed_senders)
+            permitted_ids = [email_id for email_id in unique_email_ids if email_id not in blocked]
+            for email_id in blocked:
+                (failed_ids if report_blocked_mutations else deleted_ids).append(email_id)
 
-            if deleted_any:
-                try:
-                    expunge_response = await imap.expunge()
-                    _raise_for_imap_error(expunge_response, "EXPUNGE deleted emails")
-                except Exception as e:
-                    logger.error(f"Failed to expunge deleted emails: {e}")
-                    failed_ids.extend(deleted_ids)
-                    deleted_ids = []
+            # Bare EXPUNGE would remove unrelated messages already marked
+            # \Deleted by another client. Refuse before STORE unless the exact
+            # target UIDs can be expunged through RFC 4315 UIDPLUS.
+            if permitted_ids and not _supports_uid_expunge(imap):
+                logger.warning("Refusing message-scoped delete because the server does not advertise UIDPLUS")
+                failed_ids.extend(permitted_ids)
+            else:
+                expunge_ids: list[str] = []
+                for email_id in permitted_ids:
+                    try:
+                        store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                        _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
+                        deleted_ids.append(email_id)
+                        expunge_ids.append(email_id)
+                    except Exception as e:
+                        logger.error(f"Failed to delete email {email_id}: {e}")
+                        failed_ids.append(email_id)
+
+                if expunge_ids:
+                    try:
+                        await _uid_expunge(imap, expunge_ids, "UID EXPUNGE deleted emails")
+                    except Exception as e:
+                        logger.error(f"Failed to expunge deleted emails: {e}")
+                        expunge_set = set(expunge_ids)
+                        failed_ids.extend(expunge_ids)
+                        deleted_ids = [email_id for email_id in deleted_ids if email_id not in expunge_set]
         finally:
             try:
                 await imap.logout()
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
-        return deleted_ids, failed_ids
+        deleted_set = set(deleted_ids)
+        failed_set = set(failed_ids)
+        return (
+            [email_id for email_id in email_ids if email_id in deleted_set],
+            [email_id for email_id in email_ids if email_id in failed_set],
+        )
 
     async def mark_emails_as_read(
         self,
@@ -1714,48 +1770,62 @@ class EmailClient:
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
+            capabilities = await _refresh_imap_capabilities(imap)
             select_response = await imap.select(_quote_mailbox(source_mailbox))
             _raise_for_imap_error(select_response, f"SELECT source mailbox {source_mailbox}")
 
-            capabilities = {str(capability).upper() for capability in getattr(imap, "capabilities", ())}
-            has_move = hasattr(imap, "move") and "MOVE" in capabilities
+            has_move = "MOVE" in capabilities
 
-            blocked = await self._blocked_uids(imap, email_ids, allowed_senders)
-            copied: list[str] = []  # allowed UIDs that actually completed COPY+STORE on the fallback path
-            for email_id in email_ids:
-                if email_id in blocked:
-                    (failed_ids if report_blocked_mutations else moved_ids).append(email_id)
-                    continue
-                try:
-                    if has_move:
-                        move_response = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
-                        _raise_for_imap_error(move_response, f"MOVE email {email_id}")
-                    else:
-                        copy_response = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
-                        _raise_for_imap_error(copy_response, f"COPY email {email_id}")
-                        store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
-                        _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
-                        copied.append(email_id)
-                    moved_ids.append(email_id)
-                except Exception as e:
-                    logger.error(f"Failed to move email {email_id}: {e}")
-                    failed_ids.append(email_id)
+            unique_email_ids = list(dict.fromkeys(email_ids))
+            blocked = await self._blocked_uids(imap, unique_email_ids, allowed_senders)
+            permitted_ids = [email_id for email_id in unique_email_ids if email_id not in blocked]
+            for email_id in blocked:
+                (failed_ids if report_blocked_mutations else moved_ids).append(email_id)
 
-            if copied:  # only expunge when real COPY+STORE happened — never for blocked/no-op UIDs
-                try:
-                    expunge_response = await imap.expunge()
-                    _raise_for_imap_error(expunge_response, "EXPUNGE moved emails")
-                except Exception as e:
-                    logger.error(f"Failed to expunge moved emails: {e}")
-                    failed_ids.extend(copied)
-                    moved_ids = [uid for uid in moved_ids if uid not in set(copied)]
+            # Reject the COPY+DELETE fallback before COPY unless its exact source
+            # UIDs can be expunged. This prevents both duplicate destinations and
+            # mailbox-wide deletion of another client's \Deleted messages.
+            if permitted_ids and not has_move and not _supports_uid_expunge(imap):
+                logger.warning("Refusing COPY+DELETE move fallback because the server does not advertise UIDPLUS")
+                failed_ids.extend(permitted_ids)
+            else:
+                copied: list[str] = []
+                for email_id in permitted_ids:
+                    try:
+                        if has_move:
+                            move_response = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                            _raise_for_imap_error(move_response, f"MOVE email {email_id}")
+                        else:
+                            copy_response = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                            _raise_for_imap_error(copy_response, f"COPY email {email_id}")
+                            store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                            _raise_for_imap_error(store_response, f"STORE \\Deleted for email {email_id}")
+                            copied.append(email_id)
+                        moved_ids.append(email_id)
+                    except Exception as e:
+                        logger.error(f"Failed to move email {email_id}: {e}")
+                        failed_ids.append(email_id)
+
+                if copied:
+                    try:
+                        await _uid_expunge(imap, copied, "UID EXPUNGE moved emails")
+                    except Exception as e:
+                        logger.error(f"Failed to expunge moved emails: {e}")
+                        copied_set = set(copied)
+                        failed_ids.extend(copied)
+                        moved_ids = [uid for uid in moved_ids if uid not in copied_set]
         finally:
             try:
                 await imap.logout()
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
-        return moved_ids, failed_ids
+        moved_set = set(moved_ids)
+        failed_set = set(failed_ids)
+        return (
+            [email_id for email_id in email_ids if email_id in moved_set],
+            [email_id for email_id in email_ids if email_id in failed_set],
+        )
 
     async def list_mailboxes(self, pattern: str = "*", reference: str = "") -> list[MailboxInfo]:
         """List available IMAP mailboxes with flags and delimiter."""

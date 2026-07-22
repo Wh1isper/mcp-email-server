@@ -172,6 +172,15 @@ def _seed_message(subject: str, body: str) -> None:
         smtp.send_message(message)
 
 
+def _mark_deleted_without_expunge(credentials: tuple[str, str], mailbox: str, uid: str) -> None:
+    """Simulate another client leaving an unrelated message pending deletion."""
+    with _imap_session(credentials) as client:
+        status, _ = client.select(mailbox)
+        assert status == "OK"
+        status, _ = client.uid("store", uid, "+FLAGS.SILENT", r"(\Deleted)")
+        assert status == "OK"
+
+
 def _text_content(result: Any) -> str:
     return "\n".join(item.text for item in result.content if isinstance(item, TextContent))
 
@@ -381,6 +390,59 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
             )
             assert delete_draft["result"] == "Successfully deleted 1 email(s)"
             assert _find_message(ALICE, "Drafts", draft_subject) is None
+
+            # Another IMAP client may already have left an unrelated message with
+            # \\Deleted set. A message-scoped MCP delete must expunge only its own
+            # target rather than silently committing the other client's deletion.
+            pending_subject = f"mcp-e2e-unrelated-pending-delete-{run_id}"
+            delete_subject = f"mcp-e2e-scoped-delete-{run_id}"
+            _seed_message(pending_subject, "Leave this message pending deletion")
+            _seed_message(delete_subject, "Delete only this message")
+            pending = _wait_for_message(BOB, "INBOX", pending_subject)
+            _wait_for_message(BOB, "INBOX", delete_subject)
+            delete_metadata = await _metadata_for_subject(session, "bob", delete_subject)
+            _mark_deleted_without_expunge(BOB, "INBOX", pending.uid)
+            assert r"\Deleted" in _wait_for_message(BOB, "INBOX", pending_subject).flags
+
+            scoped_delete = await _call_tool(
+                session,
+                "delete_emails",
+                {
+                    "account_name": "bob",
+                    "email_ids": [delete_metadata["email_id"]],
+                    "mailbox": "INBOX",
+                },
+            )
+            assert scoped_delete["result"] == "Successfully deleted 1 email(s)"
+            assert _find_message(BOB, "INBOX", delete_subject) is None
+            still_pending = _wait_for_message(BOB, "INBOX", pending_subject)
+            assert r"\Deleted" in still_pending.flags
+
+            # Native MOVE must preserve the same unrelated pending deletion too.
+            move_pending_subject = f"mcp-e2e-unrelated-pending-move-{run_id}"
+            move_target_subject = f"mcp-e2e-scoped-move-{run_id}"
+            _seed_message(move_pending_subject, "Leave this message pending while another moves")
+            _seed_message(move_target_subject, "Move only this message")
+            move_pending = _wait_for_message(BOB, "INBOX", move_pending_subject)
+            _wait_for_message(BOB, "INBOX", move_target_subject)
+            move_target_metadata = await _metadata_for_subject(session, "bob", move_target_subject)
+            _mark_deleted_without_expunge(BOB, "INBOX", move_pending.uid)
+
+            scoped_move = await _call_tool(
+                session,
+                "move_emails",
+                {
+                    "account_name": "bob",
+                    "email_ids": [move_target_metadata["email_id"]],
+                    "source_mailbox": "INBOX",
+                    "destination_mailbox": "Archive",
+                },
+            )
+            assert scoped_move["result"] == "Successfully moved 1 email(s) to Archive"
+            assert _find_message(BOB, "INBOX", move_target_subject) is None
+            _wait_for_message(BOB, "Archive", move_target_subject)
+            still_pending_after_move = _wait_for_message(BOB, "INBOX", move_pending_subject)
+            assert r"\Deleted" in still_pending_after_move.flags
 
             mailboxes = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
             mailbox_names = {mailbox["name"] for mailbox in mailboxes["result"]}

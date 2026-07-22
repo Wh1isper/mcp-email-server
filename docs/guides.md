@@ -48,6 +48,18 @@ list. IMAP mutation tools remain available, so this is not a strict read-only
 mode. To limit mutations, also constrain which MCP tools the client may call or
 run the server with an account whose provider permissions are read-only.
 
+## Safe delete and move behavior
+
+Message-scoped deletion never uses mailbox-wide IMAP `EXPUNGE`, which would
+remove every message already marked `\Deleted`, including messages selected by
+another email client. The server uses `UID EXPUNGE` only when the provider
+advertises the RFC 4315 `UIDPLUS` capability.
+
+If a provider lacks `UIDPLUS`, `delete_emails` reports the requested messages as
+failed before changing their flags. When the provider also lacks native `MOVE`,
+`move_emails` rejects its COPY-and-delete fallback before copying anything. Use
+the provider's own client or an IMAP server that supports `MOVE` or `UIDPLUS`.
+
 ## ProtonMail Bridge and self-signed TLS
 
 Local bridges commonly expose IMAP through STARTTLS with a locally issued
