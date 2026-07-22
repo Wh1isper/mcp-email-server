@@ -1,14 +1,14 @@
-from collections.abc import Callable
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import Icon, ToolAnnotations
 from pydantic import Field
 
+from mcp_email_server.application.accounts import EffectiveConfiguration
 from mcp_email_server.application.metadata import ListEmailMetadataQuery
 from mcp_email_server.application.mutations import (
-    APPLICATION_LIMITS,
     AppendMutationOutcome,
     ArchiveCommand,
     ArchiveMutationOutcome,
@@ -22,26 +22,25 @@ from mcp_email_server.application.mutations import (
     SendMutationOutcome,
     TargetMutationOutcome,
 )
+from mcp_email_server.application.reads import (
+    DownloadAttachmentCommand,
+    GetEmailContentQuery,
+    ListMailboxesQuery,
+)
 from mcp_email_server.bootstrap import assert_legacy_writable
 from mcp_email_server.config import (
     AccountAttributes,
     EmailSettings,
-    ProviderSettings,
     clear_settings_cache,
     get_settings,
 )
-from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
     MailboxInfo,
 )
-from mcp_email_server.log import logger
-from mcp_email_server.runtime import get_application_runtime
-
-AnyFunction = Callable[..., Any]
-ToolVisibilityPredicate = Callable[[], bool]
+from mcp_email_server.runtime import close_application_runtime, get_application_runtime
 
 
 def list_effective_accounts() -> list[AccountAttributes]:
@@ -74,6 +73,22 @@ async def move_emails_command(command: MoveCommand) -> BatchMutationOutcome:
 
 async def archive_emails_command(command: ArchiveCommand) -> ArchiveMutationOutcome:
     return await get_application_runtime().mutations.archive.execute(command)
+
+
+async def get_email_content_query(query: GetEmailContentQuery) -> EmailContentBatchResponse:
+    return await get_application_runtime().reads.content.execute(query)
+
+
+async def list_mailboxes_query(query: ListMailboxesQuery) -> list[MailboxInfo]:
+    return await get_application_runtime().reads.mailboxes.execute(query)
+
+
+async def download_attachment_command(command: DownloadAttachmentCommand) -> AttachmentDownloadResponse:
+    return await get_application_runtime().reads.attachments.execute(command)
+
+
+def effective_configuration() -> EffectiveConfiguration:
+    return get_application_runtime().configuration.execute()
 
 
 def _ordered_target_sections(
@@ -117,68 +132,20 @@ def _tagged_send_result(outcome: SendMutationOutcome) -> str:
     return "; ".join(sections)
 
 
-def _has_send_capable_account() -> bool:
-    settings = get_settings()
-    return any(isinstance(account, EmailSettings) and account.can_send for account in settings.get_accounts())
+@asynccontextmanager
+async def _application_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, object]]:
+    try:
+        yield {}
+    finally:
+        await close_application_runtime()
 
 
-def _has_allowed_recipients() -> bool:
-    return bool(get_settings().allowed_recipients)
-
-
-def _has_allowed_senders() -> bool:
-    return bool(get_settings().allowed_senders)
-
-
-class VisibilityAwareFastMCP(FastMCP):
-    """FastMCP server with declarative tool visibility predicates."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._tool_visibility: dict[str, ToolVisibilityPredicate] = {}
-
-    def tool(
-        self,
-        name: str | None = None,
-        title: str | None = None,
-        description: str | None = None,
-        annotations: ToolAnnotations | None = None,
-        icons: list[Icon] | None = None,
-        meta: dict[str, Any] | None = None,
-        structured_output: bool | None = None,
-        *,
-        visible_if: ToolVisibilityPredicate | None = None,
-    ) -> Callable[[AnyFunction], AnyFunction]:
-        decorator = super().tool(
-            name=name,
-            title=title,
-            description=description,
-            annotations=annotations,
-            icons=icons,
-            meta=meta,
-            structured_output=structured_output,
-        )
-
-        def wrapped(fn: AnyFunction) -> AnyFunction:
-            registered = decorator(fn)
-            if visible_if is not None:
-                self._tool_visibility[name or fn.__name__] = visible_if
-            return registered
-
-        return wrapped
-
-    async def list_tools(self):
-        tools = await super().list_tools()
-        return [tool for tool in tools if self._tool_visibility.get(tool.name, lambda: True)()]
-
-
-mcp = VisibilityAwareFastMCP("email")
+mcp = FastMCP("email", lifespan=_application_lifespan)
 
 
 @mcp.resource("email://{account_name}")
-async def get_account(account_name: str) -> EmailSettings | ProviderSettings | None:
-    settings = get_settings()
-    return settings.get_account(account_name, masked=True)
+async def get_account(account_name: str) -> AccountAttributes | None:
+    return get_application_runtime().accounts.get(account_name)
 
 
 @mcp.tool(description="List all configured email accounts with masked credentials.")
@@ -329,41 +296,26 @@ async def get_emails_content(
         ),
     ] = 20000,
 ) -> EmailContentBatchResponse:
-    handler = dispatch_handler(account_name)
-    response = await handler.get_emails_content(email_ids, mailbox, False, body_offset, max_body_length)
-    if mark_as_read and response.emails:
-        mark_ids = tuple(dict.fromkeys(item.email_id for item in response.emails))
-        try:
-            for offset in range(0, len(mark_ids), APPLICATION_LIMITS.mutation_uids):
-                outcome = await mark_read_command(
-                    MarkReadCommand(
-                        account_name=account_name,
-                        email_ids=mark_ids[offset : offset + APPLICATION_LIMITS.mutation_uids],
-                        mailbox=mailbox,
-                    )
-                )
-                if any(item.status != "succeeded" for item in outcome.outcomes) or outcome.reconciliation_needed:
-                    logger.warning(f"Content retrieval mark-as-read result: {_tagged_batch_result(outcome)}")
-                if outcome.reconciliation_needed or any(item.status == "unknown" for item in outcome.outcomes):
-                    # Unknown or failed projection reconciliation may represent
-                    # cancellation; do not start another independent batch.
-                    break
-        except Exception as exc:
-            # Preserve the documented retrieval contract: marking is a separate
-            # best-effort mutation and never discards successfully read bodies.
-            logger.warning(f"Content retrieval mark-as-read failed: {type(exc).__name__}")
-    return response
+    return await get_email_content_query(
+        GetEmailContentQuery(
+            account_name=account_name,
+            email_ids=tuple(email_ids),
+            mailbox=mailbox,
+            mark_as_read=mark_as_read,
+            body_offset=body_offset,
+            max_body_length=max_body_length,
+        )
+    )
 
 
 @mcp.tool(
     description=(
         "List the configured recipient allowlist — the addresses that send_email is permitted to "
-        "send to and save_to_mailbox is permitted to address. Only available when an allowlist is configured."
+        "send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted."
     ),
-    visible_if=_has_allowed_recipients,
 )
 async def list_allowed_recipients() -> list[str]:
-    return get_settings().allowed_recipients
+    return list(effective_configuration().allowed_recipients)
 
 
 @mcp.tool(
@@ -371,13 +323,12 @@ async def list_allowed_recipients() -> list[str]:
         "List the configured inbound sender allowlist — the address patterns whose mail the server "
         "will read or act on. When configured, only these senders' mail is visible to the read tools "
         "(list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation "
-        "tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Only available when an "
-        "allowlist is configured."
+        "tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Returns an empty list "
+        "when unrestricted."
     ),
-    visible_if=_has_allowed_senders,
 )
 async def list_allowed_senders() -> list[str]:
-    return get_settings().allowed_senders
+    return list(effective_configuration().allowed_senders)
 
 
 @mcp.tool(
@@ -386,7 +337,6 @@ async def list_allowed_senders() -> list[str]:
         "delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy "
         "outcome separately; ambiguous effects are not retried automatically."
     ),
-    visible_if=_has_send_capable_account,
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -654,8 +604,9 @@ async def list_mailboxes(
         Field(default="", description="IMAP LIST reference name (namespace prefix). Usually empty."),
     ] = "",
 ) -> list[MailboxInfo]:
-    handler = dispatch_handler(account_name)
-    return await handler.list_mailboxes(pattern, reference)
+    return await list_mailboxes_query(
+        ListMailboxesQuery(account_name=account_name, pattern=pattern, reference=reference)
+    )
 
 
 @mcp.tool(
@@ -677,12 +628,12 @@ async def download_attachment(
     ],
     mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
 ) -> AttachmentDownloadResponse:
-    settings = get_settings()
-    if not settings.enable_attachment_download:
-        msg = (
-            "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
+    return await download_attachment_command(
+        DownloadAttachmentCommand(
+            account_name=account_name,
+            email_id=email_id,
+            attachment_name=attachment_name,
+            save_path=save_path,
+            mailbox=mailbox,
         )
-        raise PermissionError(msg)
-
-    handler = dispatch_handler(account_name)
-    return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+    )

@@ -1,6 +1,6 @@
 # 03. Configuration and Credentials
 
-Status: Accepted
+Status: Implemented
 
 Previous: [`02-application-boundaries.md`](02-application-boundaries.md)
 Next: [`04-mail-workflows-and-consistency.md`](04-mail-workflows-and-consistency.md)
@@ -99,7 +99,10 @@ sequenceDiagram
 ```
 
 The active secret is never overwritten or deleted before the replacement is
-committed. A failed secret write leaves a resumable/discardable pending binding.
+committed. Older pending candidates are atomically claimed as cleanup-required
+before external deletion, so a concurrent candidate cannot become active after
+cleanup selected its locator. A failed secret write leaves a
+resumable/discardable pending binding.
 A failed DB activation leaves the old binding active and the candidate eligible
 for doctor-assisted cleanup. A post-commit cleanup failure does not invalidate
 the new active secret and is reported without locator disclosure.
@@ -155,6 +158,9 @@ Import is a CLI workflow, never startup side effect. It:
 
 Repeated import is deterministic: existing matching accounts are reported,
 conflicts require user resolution, and no credential is overwritten in place.
+Credential resolution verifies that the stored non-secret account snapshot still
+matches the plan; source changes fail and require a new preview before any
+account write can combine old endpoint data with a new secret.
 
 ## Filesystem Security
 
@@ -169,18 +175,22 @@ Failure to use the selected SecretStore or secure filesystem is fatal in managed
 mode. Diagnostics identify the category and remediation without leaking paths
 beyond what the user explicitly supplied.
 
-## Implementation Progress
+## Implementation Evidence
 
-The first vertical managed-account slice is implemented: explicit bootstrap
-selection, secure `STAGING`/`ACTIVE` catalog lifecycle, manual account setup,
-immutable keyring candidate bindings, bounded diagnostics, disablement,
-connectivity testing, legacy-writer fences, and managed account resolution by a
-restarted stdio MCP process. Unit, contract, and loopback GreenMail E2E cover
-that path and its primary fail-closed boundaries.
+Explicit bootstrap selection, secure `STAGING`/`ACTIVE` lifecycle, manual setup,
+account list/show/update/disable/re-enable/soft removal, connectivity testing,
+immutable candidate rotation and detachment, bounded doctor/cleanup, legacy
+writer fences, and selected-mode MCP resolution are implemented through shared
+management services. Optimistic revisions protect lifecycle and endpoint writes;
+soft removal retains operational identity and cleanup state.
 
-Account field updates, re-enable, soft removal, explicit legacy import, and
-full doctor-assisted cleanup remain part of the accepted MVP contract and are
-not claimed complete by this status note.
+Legacy import is preview-first and reads stored TOML without environment overlays
+or preview-time secret access. Confirmed apply is staging-only, conflict-first,
+deterministic on repeat, resumable for missing bindings, and leaves the source
+unchanged. Cleanup atomically claims stale pending bindings before external
+deletion and never targets active bindings. Unit, adapter, CLI contract, runtime,
+and loopback GreenMail stdio E2E cover lifecycle changes, rotation, import, and
+fail-closed boundaries.
 
 ## Validation
 

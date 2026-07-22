@@ -325,7 +325,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             assert metadata["total"] == 1
             assert metadata["emails"][0]["subject"] == subject
             with contextlib.closing(sqlite3.connect(database)) as connection:
-                assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 2
+                assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
                 assert connection.execute("SELECT completeness FROM index_coverage").fetchone()[0] == "COMPLETE"
 
             managed_uid = metadata["emails"][0]["email_id"]
@@ -409,7 +409,11 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
 
             # Disablement commits in a separate management process and must be
             # observed before the next provider access in this same stdio session.
-            _run_cli(console_script, server_env, ["account", "disable", "alice-managed"])
+            _run_cli(
+                console_script,
+                server_env,
+                ["account", "disable", "alice-managed", "--expected-revision", "2"],
+            )
             denied = await session.call_tool("list_mailboxes", arguments={"account_name": "alice-managed"})
             assert denied.isError is True
             assert "not found" in _text_content(denied).lower()
@@ -425,6 +429,138 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             )
             assert denied_mutation.isError is True
             assert "not found" in _text_content(denied_mutation).lower()
+
+            # Credential detachment, replacement, re-enable, active update, and
+            # soft removal must all be observed by the already-running server.
+            _run_cli(
+                console_script,
+                server_env,
+                [
+                    "account",
+                    "remove-secret",
+                    "alice-managed",
+                    "incoming",
+                    "--expected-revision",
+                    "3",
+                ],
+            )
+            _run_cli(
+                console_script,
+                server_env,
+                ["account", "set-secret", "alice-managed", "incoming", "--password-stdin"],
+                stdin=f"{ALICE[1]}\n",
+            )
+            _run_cli(
+                console_script,
+                server_env,
+                ["account", "enable", "alice-managed", "--expected-revision", "5"],
+            )
+            restored = await _call_tool(session, "list_mailboxes", {"account_name": "alice-managed"})
+            assert "INBOX" in {mailbox["name"] for mailbox in restored["result"]}
+            _run_cli(
+                console_script,
+                server_env,
+                [
+                    "account",
+                    "update",
+                    "alice-managed",
+                    "--expected-revision",
+                    "6",
+                    "--name",
+                    "alice-managed-updated",
+                ],
+            )
+            updated_accounts = await _call_tool(session, "list_available_accounts", {})
+            assert [account["account_name"] for account in updated_accounts["result"]] == ["alice-managed-updated"]
+            _run_cli(
+                console_script,
+                server_env,
+                ["account", "disable", "alice-managed-updated", "--expected-revision", "7"],
+            )
+            _run_cli(
+                console_script,
+                server_env,
+                [
+                    "account",
+                    "remove",
+                    "alice-managed-updated",
+                    "--expected-revision",
+                    "8",
+                    "--confirm",
+                    "alice-managed-updated",
+                ],
+            )
+            removed = await session.call_tool("list_mailboxes", arguments={"account_name": "alice-managed-updated"})
+            assert removed.isError is True
+            assert "not found" in _text_content(removed).lower()
+
+
+@pytest.mark.asyncio
+async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_greenmail(tmp_path: Path) -> None:
+    """Prove stored-only preview, confirmed import, connectivity, activation, and stdio."""
+    _wait_until_ready()
+    app_dir = tmp_path / "managed-import"
+    app_dir.mkdir(mode=0o700)
+    app_dir.chmod(0o700)
+    config_path = app_dir / "config.toml"
+    config_path.write_text(CONFIG_TEMPLATE)
+    config_path.chmod(0o600)
+    database = app_dir / "catalog.sqlite3"
+    keyring_path = app_dir / "e2e-keyring.sqlite3"
+    console_script = Path(sys.executable).with_name("mcp-email-server")
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_E2E_KEYRING_PATH": str(keyring_path),
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+        "PYTHON_KEYRING_BACKEND": "dev.greenmail.file_keyring.FileKeyring",
+        "PYTHONPATH": str(Path.cwd()),
+        # A complete environment account is a tripwire: import must ignore it.
+        "MCP_EMAIL_SERVER_ACCOUNT_NAME": "environment-only",
+        "MCP_EMAIL_SERVER_EMAIL_ADDRESS": "environment@example.test",
+        "MCP_EMAIL_SERVER_PASSWORD": "environment-secret",
+        "MCP_EMAIL_SERVER_IMAP_HOST": IMAP_HOST,
+    })
+
+    _run_cli(console_script, server_env, ["config", "init", "--database", str(database)])
+    stored_source = config_path.read_bytes()
+    preview = _run_cli(console_script, server_env, ["config", "import-legacy"])
+    assert "account=alice action=create" in preview
+    assert "account=bob action=create" in preview
+    assert "environment-only" not in preview
+    assert "alice-password" not in preview
+    with contextlib.closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM managed_account").fetchone()[0] == 0
+
+    applied = _run_cli(
+        console_script,
+        server_env,
+        ["config", "import-legacy", "--apply", "--confirm", "IMPORT"],
+    )
+    assert "created=alice,bob" in applied
+    assert config_path.read_bytes() == stored_source
+    test_output = _run_cli(console_script, server_env, ["account", "test", "alice"])
+    assert "connectivity test passed" in test_output
+    _run_cli(console_script, server_env, ["config", "activate"])
+    _run_cli(console_script, server_env, ["config", "select", "managed"])
+
+    server = StdioServerParameters(
+        command=str(console_script),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(
+            read_stream,
+            write_stream,
+            read_timeout_seconds=timedelta(seconds=15),
+        ) as session:
+            await session.initialize()
+            accounts = await _call_tool(session, "list_available_accounts", {})
+            assert [account["account_name"] for account in accounts["result"]] == ["alice", "bob"]
+            mailboxes = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
+            assert "INBOX" in {mailbox["name"] for mailbox in mailboxes["result"]}
 
 
 @pytest.mark.asyncio

@@ -77,7 +77,7 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
         observed_at=NOW,
     )
     handler = MagicMock()
-    handler.get_emails_metadata = AsyncMock(return_value=response)
+    handler.incoming_client.get_emails_metadata = AsyncMock(return_value=(response.total, []))
     handler.incoming_client.get_mailbox_state = AsyncMock(return_value=snapshot.state)
     handler.incoming_client.get_mailbox_metadata_snapshot = AsyncMock(return_value=snapshot)
     provider = ClassicMetadataProvider(handler)
@@ -92,10 +92,16 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
         has_attachment=True,
     )
 
-    assert await provider.list_metadata(query) is response
+    account = MetadataAccountSnapshot(
+        account_name="work",
+        mode="managed",
+        allowed_senders=("trusted@example.test",),
+    )
+
+    assert await provider.list_metadata(query, account) == response
     assert await provider.mailbox_state("Archive") == snapshot.state
     assert await provider.mailbox_snapshot("Archive") is snapshot
-    handler.get_emails_metadata.assert_awaited_once_with(
+    handler.incoming_client.get_emails_metadata.assert_awaited_once_with(
         page=2,
         page_size=20,
         before=None,
@@ -111,6 +117,7 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
         body=None,
         text=None,
         has_attachment=True,
+        allowed_senders=["trusted@example.test"],
     )
     handler.incoming_client.get_mailbox_metadata_snapshot.assert_awaited_once_with(
         "Archive",
@@ -126,7 +133,9 @@ async def test_classic_provider_sanitizes_transport_exceptions(
     exception_type: type[Exception],
 ) -> None:
     handler = MagicMock()
-    handler.get_emails_metadata = AsyncMock(side_effect=exception_type("provider-controlled transport detail"))
+    handler.incoming_client.get_emails_metadata = AsyncMock(
+        side_effect=exception_type("provider-controlled transport detail")
+    )
     handler.incoming_client.get_mailbox_state = AsyncMock(
         side_effect=exception_type("provider-controlled transport detail")
     )
@@ -137,7 +146,10 @@ async def test_classic_provider_sanitizes_transport_exceptions(
 
     with pytest.raises(MetadataProviderError, match="provider_failure") as exc_info:
         if operation == "list":
-            await provider.list_metadata(ListEmailMetadataQuery(account_name="work"))
+            await provider.list_metadata(
+                ListEmailMetadataQuery(account_name="work"),
+                MetadataAccountSnapshot(account_name="work", mode="managed", allowed_senders=()),
+            )
         elif operation == "state":
             await provider.mailbox_state("INBOX")
         else:

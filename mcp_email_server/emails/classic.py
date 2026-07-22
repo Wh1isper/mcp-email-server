@@ -8,6 +8,7 @@ import re
 import ssl
 import time
 import unicodedata
+from contextlib import suppress
 from datetime import UTC, datetime
 from email.header import Header
 from email.message import Message
@@ -66,6 +67,7 @@ MAX_IMAP_UID = 2**32 - 1
 MAX_METADATA_UID_SEARCH_BYTES = MAX_METADATA_CANDIDATES * 11
 MAX_ATTACHMENT_BYTES = APPLICATION_LIMITS.attachment_bytes
 MAX_TOTAL_ATTACHMENT_BYTES = APPLICATION_LIMITS.total_attachment_bytes
+MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
 
 
 class MetadataPayloadTooLargeError(ValueError):
@@ -611,17 +613,35 @@ class EmailClient:
         return await self._prepare_imap_connection(imap, self.email_server)
 
     @staticmethod
+    async def _abort_imap_connection(imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4) -> None:
+        """Close a connection that failed before ownership reached a caller."""
+        protocol = imap.protocol
+        if protocol is not None and protocol.transport is not None:
+            with suppress(Exception):
+                protocol.transport.close()
+        client_task = imap._client_task
+        if isinstance(client_task, asyncio.Future) and not client_task.done():
+            client_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await client_task
+
+    @staticmethod
     async def _prepare_imap_connection(
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         server: EmailServer,
     ) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
         """Wait for greeting and optionally STARTTLS-upgrade an IMAP connection."""
-        await imap._client_task
-        await imap.wait_hello_from_server()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
 
-        if server.start_ssl:
-            ssl_context = _create_starttls_ssl_context(server.verify_ssl)
-            await _imap_starttls(imap, ssl_context, server.host)
+            if server.start_ssl:
+                ssl_context = _create_starttls_ssl_context(server.verify_ssl)
+                await _imap_starttls(imap, ssl_context, server.host)
+        except BaseException:
+            # Ownership has not reached the operation's normal logout guard yet.
+            await EmailClient._abort_imap_connection(imap)
+            raise
 
         return imap
 
@@ -1445,6 +1465,9 @@ class EmailClient:
             if not raw_email:
                 logger.error(f"Could not find email data in response for email ID: {email_id}")
                 return None
+            if len(raw_email) > MAX_RAW_EMAIL_BYTES:
+                logger.error(f"Email {email_id} exceeds the raw message size limit")
+                return None
 
             # Parse the email
             try:
@@ -1466,20 +1489,18 @@ class EmailClient:
             except Exception:
                 logger.info("IMAP logout failed")
 
-    async def download_attachment(
+    async def fetch_attachment(  # noqa: C901 - bounded MIME selection and provider cleanup
         self,
         email_id: str,
         attachment_name: str,
-        save_path: str,
         mailbox: str = "INBOX",
         allowed_senders: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Download a specific attachment from an email and save it to disk.
+        """Fetch a specific attachment without performing a filesystem write.
 
         Args:
             email_id: The UID of the email containing the attachment.
             attachment_name: The filename of the attachment to download.
-            save_path: The local path where the attachment will be saved.
             mailbox: The mailbox to search in (default: "INBOX").
             allowed_senders: Optional sender allowlist; when set, a non-allowed sender's
                 message is treated as not found and its body is never fetched.
@@ -1510,6 +1531,8 @@ class EmailClient:
                 msg = f"Could not find email data for email ID: {email_id}"
                 logger.error(msg)
                 raise ValueError(msg)
+            if len(raw_email) > MAX_RAW_EMAIL_BYTES:
+                raise ValueError("Email exceeds the raw message size limit")
 
             parser = BytesParser(policy=default)
             email_message = parser.parsebytes(raw_email)
@@ -1537,20 +1560,14 @@ class EmailClient:
                 msg = f"Attachment '{attachment_name}' not found in email {email_id}"
                 logger.error(msg)
                 raise ValueError(msg)
-
-            # Save to disk
-            save_file = Path(save_path)
-            save_file.parent.mkdir(parents=True, exist_ok=True)
-            save_file.write_bytes(attachment_data)
-
-            logger.info(f"Attachment '{attachment_name}' saved to {save_path}")
+            if len(attachment_data) > MAX_ATTACHMENT_BYTES:
+                raise ValueError(f"attachment exceeds {MAX_ATTACHMENT_BYTES} bytes")
 
             return {
                 "email_id": email_id,
                 "attachment_name": attachment_name,
                 "mime_type": mime_type or "application/octet-stream",
-                "size": len(attachment_data),
-                "saved_path": str(save_file.resolve()),
+                "content": attachment_data,
             }
 
         finally:
@@ -1558,6 +1575,30 @@ class EmailClient:
                 await imap.logout()
             except Exception:
                 logger.info("IMAP logout failed")
+
+    async def download_attachment(
+        self,
+        email_id: str,
+        attachment_name: str,
+        save_path: str,
+        mailbox: str = "INBOX",
+        allowed_senders: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper that writes a fetched attachment to the requested path."""
+        result = await self.fetch_attachment(email_id, attachment_name, mailbox, allowed_senders)
+        content = result["content"]
+        if not isinstance(content, bytes):
+            raise TypeError("Attachment content is invalid")
+        save_file = Path(save_path)
+        save_file.parent.mkdir(parents=True, exist_ok=True)
+        save_file.write_bytes(content)
+        return {
+            "email_id": result["email_id"],
+            "attachment_name": result["attachment_name"],
+            "mime_type": result["mime_type"],
+            "size": len(content),
+            "saved_path": str(save_file.resolve()),
+        }
 
     def _validate_attachment(self, file_path: str) -> Path:
         """Validate attachment file path."""

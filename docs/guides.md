@@ -43,10 +43,11 @@ Or configure one through environment variables without
 }
 ```
 
-If no configured account has SMTP, `send_email` is omitted from the MCP tool
-list. IMAP mutation tools remain available, so this is not a strict read-only
-mode. To limit mutations, also constrain which MCP tools the client may call or
-run the server with an account whose provider permissions are read-only.
+`send_email` remains in the static MCP tool list, but calling it for this
+account fails its SMTP capability check before provider access. IMAP mutation
+tools remain available, so this is not a strict read-only mode. To limit
+mutations, also constrain which MCP tools the client may call or run the server
+with an account whose provider permissions are read-only.
 
 ## Safe delete and move behavior
 
@@ -232,6 +233,35 @@ second = await get_emails_content(
 
 Keep the mailbox argument consistent with the mailbox used to obtain the
 `email_id`.
+
+## Import legacy accounts into a managed catalog
+
+Create the destination without selecting it, preview the stored source, and
+apply only after reviewing every action:
+
+```bash
+mcp-email-server config init \
+  --database ~/.config/mcp-email-server/catalog.sqlite3
+mcp-email-server config import-legacy
+mcp-email-server config import-legacy --apply --confirm IMPORT
+mcp-email-server account list
+mcp-email-server account test work incoming
+mcp-email-server config activate
+mcp-email-server config select managed
+```
+
+The source is the TOML file selected by `MCP_EMAIL_SERVER_CONFIG_PATH`, not the
+environment-composited runtime view. Environment-only accounts and overrides are
+ignored. Preview does not access the keyring, so it can still show actions while
+the legacy keyring is locked; apply then fails safely if a required stored
+credential cannot be read.
+
+A `conflict` means the destination already has a different account with that
+name or retains a soft-removal tombstone. Import never overwrites that row.
+Resolve it deliberately by choosing a fresh staging catalog or reconciling the
+account manually. An exact repeat is `unchanged`; an interrupted matching import
+can report `resume_credentials` and install only missing bindings. The source is
+left untouched in every case.
 
 ## Containers and CI
 

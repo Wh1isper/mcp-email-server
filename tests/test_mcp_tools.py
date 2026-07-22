@@ -20,11 +20,11 @@ from mcp_email_server.app import (
     save_to_mailbox,
     send_email,
 )
+from mcp_email_server.application.accounts import EffectiveConfiguration
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
-    MarkReadCommand,
     RecipientPolicyDeniedError,
     SendMutationOutcome,
     SentCopyMutationOutcome,
@@ -302,11 +302,9 @@ class TestMcpTools:
             failed_ids=[],
         )
 
-        # Mock the dispatch_handler function
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = batch_response
+        query_handler = AsyncMock(return_value=batch_response)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.get_email_content_query", query_handler):
             # Call the function
             result = await get_emails_content(
                 account_name="test_account",
@@ -322,8 +320,11 @@ class TestMcpTools:
             assert result.emails[0].email_id == "12345"
             assert result.emails[0].subject == "Test Subject"
 
-            # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "INBOX", False, 0, 20000)
+            query_handler.assert_awaited_once()
+            query = query_handler.await_args.args[0]
+            assert query.email_ids == ("12345",)
+            assert query.mailbox == "INBOX"
+            assert query.mark_as_read is False
 
     @pytest.mark.asyncio
     async def test_get_emails_content_batch(self):
@@ -357,11 +358,9 @@ class TestMcpTools:
             failed_ids=["12347"],
         )
 
-        # Mock the dispatch_handler function
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = batch_response
+        query_handler = AsyncMock(return_value=batch_response)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.get_email_content_query", query_handler):
             # Call the function
             result = await get_emails_content(
                 account_name="test_account",
@@ -378,10 +377,9 @@ class TestMcpTools:
             assert result.emails[0].email_id == "12345"
             assert result.emails[1].email_id == "12346"
 
-            # Verify dispatch_handler and get_emails_content were called correctly
-            mock_handler.get_emails_content.assert_called_once_with(
-                ["12345", "12346", "12347"], "INBOX", False, 0, 20000
-            )
+            query = query_handler.await_args.args[0]
+            assert query.email_ids == ("12345", "12346", "12347")
+            assert query.mailbox == "INBOX"
 
     @pytest.mark.asyncio
     async def test_get_emails_content_with_mailbox(self):
@@ -404,10 +402,9 @@ class TestMcpTools:
             failed_ids=[],
         )
 
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = batch_response
+        query_handler = AsyncMock(return_value=batch_response)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.get_email_content_query", query_handler):
             result = await get_emails_content(
                 account_name="test_account",
                 email_ids=["12345"],
@@ -415,64 +412,19 @@ class TestMcpTools:
             )
 
             assert result == batch_response
-            mock_handler.get_emails_content.assert_called_once_with(["12345"], "Sent", False, 0, 20000)
+            assert query_handler.await_args.args[0].mailbox == "Sent"
 
     @pytest.mark.asyncio
-    async def test_tool_visibility_hides_outbound_tools_for_read_only_accounts(self):
-        """Read-only deployments hide send_email but keep IMAP-only tools like save_to_mailbox."""
-        read_only_account = EmailSettings(
-            account_name="read_only",
-            full_name="Read Only",
-            email_address="read-only@example.com",
-            incoming=EmailServer(
-                user_name="reader",
-                password="secret",
-                host="imap.example.com",
-                port=993,
-                use_ssl=True,
-            ),
-        )
-        mock_settings = MagicMock()
-        mock_settings.get_accounts.return_value = [read_only_account]
-
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
-
-        assert "send_email" not in tool_names
-        assert "save_to_mailbox" in tool_names
-        assert "list_emails_metadata" in tool_names
-        assert "get_emails_content" in tool_names
-
-    @pytest.mark.asyncio
-    async def test_tool_visibility_shows_outbound_tools_for_send_capable_accounts(self):
-        """SMTP-configured deployments should expose outbound tools."""
-        send_capable_account = EmailSettings(
-            account_name="send_capable",
-            full_name="Send Capable",
-            email_address="sender@example.com",
-            incoming=EmailServer(
-                user_name="reader",
-                password="secret",
-                host="imap.example.com",
-                port=993,
-                use_ssl=True,
-            ),
-            outgoing=EmailServer(
-                user_name="sender",
-                password="secret",
-                host="smtp.example.com",
-                port=465,
-                use_ssl=True,
-            ),
-        )
-        mock_settings = MagicMock()
-        mock_settings.get_accounts.return_value = [send_capable_account]
-
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
+    async def test_tool_catalog_is_stable_for_all_account_capabilities(self):
+        """Clients always receive the complete static tool catalog."""
+        tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
 
         assert "send_email" in tool_names
         assert "save_to_mailbox" in tool_names
+        assert "list_emails_metadata" in tool_names
+        assert "get_emails_content" in tool_names
+        assert "list_allowed_recipients" in tool_names
+        assert "list_allowed_senders" in tool_names
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -548,25 +500,7 @@ class TestMcpTools:
         assert command_handler.await_args.args[0].mailbox == "Sent"
 
     @pytest.mark.asyncio
-    async def test_download_attachment_disabled(self):
-        """Test download_attachment MCP tool when feature is disabled."""
-        mock_settings = MagicMock()
-        mock_settings.enable_attachment_download = False
-
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            with pytest.raises(PermissionError) as exc_info:
-                await download_attachment(
-                    account_name="test_account",
-                    email_id="12345",
-                    attachment_name="document.pdf",
-                    save_path="/var/downloads/document.pdf",
-                )
-
-            assert "Attachment download is disabled" in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_download_attachment_enabled(self):
-        """Test download_attachment MCP tool when feature is enabled."""
+    async def test_download_attachment_maps_application_command(self):
         attachment_response = AttachmentDownloadResponse(
             email_id="12345",
             attachment_name="document.pdf",
@@ -574,31 +508,22 @@ class TestMcpTools:
             size=1024,
             saved_path="/var/downloads/document.pdf",
         )
+        command_handler = AsyncMock(return_value=attachment_response)
 
-        mock_settings = MagicMock()
-        mock_settings.enable_attachment_download = True
+        with patch("mcp_email_server.app.download_attachment_command", command_handler):
+            result = await download_attachment(
+                account_name="test_account",
+                email_id="12345",
+                attachment_name="document.pdf",
+                save_path="/var/downloads/document.pdf",
+            )
 
-        mock_handler = AsyncMock()
-        mock_handler.download_attachment.return_value = attachment_response
-
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-                result = await download_attachment(
-                    account_name="test_account",
-                    email_id="12345",
-                    attachment_name="document.pdf",
-                    save_path="/var/downloads/document.pdf",
-                )
-
-                assert result == attachment_response
-                assert result.email_id == "12345"
-                assert result.attachment_name == "document.pdf"
-                assert result.mime_type == "application/pdf"
-                assert result.size == 1024
-
-                mock_handler.download_attachment.assert_called_once_with(
-                    "12345", "document.pdf", "/var/downloads/document.pdf", "INBOX"
-                )
+        assert result == attachment_response
+        command = command_handler.await_args.args[0]
+        assert command.email_id == "12345"
+        assert command.attachment_name == "document.pdf"
+        assert command.save_path == "/var/downloads/document.pdf"
+        assert command.mailbox == "INBOX"
 
     @pytest.mark.asyncio
     async def test_send_email_with_reply_headers(self):
@@ -624,43 +549,8 @@ class TestMcpTools:
         assert "recipient@example.com" in result
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_includes_message_id(self):
-        """Test that get_emails_content returns message_id."""
-        from datetime import datetime
-
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content = AsyncMock(
-            return_value=EmailContentBatchResponse(
-                emails=[
-                    EmailBodyResponse(
-                        email_id="123",
-                        message_id="<test@example.com>",
-                        subject="Test",
-                        sender="sender@example.com",
-                        recipients=["recipient@example.com"],
-                        date=datetime.now(UTC),
-                        body="Test body",
-                        attachments=[],
-                    )
-                ],
-                requested_count=1,
-                retrieved_count=1,
-                failed_ids=[],
-            )
-        )
-
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            result = await get_emails_content(
-                account_name="test",
-                email_ids=["123"],
-            )
-
-            assert result.emails[0].message_id == "<test@example.com>"
-
-    @pytest.mark.asyncio
-    async def test_get_emails_content_mark_as_read_uses_mutation_service_after_retrieval(self):
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
+    async def test_get_emails_content_maps_application_query_and_preserves_message_id(self):
+        response = EmailContentBatchResponse(
             emails=[
                 EmailBodyResponse(
                     email_id="123",
@@ -677,118 +567,41 @@ class TestMcpTools:
             retrieved_count=1,
             failed_ids=[],
         )
-        mark_command = AsyncMock(return_value=BatchMutationOutcome((TargetMutationOutcome("123", "succeeded"),)))
+        query_handler = AsyncMock(return_value=response)
 
-        with (
-            patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler),
-            patch("mcp_email_server.app.mark_read_command", mark_command),
-        ):
-            await get_emails_content(
+        with patch("mcp_email_server.app.get_email_content_query", query_handler):
+            result = await get_emails_content(
                 account_name="test",
                 email_ids=["123"],
                 mark_as_read=True,
             )
 
-        mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False, 0, 20000)
-        mark_command.assert_awaited_once_with(MarkReadCommand("test", ("123",), "INBOX"))
+        assert result.emails[0].message_id == "<test@example.com>"
+        query = query_handler.await_args.args[0]
+        assert query.account_name == "test"
+        assert query.email_ids == ("123",)
+        assert query.mark_as_read is True
+        assert query.mailbox == "INBOX"
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_mark_as_read_deduplicates_and_chunks_mutations(self):
-        bodies = [
-            EmailBodyResponse(
-                email_id=str(index),
-                message_id=None,
-                subject="Test",
-                sender="sender@example.com",
-                recipients=["recipient@example.com"],
-                date=datetime.now(UTC),
-                body="body",
-                attachments=[],
-            )
-            for index in range(1, 102)
-        ]
-        bodies.append(bodies[0])
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
-            emails=bodies,
-            requested_count=len(bodies),
-            retrieved_count=len(bodies),
-            failed_ids=[],
+    async def test_get_emails_content_adapter_preserves_large_compatible_batch(self):
+        email_ids = [str(index) for index in range(1, 103)]
+        response = EmailContentBatchResponse(
+            emails=[], requested_count=len(email_ids), retrieved_count=0, failed_ids=email_ids
         )
+        query_handler = AsyncMock(return_value=response)
 
-        async def mark(command: MarkReadCommand) -> BatchMutationOutcome:
-            return BatchMutationOutcome(tuple(TargetMutationOutcome(uid, "succeeded") for uid in command.email_ids))
+        with patch("mcp_email_server.app.get_email_content_query", query_handler):
+            await get_emails_content("test", email_ids, mark_as_read=True)
 
-        mark_command = AsyncMock(side_effect=mark)
-        with (
-            patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler),
-            patch("mcp_email_server.app.mark_read_command", mark_command),
-        ):
-            await get_emails_content("test", [item.email_id for item in bodies], mark_as_read=True)
-
-        assert mark_command.await_count == 2
-        assert len(mark_command.await_args_list[0].args[0].email_ids) == 100
-        assert mark_command.await_args_list[1].args[0].email_ids == ("101",)
-
-    @pytest.mark.asyncio
-    async def test_get_emails_content_stops_mark_chunks_after_reconciliation_warning(self):
-        template = EmailBodyResponse(
-            email_id="1",
-            message_id=None,
-            subject="Test",
-            sender="sender@example.com",
-            recipients=[],
-            date=datetime.now(UTC),
-            body="body",
-            attachments=[],
-        )
-        bodies = [template.model_copy(update={"email_id": str(index)}) for index in range(1, 102)]
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
-            emails=bodies,
-            requested_count=len(bodies),
-            retrieved_count=len(bodies),
-            failed_ids=[],
-        )
-        mark_command = AsyncMock(
-            return_value=BatchMutationOutcome(
-                tuple(TargetMutationOutcome(str(index), "succeeded") for index in range(1, 101)),
-                reconciliation_needed=True,
-            )
-        )
-        with (
-            patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler),
-            patch("mcp_email_server.app.mark_read_command", mark_command),
-        ):
-            await get_emails_content("test", [item.email_id for item in bodies], mark_as_read=True)
-
-        assert mark_command.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_get_emails_content_mark_as_read_default_false(self):
-        """Test that mark_as_read defaults to False."""
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
-            emails=[], requested_count=1, retrieved_count=0, failed_ids=["123"]
-        )
-
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            await get_emails_content(
-                account_name="test",
-                email_ids=["123"],
-            )
-
-            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False, 0, 20000)
+        assert query_handler.await_args.args[0].email_ids == tuple(email_ids)
 
     @pytest.mark.asyncio
     async def test_get_emails_content_body_offset_and_max_body_length(self):
-        """body_offset and max_body_length are passed through to the handler for paging."""
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_content.return_value = EmailContentBatchResponse(
-            emails=[], requested_count=1, retrieved_count=0, failed_ids=["123"]
-        )
+        response = EmailContentBatchResponse(emails=[], requested_count=1, retrieved_count=0, failed_ids=["123"])
+        query_handler = AsyncMock(return_value=response)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.get_email_content_query", query_handler):
             await get_emails_content(
                 account_name="test",
                 email_ids=["123"],
@@ -796,7 +609,9 @@ class TestMcpTools:
                 max_body_length=2000,
             )
 
-            mock_handler.get_emails_content.assert_called_once_with(["123"], "INBOX", False, 4000, 2000)
+        query = query_handler.await_args.args[0]
+        assert query.body_offset == 4000
+        assert query.max_body_length == 2000
 
     @pytest.mark.asyncio
     async def test_move_emails(self):
@@ -844,66 +659,46 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_list_mailboxes(self):
-        """Test list_mailboxes MCP tool."""
-        mock_handler = AsyncMock()
-        mock_handler.list_mailboxes.return_value = [
+        mailboxes = [
             MailboxInfo(name="INBOX", delimiter="/", flags=["\\HasChildren"]),
             MailboxInfo(name="Sent", delimiter="/", flags=["\\Sent", "\\HasNoChildren"]),
             MailboxInfo(name="Drafts", delimiter="/", flags=["\\Drafts", "\\HasNoChildren"]),
             MailboxInfo(name="Trash", delimiter="/", flags=["\\Trash", "\\HasNoChildren"]),
             MailboxInfo(name="Archive", delimiter="/", flags=["\\HasNoChildren"]),
         ]
+        query_handler = AsyncMock(return_value=mailboxes)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.list_mailboxes_query", query_handler):
             result = await list_mailboxes(account_name="test_account")
 
-            assert len(result) == 5
-            assert result[0].name == "INBOX"
-            assert result[0].delimiter == "/"
-            assert "\\HasChildren" in result[0].flags
-            assert result[1].name == "Sent"
-            assert "\\Sent" in result[1].flags
-            mock_handler.list_mailboxes.assert_called_once_with("*", "")
+        assert result == mailboxes
+        query = query_handler.await_args.args[0]
+        assert query.account_name == "test_account"
+        assert query.pattern == "*"
+        assert query.reference == ""
 
     @pytest.mark.asyncio
     async def test_list_mailboxes_with_pattern(self):
-        """Test list_mailboxes MCP tool with custom pattern."""
-        mock_handler = AsyncMock()
-        mock_handler.list_mailboxes.return_value = [
+        mailboxes = [
             MailboxInfo(name="INBOX.Clients", delimiter=".", flags=["\\HasNoChildren"]),
             MailboxInfo(name="INBOX.Projects", delimiter=".", flags=["\\HasNoChildren"]),
         ]
+        query_handler = AsyncMock(return_value=mailboxes)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.list_mailboxes_query", query_handler):
             result = await list_mailboxes(account_name="test_account", pattern="INBOX.*")
 
-            assert len(result) == 2
-            assert result[0].delimiter == "."
-            mock_handler.list_mailboxes.assert_called_once_with("INBOX.*", "")
+        assert result == mailboxes
+        assert query_handler.await_args.args[0].pattern == "INBOX.*"
 
     @pytest.mark.asyncio
-    async def test_list_allowed_recipients_hidden_when_unconfigured(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_recipients = []
-        mock_settings.get_accounts.return_value = []
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
-        assert "list_allowed_recipients" not in tool_names
-
-    @pytest.mark.asyncio
-    async def test_list_allowed_recipients_visible_when_configured(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_recipients = ["alice@example.com"]
-        mock_settings.get_accounts.return_value = []
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
-        assert "list_allowed_recipients" in tool_names
-
-    @pytest.mark.asyncio
-    async def test_list_allowed_recipients_returns_list(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_recipients = ["alice@example.com", "bob@example.com"]
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+    async def test_list_allowed_recipients_returns_selected_authority_policy(self):
+        configuration = EffectiveConfiguration(
+            accounts=(),
+            allowed_recipients=("alice@example.com", "bob@example.com"),
+            allowed_senders=(),
+        )
+        with patch("mcp_email_server.app.effective_configuration", return_value=configuration):
             result = await list_allowed_recipients()
         assert result == ["alice@example.com", "bob@example.com"]
 
@@ -1036,28 +831,13 @@ class TestMcpTools:
         command_handler.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_list_allowed_senders_hidden_when_unconfigured(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_senders = []
-        mock_settings.get_accounts.return_value = []
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
-        assert "list_allowed_senders" not in tool_names
-
-    @pytest.mark.asyncio
-    async def test_list_allowed_senders_visible_when_configured(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_senders = ["*@example.com"]
-        mock_settings.get_accounts.return_value = []
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
-        assert "list_allowed_senders" in tool_names
-
-    @pytest.mark.asyncio
-    async def test_list_allowed_senders_returns_list(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_senders = ["*@example.com", "bob@example.com"]
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
+    async def test_list_allowed_senders_returns_selected_authority_policy(self):
+        configuration = EffectiveConfiguration(
+            accounts=(),
+            allowed_recipients=(),
+            allowed_senders=("*@example.com", "bob@example.com"),
+        )
+        with patch("mcp_email_server.app.effective_configuration", return_value=configuration):
             result = await list_allowed_senders()
         assert result == ["*@example.com", "bob@example.com"]
 

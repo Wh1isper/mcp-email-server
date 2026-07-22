@@ -29,12 +29,14 @@ Primary repository areas:
 
 ## Current Architecture Direction
 
-The proposed target under `spec/` is a local, single-user Email App: MCP uses
-stdio, CLI is the management plane, SQLite stores managed non-secret
-configuration and reusable mail metadata/index state, and a `SecretStore` owns
-credentials. Current TOML, environment, and keyring behavior remains a
-compatibility mode and explicit import source. HTTP, daemon, multi-user, and
-cloud-service design are out of scope for this proposal.
+The Local Email App architecture under `spec/` is implemented: MCP uses stdio,
+CLI is the management plane, SQLite stores managed non-secret configuration and
+reusable mail metadata/index state, and a `SecretStore` owns credentials. MCP and
+CLI enter workflow-specific application services composed in
+`mcp_email_server/runtime.py`; concrete mail, SQLite, keyring, legacy config, and
+filesystem behavior stays in adapters. TOML, environment, and legacy keyring
+behavior remains a compatibility mode and explicit import source. HTTP, daemon,
+multi-user, hard purge, and cloud-service design remain out of scope.
 
 ## Development Workflow
 

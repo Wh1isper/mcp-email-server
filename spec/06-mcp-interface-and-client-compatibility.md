@@ -1,6 +1,6 @@
 # 06. MCP Interface and Client Compatibility
 
-Status: Accepted
+Status: Implemented
 
 Previous: [`05-sqlite-persistence-and-data-model.md`](05-sqlite-persistence-and-data-model.md)
 Next: [`README.md`](README.md)
@@ -23,9 +23,10 @@ Account additions, disablement, capability changes, and mode changes do not
 replace tools mid-session. Tools validate account existence, enabled state,
 capability, and policy at call time. A mode change requires restart.
 
-Conditional legacy visibility may remain only where required for current
-compatibility, but migration must not make catalog contents depend on transient
-index freshness or secret-store availability.
+The implemented catalog is fully static: capability and allowlist discovery
+tools remain advertised and return data or bounded call-time errors. Catalog
+contents do not depend on transient index freshness, account rows, policy, or
+secret-store availability.
 
 ## Adapter Contract
 
@@ -146,12 +147,14 @@ and contain no secrets or message content. Startup either completes a valid
 selected-mode runtime or exits non-zero before serving requests. EOF,
 cancellation, and normal termination close runtime resources.
 
-## Implementation Progress
+## Implementation Evidence
 
-`list_emails_metadata` is migrated to a typed application query while retaining
-its name, arguments, response model, exact filtered total, and header-only
-attachment behavior. The adapter enforces one-based pages and a page size from 1
-to 100. Application and provider layers enforce the same bounds for direct and
+Every MCP account, policy, metadata, mailbox, body, attachment, compose, and
+mutation path maps to a typed application query or command while retaining its
+public name, arguments, and compatible response mapping. The former dispatcher
+and dynamic visibility subclass were removed. The static catalog always
+advertises capability/policy tools; calls revalidate current account state and
+policy. The adapter enforces one-based metadata pages and a page size from 1 to 100. Application and provider layers enforce the same bounds for direct and
 embedded callers, and provider candidate work is capped at 10,000 UIDs.
 
 Index selection and fallback are no longer MCP-handler decisions. The application
@@ -168,10 +171,14 @@ Partial batches expose input-ordered `succeeded`, `failed`, and `unknown`
 sections; SMTP recipients and Sent-copy status remain separate. Commands enforce
 one bounded canonical UID batch and bounded mailbox, recipient, content, and
 attachment inputs before provider access. Managed GreenMail coverage proves
-mutation wiring, projection invalidation, lifecycle disablement, real IMAP state
-changes, and recipient-policy rejection before SMTP. Provider adapter tests
-preserve mixed accepted/rejected SMTP recipients because the GreenMail test
-configuration accepts arbitrary local recipients.
+mutation wiring, projection invalidation, lifecycle disable/re-enable/removal,
+credential replacement, real IMAP state changes, explicit stored-only legacy
+import, and recipient-policy rejection before SMTP. Body reads accept at most
+500 canonical UIDs and split explicit read marking into safe mutation batches.
+Attachment download separates provider bytes from exact-path filesystem effects
+and rechecks current policy. Provider adapter tests preserve mixed
+accepted/rejected SMTP recipients because the GreenMail test configuration
+accepts arbitrary local recipients.
 
 ## Validation
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 from mcp_email_server import bootstrap as bootstrap_module
 from mcp_email_server import config as config_module
 from mcp_email_server import keyring_store
+from mcp_email_server.adapters.reads import LocalReadBackend
 from mcp_email_server.app import add_email_account
 from mcp_email_server.bootstrap import BOOTSTRAP_VERSION, ManagedModeWriteError, freeze_process_bootstrap
 from mcp_email_server.cli import app
@@ -21,8 +23,25 @@ from mcp_email_server.config import (
     delete_settings,
     get_settings,
 )
-from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.managed import ManagedCatalog
+
+
+def test_transport_adapters_do_not_import_legacy_provider_or_catalog_bypasses() -> None:
+    project_root = Path(__file__).parents[1]
+    forbidden = {
+        ("mcp_email_server.emails.classic", "ClassicEmailHandler"),
+        ("mcp_email_server.managed", "ManagedCatalog"),
+        ("mcp_email_server.emails.dispatcher", "dispatch_handler"),
+    }
+    discovered: set[tuple[str, str]] = set()
+    for relative_path in ("mcp_email_server/app.py", "mcp_email_server/cli.py"):
+        tree = ast.parse((project_root / relative_path).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and isinstance(node.module, str):
+                discovered.update((node.module, alias.name) for alias in node.names)
+
+    assert discovered.isdisjoint(forbidden)
+    assert not (project_root / "mcp_email_server/emails/dispatcher.py").exists()
 
 
 def _private_directory(path: Path) -> Path:
@@ -138,17 +157,18 @@ def test_running_legacy_process_preserves_external_managed_selection(monkeypatch
     assert durable.db_path == catalog.path
 
 
-def test_disable_is_revalidated_before_next_provider_dispatch(monkeypatch, tmp_path, fake_keyring):
+def test_disable_is_revalidated_before_next_read_provider_open(monkeypatch, tmp_path, fake_keyring):
     _config_path, catalog = _select_managed(monkeypatch, tmp_path, fake_keyring)
     monkeypatch.setattr(bootstrap_module, "_PROCESS_BOOTSTRAP", None)
     freeze_process_bootstrap(_config_path)
     get_settings(reload=True)
-    assert dispatch_handler("managed-alice").email_settings.account_name == "managed-alice"
+    backend = LocalReadBackend()
+    assert backend.resolve("managed-alice").account_name == "managed-alice"
 
-    catalog.disable_account("managed-alice")
+    catalog.disable_account("managed-alice", expected_revision=2)
 
     with pytest.raises(ValueError, match="not found"):
-        dispatch_handler("managed-alice")
+        backend.open("managed-alice", expected_mode="managed")
 
 
 def test_managed_missing_database_does_not_fall_back_to_legacy(monkeypatch, tmp_path):

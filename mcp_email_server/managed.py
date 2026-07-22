@@ -8,55 +8,39 @@ import stat
 import time
 import uuid
 from collections.abc import Iterator
-from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
-from typing import Literal, NoReturn
 
 from pydantic import SecretStr
 
+from mcp_email_server.application.management import (
+    AccountDetails,
+    AccountSummary,
+    BindingRole,
+    CredentialCleanupReport,
+    DoctorReport,
+    EndpointSummary,
+    Lifecycle,
+    ManagedPolicy,
+    ManagementError,
+)
 from mcp_email_server.config import EmailServer, EmailSettings, Settings
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 1
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
-BindingRole = Literal["incoming", "outgoing"]
-Lifecycle = Literal["STAGING", "ACTIVE"]
+MAX_CREDENTIAL_CLEANUP_ROWS = 100
+PENDING_CLEANUP_MINIMUM_AGE = timedelta(minutes=5)
 
 
-class ManagedCatalogError(RuntimeError):
+class ManagedCatalogError(ManagementError):
     """A managed catalog operation failed without exposing sensitive internals."""
 
 
 class ManagedCatalogSecurityError(ManagedCatalogError):
     """A managed catalog path does not meet local security requirements."""
-
-
-def _fail_schema_version() -> NoReturn:
-    raise ManagedCatalogError("Managed catalog schema version is unsupported")
-
-
-@dataclass(frozen=True)
-class AccountSummary:
-    name: str
-    email_address: str
-    enabled: bool
-    revision: int
-    has_outgoing: bool
-    incoming_binding: str
-    outgoing_binding: str | None
-
-
-@dataclass(frozen=True)
-class DoctorReport:
-    lifecycle: Lifecycle
-    schema_version: int
-    account_count: int
-    enabled_account_count: int
-    pending_bindings: int
-    cleanup_required_bindings: int
-    problems: tuple[str, ...]
 
 
 class ManagedKeyringSecretStore:
@@ -229,7 +213,7 @@ def _connect(
             _secure_sidecars(path)
 
 
-_MANAGED_SCHEMA = """
+_AUTHORITY_SCHEMA = """
 CREATE TABLE schema_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     version INTEGER NOT NULL
@@ -332,7 +316,7 @@ CREATE INDEX IF NOT EXISTS metadata_projection_uid_desc
     ON message_metadata_projection(mailbox_id, uidvalidity, uid DESC);
 """
 
-_SCHEMA = _MANAGED_SCHEMA + _OPERATIONAL_SCHEMA
+_SCHEMA = _AUTHORITY_SCHEMA + _OPERATIONAL_SCHEMA
 _OPERATIONAL_DATABASE_SCHEMA = (
     """
 CREATE TABLE schema_metadata (
@@ -418,14 +402,9 @@ class ManagedCatalog:
             row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
         except sqlite3.Error as exc:
             raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
-        if row is None:
+        if row is None or row["version"] != SCHEMA_VERSION:
             raise ManagedCatalogError("Managed catalog schema version is unsupported")
-        if row["version"] == 1:
-            _validate_managed_schema(connection, _MANAGED_SCHEMA)
-        elif row["version"] == SCHEMA_VERSION:
-            _validate_managed_schema(connection, _SCHEMA)
-        else:
-            raise ManagedCatalogError("Managed catalog schema version is unsupported")
+        _validate_managed_schema(connection, _SCHEMA)
 
     @contextlib.contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -440,31 +419,7 @@ class ManagedCatalog:
             row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
         except sqlite3.Error as exc:
             raise ManagedCatalogError("Managed catalog schema is missing or incompatible") from exc
-        if row is None:
-            raise ManagedCatalogError("Managed catalog schema version is unsupported")
-        if row["version"] == 1:
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                # A competing process may have completed migration while this
-                # connection waited for the write lock.
-                row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
-                if row is None:
-                    _fail_schema_version()
-                if row["version"] == 1:
-                    _validate_managed_schema(connection, _MANAGED_SCHEMA)
-                    _execute_schema(connection, _OPERATIONAL_SCHEMA)
-                    connection.execute(
-                        "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
-                        (SCHEMA_VERSION,),
-                    )
-                    _validate_managed_schema(connection, _SCHEMA)
-                elif row["version"] != SCHEMA_VERSION:
-                    _fail_schema_version()
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
-        elif row["version"] != SCHEMA_VERSION:
+        if row is None or row["version"] != SCHEMA_VERSION:
             raise ManagedCatalogError("Managed catalog schema version is unsupported")
         _validate_managed_schema(connection, _SCHEMA)
 
@@ -474,6 +429,65 @@ class ManagedCatalog:
             if row is None or row["lifecycle"] not in ("STAGING", "ACTIVE"):
                 raise ManagedCatalogError("Managed catalog lifecycle is invalid")
             return row["lifecycle"]
+
+    def policy(self) -> ManagedPolicy:
+        with self._connection() as connection:
+            row = connection.execute("SELECT * FROM catalog WHERE id = 'local'").fetchone()
+        if row is None:
+            raise ManagedCatalogError("Managed catalog row is missing")
+        try:
+            allowed_recipients = json.loads(row["allowed_recipients_json"])
+            allowed_senders = json.loads(row["allowed_senders_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ManagedCatalogError("Managed policy data is invalid") from exc
+        if not isinstance(allowed_recipients, list) or not all(isinstance(item, str) for item in allowed_recipients):
+            raise ManagedCatalogError("Managed recipient policy is invalid")
+        if not isinstance(allowed_senders, list) or not all(isinstance(item, str) for item in allowed_senders):
+            raise ManagedCatalogError("Managed sender policy is invalid")
+        return ManagedPolicy(
+            revision=row["revision"],
+            enable_attachment_download=bool(row["enable_attachment_download"]),
+            allowed_recipients=tuple(allowed_recipients),
+            allowed_senders=tuple(allowed_senders),
+            report_blocked_mutations=bool(row["report_blocked_mutations"]),
+        )
+
+    def update_policy(
+        self,
+        *,
+        expected_revision: int,
+        enable_attachment_download: bool,
+        allowed_recipients: tuple[str, ...],
+        allowed_senders: tuple[str, ...],
+        report_blocked_mutations: bool,
+    ) -> int:
+        if expected_revision < 1:
+            raise ManagedCatalogError("Expected catalog revision must be positive")
+        if any(not item.strip() for item in (*allowed_recipients, *allowed_senders)):
+            raise ManagedCatalogError("Managed policy entries must not be empty")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE catalog SET
+                       revision = revision + 1,
+                       enable_attachment_download = ?,
+                       allowed_recipients_json = ?,
+                       allowed_senders_json = ?,
+                       report_blocked_mutations = ?
+                   WHERE id = 'local' AND revision = ?""",
+                (
+                    int(enable_attachment_download),
+                    json.dumps(list(allowed_recipients)),
+                    json.dumps(list(allowed_senders)),
+                    int(report_blocked_mutations),
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise ManagedCatalogError("Managed catalog revision changed; reload and retry")
+            connection.commit()
+        return expected_revision + 1
 
     def add_account(
         self,
@@ -517,7 +531,7 @@ class ManagedCatalog:
         connection: sqlite3.Connection,
         account_id: str,
         role: BindingRole,
-        endpoint: EmailServer,
+        endpoint: EmailServer | EndpointSummary,
     ) -> None:
         connection.execute(
             """INSERT INTO endpoint(
@@ -629,19 +643,27 @@ class ManagedCatalog:
         self._retire_pending_bindings(account_id, role, active_binding_id=binding_id)
 
     def _retire_pending_bindings(self, account_id: str, role: BindingRole, *, active_binding_id: str) -> None:
-        """Clean candidates left by prior failed writes after a replacement succeeds."""
+        """Atomically claim prior candidates before external cleanup."""
         with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             pending = connection.execute(
                 """SELECT id, opaque_locator FROM secret_binding
                    WHERE account_id = ? AND role = ? AND status = 'PENDING' AND id != ?""",
                 (account_id, role, active_binding_id),
             ).fetchall()
+            for binding in pending:
+                connection.execute(
+                    "UPDATE secret_binding SET status = 'CLEANUP_REQUIRED' WHERE id = ? AND status = 'PENDING'",
+                    (binding["id"],),
+                )
+            connection.commit()
         for binding in pending:
-            cleaned = self.secret_store.delete(binding["opaque_locator"])
+            if not self.secret_store.delete(binding["opaque_locator"]):
+                continue
             with self._connection() as connection:
                 connection.execute(
-                    "UPDATE secret_binding SET status = ? WHERE id = ? AND status = 'PENDING'",
-                    ("SUPERSEDED" if cleaned else "CLEANUP_REQUIRED", binding["id"]),
+                    "UPDATE secret_binding SET status = 'SUPERSEDED' WHERE id = ? AND status = 'CLEANUP_REQUIRED'",
+                    (binding["id"],),
                 )
                 connection.commit()
 
@@ -669,18 +691,393 @@ class ManagedCatalog:
             for row in rows
         ]
 
-    def disable_account(self, name: str) -> None:
+    @staticmethod
+    def _endpoint_summary(row: sqlite3.Row) -> EndpointSummary:
+        return EndpointSummary(
+            host=row["host"],
+            port=row["port"],
+            use_ssl=bool(row["use_ssl"]),
+            start_ssl=bool(row["start_ssl"]),
+            verify_ssl=bool(row["verify_ssl"]),
+            user_name=row["user_name"],
+        )
+
+    def show_account(self, name: str) -> AccountDetails:
+        with self._connection() as connection:
+            account = connection.execute(
+                "SELECT * FROM managed_account WHERE name = ? AND removed_at IS NULL",
+                (name,),
+            ).fetchone()
+            if account is None:
+                raise ManagedCatalogError("Managed account was not found")
+            endpoints = {
+                row["role"]: self._endpoint_summary(row)
+                for row in connection.execute("SELECT * FROM endpoint WHERE account_id = ?", (account["id"],))
+            }
+            bindings: dict[str, str] = {}
+            for row in connection.execute(
+                """SELECT role, status FROM secret_binding
+                   WHERE account_id = ?
+                   ORDER BY CASE status WHEN 'ACTIVE' THEN 0 WHEN 'PENDING' THEN 1 ELSE 2 END,
+                            created_at DESC""",
+                (account["id"],),
+            ):
+                bindings.setdefault(row["role"], row["status"])
+        incoming = endpoints.get("incoming")
+        if incoming is None:
+            raise ManagedCatalogError("Managed account has no incoming endpoint")
+        return AccountDetails(
+            name=account["name"],
+            full_name=account["full_name"],
+            email_address=account["email_address"],
+            enabled=bool(account["enabled"]),
+            revision=account["revision"],
+            save_to_sent=bool(account["save_to_sent"]),
+            sent_folder_name=account["sent_folder_name"],
+            incoming=incoming,
+            outgoing=endpoints.get("outgoing"),
+            incoming_binding=bindings.get("incoming", "MISSING"),
+            outgoing_binding=bindings.get("outgoing"),
+        )
+
+    def has_removed_account(self, name: str) -> bool:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM managed_account WHERE name = ? AND removed_at IS NOT NULL",
+                (name,),
+            ).fetchone()
+        return row is not None
+
+    def update_account(
+        self,
+        name: str,
+        *,
+        expected_revision: int,
+        new_name: str | None = None,
+        full_name: str | None = None,
+        email_address: str | None = None,
+        incoming: EmailServer | EndpointSummary | None = None,
+        outgoing: EmailServer | EndpointSummary | None = None,
+        remove_outgoing: bool = False,
+        save_to_sent: bool | None = None,
+        sent_folder_name: str | None = None,
+        update_sent_folder: bool = False,
+    ) -> int:
+        if expected_revision < 1:
+            raise ManagedCatalogError("Expected account revision must be positive")
+        if new_name is not None and not new_name.strip():
+            raise ManagedCatalogError("Account name must not be empty")
+        if full_name is not None and not full_name.strip():
+            raise ManagedCatalogError("Full name must not be empty")
+        if email_address is not None and not email_address.strip():
+            raise ManagedCatalogError("Email address must not be empty")
+        if outgoing is not None and remove_outgoing:
+            raise ManagedCatalogError("Outgoing endpoint update and removal are mutually exclusive")
+        if not any((
+            new_name is not None,
+            full_name is not None,
+            email_address is not None,
+            incoming is not None,
+            outgoing is not None,
+            remove_outgoing,
+            save_to_sent is not None,
+            update_sent_folder,
+        )):
+            raise ManagedCatalogError("Account update did not specify any changes")
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._perform_account_update(
+                    connection,
+                    name=name,
+                    expected_revision=expected_revision,
+                    new_name=new_name,
+                    full_name=full_name,
+                    email_address=email_address,
+                    incoming=incoming,
+                    outgoing=outgoing,
+                    remove_outgoing=remove_outgoing,
+                    save_to_sent=save_to_sent,
+                    sent_folder_name=sent_folder_name,
+                    update_sent_folder=update_sent_folder,
+                )
+                connection.commit()
+            except sqlite3.IntegrityError as exc:
+                connection.rollback()
+                raise ManagedCatalogError("Account name already exists or endpoint settings are invalid") from exc
+            except Exception:
+                connection.rollback()
+                raise
+        return expected_revision + 1
+
+    def _perform_account_update(  # noqa: C901 - one bounded optimistic transaction
+        self,
+        connection: sqlite3.Connection,
+        *,
+        name: str,
+        expected_revision: int,
+        new_name: str | None,
+        full_name: str | None,
+        email_address: str | None,
+        incoming: EmailServer | EndpointSummary | None,
+        outgoing: EmailServer | EndpointSummary | None,
+        remove_outgoing: bool,
+        save_to_sent: bool | None,
+        sent_folder_name: str | None,
+        update_sent_folder: bool,
+    ) -> None:
+        account = connection.execute(
+            "SELECT id, enabled, revision FROM managed_account WHERE name = ? AND removed_at IS NULL",
+            (name,),
+        ).fetchone()
+        if account is None:
+            raise ManagedCatalogError("Managed account was not found")
+        if account["revision"] != expected_revision:
+            raise ManagedCatalogError("Managed account revision changed; reload and retry")
+        if remove_outgoing:
+            binding = connection.execute(
+                """SELECT 1 FROM secret_binding
+                   WHERE account_id = ? AND role = 'outgoing' AND status != 'SUPERSEDED'""",
+                (account["id"],),
+            ).fetchone()
+            if binding is not None:
+                raise ManagedCatalogError("Remove the outgoing credential before removing its endpoint")
+            connection.execute(
+                "DELETE FROM endpoint WHERE account_id = ? AND role = 'outgoing'",
+                (account["id"],),
+            )
+        if incoming is not None:
+            connection.execute("DELETE FROM endpoint WHERE account_id = ? AND role = 'incoming'", (account["id"],))
+            self._insert_endpoint(connection, account["id"], "incoming", incoming)
+        if outgoing is not None:
+            connection.execute("DELETE FROM endpoint WHERE account_id = ? AND role = 'outgoing'", (account["id"],))
+            self._insert_endpoint(connection, account["id"], "outgoing", outgoing)
+
+        assignments = ["revision = revision + 1"]
+        values: list[object] = []
+        for column, value in (
+            ("name", new_name),
+            ("full_name", full_name),
+            ("email_address", email_address),
+        ):
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                values.append(value)
+        if save_to_sent is not None:
+            assignments.append("save_to_sent = ?")
+            values.append(int(save_to_sent))
+        if update_sent_folder:
+            assignments.append("sent_folder_name = ?")
+            values.append(sent_folder_name)
+        values.extend((account["id"], expected_revision))
+        cursor = connection.execute(
+            f"UPDATE managed_account SET {', '.join(assignments)} WHERE id = ? AND revision = ?",  # noqa: S608
+            values,
+        )
+        if cursor.rowcount != 1:
+            raise ManagedCatalogError("Managed account revision changed; reload and retry")
+        if account["enabled"] and self._account_problems(connection, account["id"]):
+            raise ManagedCatalogError("Enabled managed account update would leave incomplete endpoints")
+        if incoming is not None:
+            connection.execute(
+                """DELETE FROM mailbox_projection WHERE operational_account_id IN (
+                       SELECT id FROM operational_account WHERE source_reference = ?
+                   )""",
+                (f"managed:{account['id']}",),
+            )
+
+    def disable_account(self, name: str, *, expected_revision: int) -> int:
+        if expected_revision < 1:
+            raise ManagedCatalogError("Expected account revision must be positive")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE managed_account SET enabled = 0, revision = revision + 1
-                   WHERE name = ? AND removed_at IS NULL AND enabled = 1""",
-                (name,),
+                   WHERE name = ? AND removed_at IS NULL AND enabled = 1 AND revision = ?""",
+                (name, expected_revision),
             )
             if cursor.rowcount != 1:
                 connection.rollback()
-                raise ManagedCatalogError("Managed account was not found or is already disabled")
+                raise ManagedCatalogError("Managed account was not found, already disabled, or revision changed")
             connection.commit()
+        return expected_revision + 1
+
+    def _account_problems(self, connection: sqlite3.Connection, account_id: str) -> list[BindingRole]:
+        roles = {
+            row["role"] for row in connection.execute("SELECT role FROM endpoint WHERE account_id = ?", (account_id,))
+        }
+        bindings = {
+            row["role"]
+            for row in connection.execute(
+                "SELECT role FROM secret_binding WHERE account_id = ? AND status = 'ACTIVE'",
+                (account_id,),
+            )
+        }
+        problems: list[BindingRole] = []
+        if "incoming" not in roles or "incoming" not in bindings:
+            problems.append("incoming")
+        if ("outgoing" in roles) != ("outgoing" in bindings):
+            problems.append("outgoing")
+        return problems
+
+    def enable_account(self, name: str, *, expected_revision: int) -> int:
+        if expected_revision < 1:
+            raise ManagedCatalogError("Expected account revision must be positive")
+        with self._connection() as connection:
+            account = connection.execute(
+                """SELECT id, enabled, revision FROM managed_account
+                   WHERE name = ? AND removed_at IS NULL""",
+                (name,),
+            ).fetchone()
+            if account is None or account["enabled"]:
+                raise ManagedCatalogError("Managed account was not found or is already enabled")
+            if account["revision"] != expected_revision:
+                raise ManagedCatalogError("Managed account revision changed; reload and retry")
+            if self._account_problems(connection, account["id"]):
+                raise ManagedCatalogError("Managed account is incomplete")
+            bindings = connection.execute(
+                """SELECT role, opaque_locator FROM secret_binding
+                   WHERE account_id = ? AND status = 'ACTIVE' ORDER BY role""",
+                (account["id"],),
+            ).fetchall()
+
+        # Secret backend access must not hold a SQLite write transaction.
+        for binding in bindings:
+            self.secret_store.get(binding["opaque_locator"])
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """SELECT enabled, revision FROM managed_account
+                   WHERE id = ? AND removed_at IS NULL""",
+                (account["id"],),
+            ).fetchone()
+            if current is None or current["enabled"] or current["revision"] != expected_revision:
+                connection.rollback()
+                raise ManagedCatalogError("Managed account changed while credentials were validated; retry")
+            if self._account_problems(connection, account["id"]):
+                connection.rollback()
+                raise ManagedCatalogError("Managed account changed while credentials were validated; retry")
+            cursor = connection.execute(
+                """UPDATE managed_account SET enabled = 1, revision = revision + 1
+                   WHERE id = ? AND enabled = 0 AND revision = ?""",
+                (account["id"], expected_revision),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise ManagedCatalogError("Managed account changed while credentials were validated; retry")
+            connection.commit()
+        return expected_revision + 1
+
+    def soft_remove_account(self, name: str, *, expected_revision: int) -> int:
+        if expected_revision < 1:
+            raise ManagedCatalogError("Expected account revision must be positive")
+        removed_at = datetime.now(UTC).isoformat(timespec="microseconds")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE managed_account
+                   SET enabled = 0, removed_at = ?, revision = revision + 1
+                   WHERE name = ? AND removed_at IS NULL AND revision = ?""",
+                (removed_at, name, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise ManagedCatalogError("Managed account was not found or revision changed")
+            connection.commit()
+        return expected_revision + 1
+
+    def remove_secret(self, name: str, role: BindingRole, *, expected_revision: int) -> bool:
+        if expected_revision < 1:
+            raise ManagedCatalogError("Expected account revision must be positive")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            account = connection.execute(
+                """SELECT id, enabled, revision FROM managed_account
+                   WHERE name = ? AND removed_at IS NULL""",
+                (name,),
+            ).fetchone()
+            if account is None:
+                connection.rollback()
+                raise ManagedCatalogError("Managed account was not found")
+            if account["revision"] != expected_revision:
+                connection.rollback()
+                raise ManagedCatalogError("Managed account revision changed; reload and retry")
+            if account["enabled"]:
+                connection.rollback()
+                raise ManagedCatalogError("Disable the managed account before removing an active credential")
+            binding = connection.execute(
+                """SELECT id, opaque_locator FROM secret_binding
+                   WHERE account_id = ? AND role = ? AND status = 'ACTIVE'""",
+                (account["id"], role),
+            ).fetchone()
+            if binding is None:
+                connection.rollback()
+                raise ManagedCatalogError("Managed account has no active credential for that role")
+            connection.execute(
+                "UPDATE secret_binding SET status = 'CLEANUP_REQUIRED' WHERE id = ?",
+                (binding["id"],),
+            )
+            connection.execute(
+                "UPDATE managed_account SET revision = revision + 1 WHERE id = ? AND revision = ?",
+                (account["id"], expected_revision),
+            )
+            connection.commit()
+
+        cleaned = self.secret_store.delete(binding["opaque_locator"])
+        if cleaned:
+            with self._connection() as connection:
+                connection.execute(
+                    "UPDATE secret_binding SET status = 'SUPERSEDED' WHERE id = ? AND status = 'CLEANUP_REQUIRED'",
+                    (binding["id"],),
+                )
+                connection.commit()
+        return cleaned
+
+    def cleanup_credentials(self, *, limit: int = MAX_CREDENTIAL_CLEANUP_ROWS) -> CredentialCleanupReport:
+        if not 1 <= limit <= MAX_CREDENTIAL_CLEANUP_ROWS:
+            raise ManagedCatalogError(f"Credential cleanup limit must be between 1 and {MAX_CREDENTIAL_CLEANUP_ROWS}")
+        pending_before = (datetime.now(UTC) - PENDING_CLEANUP_MINIMUM_AGE).strftime("%Y-%m-%d %H:%M:%S")
+        with self._connection() as connection:
+            candidates = connection.execute(
+                """SELECT id, opaque_locator FROM secret_binding
+                   WHERE status = 'CLEANUP_REQUIRED'
+                      OR (status = 'PENDING' AND created_at <= ?)
+                   ORDER BY created_at, id LIMIT ?""",
+                (pending_before, limit),
+            ).fetchall()
+        cleaned = 0
+        for candidate in candidates:
+            # Claim stale PENDING work before external deletion. A concurrent
+            # set_secret finalizer requires PENDING and therefore cannot activate
+            # a candidate after cleanup has detached it.
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                claimed = connection.execute(
+                    """UPDATE secret_binding SET status = 'CLEANUP_REQUIRED'
+                       WHERE id = ? AND (
+                           status = 'CLEANUP_REQUIRED'
+                           OR (status = 'PENDING' AND created_at <= ?)
+                       )""",
+                    (candidate["id"], pending_before),
+                )
+                connection.commit()
+            if claimed.rowcount != 1 or not self.secret_store.delete(candidate["opaque_locator"]):
+                continue
+            with self._connection() as connection:
+                cursor = connection.execute(
+                    """UPDATE secret_binding SET status = 'SUPERSEDED'
+                       WHERE id = ? AND status = 'CLEANUP_REQUIRED'""",
+                    (candidate["id"],),
+                )
+                connection.commit()
+            cleaned += cursor.rowcount
+        return CredentialCleanupReport(
+            examined=len(candidates),
+            cleaned=cleaned,
+            remaining=len(candidates) - cleaned,
+        )
 
     def _problems(self, connection: sqlite3.Connection, *, require_enabled: bool = True) -> list[str]:
         problems: list[str] = []

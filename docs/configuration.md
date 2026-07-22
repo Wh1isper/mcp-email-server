@@ -68,7 +68,9 @@ mcp-email-server config doctor
 mcp-email-server account list
 mcp-email-server account show work
 mcp-email-server account set-secret work incoming
-mcp-email-server account disable work
+mcp-email-server account disable work --expected-revision 3
+mcp-email-server account enable work --expected-revision 4
+mcp-email-server config cleanup-credentials
 mcp-email-server config select legacy
 ```
 
@@ -78,6 +80,61 @@ secret or locator. Disabled accounts are revalidated and excluded before every
 provider access, including calls in an already-running stdio session. Selecting
 managed mode never deletes preserved legacy TOML rows, and selecting legacy mode
 never deletes the managed catalog.
+
+### Managed account lifecycle
+
+`account show` prints the current account revision. Pass that value with
+`--expected-revision` to `account update`, `account disable`, `account enable`,
+`account remove-secret`, and `account remove`. A stale value is rejected without
+applying the write; inspect the account again and decide whether to retry against
+the new state.
+
+`account update` can rename an account, change identity fields and endpoint
+settings, add or remove SMTP, and change Sent-copy behavior. A new SMTP endpoint
+requires all host, port, username, and TLS fields. An enabled account cannot be
+left with an incomplete endpoint/binding pair. Remove its SMTP credential before
+using `--remove-outgoing`.
+
+Disable an account before removing one of its credentials. Credential removal
+first detaches the active binding in SQLite, then attempts keyring deletion. If
+the external deletion cannot be confirmed, `config doctor` reports
+`CLEANUP_REQUIRED`; run the bounded `config cleanup-credentials --limit 100`
+command after keyring access is restored. Re-enabling validates all required
+active credentials outside a SQLite transaction and rejects concurrent revision
+changes.
+
+`account remove NAME --expected-revision REV --confirm NAME` is an intentional
+soft removal. The exact name confirmation is required. The row no longer appears
+as an available account, but its stable operational identity, endpoints,
+bindings, and referenced keyring candidates remain; hard purge is not part of
+this release. To destroy credentials now, disable the account and remove each
+secret before soft removal.
+
+### Import stored legacy configuration
+
+Import is explicit and preview-first. Initialize a staging catalog, then run:
+
+```bash
+mcp-email-server config import-legacy
+mcp-email-server config import-legacy --apply --confirm IMPORT
+```
+
+The preview reads only stored TOML accounts and policy. It ignores environment
+accounts and overlays, does not resolve keyring values, does not write the
+catalog, and reports provider-style accounts as unsupported. Apply is accepted
+only for a `STAGING` catalog. It resolves the required stored plaintext or
+keyring credentials through the normal managed candidate workflow, leaves the
+source TOML and legacy keyring entries unchanged, and never activates or selects
+the destination automatically.
+
+A repeated import is deterministic: exact matching accounts and policy are
+reported unchanged, missing candidate bindings can be resumed, and a changed,
+renamed, or previously soft-removed destination is reported as a conflict before
+any secret resolution or destination write. If the stored source account changes
+between planning and credential resolution, apply fails and requires a new
+preview rather than mixing an old endpoint with a new secret. Resolve conflicts
+manually, preview again, test imported endpoints, then activate and select the
+catalog.
 
 ## Operational metadata database
 
@@ -94,12 +151,12 @@ configuration tables. The projection may contain mailbox names and message
 headers needed by the public metadata result. Removing the operational database
 only discards rebuildable observations; it does not remove accounts or mail.
 
-An exact managed schema version 1 baseline is migrated transactionally to
-version 2 on first open by adding only the operational projection tables.
-Coincidental version markers or partially compatible schemas are never claimed.
-Unsupported, corrupt, or insecure managed storage fails closed. In legacy mode, an unavailable or unsafe
-operational database produces a bounded warning and the metadata query uses its
-bounded IMAP fallback instead.
+Managed storage uses one exact schema version 1 baseline containing both account
+authority and operational projection tables. Coincidental version markers or
+partially compatible schemas are never claimed. Unsupported, corrupt, or insecure
+managed storage fails closed. In legacy mode, an unavailable or unsafe operational
+database produces a bounded warning and the metadata query uses its bounded IMAP
+fallback instead.
 
 ## Legacy configuration precedence
 
@@ -239,8 +296,9 @@ or an otherwise isolated network.
 
 ## IMAP-only accounts
 
-SMTP configuration is optional. When every configured account omits SMTP,
-`send_email` is hidden from the MCP tool list.
+SMTP configuration is optional. The MCP tool catalog is static, so `send_email`
+is still advertised when every account omits SMTP; a call for an IMAP-only
+account fails its capability check before SMTP access.
 
 IMAP-only does not mean read-only. These tools can still change mailbox state:
 

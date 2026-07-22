@@ -98,8 +98,10 @@ After restarting the client:
    `list_available_accounts`.
 2. Ask it to list recent messages for the configured account. This calls
    `list_emails_metadata`.
-3. If SMTP is configured, ask which email tools are available and confirm that
-   `send_email` is present.
+3. If SMTP is configured through the managed workflow, make a non-destructive
+   connectivity check with `mcp-email-server account test ACCOUNT outgoing`
+   before asking the client to send. `send_email` is always present in the
+   static MCP tool catalog.
 
 If the account is listed but a mail operation fails, check the IMAP or SMTP
 host, port, TLS mode, username, and password. See

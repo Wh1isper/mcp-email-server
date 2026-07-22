@@ -1,6 +1,6 @@
 # 01. System Context
 
-Status: Accepted
+Status: Implemented
 
 Previous: [`README.md`](README.md)
 Next: [`02-application-boundaries.md`](02-application-boundaries.md)

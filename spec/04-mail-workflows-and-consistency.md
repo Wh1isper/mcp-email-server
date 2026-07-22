@@ -1,6 +1,6 @@
 # 04. Mail Workflows and Consistency
 
-Status: Accepted
+Status: Implemented
 
 Previous: [`03-configuration-and-credentials.md`](03-configuration-and-credentials.md)
 Next: [`05-sqlite-persistence-and-data-model.md`](05-sqlite-persistence-and-data-model.md)
@@ -71,17 +71,23 @@ Mailbox discovery is bounded and records remote name, delimiter, attributes,
 UIDVALIDITY when available, and observation time. Provider mailbox names are
 quoted and validated by the mail adapter.
 
-Body retrieval remains provider-direct and bounded and always uses IMAP PEEK.
-When `mark_as_read=true`, successfully retrieved UIDs then enter the application
-mark-read workflow as a separate effect with fresh authority resolution and
-projection invalidation. A mark failure never discards retrieved bodies. Batch
-results preserve requested count, retrieved count, and failed IDs.
+Body retrieval is application-owned, provider-direct, bounded to 500 canonical
+UIDs, and always uses IMAP PEEK. When `mark_as_read=true`, successfully retrieved
+UIDs enter the application mark-read workflow as separate batches of at most
+100 with fresh authority resolution and projection invalidation. A mark failure
+never discards retrieved bodies; unknown or reconciliation-needed status stops
+later batches. Results preserve requested count, retrieved count, and failed
+IDs.
 
-Attachment discovery and download remain provider-direct. Filenames are
-untrusted, output is confined to an approved private workspace, writes are
-bounded and collision-safe, and the result exposes only the compatible path
-information required by the current public API. No persistent attachment or raw
-MIME store is required.
+Attachment retrieval is application-owned. Current account and feature policy
+are resolved before provider access and revalidated when opening the provider.
+The provider returns bounded bytes only and never receives a destination path.
+Authority and download policy are resolved again after fetch immediately before
+the local effect, so revocation during provider I/O prevents the write. The
+artifact adapter writes only the caller's exact requested path, rejects
+symlink and non-regular parent/final targets, and uses owner-only output on
+POSIX. Raw messages are limited to 50 MiB and decoded attachments to 25 MiB. No
+persistent attachment or raw MIME store is required.
 
 ## Mutation Rules
 
@@ -147,17 +153,18 @@ supplies definitive evidence. The application never retries an ambiguous
 mutation automatically. Provider errors are sanitized and bounded; server text,
 message content, credentials, and local internals are not echoed blindly.
 
-## Implementation Progress
+## Implementation Evidence
 
-Effective account listing now reloads selected-mode authority through a small
-application service. The metadata listing workflow is implemented through one
-injected application query service assembled by the process-scoped composition
-root. The MCP adapter creates a typed query and no longer dispatches this tool
-directly to `ClassicEmailHandler`. The first indexed subset is intentionally conservative:
-unfiltered one-mailbox pages can use complete SQLite coverage after a provider
-state probe; provider-specific text/date/address matching, mutable flag filters,
-body/text search, and attachment heuristics remain on the application-owned
-bounded IMAP fallback.
+Effective account and policy queries, metadata listing, mailbox discovery, body
+retrieval, and attachment retrieval are implemented through injected application
+services assembled by the process-scoped composition root. MCP handlers create
+typed queries/commands and no longer dispatch directly to `ClassicEmailHandler`.
+Each provider adapter consumes a freshly resolved immutable account/policy
+snapshot; metadata fallback does not re-read global policy. The indexed subset
+is intentionally conservative: unfiltered one-mailbox pages can use complete
+SQLite coverage after a provider state probe; provider-specific text/date/address
+matching, mutable flag filters, body/text search, and attachment heuristics use
+the application-owned bounded IMAP fallback.
 
 A full mailbox of at most 1,000 messages can establish complete coverage only
 when matching provider state observations bracket the refresh. Larger mailboxes
@@ -171,7 +178,9 @@ each wire FETCH is sized below that ceiling. Missing, duplicate, or mismatched
 sender or INTERNALDATE observations fail instead of producing an inexact total
 or UID-substituted ordering. Provider transport failures map to fixed bounded
 application errors. Header refresh and body retrieval use PEEK forms and therefore do not
-mark messages read.
+mark messages read. IMAP connection setup closes its transport and client task
+when greeting, STARTTLS, or cancellation fails before operation ownership is
+established.
 
 Mark-read, save/APPEND, move, archive, delete, SMTP delivery, and Sent-copy now
 run through injected workflow services. The classic provider adapter returns

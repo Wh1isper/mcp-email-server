@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from mcp_email_server import config as config_module
+from mcp_email_server.application.accounts import EffectiveConfiguration
 from mcp_email_server.application.metadata import (
     ListEmailMetadataQuery,
     MailboxMetadataSnapshot,
@@ -27,7 +28,7 @@ from mcp_email_server.emails.classic import (
     ClassicEmailHandler,
     MetadataPayloadTooLargeError,
 )
-from mcp_email_server.emails.models import EmailMetadataPageResponse
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse
 from mcp_email_server.metadata_index import MetadataIndex, MetadataIndexError
 
 _T = TypeVar("_T")
@@ -57,9 +58,13 @@ class ClassicMetadataProvider:
     def __init__(self, handler: ClassicEmailHandler) -> None:
         self._handler = handler
 
-    async def list_metadata(self, query: ListEmailMetadataQuery) -> EmailMetadataPageResponse:
-        return await _bounded_provider_call(
-            self._handler.get_emails_metadata(
+    async def list_metadata(
+        self,
+        query: ListEmailMetadataQuery,
+        account: MetadataAccountSnapshot,
+    ) -> EmailMetadataPageResponse:
+        total, email_dicts = await _bounded_provider_call(
+            self._handler.incoming_client.get_emails_metadata(
                 page=query.page,
                 page_size=query.page_size,
                 before=query.before,
@@ -75,7 +80,17 @@ class ClassicMetadataProvider:
                 body=query.body,
                 text=query.text,
                 has_attachment=query.has_attachment,
+                allowed_senders=list(account.allowed_senders),
             )
+        )
+        return EmailMetadataPageResponse(
+            page=query.page,
+            page_size=query.page_size,
+            before=query.before,
+            since=query.since,
+            subject=query.subject,
+            emails=[EmailMetadata.from_email(email) for email in email_dicts],
+            total=total,
         )
 
     async def mailbox_state(self, mailbox: str) -> MailboxState:
@@ -193,9 +208,16 @@ class LocalMetadataBackend:
         return SQLiteMetadataProjection(index, operational_account_id)
 
     def list_effective_accounts(self) -> list[AccountAttributes]:
+        return list(self.effective_configuration().accounts)
+
+    def effective_configuration(self) -> EffectiveConfiguration:
         mode = process_bootstrap(config_module.CONFIG_PATH).mode
         settings = get_settings(reload=mode == "managed")
-        return [account.masked() for account in settings.get_accounts()]
+        return EffectiveConfiguration(
+            accounts=tuple(account.masked() for account in settings.get_accounts()),
+            allowed_recipients=tuple(settings.allowed_recipients),
+            allowed_senders=tuple(settings.allowed_senders),
+        )
 
 
 class LocalMetadataProjectionFactory:

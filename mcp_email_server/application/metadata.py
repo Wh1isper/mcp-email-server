@@ -114,7 +114,11 @@ class MetadataAccountAuthority(Protocol):
 
 
 class MetadataProvider(Protocol):
-    async def list_metadata(self, query: ListEmailMetadataQuery) -> EmailMetadataPageResponse: ...
+    async def list_metadata(
+        self,
+        query: ListEmailMetadataQuery,
+        account: MetadataAccountSnapshot,
+    ) -> EmailMetadataPageResponse: ...
 
     async def mailbox_state(self, mailbox: str) -> MailboxState: ...
 
@@ -220,7 +224,7 @@ class MetadataQueryService:
         mode: RuntimeMode,
     ) -> EmailMetadataPageResponse:
         access = self._open_provider(query, mode)
-        return await access.provider.list_metadata(query)
+        return await access.provider.list_metadata(query, access.account)
 
     async def execute(  # noqa: C901 - explicit bounded workflow branches
         self,

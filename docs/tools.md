@@ -120,10 +120,17 @@ If a body extends beyond the requested window, the returned body ends with
 `max_body_length`.
 
 The batch response reports requested and retrieved counts and includes
-`failed_ids` for messages that could not be fetched. Body retrieval always uses
-IMAP PEEK. When requested, successfully retrieved IDs are marked through the
-same application mutation workflow as `mark_emails_as_read`; a mark failure is
-logged but does not discard successfully retrieved content.
+`failed_ids` for messages that could not be fetched. A request accepts 1 to 500
+canonical positive decimal IMAP UIDs; zero, signs, ranges, sets, and values above
+the IMAP UID limit are rejected before provider access. Raw messages above 50
+MiB are rejected before MIME parsing.
+
+Body retrieval always uses IMAP PEEK. When requested, successfully retrieved IDs
+are deduplicated and marked through the same application mutation workflow as
+`mark_emails_as_read` in batches of at most 100. A known mark failure is logged
+but does not discard successfully retrieved content. An unknown or
+reconciliation-needed mark outcome stops later mark batches so the application
+does not continue after ambiguous state.
 
 ## Composing messages
 
@@ -136,8 +143,9 @@ Sends a message through the selected account's SMTP server. It supports:
 - Attachments from file paths available to the server process. Relative paths use the process working directory; absolute paths are recommended.
 - `Reply-To`, `In-Reply-To`, and `References` headers.
 
-This tool is visible only when at least one configured account has SMTP
-settings. The selected `account_name` must itself be send-capable.
+The tool is always present in the stable MCP catalog. The selected
+`account_name` must itself be enabled and send-capable; an IMAP-only account is
+rejected before SMTP access.
 
 If a recipient allowlist is configured, every To, CC, and BCC address must be
 allowed. SMTP delivery reports accepted, rejected, and unknown recipients
@@ -172,7 +180,10 @@ Lists IMAP mailboxes with their names, hierarchy delimiters, and flags. Call it
 before moving or saving messages when provider-specific folder names are not
 known.
 
-`pattern` defaults to `*`, and `reference` defaults to an empty string.
+`pattern` defaults to `*`, and `reference` defaults to an empty string. The
+account name and both IMAP LIST values are validated before provider access;
+`pattern` must be non-empty and pattern/reference values are each limited to
+1,024 UTF-8 bytes.
 
 ### `mark_emails_as_read`
 
@@ -239,21 +250,31 @@ raises a permission error. Enable it explicitly with:
 enable_attachment_download = true
 ```
 
+The application checks the current account and feature policy before fetching,
+checks them again when opening provider access, and resolves authority once more
+after fetch immediately before the filesystem write. Revocation during a slow
+fetch therefore discards the payload without creating a file. It rejects raw
+messages above 50 MiB and decoded attachment content above 25 MiB. The mail adapter
+returns bytes only; it cannot choose or write a filesystem path. The local
+artifact adapter writes only the exact requested destination, creates files with
+owner-only mode on POSIX, and rejects symlinked/non-directory parents plus
+symlinked or non-regular final targets. Existing regular files at the exact path
+may be replaced.
+
 Review [Attachment access](security.md#attachment-access) before enabling this
 operation.
 
-## Conditional tools
+## Stable tool catalog
 
-The tool list adapts to the active configuration:
+The tool list is static for the lifetime of a server process. `send_email`,
+`list_allowed_recipients`, `list_allowed_senders`, and `download_attachment` are
+always advertised. Account existence, enabled state, SMTP capability, and
+current policies are enforced when each tool is called. The two allowlist tools
+return an empty list when their corresponding policy is unrestricted.
 
-| Tool                      | Visibility condition                                     |
-| ------------------------- | -------------------------------------------------------- |
-| `send_email`              | At least one configured email account has SMTP settings. |
-| `list_allowed_recipients` | `allowed_recipients` is not empty.                       |
-| `list_allowed_senders`    | `allowed_senders` is not empty.                          |
-
-`download_attachment` is not hidden when disabled; it checks permission when
-called.
+Account lifecycle changes therefore do not require a tools-list notification.
+A bootstrap mode selection still requires a server restart because it changes
+the selected configuration authority.
 
 ## Reply threading
 

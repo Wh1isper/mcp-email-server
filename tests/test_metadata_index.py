@@ -345,7 +345,26 @@ def test_legacy_version_marker_must_match_canonical_definition(tmp_path: Path) -
         index.ensure_ready()
 
 
-def test_coincidental_version_one_schema_is_not_migrated(tmp_path: Path) -> None:
+def test_legacy_operational_database_rejects_unsupported_version_before_wal(tmp_path: Path) -> None:
+    path = tmp_path / "private" / "operational.sqlite3"
+    index = MetadataIndex(path, "legacy")
+    index.ensure_ready()
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0].lower() == "delete"
+        connection.execute("UPDATE schema_metadata SET version = ?", (SCHEMA_VERSION + 1,))
+        connection.commit()
+
+    with pytest.raises(MetadataIndexError, match="version is unsupported"):
+        index.ensure_ready()
+
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION + 1
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+    assert not Path(f"{path}-wal").exists()
+    assert not Path(f"{path}-shm").exists()
+
+
+def test_coincidental_baseline_version_does_not_claim_unrelated_schema(tmp_path: Path) -> None:
     parent = tmp_path / "private"
     parent.mkdir(mode=0o700)
     path = parent / "unrelated.sqlite3"
@@ -356,7 +375,7 @@ def test_coincidental_version_one_schema_is_not_migrated(tmp_path: Path) -> None
         connection.commit()
     path.chmod(0o600)
 
-    with pytest.raises(MetadataIndexError, match="version is unsupported"):
+    with pytest.raises(MetadataIndexError, match="incomplete or incompatible"):
         MetadataIndex(path, "legacy").ensure_ready()
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
@@ -400,7 +419,18 @@ def test_corrupt_legacy_operational_database_is_rejected_without_replacement(tmp
     assert path.read_bytes() == b"not a sqlite database"
 
 
-def test_managed_version_two_missing_operational_table_fails_closed(tmp_path: Path) -> None:
+def test_managed_catalog_rejects_unsupported_schema_version(tmp_path: Path) -> None:
+    path = tmp_path / "private" / "catalog.sqlite3"
+    catalog = ManagedCatalog.initialize(path)
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("UPDATE schema_metadata SET version = ?", (SCHEMA_VERSION + 1,))
+        connection.commit()
+
+    with pytest.raises(ManagedCatalogError, match="version is unsupported"):
+        catalog.lifecycle()
+
+
+def test_managed_baseline_missing_operational_table_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "private" / "catalog.sqlite3"
     catalog = ManagedCatalog.initialize(path)
     with closing(sqlite3.connect(path)) as connection:
@@ -411,7 +441,7 @@ def test_managed_version_two_missing_operational_table_fails_closed(tmp_path: Pa
         catalog.lifecycle()
 
 
-def test_managed_version_two_rejects_table_with_same_columns_but_missing_constraints(tmp_path: Path) -> None:
+def test_managed_baseline_rejects_table_with_same_columns_but_missing_constraints(tmp_path: Path) -> None:
     path = tmp_path / "private" / "catalog.sqlite3"
     catalog = ManagedCatalog.initialize(path)
     with closing(sqlite3.connect(path)) as connection:
@@ -434,24 +464,7 @@ def test_managed_version_two_rejects_table_with_same_columns_but_missing_constra
         catalog.lifecycle()
 
 
-def test_failed_version_one_migration_rolls_back_schema_and_version(tmp_path: Path) -> None:
-    path = tmp_path / "private" / "catalog.sqlite3"
-    catalog = ManagedCatalog.initialize(path)
-    with closing(sqlite3.connect(path)) as connection:
-        connection.execute("DROP TABLE index_coverage")
-        connection.execute("CREATE TABLE index_coverage (mailbox_id TEXT PRIMARY KEY)")
-        connection.execute("UPDATE schema_metadata SET version = 1")
-        connection.commit()
-
-    with pytest.raises(ManagedCatalogError, match="schema"):
-        catalog.lifecycle()
-    with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(index_coverage)")]
-    assert columns == ["mailbox_id"]
-
-
-def test_managed_version_two_rejects_same_name_index_with_wrong_shape(tmp_path: Path) -> None:
+def test_managed_baseline_rejects_same_name_index_with_wrong_shape(tmp_path: Path) -> None:
     path = tmp_path / "private" / "catalog.sqlite3"
     catalog = ManagedCatalog.initialize(path)
     with closing(sqlite3.connect(path)) as connection:
@@ -461,32 +474,6 @@ def test_managed_version_two_rejects_same_name_index_with_wrong_shape(tmp_path: 
 
     with pytest.raises(ManagedCatalogError, match="schema"):
         catalog.lifecycle()
-
-
-def test_version_one_managed_catalog_migrates_once_and_preserves_catalog_rows(tmp_path: Path) -> None:
-    path = tmp_path / "private" / "catalog.sqlite3"
-    catalog = ManagedCatalog.initialize(path)
-    with closing(sqlite3.connect(path)) as connection:
-        for table in (
-            "index_coverage",
-            "message_metadata_projection",
-            "mailbox_projection",
-            "legacy_source",
-            "operational_account",
-        ):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("UPDATE schema_metadata SET version = 1")
-        connection.commit()
-
-    assert catalog.lifecycle() == "STAGING"
-    assert catalog.lifecycle() == "STAGING"
-    with closing(sqlite3.connect(path)) as connection:
-        version = connection.execute("SELECT version FROM schema_metadata").fetchone()[0]
-        lifecycle = connection.execute("SELECT lifecycle FROM catalog").fetchone()[0]
-        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert version == SCHEMA_VERSION
-    assert lifecycle == "STAGING"
-    assert "index_coverage" in tables
 
 
 def test_mutation_invalidation_removes_only_selected_mailbox_coverage(tmp_path: Path) -> None:

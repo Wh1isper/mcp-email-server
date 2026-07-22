@@ -27,6 +27,79 @@ def email_client(email_server):
     return EmailClient(email_server, sender="Test User <test@example.com>")
 
 
+@pytest.mark.asyncio
+async def test_prepare_imap_connection_closes_transport_on_greeting_failure() -> None:
+    imap = MagicMock()
+    imap._client_task = asyncio.Future()
+    imap._client_task.set_result(None)
+    imap.wait_hello_from_server = AsyncMock(side_effect=OSError("greeting failed"))
+    imap.protocol = MagicMock()
+    imap.protocol.transport = MagicMock()
+    server = EmailServer(
+        user_name="user",
+        password="secret",
+        host="imap.example.com",
+        port=143,
+        use_ssl=False,
+    )
+
+    with pytest.raises(OSError, match="greeting failed"):
+        await EmailClient._prepare_imap_connection(imap, server)
+
+    imap.protocol.transport.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_prepare_imap_connection_closes_transport_on_starttls_failure() -> None:
+    imap = MagicMock()
+    imap._client_task = asyncio.Future()
+    imap._client_task.set_result(None)
+    imap.wait_hello_from_server = AsyncMock()
+    imap.protocol = MagicMock()
+    imap.protocol.transport = MagicMock()
+    server = EmailServer(
+        user_name="user",
+        password="secret",
+        host="imap.example.com",
+        port=143,
+        use_ssl=False,
+        start_ssl=True,
+    )
+
+    with (
+        patch("mcp_email_server.emails.classic._imap_starttls", AsyncMock(side_effect=OSError("TLS rejected"))),
+        pytest.raises(OSError, match="TLS rejected"),
+    ):
+        await EmailClient._prepare_imap_connection(imap, server)
+
+    imap.protocol.transport.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_prepare_imap_connection_closes_transport_on_cancellation() -> None:
+    imap = MagicMock()
+    imap._client_task = asyncio.create_task(asyncio.sleep(60))
+    imap.wait_hello_from_server = AsyncMock()
+    imap.protocol = MagicMock()
+    imap.protocol.transport = MagicMock()
+    server = EmailServer(
+        user_name="user",
+        password="secret",
+        host="imap.example.com",
+        port=143,
+        use_ssl=False,
+    )
+
+    operation = asyncio.create_task(EmailClient._prepare_imap_connection(imap, server))
+    await asyncio.sleep(0)
+    operation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+
+    imap.protocol.transport.close.assert_called_once_with()
+    assert imap._client_task.cancelled()
+
+
 class TestImapLogin:
     @pytest.mark.asyncio
     async def test_imap_login_ok_returns_none(self):

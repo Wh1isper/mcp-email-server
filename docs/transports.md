@@ -12,8 +12,8 @@ mcp-email-server streamable-http [--host HOST] [--port PORT]
 mcp-email-server ui
 mcp-email-server reset
 mcp-email-server migrate-credentials [--to keyring|plaintext]
-mcp-email-server config {init|status|doctor|activate|select}
-mcp-email-server account {add|list|show|set-secret|test|disable}
+mcp-email-server config {init|status|doctor|cleanup-credentials|import-legacy|activate|select}
+mcp-email-server account {add|set-secret|list|show|update|disable|enable|remove|remove-secret|test}
 ```
 
 Run `mcp-email-server COMMAND --help` or
@@ -46,6 +46,12 @@ managed mode loads only an `ACTIVE` managed catalog and its keyring bindings. A
 missing, staging, corrupt, incompatible, or insecure selected catalog fails
 closed and never falls back to preserved legacy TOML accounts. Restart stdio
 after every `config select` command.
+
+The tool catalog remains static during the process. Account disablement,
+re-enablement, credential changes, endpoint changes, and policy changes are
+revalidated on each operation and do not rewrite `tools/list`. Normal shutdown,
+EOF, cancellation, or transport lifespan exit closes application runtime
+resources and discards the process cache.
 
 ## SSE
 

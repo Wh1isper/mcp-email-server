@@ -1,6 +1,6 @@
 # 02. Application Boundaries
 
-Status: Accepted
+Status: Implemented
 
 Previous: [`01-system-context.md`](01-system-context.md)
 Next: [`03-configuration-and-credentials.md`](03-configuration-and-credentials.md)
@@ -153,19 +153,20 @@ service and the prior direct handler bypass is removed. During migration:
 - GreenMail E2E starts the real stdio server and proves supported provider paths,
   including failure and scoped-mutation safety boundaries.
 
-## Implementation Progress
+## Implementation Evidence
 
-Effective-account listing, `list_emails_metadata`, and all explicit mutation
-and compose tools now enter process-scoped application services from the MCP
-adapter. Metadata and workflow-specific mutation services receive narrow
-account-authority, provider-factory, and operational-projection ports. They own
-lifecycle revalidation, bounds, replay decisions, index invalidation, and
-compatible result mapping. Concrete legacy/managed configuration,
-`ClassicEmailHandler`, and SQLite index construction live in local adapters
-assembled by `mcp_email_server.runtime`. Service tests use injected fakes, while
-adapter, provider, SQLite, MCP contract, and GreenMail stdio tests cover the
-concrete boundaries.
+Account and policy queries, managed lifecycle and import commands, metadata,
+mailbox discovery, body retrieval, attachment retrieval, compose, and every
+mutation enter typed application services from thin MCP or CLI adapters. The
+services receive narrow authority, provider, projection, secret, management, and
+artifact ports and own lifecycle revalidation, bounds, policy, replay decisions,
+index invalidation, and compatible result mapping.
 
-The remaining body, attachment, and mailbox-discovery paths still use
-compatibility dispatch and are not considered migrated until their MCP adapter
-paths call application services under the same composition root.
+Concrete legacy/managed configuration, `ClassicEmailHandler`, SQLite, keyring,
+and filesystem construction live in local adapters assembled by
+`mcp_email_server.runtime`. The former production dispatcher was removed; MCP
+and CLI contain no direct mail-handler or managed-catalog bypass. Runtime
+lifespan shutdown closes and discards cached application resources. Service tests
+use injected fakes, while adapter, provider, SQLite, MCP contract, lifecycle,
+and GreenMail stdio tests cover the concrete boundaries and same-process
+lifecycle changes.

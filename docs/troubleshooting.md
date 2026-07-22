@@ -95,8 +95,35 @@ mcp-email-server account set-secret ACCOUNT incoming
 ```
 
 Use `outgoing` for an SMTP credential. A successful retry retires stale pending
-candidates. `CLEANUP_REQUIRED` means the replacement is active but an old
-candidate could not be deleted; the active account remains usable.
+candidates. `CLEANUP_REQUIRED` means a replacement or detachment committed but
+an old candidate could not be deleted. Restore keyring access and run:
+
+```bash
+mcp-email-server config cleanup-credentials --limit 100
+```
+
+Cleanup claims only stale pending or cleanup-required rows and never removes an
+active credential. The account remains usable after a rotation cleanup failure;
+a credential detachment instead leaves the disabled account incomplete until a
+new secret is installed.
+
+## A managed write reports a revision conflict
+
+Run `mcp-email-server account show ACCOUNT` and use its current `revision` with
+`--expected-revision`. Update, disable, enable, credential removal, and soft
+removal use optimistic revisions so a stale operator command cannot overwrite a
+concurrent lifecycle or endpoint change. Do not blindly retry: inspect the new
+state first, then issue the intended command against that revision.
+
+To remove an account, the confirmation must also exactly match the current name:
+
+```bash
+mcp-email-server account remove work \
+  --expected-revision 7 \
+  --confirm work
+```
+
+The operation is a soft removal and does not make the name immediately reusable.
 
 ## Metadata index warnings or `query_too_broad`
 
@@ -196,15 +223,13 @@ The migration command prints a warning when the values conflict.
 Migration changes only persistent TOML accounts. It does not migrate an
 account supplied solely through environment variables.
 
-## `send_email` is missing
+## `send_email` reports that SMTP is unavailable
 
-`send_email` is advertised only when at least one configured account contains
-an SMTP `outgoing` section or `MCP_EMAIL_SERVER_SMTP_HOST` is set for the
-environment account.
-
-If the tool is visible but sending fails for one account, confirm that the
-selected `account_name` itself has SMTP settings. Visibility is based on all
-accounts, not the selected one.
+`send_email` is always advertised in the static MCP catalog. If sending fails
+for one account, confirm that the selected account is enabled and has a complete
+SMTP endpoint and active outgoing credential. In managed mode, inspect it with
+`account show`; disable it before changing or removing credentials, then
+re-enable it with the latest revision.
 
 ## SMTP delivery succeeds but saving to Sent fails
 
@@ -256,7 +281,10 @@ MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 
 Use an absolute `save_path` when possible and ensure the server process can
 write to its parent directory. A relative path is resolved against the server
-process's working directory.
+process's working directory. The destination fails closed if any existing parent
+is a symlink or not a directory, or if the final target is a symlink, FIFO,
+device, or other non-regular file. Choose a real directory and an exact regular
+file path; do not work around this check with links.
 
 ## A message mutation reports success but nothing changed
 
@@ -319,6 +347,20 @@ hostname a request will use. Do not disable DNS rebinding protection merely to
 avoid configuring an explicit allowlist.
 
 See [DNS rebinding protection](transports.md#dns-rebinding-protection).
+
+## Legacy import reports a conflict or missing credential
+
+Run `mcp-email-server config import-legacy` without `--apply` to preview again.
+A conflict means the staging destination differs from the stored TOML account or
+retains that name from a soft removal. Import checks all such conflicts before
+resolving secrets or writing, and it will not overwrite the destination. Use a
+fresh staging database or reconcile the destination manually.
+
+Preview intentionally ignores environment-only accounts and never accesses the
+keyring. Apply reads required stored credentials. If apply reports a missing
+credential, unlock or repair the legacy keyring entry and repeat the confirmed
+apply. Matching account rows are reused and only missing bindings are resumed;
+the stored TOML and legacy keyring entries are never deleted.
 
 ## Duplicate account name
 

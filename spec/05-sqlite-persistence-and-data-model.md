@@ -1,6 +1,6 @@
 # 05. SQLite Persistence and Data Model
 
-Status: Accepted
+Status: Implemented
 
 Previous: [`04-mail-workflows-and-consistency.md`](04-mail-workflows-and-consistency.md)
 Next: [`06-mcp-interface-and-client-compatibility.md`](06-mcp-interface-and-client-compatibility.md)
@@ -167,15 +167,15 @@ retention may evict rows outside the observed window.
 
 ## Schema and Migration
 
-A schema metadata record identifies a supported version. Migrations are ordered,
-transactional where SQLite permits, and idempotently recognized after restart.
-A newer unsupported schema, failed migration, corrupt database, or migration
-lock timeout produces a typed startup failure in managed mode.
+A schema metadata record identifies a supported version. The first managed
+release uses one exact version 1 baseline; no unreleased development migration is
+retained. A newer unsupported schema, corrupt database, or initialization lock
+timeout produces a typed startup failure in managed mode.
 
-Before the first managed release, unreleased development migrations are
-consolidated into the smallest coherent baseline. New migrations require a live
-consumer in the same delivery slice; no table is added solely for a deferred UI,
-operation engine, backup system, FTS, body cache, or QRESYNC optimization.
+Future migrations must be ordered, transactional where SQLite permits, and
+idempotently recognized after restart. A new migration requires a live consumer
+in the same delivery slice; no table is added solely for a deferred UI, operation
+engine, backup system, FTS, body cache, or QRESYNC optimization.
 
 ## Files and Permissions
 
@@ -207,21 +207,21 @@ honestly. The MVP has no unresolved generic operation evidence that requires a
 retention ledger. Rebuild never alters managed accounts, policies, secret
 bindings, or legacy source configuration.
 
-## Implementation Progress
+## Implementation Evidence
 
-The managed-configuration portion of the logical model is implemented as the
-initial schema: schema metadata, one catalog, managed accounts, endpoints, and
-secret bindings. It uses foreign keys, WAL, a bounded busy timeout, optimistic
-account revisions for binding activation, and owner-only path checks. No index,
-operation, continuity, backup, body, or attachment tables were added ahead of a
-live workflow.
+One exact schema version 1 baseline implements schema metadata, one catalog,
+managed accounts, endpoints, candidate binding states, durable policy, stable
+operational identities, legacy source mappings, mailbox UIDVALIDITY, combined
+placement/scalar metadata rows, and explicit partial or complete coverage. It
+uses foreign keys, WAL, a bounded busy timeout, optimistic account/catalog
+revisions, and owner-only path checks. Account disable/re-enable/update/soft
+removal and credential pending/active/cleanup transitions preserve stable
+operational identity without storing secret values.
 
-The bounded operational projection is implemented. It adds stable managed or
-hashed legacy operational identities, mailbox UIDVALIDITY, combined
-placement/scalar metadata rows, and explicit partial or complete coverage. An
-older managed catalog migrates in place by adding only these live-consumer
-tables. Legacy storage initializes at `db_location` and never copies endpoints
-or secrets into managed rows.
+Legacy operational storage initializes its complete baseline lazily at
+`db_location`; it never copies endpoints, policy, or secrets into managed rows.
+No operation engine, continuity ledger, backup, body, raw MIME, attachment, FTS,
+or deferred optimization tables were added.
 
 The metadata query verifies UIDVALIDITY, UIDNEXT, and message count with IMAP
 before using complete SQLite coverage, and matching state observations bracket a
@@ -236,15 +236,16 @@ compares canonical table and index definitions, including constraints and
 foreign keys; unmarked files must contain no user schema object before legacy
 index initialization. Existing files pass an exact read-only ownership preflight
 before WAL is enabled, so rejection does not change an unrelated database's
-journal mode or create sidecars. Version 1 migration validates the exact managed
-baseline and commits DDL, version change, and final validation in one write transaction.
-Bodies, raw MIME, attachment bytes, FTS, QRESYNC, and generic operation state
-remain absent.
+journal mode or create sidecars. Managed storage accepts only the exact version 1
+baseline; operational-only storage initializes its full baseline in one write
+transaction. Bodies, raw MIME, attachment bytes, FTS, QRESYNC, and generic
+operation state remain absent.
 
 ## Validation
 
 Tests cover constraints, revisions, lifecycle transitions, binding states,
 source mapping without secret material, deterministic paging, exact-total
-eligibility, UIDVALIDITY invalidation, bounded partial-window eviction, migration
-restart, busy/corrupt/insecure failures, sidecar permissions, concurrent
-processes, bounded retention, rebuild isolation, and clean resource shutdown.
+eligibility, UIDVALIDITY invalidation, bounded partial-window eviction, exact
+schema ownership and version rejection, busy/corrupt/insecure failures, sidecar
+permissions, concurrent initialization, bounded retention, rebuild isolation,
+and clean resource shutdown.

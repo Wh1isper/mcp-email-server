@@ -15,6 +15,18 @@ best-effort removes the old candidate and marks cleanup complete. A crash before
 deletion therefore remains visible to `config doctor`. The active credential is
 never overwritten in place.
 
+Credential removal is available only for a disabled account. It atomically
+detaches the binding and increments the account revision before attempting the
+external keyring deletion, so an enabled provider operation cannot continue to
+use a credential that is being removed. A successful replacement atomically
+claims any older pending candidates before deleting them, so concurrent
+activation cannot turn a cleanup target into an active missing secret. Failed
+deletion remains
+`CLEANUP_REQUIRED`. `config cleanup-credentials` processes at most 100 rows per
+invocation and first atomically claims stale `PENDING` candidates older than five
+minutes; it never deletes an active binding. This claim prevents concurrent
+activation from racing a cleanup delete.
+
 Enter managed credentials through the masked prompt or `--password-stdin`.
 Never place them in argv. `config doctor`, account summaries, errors, logs, and
 MCP results do not expose secret values or candidate locators. A missing or
@@ -31,6 +43,24 @@ not bypass these checks by moving secrets into the catalog.
 The managed secret service is separate from legacy account-name-based entries.
 Its internal candidate names are intentionally not a diagnostic or user-facing
 contract.
+
+Soft account removal is a tombstone operation, not credential destruction. It
+retains endpoint rows, binding rows, and referenced keyring candidates so stable
+operational identity and future hard-purge recovery remain possible. If a
+credential must be deleted now, disable the account and run `account
+remove-secret` for each role before `account remove`; a tombstoned account has no
+public credential-removal command in this release.
+
+### Legacy import security
+
+`config import-legacy` previews stored TOML only. Preview ignores environment
+overlays, does not resolve plaintext or keyring credentials, and performs no
+managed write. Confirmed apply is limited to `STAGING`, checks all destination
+conflicts before resolving any secret, and installs credentials through the same
+immutable candidate protocol as manual setup. It never deletes or rewrites the
+legacy source or its keyring entries, and does not activate or select managed
+mode. Provider-style legacy accounts are reported unsupported rather than
+partially imported.
 
 ## Indexed metadata privacy
 
@@ -200,8 +230,8 @@ MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS='alice@example.com,bob@example.com'
 Every To, CC, and BCC address must be allowed. Matching is case-insensitive and
 understands display-name forms such as `Alice <alice@example.com>`.
 
-When the list is configured, `list_allowed_recipients` becomes visible to MCP
-clients. An empty list permits all recipients.
+`list_allowed_recipients` is always visible in the static MCP tool catalog and
+returns an empty list when unrestricted. An empty list permits all recipients.
 
 ## Sender allowlist
 
@@ -242,9 +272,9 @@ Set this option to report blocked IDs as failures instead:
 report_blocked_mutations = true
 ```
 
-This is more explicit but reveals that a blocked message exists. When the
-sender list is configured, `list_allowed_senders` becomes visible to MCP
-clients.
+This is more explicit but reveals that a blocked message exists.
+`list_allowed_senders` is always visible in the static MCP tool catalog and
+returns an empty list when unrestricted.
 
 The sender allowlist is local filtering, not sender authentication. A spoofed
 `From` header can match. Continue to rely on provider-side SPF, DKIM, DMARC,
@@ -283,9 +313,22 @@ MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 
 Use an absolute destination path with `download_attachment` so the target is
 unambiguous. The implementation also accepts relative paths and resolves them
-against the server process's working directory. Run the server with filesystem
-permissions that limit where it can write, and do not assume attachments are
-safe to open or execute.
+against the server process's working directory. The application fetches at most
+a 50 MiB raw message, accepts at most 25 MiB of decoded attachment bytes, and
+passes bytes rather than a path to the artifact writer. The writer operates only
+on the exact requested target. On POSIX it creates and traverses parent
+components through pinned no-follow directory descriptors, opens the final name
+relative to that descriptor with no-follow/nonblocking flags, verifies the opened
+descriptor is a regular file, and applies owner-only `0600` mode. Other platforms
+preflight the parent and final path using their available filesystem controls. An
+existing regular file at the exact requested path can be replaced.
+
+The POSIX descriptor traversal prevents provider-controlled filenames and common
+symlink/FIFO/device races from redirecting the write; these checks are not a
+sandbox around arbitrary paths a trusted MCP caller can request. Run the server
+with filesystem permissions
+that limit where it can write, and do not assume attachments are safe to open or
+execute.
 
 The separate `attachments` parameter on `send_email` and `save_to_mailbox`
 reads local file paths. Relative paths are likewise resolved against the server

@@ -1,11 +1,11 @@
 # Local Email App Architecture
 
-Status: Accepted
+Status: Implemented
 
-This directory defines the accepted MVP architecture for evolving
-`mcp-email-server` into a local, single-user Email App. `Accepted` means the
-contract is approved; it does not claim that every part is implemented. Shipped
-behavior remains documented under [`docs/`](../docs/).
+This directory records the implemented MVP architecture for the local,
+single-user Email App. The numbered specs define the delivered boundaries and
+retain deferred decisions explicitly; user-visible behavior is documented under
+[`docs/`](../docs/).
 
 ## Product Contract
 
