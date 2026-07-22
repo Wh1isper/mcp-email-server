@@ -299,8 +299,9 @@ class TestAppendToMailbox:
         msg = MIMEText("body")
         with patch("mcp_email_server.emails.classic.aioimaplib") as mock_lib:
             mock_lib.IMAP4_SSL.return_value = mock_imap
-            result = await email_client.append_to_mailbox(msg, incoming_server, "Drafts")
-        assert result is None
+            with pytest.raises(ConnectionError, match=r"IMAP login failed \(TRANSPORT\)") as exc_info:
+                await email_client.append_to_mailbox(msg, incoming_server, "Drafts")
+        assert "Auth failed" not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_append_imap_append_fails(self, email_client, incoming_server, mock_imap):

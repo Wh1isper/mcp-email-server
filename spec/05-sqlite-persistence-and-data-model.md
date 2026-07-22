@@ -150,7 +150,8 @@ raw MIME, and attachment bytes are not persisted in the MVP.
 Coverage records exactly what range and completeness were observed. A recent
 window is not complete-mailbox coverage. An exact filtered public total may be
 computed from SQLite only when coverage and indexed fields prove the whole
-request. Partial refresh never deletes by absence.
+request. Partial refresh never infers provider removal by absence; bounded local
+retention may evict rows outside the observed window.
 
 ## Transactions
 
@@ -192,7 +193,7 @@ sidecars where the platform permits. Errors are sanitized.
 | Corrupt/incompatible schema                  | fail closed                                                 | warn and provider fallback for eligible reads           |
 | Insecure file/path                           | fail closed                                                 | disable index; provider fallback for eligible reads     |
 | Busy timeout                                 | typed failure; no legacy fallback                           | bounded warning and provider fallback for metadata read |
-| Projection write failure after provider read | return bounded provider result with stale warning when safe | same                                                    |
+| Projection write failure after provider read | fail closed; selected DB also owns authority                | return bounded provider result with stale warning       |
 | Projection write failure after mutation      | preserve known provider outcome; mark reconciliation needed | same                                                    |
 
 Provider fallback always stays in the application query service. Managed catalog
@@ -215,14 +216,35 @@ account revisions for binding activation, and owner-only path checks. No index,
 operation, continuity, backup, body, or attachment tables were added ahead of a
 live workflow.
 
-The operational account, mailbox, placement, metadata, and coverage model
-remains accepted target behavior for the bounded index slice; it is not claimed
-implemented here.
+The bounded operational projection is implemented. It adds stable managed or
+hashed legacy operational identities, mailbox UIDVALIDITY, combined
+placement/scalar metadata rows, and explicit partial or complete coverage. An
+older managed catalog migrates in place by adding only these live-consumer
+tables. Legacy storage initializes at `db_location` and never copies endpoints
+or secrets into managed rows.
+
+The metadata query verifies UIDVALIDITY, UIDNEXT, and message count with IMAP
+before using complete SQLite coverage, and matching state observations bracket a
+complete refresh. Reads traverse a UID-descending keyset; public page ordering
+remains compatible with provider INTERNALDATE and UID tie-breaking. Refresh
+stores at most 1,000 recent UIDs, evicts older local projection rows without
+claiming provider removal, invalidates the old projection on UIDVALIDITY change,
+and only performs provider-removal inference for a complete matching-epoch
+observation. Keyset batches share one WAL read snapshot, and the repository
+rejects oversized or state-inconsistent coverage writes. Managed validation
+compares canonical table and index definitions, including constraints and
+foreign keys; unmarked files must contain no user schema object before legacy
+index initialization. Existing files pass an exact read-only ownership preflight
+before WAL is enabled, so rejection does not change an unrelated database's
+journal mode or create sidecars. Version 1 migration validates the exact managed
+baseline and commits DDL, version change, and final validation in one write transaction.
+Bodies, raw MIME, attachment bytes, FTS, QRESYNC, and generic operation state
+remain absent.
 
 ## Validation
 
 Tests cover constraints, revisions, lifecycle transitions, binding states,
 source mapping without secret material, deterministic paging, exact-total
-eligibility, UIDVALIDITY invalidation, partial-refresh non-deletion, migration
+eligibility, UIDVALIDITY invalidation, bounded partial-window eviction, migration
 restart, busy/corrupt/insecure failures, sidecar permissions, concurrent
 processes, bounded retention, rebuild isolation, and clean resource shutdown.

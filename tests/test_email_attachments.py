@@ -279,7 +279,7 @@ class TestDownloadAttachmentMailboxParam:
         message = str(exc_info.value)
         assert "SELECT mailbox Archive failed" in message
         assert "NO" in message
-        assert "[NONEXISTENT] Unknown Mailbox: Archive" in message
+        assert "[NONEXISTENT] Unknown Mailbox: Archive" not in message
         mock_fetch.assert_not_called()
         mock_imap.logout.assert_called_once()
 

@@ -62,21 +62,16 @@ class TestMcpTools:
             api_key="test_key",
         )
 
-        # Mock the get_settings function
-        mock_settings = MagicMock()
-        mock_settings.get_accounts.return_value = [email_settings, provider_settings]
-
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            # Call the function
+        with patch(
+            "mcp_email_server.app.list_effective_accounts",
+            return_value=[email_settings.masked(), provider_settings.masked()],
+        ) as list_accounts:
             result = await list_available_accounts()
 
-            # Verify the result
-            assert len(result) == 2
-            assert result[0].account_name == "test_email"
-            assert result[1].account_name == "test_provider"
-
-            # Verify get_accounts was called correctly
-            mock_settings.get_accounts.assert_called_once()
+        assert len(result) == 2
+        assert result[0].account_name == "test_email"
+        assert result[1].account_name == "test_provider"
+        list_accounts.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_add_email_account(self):
@@ -193,11 +188,9 @@ class TestMcpTools:
             total=1,
         )
 
-        # Mock the dispatch_handler function
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_metadata.return_value = email_metadata_page
+        mock_query = AsyncMock(return_value=email_metadata_page)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.list_email_metadata", mock_query):
             # Call the function
             result = await list_emails_metadata(
                 account_name="test_account",
@@ -220,24 +213,15 @@ class TestMcpTools:
             assert result.emails[0].subject == "Test Subject"
             assert result.emails[0].email_id == "12345"
 
-            # Verify dispatch_handler and get_emails_metadata were called correctly
-            mock_handler.get_emails_metadata.assert_called_once_with(
-                page=1,
-                page_size=10,
-                before=now,
-                since=None,
-                subject="Test",
-                from_address="sender@example.com",
-                to_address=None,
-                order="desc",
-                mailbox="INBOX",
-                seen=None,
-                flagged=None,
-                answered=None,
-                body=None,
-                text=None,
-                has_attachment=None,
-            )
+            mock_query.assert_awaited_once()
+            query = mock_query.await_args.args[0]
+            assert query.account_name == "test_account"
+            assert query.page == 1
+            assert query.page_size == 10
+            assert query.before == now
+            assert query.subject == "Test"
+            assert query.from_address == "sender@example.com"
+            assert query.mailbox == "INBOX"
 
     @pytest.mark.asyncio
     async def test_list_emails_metadata_with_mailbox(self):
@@ -262,33 +246,17 @@ class TestMcpTools:
             total=1,
         )
 
-        mock_handler = AsyncMock()
-        mock_handler.get_emails_metadata.return_value = email_metadata_page
+        mock_query = AsyncMock(return_value=email_metadata_page)
 
-        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+        with patch("mcp_email_server.app.list_email_metadata", mock_query):
             result = await list_emails_metadata(
                 account_name="test_account",
                 mailbox="Sent",
             )
 
             assert result == email_metadata_page
-            mock_handler.get_emails_metadata.assert_called_once_with(
-                page=1,
-                page_size=10,
-                before=None,
-                since=None,
-                subject=None,
-                from_address=None,
-                to_address=None,
-                order="desc",
-                mailbox="Sent",
-                seen=None,
-                flagged=None,
-                answered=None,
-                body=None,
-                text=None,
-                has_attachment=None,
-            )
+            mock_query.assert_awaited_once()
+            assert mock_query.await_args.args[0].mailbox == "Sent"
 
     @pytest.mark.asyncio
     async def test_get_emails_content_single(self):

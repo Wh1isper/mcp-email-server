@@ -251,7 +251,10 @@ class TestDeleteEmailsAllowlist:
 
         mock_imap.uid = AsyncMock(side_effect=uid_side_effect)
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            with pytest.raises(RuntimeError, match="FETCH From headers for UIDs 1,2 failed"):
+            with pytest.raises(
+                RuntimeError,
+                match=r"FETCH From headers for 2 UIDs failed \(NO\)",
+            ):
                 await email_client.delete_emails(["1", "2"], allowed_senders=["*@allowed.com"])
 
         assert _uid_op_targets(mock_imap, "store") == []

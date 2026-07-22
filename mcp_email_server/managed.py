@@ -5,17 +5,21 @@ import json
 import os
 import sqlite3
 import stat
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 from pydantic import SecretStr
 
 from mcp_email_server.config import EmailServer, EmailSettings, Settings
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SQLITE_BUSY_TIMEOUT_MS = 5_000
+WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
 BindingRole = Literal["incoming", "outgoing"]
 Lifecycle = Literal["STAGING", "ACTIVE"]
@@ -27,6 +31,10 @@ class ManagedCatalogError(RuntimeError):
 
 class ManagedCatalogSecurityError(ManagedCatalogError):
     """A managed catalog path does not meet local security requirements."""
+
+
+def _fail_schema_version() -> NoReturn:
+    raise ManagedCatalogError("Managed catalog schema version is unsupported")
 
 
 @dataclass(frozen=True)
@@ -123,14 +131,17 @@ def _assert_private_file(path: Path) -> os.stat_result:
 def _prepare_new_file(path: Path) -> None:
     parent = path.parent
     if not parent.exists():
-        parent.mkdir(mode=0o700, parents=True)
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _assert_private_directory(parent)
     if path.exists() or path.is_symlink():
         raise ManagedCatalogError("Managed catalog already exists")
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise ManagedCatalogError("Managed catalog already exists") from exc
     os.close(fd)
 
 
@@ -162,8 +173,35 @@ def _validate_existing_path(path: Path) -> os.stat_result:
     return _assert_private_file(path)
 
 
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + SQLITE_BUSY_TIMEOUT_MS / 1_000
+    connection.execute(f"PRAGMA busy_timeout = {WAL_RETRY_BUSY_TIMEOUT_MS}")
+    try:
+        while True:
+            try:
+                current = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(current).lower() == "wal":
+                    return
+                changed = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                if str(changed).lower() == "wal":
+                    return
+                raise ManagedCatalogError("Managed catalog could not enable WAL mode")
+            except sqlite3.OperationalError as exc:
+                remaining = deadline - time.monotonic()
+                if "locked" not in str(exc).lower() or remaining <= 0:
+                    raise
+                time.sleep(min(0.1, remaining))
+    finally:
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+
+
 @contextlib.contextmanager
-def _connect(path: Path, *, require_exists: bool = True) -> Iterator[sqlite3.Connection]:
+def _connect(
+    path: Path,
+    *,
+    require_exists: bool = True,
+    enable_wal: bool = True,
+) -> Iterator[sqlite3.Connection]:
     path = Path(os.path.abspath(path.expanduser()))
     if require_exists and not path.exists():
         raise ManagedCatalogError("Selected managed catalog is missing")
@@ -178,20 +216,20 @@ def _connect(path: Path, *, require_exists: bool = True) -> Iterator[sqlite3.Con
             raise ManagedCatalogSecurityError("Managed catalog changed while it was being opened")
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        journal_mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-        if str(journal_mode).lower() != "wal":
-            raise ManagedCatalogError("Managed catalog could not enable WAL mode")
-        _secure_sidecars(path)
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        if enable_wal:
+            _enable_wal(connection)
+            _secure_sidecars(path)
         yield connection
     except sqlite3.DatabaseError as exc:
         raise ManagedCatalogError("Managed catalog is corrupt or unavailable") from exc
     finally:
         connection.close()
-        _secure_sidecars(path)
+        if enable_wal:
+            _secure_sidecars(path)
 
 
-_SCHEMA = """
+_MANAGED_SCHEMA = """
 CREATE TABLE schema_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     version INTEGER NOT NULL
@@ -243,6 +281,111 @@ CREATE UNIQUE INDEX one_active_binding_per_role
     ON secret_binding(account_id, role) WHERE status = 'ACTIVE';
 """
 
+_OPERATIONAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS operational_account (
+    id TEXT PRIMARY KEY,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('managed', 'legacy')),
+    source_reference TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS legacy_source (
+    source_fingerprint TEXT PRIMARY KEY,
+    operational_account_id TEXT NOT NULL UNIQUE REFERENCES operational_account(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS mailbox_projection (
+    id TEXT PRIMARY KEY,
+    operational_account_id TEXT NOT NULL REFERENCES operational_account(id) ON DELETE CASCADE,
+    remote_name TEXT NOT NULL,
+    delimiter TEXT,
+    attributes_json TEXT NOT NULL,
+    uidvalidity INTEGER NOT NULL CHECK (uidvalidity > 0),
+    observed_at TEXT NOT NULL,
+    UNIQUE (operational_account_id, remote_name)
+);
+CREATE TABLE IF NOT EXISTS message_metadata_projection (
+    mailbox_id TEXT NOT NULL REFERENCES mailbox_projection(id) ON DELETE CASCADE,
+    uidvalidity INTEGER NOT NULL CHECK (uidvalidity > 0),
+    uid INTEGER NOT NULL CHECK (uid > 0),
+    message_id TEXT,
+    subject TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    recipients_json TEXT NOT NULL,
+    message_date TEXT NOT NULL,
+    internal_date TEXT,
+    attachment_names_json TEXT NOT NULL,
+    flags_json TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (mailbox_id, uidvalidity, uid)
+);
+CREATE TABLE IF NOT EXISTS index_coverage (
+    mailbox_id TEXT PRIMARY KEY REFERENCES mailbox_projection(id) ON DELETE CASCADE,
+    uidvalidity INTEGER NOT NULL CHECK (uidvalidity > 0),
+    uidnext INTEGER NOT NULL CHECK (uidnext > 0),
+    message_count INTEGER NOT NULL CHECK (message_count >= 0),
+    low_uid INTEGER,
+    high_uid INTEGER,
+    completeness TEXT NOT NULL CHECK (completeness IN ('PARTIAL', 'COMPLETE')),
+    observed_at TEXT NOT NULL,
+    CHECK ((low_uid IS NULL AND high_uid IS NULL) OR (low_uid > 0 AND high_uid >= low_uid))
+);
+CREATE INDEX IF NOT EXISTS metadata_projection_uid_desc
+    ON message_metadata_projection(mailbox_id, uidvalidity, uid DESC);
+"""
+
+_SCHEMA = _MANAGED_SCHEMA + _OPERATIONAL_SCHEMA
+_OPERATIONAL_DATABASE_SCHEMA = (
+    """
+CREATE TABLE schema_metadata (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    version INTEGER NOT NULL
+);
+"""
+    + _OPERATIONAL_SCHEMA
+)
+
+
+def _execute_schema(connection: sqlite3.Connection, schema: str) -> None:
+    statement = ""
+    for line in schema.splitlines():
+        statement = f"{statement}\n{line}" if statement else line
+        if sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise ManagedCatalogError("Managed catalog schema definition is incomplete")
+
+
+def _normalized_schema_sql(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    rows = connection.execute(
+        """SELECT type, name, sql FROM sqlite_master
+           WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+           ORDER BY type, name"""
+    )
+    return {(row["type"], row["name"]): _normalized_schema_sql(row["sql"]) for row in rows}
+
+
+@cache
+def _expected_schema_objects(schema: str) -> dict[tuple[str, str], str]:
+    with contextlib.closing(sqlite3.connect(":memory:")) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(schema)
+        return _schema_objects(connection)
+
+
+def _validate_operational_schema(connection: sqlite3.Connection) -> None:
+    expected = _expected_schema_objects(_OPERATIONAL_DATABASE_SCHEMA)
+    if _schema_objects(connection) != expected:
+        raise ManagedCatalogError("Operational database schema is incomplete or incompatible")
+
+
+def _validate_managed_schema(connection: sqlite3.Connection, schema: str) -> None:
+    if _schema_objects(connection) != _expected_schema_objects(schema):
+        raise ManagedCatalogError("Managed catalog schema is missing or incompatible")
+
 
 class ManagedCatalog:
     def __init__(self, path: Path, secret_store: ManagedKeyringSecretStore | None = None) -> None:
@@ -270,17 +413,63 @@ class ManagedCatalog:
             raise
         return cls(normalized)
 
+    def _preflight_schema_ownership(self, connection: sqlite3.Connection) -> None:
+        try:
+            row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
+        except sqlite3.Error as exc:
+            raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
+        if row is None:
+            raise ManagedCatalogError("Managed catalog schema version is unsupported")
+        if row["version"] == 1:
+            _validate_managed_schema(connection, _MANAGED_SCHEMA)
+        elif row["version"] == SCHEMA_VERSION:
+            _validate_managed_schema(connection, _SCHEMA)
+        else:
+            raise ManagedCatalogError("Managed catalog schema version is unsupported")
+
+    @contextlib.contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        with _connect(self.path, enable_wal=False) as connection:
+            self._preflight_schema_ownership(connection)
+        with _connect(self.path) as connection:
+            self._validate_schema(connection)
+            yield connection
+
     def _validate_schema(self, connection: sqlite3.Connection) -> None:
         try:
             row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
         except sqlite3.Error as exc:
             raise ManagedCatalogError("Managed catalog schema is missing or incompatible") from exc
-        if row is None or row["version"] != SCHEMA_VERSION:
+        if row is None:
             raise ManagedCatalogError("Managed catalog schema version is unsupported")
+        if row["version"] == 1:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                # A competing process may have completed migration while this
+                # connection waited for the write lock.
+                row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
+                if row is None:
+                    _fail_schema_version()
+                if row["version"] == 1:
+                    _validate_managed_schema(connection, _MANAGED_SCHEMA)
+                    _execute_schema(connection, _OPERATIONAL_SCHEMA)
+                    connection.execute(
+                        "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
+                        (SCHEMA_VERSION,),
+                    )
+                    _validate_managed_schema(connection, _SCHEMA)
+                elif row["version"] != SCHEMA_VERSION:
+                    _fail_schema_version()
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        elif row["version"] != SCHEMA_VERSION:
+            raise ManagedCatalogError("Managed catalog schema version is unsupported")
+        _validate_managed_schema(connection, _SCHEMA)
 
     def lifecycle(self) -> Lifecycle:
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             row = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
             if row is None or row["lifecycle"] not in ("STAGING", "ACTIVE"):
                 raise ManagedCatalogError("Managed catalog lifecycle is invalid")
@@ -300,8 +489,7 @@ class ManagedCatalog:
         if not name.strip() or not full_name.strip() or not email_address.strip():
             raise ManagedCatalogError("Account name, full name, and email address are required")
         account_id = uuid.uuid4().hex
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 lifecycle = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
@@ -348,8 +536,7 @@ class ManagedCatalog:
         )
 
     def account_revision(self, name: str) -> tuple[str, int]:
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             row = connection.execute(
                 "SELECT id, revision FROM managed_account WHERE name = ? AND removed_at IS NULL", (name,)
             ).fetchone()
@@ -363,7 +550,7 @@ class ManagedCatalog:
         account_id, expected_revision = self.account_revision(name)
         binding_id = uuid.uuid4().hex
         locator = uuid.uuid4().hex
-        with _connect(self.path) as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             endpoint = connection.execute(
                 "SELECT 1 FROM endpoint WHERE account_id = ? AND role = ?", (account_id, role)
@@ -385,7 +572,7 @@ class ManagedCatalog:
         self.secret_store.put(locator, value)
 
         old_locator: str | None = None
-        with _connect(self.path) as connection:
+        with self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 current = connection.execute(
@@ -433,7 +620,7 @@ class ManagedCatalog:
                 raise
 
         if old_locator is not None and self.secret_store.delete(old_locator):
-            with _connect(self.path) as connection:
+            with self._connection() as connection:
                 connection.execute(
                     "UPDATE secret_binding SET status = 'SUPERSEDED' WHERE opaque_locator = ?",
                     (old_locator,),
@@ -443,7 +630,7 @@ class ManagedCatalog:
 
     def _retire_pending_bindings(self, account_id: str, role: BindingRole, *, active_binding_id: str) -> None:
         """Clean candidates left by prior failed writes after a replacement succeeds."""
-        with _connect(self.path) as connection:
+        with self._connection() as connection:
             pending = connection.execute(
                 """SELECT id, opaque_locator FROM secret_binding
                    WHERE account_id = ? AND role = ? AND status = 'PENDING' AND id != ?""",
@@ -451,7 +638,7 @@ class ManagedCatalog:
             ).fetchall()
         for binding in pending:
             cleaned = self.secret_store.delete(binding["opaque_locator"])
-            with _connect(self.path) as connection:
+            with self._connection() as connection:
                 connection.execute(
                     "UPDATE secret_binding SET status = ? WHERE id = ? AND status = 'PENDING'",
                     ("SUPERSEDED" if cleaned else "CLEANUP_REQUIRED", binding["id"]),
@@ -459,8 +646,7 @@ class ManagedCatalog:
                 connection.commit()
 
     def list_accounts(self) -> list[AccountSummary]:
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             rows = connection.execute(
                 """SELECT a.name, a.email_address, a.enabled, a.revision,
                           EXISTS(SELECT 1 FROM endpoint e WHERE e.account_id = a.id AND e.role = 'outgoing') has_outgoing,
@@ -484,7 +670,7 @@ class ManagedCatalog:
         ]
 
     def disable_account(self, name: str) -> None:
-        with _connect(self.path) as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """UPDATE managed_account SET enabled = 0, revision = revision + 1
@@ -527,8 +713,7 @@ class ManagedCatalog:
         return problems
 
     def doctor(self) -> DoctorReport:
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             catalog = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
             if catalog is None or catalog["lifecycle"] not in ("STAGING", "ACTIVE"):
                 raise ManagedCatalogError("Managed catalog lifecycle is invalid")
@@ -566,8 +751,7 @@ class ManagedCatalog:
         )
 
     def activate(self) -> None:
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
             if row is None:
@@ -582,8 +766,7 @@ class ManagedCatalog:
 
     def load_account(self, name: str, *, require_active_catalog: bool = False) -> EmailSettings:
         """Resolve one enabled account and only its secret bindings."""
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             catalog = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
             if catalog is None or (require_active_catalog and catalog["lifecycle"] != "ACTIVE"):
                 raise ManagedCatalogError("Managed catalog is not active")
@@ -620,8 +803,7 @@ class ManagedCatalog:
         )
 
     def load_settings(self, *, require_active: bool = True) -> Settings:
-        with _connect(self.path) as connection:
-            self._validate_schema(connection)
+        with self._connection() as connection:
             catalog = connection.execute("SELECT * FROM catalog WHERE id = 'local'").fetchone()
             if catalog is None:
                 raise ManagedCatalogError("Managed catalog row is missing")

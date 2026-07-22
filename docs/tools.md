@@ -55,7 +55,7 @@ Important parameters include:
 | ----------------------------- | -------- | ------------------------------------------- |
 | `account_name`                | Required | Configured account identifier.              |
 | `page`                        | `1`      | One-based result page.                      |
-| `page_size`                   | `10`     | Number of results per page.                 |
+| `page_size`                   | `10`     | Number of results per page, from 1 to 100.  |
 | `mailbox`                     | `INBOX`  | Mailbox to search.                          |
 | `before` / `since`            | None     | UTC datetime boundaries.                    |
 | `subject`                     | None     | Subject filter.                             |
@@ -78,6 +78,29 @@ or report multipart messages that do not contain a conventional attachment.
 
 When a sender allowlist is configured, blocked messages are removed before
 pagination, so `total` and page sizes describe only visible messages.
+
+The application keeps a rebuildable SQLite projection for unfiltered mailbox
+pages. It uses that projection only after a small IMAP `STATUS` probe confirms
+the same UIDVALIDITY, UIDNEXT, and message count and the projection covers the
+whole mailbox. Text, date, address, flag, body, and attachment filters remain on
+the bounded IMAP path so provider-specific search semantics and mutable flags
+stay authoritative. This choice does not change the response schema or expose
+whether a particular call used SQLite.
+
+A refresh stores at most the 1,000 most recent UIDs and claims complete coverage
+only when the whole mailbox fits that window and provider state is unchanged
+across the refresh. Provider fallback accepts at most 10,000 unique canonical
+single UIDs; ranges, sets, zero, duplicates, and values outside the IMAP UID
+range are rejected before any UID FETCH. Metadata header requests use IMAP
+partial fetches, with limits of 64 KiB per
+message and 4 MiB total per metadata query or refresh. Each wire FETCH is also
+sized below that aggregate ceiling. Missing, duplicate, or mismatched sender or
+INTERNALDATE evidence is a bounded error because the server cannot otherwise
+prove the exact total or ordering. Transport and protocol failures are mapped to
+bounded categories without returning provider-controlled detail. If a work or
+payload ceiling is exceeded,
+the tool returns a bounded error instead of an inexact `total`, partial page, or
+unbounded projection.
 
 ### `get_emails_content`
 

@@ -884,7 +884,7 @@ class TestEmailClientMarkAsRead:
         mock_imap.login = AsyncMock(side_effect=Exception("auth failed"))
 
         with patch.object(email_client, "_imap_connect", return_value=mock_imap):
-            with pytest.raises(Exception, match="auth failed"):
+            with pytest.raises(ConnectionError, match=r"IMAP login failed \(TRANSPORT\)"):
                 await email_client.mark_emails_as_read(["123"])
 
         mock_imap.logout.assert_called_once()

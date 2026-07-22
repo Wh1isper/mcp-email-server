@@ -5,15 +5,20 @@ import sqlite3
 import stat
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.managed import (
+    SQLITE_BUSY_TIMEOUT_MS,
+    WAL_RETRY_BUSY_TIMEOUT_MS,
     ManagedCatalog,
     ManagedCatalogError,
     ManagedCatalogSecurityError,
+    _enable_wal,
 )
 
 
@@ -85,11 +90,22 @@ def test_initialize_creates_minimal_private_staging_catalog(tmp_path):
     catalog = _catalog(tmp_path)
 
     assert catalog.lifecycle() == "STAGING"
-    with sqlite3.connect(catalog.path) as connection:
+    with closing(sqlite3.connect(catalog.path)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
         busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
-    assert tables == {"schema_metadata", "catalog", "managed_account", "endpoint", "secret_binding"}
+    assert tables == {
+        "schema_metadata",
+        "catalog",
+        "managed_account",
+        "endpoint",
+        "secret_binding",
+        "operational_account",
+        "legacy_source",
+        "mailbox_projection",
+        "message_metadata_projection",
+        "index_coverage",
+    }
     assert journal_mode.lower() == "wal"
     assert busy_timeout <= 5000
     if os.name == "posix":
@@ -168,7 +184,7 @@ def test_pending_binding_is_committed_before_external_secret_write(tmp_path):
     catalog_holder: list[ManagedCatalog] = []
 
     def observe(locator: str, _value: str) -> None:
-        with sqlite3.connect(catalog_holder[0].path) as connection:
+        with closing(sqlite3.connect(catalog_holder[0].path)) as connection:
             row = connection.execute(
                 "SELECT status, opaque_locator FROM secret_binding WHERE opaque_locator = ?", (locator,)
             ).fetchone()
@@ -202,7 +218,7 @@ def test_revision_conflict_cleans_candidate_and_preserves_no_active_binding(tmp_
     catalog_holder: list[ManagedCatalog] = []
 
     def race(_locator: str, _value: str) -> None:
-        with sqlite3.connect(catalog_holder[0].path) as connection:
+        with closing(sqlite3.connect(catalog_holder[0].path)) as connection:
             connection.execute("UPDATE managed_account SET revision = revision + 1 WHERE name = 'alice'")
             connection.commit()
 
@@ -375,6 +391,36 @@ def test_concurrent_readers_do_not_fail_on_sidecar_shutdown_races(tmp_path):
     assert results == ["STAGING"] * 8
 
 
+def test_wal_retry_uses_one_wall_clock_busy_deadline() -> None:
+    clock = [0.0]
+    calls: list[str] = []
+
+    class LockedConnection:
+        def execute(self, statement: str):
+            calls.append(statement)
+            if statement == "PRAGMA journal_mode":
+                clock[0] += WAL_RETRY_BUSY_TIMEOUT_MS / 1_000
+                raise sqlite3.OperationalError("database is locked")
+            return self
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    with (
+        patch("mcp_email_server.managed.time.monotonic", side_effect=monotonic),
+        patch("mcp_email_server.managed.time.sleep", side_effect=sleep),
+        pytest.raises(sqlite3.OperationalError, match="locked"),
+    ):
+        _enable_wal(LockedConnection())  # type: ignore[arg-type]
+
+    assert SQLITE_BUSY_TIMEOUT_MS / 1_000 <= clock[0] <= SQLITE_BUSY_TIMEOUT_MS / 1_000 + 0.2
+    assert calls[0] == f"PRAGMA busy_timeout = {WAL_RETRY_BUSY_TIMEOUT_MS}"
+    assert calls[-1] == f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}"
+
+
 def test_corrupt_database_is_rejected_with_bounded_error(tmp_path):
     parent = tmp_path / "managed"
     parent.mkdir(mode=0o700)
@@ -384,3 +430,24 @@ def test_corrupt_database_is_rejected_with_bounded_error(tmp_path):
 
     with pytest.raises(ManagedCatalogError, match=r"corrupt|unavailable"):
         ManagedCatalog(path).lifecycle()
+
+
+def test_unrelated_managed_database_is_rejected_before_enabling_wal(tmp_path: Path) -> None:
+    parent = tmp_path / "managed"
+    parent.mkdir(mode=0o700)
+    path = parent / "unrelated.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE unrelated(value TEXT)")
+        connection.commit()
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+    path.chmod(0o600)
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(ManagedCatalogError, match="schema"):
+        ManagedCatalog(path).lifecycle()
+
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+    assert path.read_bytes() == original_bytes
+    assert not Path(f"{path}-wal").exists()
+    assert not Path(f"{path}-shm").exists()

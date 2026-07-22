@@ -98,6 +98,33 @@ Use `outgoing` for an SMTP credential. A successful retry retires stale pending
 candidates. `CLEANUP_REQUIRED` means the replacement is active but an old
 candidate could not be deleted; the active account remains usable.
 
+## Metadata index warnings or `query_too_broad`
+
+In legacy mode, an owner, permission, symlink, busy, corrupt, or unsupported
+schema problem at `db_location` disables only the rebuildable metadata index.
+The application logs a bounded warning and runs the same request through IMAP;
+the MCP handler does not bypass the application query service. Correct the
+parent directory and database to owner-only access, or remove a disposable
+operational database while the server is stopped so it can be rebuilt.
+
+Managed mode is different because the selected database also owns account
+authority. An open, security, corruption, schema, or projection-write failure
+therefore fails closed rather than returning a result or falling back to TOML.
+In legacy mode, a projection write failure after a validated bounded provider
+read may return that provider result with a warning; the next request refreshes
+again.
+
+`query_too_broad` means an IMAP search returned more than 10,000 candidate UIDs,
+so the application could not prove the requested page and exact filtered total
+within its work budget. Narrow the mailbox or add a date, sender, recipient,
+subject, body, text, flag, or attachment filter. Increasing `page_size` cannot
+bypass the limit; `page_size` is restricted to 1 through 100. An `invalid UID
+search results` or incomplete provider-metadata error means the server returned
+a malformed UID set or did not return exact sender/INTERNALDATE evidence for
+every requested UID. The request is rejected rather than expanding a UID range
+or returning an incorrect page; retry after the mailbox is stable or report the
+provider issue.
+
 ## The UI cannot load accounts
 
 The browser UI is a legacy configuration surface. While managed mode is

@@ -346,9 +346,10 @@ class TestEmailClientAppendToSent:
         with patch("mcp_email_server.emails.classic.aioimaplib") as mock_aioimaplib:
             mock_aioimaplib.IMAP4_SSL.return_value = mock_imap_for_append
 
-            result = await email_client.append_to_sent(msg, incoming_server, "Sent")
+            with pytest.raises(ConnectionError, match=r"IMAP login failed \(TRANSPORT\)") as exc_info:
+                await email_client.append_to_sent(msg, incoming_server, "Sent")
 
-            assert result is False
+            assert "Login failed" not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_append_to_sent_non_ssl(self, incoming_server, mock_imap_for_append):

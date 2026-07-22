@@ -146,6 +146,22 @@ and contain no secrets or message content. Startup either completes a valid
 selected-mode runtime or exits non-zero before serving requests. EOF,
 cancellation, and normal termination close runtime resources.
 
+## Implementation Progress
+
+`list_emails_metadata` is migrated to a typed application query while retaining
+its name, arguments, response model, exact filtered total, and header-only
+attachment behavior. The adapter enforces one-based pages and a page size from 1
+to 100. Application and provider layers enforce the same bounds for direct and
+embedded callers, and provider candidate work is capped at 10,000 UIDs.
+
+Index selection and fallback are no longer MCP-handler decisions. The application
+service conservatively uses SQLite only for an unfiltered complete-mailbox
+request whose UIDVALIDITY, UIDNEXT, and message count still match provider state.
+Every current filter remains compatible through the bounded provider path. The
+stdio GreenMail suite verifies schema serialization, pagination, totals, filter
+fallback, projection reuse in one process and after restart, and bounded input
+failure.
+
 ## Validation
 
 Contract tests freeze tool names, schemas, descriptions, visibility behavior,

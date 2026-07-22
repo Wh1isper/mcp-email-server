@@ -5,6 +5,7 @@ import imaplib
 import os
 import re
 import smtplib
+import sqlite3
 import subprocess
 import sys
 import time
@@ -161,16 +162,25 @@ def _wait_for_message(credentials: tuple[str, str], mailbox: str, subject: str, 
     pytest.fail(f"Message {subject!r} did not arrive in {mailbox!r}")
 
 
-def _seed_message(subject: str, body: str) -> None:
+def _seed_message_as(
+    sender: tuple[str, str],
+    recipient: str,
+    subject: str,
+    body: str,
+) -> None:
     message = EmailMessage()
-    message["From"] = ALICE[0]
-    message["To"] = BOB[0]
+    message["From"] = sender[0]
+    message["To"] = recipient
     message["Subject"] = subject
     message["Message-ID"] = make_msgid(domain="example.test")
     message.set_content(body)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=5) as smtp:
-        smtp.login(*ALICE)
+        smtp.login(*sender)
         smtp.send_message(message)
+
+
+def _seed_message(subject: str, body: str) -> None:
+    _seed_message_as(ALICE, BOB[0], subject, body)
 
 
 def _mark_deleted_without_expunge(credentials: tuple[str, str], mailbox: str, uid: str) -> None:
@@ -179,6 +189,14 @@ def _mark_deleted_without_expunge(credentials: tuple[str, str], mailbox: str, ui
         status, _ = client.select(mailbox)
         assert status == "OK"
         status, _ = client.uid("store", uid, "+FLAGS.SILENT", r"(\Deleted)")
+        assert status == "OK"
+
+
+def _add_flags(credentials: tuple[str, str], mailbox: str, uid: str, flags: str) -> None:
+    with _imap_session(credentials) as client:
+        status, _ = client.select(mailbox)
+        assert status == "OK"
+        status, _ = client.uid("store", uid, "+FLAGS.SILENT", f"({flags})")
         assert status == "OK"
 
 
@@ -229,6 +247,10 @@ def _run_cli(console_script: Path, env: dict[str, str], arguments: list[str], *,
 async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenmail(tmp_path: Path) -> None:
     """Prove CLI staging -> test -> activation -> restart -> live managed IMAP."""
     _wait_until_ready()
+    _ensure_empty_mailboxes(ALICE, ["INBOX"])
+    subject = f"managed-index-{uuid.uuid4().hex}"
+    _seed_message_as(BOB, ALICE[0], subject, "Managed indexed metadata")
+    _wait_for_message(ALICE, "INBOX", subject)
     app_dir = tmp_path / "managed-app"
     app_dir.mkdir(mode=0o700)
     app_dir.chmod(0o700)
@@ -294,6 +316,16 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             assert ALICE[1] not in str(accounts)
             mailboxes = await _call_tool(session, "list_mailboxes", {"account_name": "alice-managed"})
             assert "INBOX" in {mailbox["name"] for mailbox in mailboxes["result"]}
+            metadata = await _call_tool(
+                session,
+                "list_emails_metadata",
+                {"account_name": "alice-managed", "page_size": 10},
+            )
+            assert metadata["total"] == 1
+            assert metadata["emails"][0]["subject"] == subject
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 2
+                assert connection.execute("SELECT completeness FROM index_coverage").fetchone()[0] == "COMPLETE"
 
             # Disablement commits in a separate management process and must be
             # observed before the next provider access in this same stdio session.
@@ -301,6 +333,12 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             denied = await session.call_tool("list_mailboxes", arguments={"account_name": "alice-managed"})
             assert denied.isError is True
             assert "not found" in _text_content(denied).lower()
+            denied_metadata = await session.call_tool(
+                "list_emails_metadata",
+                arguments={"account_name": "alice-managed"},
+            )
+            assert denied_metadata.isError is True
+            assert "not found" in _text_content(denied_metadata).lower()
 
 
 @pytest.mark.asyncio
@@ -368,6 +406,107 @@ async def test_managed_stdio_missing_database_fails_closed_without_legacy_fallba
     assert "missing" in output.lower()
     assert "alice-password" not in output
     assert "alice" not in output.lower()
+
+
+@pytest.mark.asyncio
+async def test_metadata_index_paging_fallback_and_restart_reuse_against_greenmail(tmp_path: Path) -> None:
+    """Exercise population, qualified SQLite reuse, filters, bounds, and restart."""
+    _wait_until_ready()
+    _ensure_empty_mailboxes(BOB, ["INBOX"])
+    run_id = uuid.uuid4().hex
+    subjects = [f"metadata-index-{run_id}-{number}" for number in range(5)]
+    for number, subject in enumerate(subjects):
+        _seed_message(subject, f"indexed body {number}; unique needle {run_id}-{number}")
+        _wait_for_message(BOB, "INBOX", subject)
+    flagged = _wait_for_message(BOB, "INBOX", subjects[2])
+    _add_flags(BOB, "INBOX", flagged.uid, r"\Seen \Flagged")
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(CONFIG_TEMPLATE)
+    config_path.chmod(0o600)
+    database = tmp_path / "db.sqlite3"
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE": "plaintext",
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+    })
+    console_script = Path(sys.executable).with_name("mcp-email-server")
+    server = StdioServerParameters(
+        command=str(console_script),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+
+    async def exercise_session(*, verify_filters: bool) -> tuple[str, dict[str, Any]]:
+        async with stdio_client(server) as (read_stream, write_stream):
+            async with ClientSession(
+                read_stream,
+                write_stream,
+                read_timeout_seconds=timedelta(seconds=15),
+            ) as session:
+                await session.initialize()
+                first = await _call_tool(
+                    session,
+                    "list_emails_metadata",
+                    {"account_name": "bob", "page": 1, "page_size": 2},
+                )
+                assert first["total"] == 5
+                assert len(first["emails"]) == 2
+                assert [int(email["email_id"]) for email in first["emails"]] == sorted(
+                    [int(email["email_id"]) for email in first["emails"]], reverse=True
+                )
+                with contextlib.closing(sqlite3.connect(database)) as connection:
+                    coverage = connection.execute(
+                        "SELECT completeness, message_count, observed_at FROM index_coverage"
+                    ).fetchone()
+                    rows = connection.execute("SELECT COUNT(*) FROM message_metadata_projection").fetchone()[0]
+                assert coverage is not None
+                assert coverage[0:2] == ("COMPLETE", 5)
+                assert rows == 5
+
+                second = await _call_tool(
+                    session,
+                    "list_emails_metadata",
+                    {"account_name": "bob", "page": 2, "page_size": 2},
+                )
+                assert second["total"] == 5
+                assert len(second["emails"]) == 2
+                with contextlib.closing(sqlite3.connect(database)) as connection:
+                    reused_at = connection.execute("SELECT observed_at FROM index_coverage").fetchone()[0]
+                assert reused_at == coverage[2]
+
+                if verify_filters:
+                    filter_cases = [
+                        ({"subject": subjects[1]}, 1),
+                        ({"from_address": ALICE[0]}, 5),
+                        ({"to_address": BOB[0]}, 5),
+                        ({"seen": True}, 1),
+                        ({"flagged": True}, 1),
+                        ({"body": f"unique needle {run_id}-4"}, 1),
+                        ({"text": subjects[3]}, 1),
+                        ({"has_attachment": False}, 5),
+                        ({"has_attachment": True}, 0),
+                    ]
+                    for filters, expected_total in filter_cases:
+                        result = await _call_tool(
+                            session,
+                            "list_emails_metadata",
+                            {"account_name": "bob", "page_size": 10, **filters},
+                        )
+                        assert result["total"] == expected_total, (filters, result)
+                    invalid = await session.call_tool(
+                        "list_emails_metadata",
+                        arguments={"account_name": "bob", "page_size": 101},
+                    )
+                    assert invalid.isError is True
+                return coverage[2], first
+
+    first_observed_at, first_page = await exercise_session(verify_filters=True)
+    restart_observed_at, restart_page = await exercise_session(verify_filters=False)
+    assert restart_observed_at == first_observed_at
+    assert restart_page == first_page
 
 
 @pytest.mark.asyncio

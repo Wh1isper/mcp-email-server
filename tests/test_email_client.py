@@ -3,7 +3,7 @@ import email
 import ssl
 from datetime import UTC, datetime
 from email.mime.text import MIMEText
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,7 +38,7 @@ class TestImapLogin:
         imap.login.assert_awaited_once_with("user@example.com", "secret")
 
     @pytest.mark.asyncio
-    async def test_imap_login_no_raises_connection_error_with_detail(self):
+    async def test_imap_login_no_raises_sanitized_connection_error(self):
         imap = AsyncMock()
         imap.login = AsyncMock(return_value=MagicMock(result="NO", lines=[b"Incorrect login credentials"]))
 
@@ -46,19 +46,19 @@ class TestImapLogin:
             await _imap_login(imap, "user@example.com", "secret")
 
         message = str(exc_info.value)
-        assert "user@example.com" in message
-        assert "NO" in message
-        assert "Incorrect login credentials" in message
+        assert message == "IMAP login failed (NO)"
+        assert "user@example.com" not in message
+        assert "Incorrect login credentials" not in message
 
     @pytest.mark.asyncio
-    async def test_imap_login_decodes_non_utf8_detail_with_replacement(self):
+    async def test_imap_login_bad_does_not_expose_non_utf8_provider_detail(self):
         imap = AsyncMock()
         imap.login = AsyncMock(return_value=MagicMock(result="BAD", lines=[b"bad byte: \xff"]))
 
         with pytest.raises(ConnectionError) as exc_info:
             await _imap_login(imap, "user@example.com", "secret")
 
-        assert "bad byte:" in str(exc_info.value)
+        assert str(exc_info.value) == "IMAP login failed (BAD)"
 
 
 class TestEmailClient:
@@ -431,7 +431,7 @@ class TestEmailClient:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
 
         # Mock at the helper level - test behavior, not implementation
@@ -485,9 +485,13 @@ class TestEmailClient:
                     mock_imap.logout.assert_called_once()
 
                     # Verify helpers called with correct arguments
-                    mock_fetch_dates.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])
+                    mock_fetch_dates.assert_called_once_with(mock_imap, ["1", "2", "3"])
                     # Headers fetched for page UIDs in sorted order (desc by date)
-                    mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2", "1"])
+                    mock_fetch_headers.assert_called_once_with(
+                        mock_imap,
+                        ["3", "2", "1"],
+                        header_budget=ANY,
+                    )
 
     @pytest.mark.asyncio
     async def test_get_emails_metadata_encodes_unicode_mailbox(self, email_client):
@@ -498,7 +502,7 @@ class TestEmailClient:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b""]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b""]))
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -523,7 +527,7 @@ class TestEmailClient:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b""]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b""]))
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -547,7 +551,7 @@ class TestEmailClient:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b""]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b""]))
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -571,7 +575,7 @@ class TestEmailClient:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b""]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b""]))
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -583,55 +587,24 @@ class TestEmailClient:
         assert mock_imap.uid_search.call_args.args == ("SINCE", "01-MÄR-2026")
 
     @pytest.mark.asyncio
-    async def test_get_emails_metadata_falls_back_to_uid_order_when_dates_missing(self, email_client):
-        """Metadata listing should still return emails when INTERNALDATE parsing fails."""
+    async def test_get_emails_metadata_rejects_missing_internaldate_ordering_evidence(self, email_client):
         mock_imap = AsyncMock()
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
-
-        mock_metadata = {
-            "1": {
-                "email_id": "1",
-                "subject": "Subject 1",
-                "from": "a@test.com",
-                "to": [],
-                "date": datetime(2024, 1, 1, tzinfo=UTC),
-                "attachments": [],
-            },
-            "2": {
-                "email_id": "2",
-                "subject": "Subject 2",
-                "from": "b@test.com",
-                "to": [],
-                "date": datetime(2024, 1, 2, tzinfo=UTC),
-                "attachments": [],
-            },
-            "3": {
-                "email_id": "3",
-                "subject": "Subject 3",
-                "from": "c@test.com",
-                "to": [],
-                "date": datetime(2024, 1, 3, tzinfo=UTC),
-                "attachments": [],
-            },
-        }
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
             with patch.object(email_client, "_batch_fetch_dates", return_value={}) as mock_fetch_dates:
-                with patch.object(
-                    email_client, "_batch_fetch_headers", return_value=mock_metadata
-                ) as mock_fetch_headers:
-                    total, emails = await email_client.get_emails_metadata(page=1, page_size=2)
+                with patch.object(email_client, "_batch_fetch_headers") as mock_fetch_headers:
+                    with pytest.raises(RuntimeError, match="incomplete INTERNALDATE metadata for 3 UIDs"):
+                        await email_client.get_emails_metadata(page=1, page_size=2)
 
-        assert total == 3
-        assert [email["email_id"] for email in emails] == ["3", "2"]
-        mock_fetch_dates.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])
-        mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2"])
+        mock_fetch_dates.assert_called_once_with(mock_imap, ["1", "2", "3"])
+        mock_fetch_headers.assert_not_called()
         mock_imap.logout.assert_called_once()
 
     @pytest.mark.asyncio
@@ -653,7 +626,7 @@ class TestEmailClient:
         message = str(exc_info.value)
         assert "SELECT mailbox Archive failed" in message
         assert "NO" in message
-        assert "[NONEXISTENT] Unknown Mailbox: Archive" in message
+        assert "[NONEXISTENT] Unknown Mailbox: Archive" not in message
         mock_imap.uid_search.assert_not_called()
         mock_imap.logout.assert_called_once()
 
@@ -1010,7 +983,7 @@ class TestBatchFetchDates:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [
                     b'1 FETCH (UID 100 INTERNALDATE "01-Jan-2024 12:00:00 +0000")',
                     b'2 FETCH (UID 200 INTERNALDATE "02-Jan-2024 12:00:00 +0000")',
@@ -1041,7 +1014,7 @@ class TestBatchFetchDates:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [
                     b'1 FETCH (UID 100 INTERNALDATE " 1-Jan-2024 12:00:00 +0000")',
                     b"FETCH completed",
@@ -1080,7 +1053,7 @@ class TestBatchFetchDates:
                 for i, uid in enumerate(uids, 1)
             ]
             data.append(b"FETCH completed")
-            return (None, data)
+            return ("OK", data)
 
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(side_effect=mock_uid_fetch)
@@ -1113,7 +1086,7 @@ class TestBatchFetchDates:
                 f'{i} FETCH (UID {uid} INTERNALDATE "01-Jan-2024 12:00:00 +0000")'.encode()
                 for i, uid in enumerate(uids, 1)
             ]
-            return (None, data)
+            return ("OK", data)
 
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(side_effect=mock_uid_fetch)
@@ -1132,7 +1105,7 @@ class TestBatchFetchHeaders:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [
                     b"1 FETCH (UID 100 BODY[HEADER] {50}",
                     bytearray(b"From: a@test.com\r\nSubject: Test\r\n\r\n"),
@@ -1162,7 +1135,7 @@ class TestBatchFetchHeaders:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [
                     b"1 FETCH (UID 100 BODY[HEADER] {50}",
                     bytearray(b"From: a@test.com\r\nSubject: First\r\n\r\n"),
@@ -1188,7 +1161,7 @@ class TestBatchFetchSenders:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [
                     b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {25}",
                     bytearray(b"From: alice@example.com\r\n\r\n"),
@@ -1212,7 +1185,7 @@ class TestGetEmailsMetadataSenderFilter:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
 
         mock_senders = {"1": "alice@example.com", "2": "bob@evil.com", "3": "alice@example.com"}
@@ -1250,8 +1223,12 @@ class TestGetEmailsMetadataSenderFilter:
         assert total == 2  # honest: allowed count, NOT the raw 3
         assert len(emails) == 2
         assert all(e["from"] == "alice@example.com" for e in emails)
-        mock_fs.assert_called_once_with(mock_imap, [b"1", b"2", b"3"])  # senders fetched for ALL matches
-        mock_fd.assert_called_once_with(mock_imap, [b"1", b"3"])  # dates only for allowed
+        mock_fs.assert_called_once_with(
+            mock_imap,
+            ["1", "2", "3"],
+            header_budget=ANY,
+        )  # senders fetched for ALL matches
+        mock_fd.assert_called_once_with(mock_imap, ["1", "3"])  # dates only for allowed
 
     @pytest.mark.asyncio
     async def test_get_emails_metadata_full_page_despite_blocked(self, email_client):
@@ -1261,7 +1238,7 @@ class TestGetEmailsMetadataSenderFilter:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3 4"]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b"1 2 3 4"]))
         mock_imap.logout = AsyncMock()
 
         mock_senders = {
@@ -1313,7 +1290,7 @@ class TestGetEmailsMetadataSenderFilter:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2 3"]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b"1 2 3"]))
         mock_imap.logout = AsyncMock()
 
         mock_dates = {
@@ -1373,7 +1350,7 @@ class TestSenderFilterCoverage:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {1}", bytearray(b"x"), b")"],
             )
         )
@@ -1387,7 +1364,7 @@ class TestSenderFilterCoverage:
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
             return_value=(
-                None,
+                "OK",
                 [
                     b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {23}",
                     bytearray(b"From: bob@example.com\r\n\r\n"),
@@ -1407,7 +1384,7 @@ class TestSenderFilterCoverage:
         mock_imap.wait_hello_from_server = AsyncMock()
         mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
         mock_imap.select = AsyncMock(return_value=("OK", []))
-        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2"]))
+        mock_imap.uid_search = AsyncMock(return_value=("OK", [b"1 2"]))
         mock_imap.logout = AsyncMock()
         mock_senders = {"1": "bob@evil.com", "2": "carol@evil.com"}
         with patch.object(email_client, "imap_class", return_value=mock_imap):
@@ -1425,7 +1402,7 @@ class TestSenderFilterCoverage:
         """An item whose payload is not a bytearray matches neither branch and is skipped."""
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
-            return_value=(None, [b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {0}", b"not-bytearray", b")"])
+            return_value=("OK", [b"1 FETCH (UID 100 BODY[HEADER.FIELDS (FROM)] {0}", b"not-bytearray", b")"])
         )
         result = await email_client._batch_fetch_senders(mock_imap, [b"100"])
         assert result == {}
@@ -1435,7 +1412,7 @@ class TestSenderFilterCoverage:
         """A trailing-payload item with no UID is skipped."""
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
-            return_value=(None, [b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {x}", bytearray(b"From: a@b.com\r\n\r\n"), b")"])
+            return_value=("OK", [b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {x}", bytearray(b"From: a@b.com\r\n\r\n"), b")"])
         )
         result = await email_client._batch_fetch_senders(mock_imap, [b"100"])
         assert result == {}
@@ -1445,7 +1422,7 @@ class TestSenderFilterCoverage:
         """A trailing-UID item whose header fails to parse is skipped."""
         mock_imap = AsyncMock()
         mock_imap.uid = AsyncMock(
-            return_value=(None, [b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {1}", bytearray(b"x"), b" UID 300)"])
+            return_value=("OK", [b"1 FETCH (BODY[HEADER.FIELDS (FROM)] {1}", bytearray(b"x"), b" UID 300)"])
         )
         with patch.object(email_client, "_parse_headers", return_value=None):
             result = await email_client._batch_fetch_senders(mock_imap, [b"300"])

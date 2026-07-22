@@ -32,6 +32,24 @@ The managed secret service is separate from legacy account-name-based entries.
 Its internal candidate names are intentionally not a diagnostic or user-facing
 contract.
 
+## Indexed metadata privacy
+
+The operational SQLite projection contains no message bodies, raw MIME,
+attachment bytes, passwords, tokens, or secret locators. It can contain account
+source fingerprints, mailbox names, UIDs, UIDVALIDITY, provider flags, and the
+message ID, subject, sender, recipients, and dates required by
+`list_emails_metadata`. Treat it as private email metadata even though it does
+not contain credentials.
+
+Legacy source fingerprints are one-way hashes of non-secret account identity and
+incoming endpoint attributes. Secret values are excluded, and legacy endpoints
+are not copied into managed account rows. The database and SQLite sidecars use
+the same owner-only, anti-symlink checks as managed catalog storage. Existing
+files are checked for exact application schema ownership before WAL is enabled;
+an unrelated or unmarked database is rejected without changing its journal mode
+or creating WAL sidecars. Deleting the projection does not delete provider mail,
+but an untrusted copy can still reveal communication metadata.
+
 ## Credential storage
 
 Persistent legacy configuration is stored in

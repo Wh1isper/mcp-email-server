@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import Icon, ToolAnnotations
 from pydantic import Field
 
+from mcp_email_server.application.metadata import ListEmailMetadataQuery
 from mcp_email_server.bootstrap import assert_legacy_writable
 from mcp_email_server.config import (
     AccountAttributes,
@@ -23,9 +24,18 @@ from mcp_email_server.emails.models import (
     EmailMetadataPageResponse,
     MailboxInfo,
 )
+from mcp_email_server.runtime import get_application_runtime
 
 AnyFunction = Callable[..., Any]
 ToolVisibilityPredicate = Callable[[], bool]
+
+
+def list_effective_accounts() -> list[AccountAttributes]:
+    return get_application_runtime().accounts.execute()
+
+
+async def list_email_metadata(query: ListEmailMetadataQuery) -> EmailMetadataPageResponse:
+    return await get_application_runtime().metadata.execute(query)
 
 
 def _has_send_capable_account() -> bool:
@@ -113,8 +123,7 @@ async def get_account(account_name: str) -> EmailSettings | ProviderSettings | N
 
 @mcp.tool(description="List all configured email accounts with masked credentials.")
 async def list_available_accounts() -> list[AccountAttributes]:
-    settings = get_settings()
-    return [account.masked() for account in settings.get_accounts()]
+    return list_effective_accounts()
 
 
 @mcp.tool(description="Add a new email account configuration to the settings.")
@@ -143,9 +152,12 @@ async def list_emails_metadata(
     account_name: Annotated[str, Field(description="The name of the email account.")],
     page: Annotated[
         int,
-        Field(default=1, description="The page number to retrieve (starting from 1)."),
+        Field(default=1, ge=1, description="The page number to retrieve (starting from 1)."),
     ] = 1,
-    page_size: Annotated[int, Field(default=10, description="The number of emails to retrieve per page.")] = 10,
+    page_size: Annotated[
+        int,
+        Field(default=10, ge=1, le=100, description="The number of emails to retrieve per page."),
+    ] = 10,
     before: Annotated[
         datetime | None,
         Field(default=None, description="Retrieve emails before this datetime (UTC)."),
@@ -194,24 +206,25 @@ async def list_emails_metadata(
         ),
     ] = None,
 ) -> EmailMetadataPageResponse:
-    handler = dispatch_handler(account_name)
-
-    return await handler.get_emails_metadata(
-        page=page,
-        page_size=page_size,
-        before=before,
-        since=since,
-        subject=subject,
-        from_address=from_address,
-        to_address=to_address,
-        order=order,
-        mailbox=mailbox,
-        seen=seen,
-        flagged=flagged,
-        answered=answered,
-        body=body,
-        text=text,
-        has_attachment=has_attachment,
+    return await list_email_metadata(
+        ListEmailMetadataQuery(
+            account_name=account_name,
+            page=page,
+            page_size=page_size,
+            before=before,
+            since=since,
+            subject=subject,
+            from_address=from_address,
+            to_address=to_address,
+            order=order,
+            mailbox=mailbox,
+            seen=seen,
+            flagged=flagged,
+            answered=answered,
+            body=body,
+            text=text,
+            has_attachment=has_attachment,
+        )
     )
 
 

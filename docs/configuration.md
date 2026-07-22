@@ -75,9 +75,31 @@ mcp-email-server config select legacy
 Managed account and binding summaries never print secret locators or values.
 `config doctor` also verifies active secret availability without printing the
 secret or locator. Disabled accounts are revalidated and excluded before every
-provider access, including calls in an already-running stdio session. Selecting managed mode
-never deletes preserved legacy TOML rows, and selecting legacy mode never
-deletes the managed catalog.
+provider access, including calls in an already-running stdio session. Selecting
+managed mode never deletes preserved legacy TOML rows, and selecting legacy mode
+never deletes the managed catalog.
+
+## Operational metadata database
+
+`list_emails_metadata` uses `db_location` for a bounded, rebuildable metadata
+projection. Managed mode stores that projection beside the authoritative catalog
+in the selected managed database. Legacy and environment-composited accounts use
+the configured `db_location`, whose default is `db.sqlite3` next to the active
+configuration file. The server creates this operational database only when the
+metadata workflow first needs it.
+
+Legacy source mapping stores a stable non-secret fingerprint and never copies an
+account password, keyring entry, endpoint row, or secret locator into managed
+configuration tables. The projection may contain mailbox names and message
+headers needed by the public metadata result. Removing the operational database
+only discards rebuildable observations; it does not remove accounts or mail.
+
+An exact managed schema version 1 baseline is migrated transactionally to
+version 2 on first open by adding only the operational projection tables.
+Coincidental version markers or partially compatible schemas are never claimed.
+Unsupported, corrupt, or insecure managed storage fails closed. In legacy mode, an unavailable or unsafe
+operational database produces a bounded warning and the metadata query uses its
+bounded IMAP fallback instead.
 
 ## Legacy configuration precedence
 

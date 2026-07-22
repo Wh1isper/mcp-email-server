@@ -23,6 +23,13 @@ import aioimaplib
 import aiosmtplib
 from bs4 import BeautifulSoup
 
+from mcp_email_server.application.metadata import (
+    MAX_METADATA_SNAPSHOT_ROWS,
+    MailboxMetadataSnapshot,
+    MailboxState,
+    MetadataProviderObservationError,
+    MetadataQueryTooBroadError,
+)
 from mcp_email_server.config import EmailServer, EmailSettings, get_settings, sender_allowed
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
@@ -37,6 +44,30 @@ from mcp_email_server.log import logger
 
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
+MAX_METADATA_CANDIDATES = 10_000
+MAX_INDEXED_UID_WINDOW = MAX_METADATA_SNAPSHOT_ROWS
+MAX_METADATA_HEADER_BYTES = 64 * 1024
+MAX_METADATA_HEADER_TOTAL_BYTES = 4 * 1024 * 1024
+MAX_METADATA_HEADER_FETCH_UIDS = MAX_METADATA_HEADER_TOTAL_BYTES // (MAX_METADATA_HEADER_BYTES + 1)
+MAX_IMAP_UID = 2**32 - 1
+MAX_METADATA_UID_SEARCH_BYTES = MAX_METADATA_CANDIDATES * 11
+
+
+class MetadataPayloadTooLargeError(ValueError):
+    """Provider-controlled headers exceeded the bounded metadata budget."""
+
+
+class _MetadataHeaderBudget:
+    def __init__(self) -> None:
+        self.total_bytes = 0
+
+    def add(self, raw_headers: bytes) -> None:
+        if len(raw_headers) > MAX_METADATA_HEADER_BYTES:
+            raise MetadataPayloadTooLargeError("provider_payload_too_large: metadata header exceeds 64 KiB")
+        self.total_bytes += len(raw_headers)
+        if self.total_bytes > MAX_METADATA_HEADER_TOTAL_BYTES:
+            raise MetadataPayloadTooLargeError("provider_payload_too_large: metadata header query exceeds 4 MiB")
+
 
 # aioimaplib's protocol-level CAPABILITY command has no built-in timeout.
 _IMAP_CAPABILITY_TIMEOUT_SECONDS = 30.0
@@ -233,52 +264,76 @@ def _quote_mailbox(mailbox: str) -> str:
 
 
 def _uid_sort_key(uid: bytes | str) -> int:
-    """Return a numeric sort key for IMAP UIDs."""
+    """Return a numeric sort key for already validated IMAP UIDs."""
     value = uid.decode() if isinstance(uid, bytes) else uid
     return int(value)
 
 
+def _normalize_search_uids(messages: Any) -> list[str]:  # noqa: C901 - bounded provider UID validation
+    """Return canonical single UIDs from one bounded UID SEARCH payload."""
+    if not isinstance(messages, list | tuple) or not messages or not messages[0]:
+        return []
+    # aioimaplib places the UID SEARCH payload first and may retain a tagged
+    # completion line in later response elements. Only the first element is a
+    # UID set under this adapter contract.
+    payload = messages[0]
+    if isinstance(payload, bytes):
+        if len(payload) > MAX_METADATA_UID_SEARCH_BYTES:
+            raise MetadataQueryTooBroadError(
+                f"query_too_broad: metadata search exceeded {MAX_METADATA_CANDIDATES} candidate UIDs"
+            )
+        try:
+            text = payload.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise MetadataProviderObservationError("Provider returned invalid UID search results") from exc
+    elif isinstance(payload, str):
+        if len(payload.encode("utf-8")) > MAX_METADATA_UID_SEARCH_BYTES:
+            raise MetadataQueryTooBroadError(
+                f"query_too_broad: metadata search exceeded {MAX_METADATA_CANDIDATES} candidate UIDs"
+            )
+        text = payload
+    else:
+        raise MetadataProviderObservationError("Provider returned invalid UID search results")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for token in text.split():
+        if re.fullmatch(r"[1-9][0-9]*", token) is None:
+            raise MetadataProviderObservationError("Provider returned invalid UID search results")
+        value = int(token)
+        if value > MAX_IMAP_UID or str(value) != token or token in seen:
+            raise MetadataProviderObservationError("Provider returned invalid UID search results")
+        seen.add(token)
+        result.append(token)
+    if len(result) > MAX_METADATA_CANDIDATES:
+        raise MetadataQueryTooBroadError(
+            f"query_too_broad: metadata search exceeded {MAX_METADATA_CANDIDATES} candidate UIDs"
+        )
+    return result
+
+
 def _imap_status(response: Any) -> str:
-    """Return the normalized status from an aioimaplib response."""
+    """Return a short normalized status without exposing provider text."""
     if hasattr(response, "result"):
-        return str(response.result).upper()
-    if isinstance(response, tuple) and response:
-        return str(response[0]).upper()
-    return str(response).upper()
-
-
-def _format_imap_response_detail(response: Any) -> str:
-    """Return a compact, readable IMAP response detail string."""
-    status = _imap_status(response)
-    lines = getattr(response, "lines", None)
-    if lines is None and isinstance(response, tuple) and len(response) > 1:
-        lines = response[1]
-
-    detail_parts = []
-    for line in lines or []:
-        if isinstance(line, bytes):
-            detail_parts.append(line.decode("utf-8", errors="replace"))
-        else:
-            detail_parts.append(str(line))
-
-    detail = " ".join(part for part in detail_parts if part).strip()
-    return f"{status} {detail}".strip()
+        raw_status = response.result
+    elif isinstance(response, tuple) and response:
+        raw_status = response[0]
+    else:
+        raw_status = response
+    status = str(raw_status)[:16].upper()
+    return status if status in {"OK", "NO", "BAD", "BYE", "PREAUTH"} else "UNKNOWN"
 
 
 def _raise_for_imap_error(response: Any, operation: str) -> None:
-    """Raise when an IMAP command returns a non-OK status."""
-    if _imap_status(response) != "OK":
-        detail = _format_imap_response_detail(response)
-        msg = f"{operation} failed" + (f": {detail}" if detail else "")
-        raise RuntimeError(msg)
+    """Raise a bounded error when an IMAP command returns a non-OK status."""
+    status = _imap_status(response)
+    if status != "OK":
+        raise RuntimeError(f"{operation} failed ({status})")
 
 
 def _raise_for_imap_command_failure(response: Any, operation: str) -> None:
-    """Raise only when an IMAP command reports an explicit failure status."""
-    if _imap_status(response) in {"NO", "BAD"}:
-        detail = _format_imap_response_detail(response)
-        msg = f"{operation} failed" + (f": {detail}" if detail else "")
-        raise RuntimeError(msg)
+    """Require an authoritative IMAP command to return OK."""
+    _raise_for_imap_error(response, operation)
 
 
 def _decoded_payload(message: Message) -> bytes | None:
@@ -343,8 +398,10 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
                     '("name" "mcp-email-server" "version" "1.0.0")',
                 )
             )
-    except Exception as e:
-        logger.warning(f"IMAP ID command failed: {e!s}")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("IMAP ID command failed")
 
 
 async def _imap_login(
@@ -368,16 +425,16 @@ async def _imap_login(
     real error and back off, and so a one-off auth failure does not cascade
     into a multi-minute lock-out.
     """
-    response = await imap.login(user_name, password)
-    if response.result == "OK":
+    try:
+        response = await imap.login(user_name, password)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        raise ConnectionError("IMAP login failed (TRANSPORT)") from None
+    status = _imap_status(response)
+    if status == "OK":
         return
-    detail = " ".join(
-        line.decode("utf-8", errors="replace") if isinstance(line, bytes) else str(line)
-        for line in (response.lines or [])
-    ).strip()
-    raise ConnectionError(
-        f"IMAP login failed for {user_name!r}: {response.result}" + (f" ({detail})" if detail else "")
-    )
+    raise ConnectionError(f"IMAP login failed ({status})")
 
 
 def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
@@ -797,37 +854,48 @@ class EmailClient:
                 "date": date,
                 "attachments": [],
             }
-        except Exception as e:
-            logger.error(f"Error parsing email headers: {e!s}")
+        except Exception:
+            logger.error("Error parsing email headers")
             return None
 
     async def _fetch_dates_chunk(
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
-        chunk: list[bytes],
+        chunk: list[bytes] | list[str],
         chunk_num: int,
         total_chunks: int,
         timeout: float = 30.0,
     ) -> dict[str, datetime]:
         """Fetch INTERNALDATE for a single chunk of UIDs."""
-        uid_list = ",".join(uid.decode() for uid in chunk)
+        uid_list = ",".join(uid.decode() if isinstance(uid, bytes) else uid for uid in chunk)
         chunk_start = time.perf_counter()
-        _, data = await asyncio.wait_for(
+        response = await asyncio.wait_for(
             imap.uid("fetch", uid_list, "(INTERNALDATE)"),
             timeout=timeout,
         )
+        _raise_for_imap_command_failure(response, f"FETCH INTERNALDATE for {len(chunk)} UIDs")
+        _, data = response
         chunk_elapsed = time.perf_counter() - chunk_start
 
+        expected_uids = {uid.decode() if isinstance(uid, bytes) else uid for uid in chunk}
         chunk_dates: dict[str, datetime] = {}
         for item in data:
             if not isinstance(item, bytes) or b"INTERNALDATE" not in item:
                 continue
             uid_match = re.search(rb"UID (\d+)", item)
             date_match = re.search(rb'INTERNALDATE "([^"]+)"', item)
-            if uid_match and date_match:
-                uid = uid_match.group(1).decode()
-                date_str = date_match.group(1).decode().strip()
+            if uid_match is None or date_match is None:
+                raise MetadataProviderObservationError("Provider returned invalid INTERNALDATE metadata")
+            uid = uid_match.group(1).decode()
+            if uid not in expected_uids or uid in chunk_dates:
+                raise MetadataProviderObservationError("Provider returned invalid INTERNALDATE metadata")
+            try:
+                date_str = date_match.group(1).decode("ascii").strip()
                 chunk_dates[uid] = datetime.strptime(date_str, "%d-%b-%Y %H:%M:%S %z")
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise MetadataProviderObservationError("Provider returned invalid INTERNALDATE metadata") from exc
+        if set(chunk_dates) != expected_uids:
+            raise MetadataProviderObservationError("Provider returned incomplete INTERNALDATE metadata")
 
         if total_chunks > 1:
             logger.info(f"Fetched dates chunk {chunk_num}/{total_chunks}: {len(chunk)} UIDs in {chunk_elapsed:.2f}s")
@@ -837,7 +905,7 @@ class EmailClient:
     async def _batch_fetch_dates(
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
-        email_ids: list[bytes],
+        email_ids: list[bytes] | list[str],
         chunk_size: int = 500,
     ) -> dict[str, datetime]:
         """Batch fetch INTERNALDATE for all UIDs in sequential chunks.
@@ -862,43 +930,67 @@ class EmailClient:
 
         return uid_dates
 
-    async def _batch_fetch_headers(
+    async def _batch_fetch_headers(  # noqa: C901 - bounded provider response alternatives
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         email_ids: list[bytes] | list[str],
+        *,
+        include_flags: bool = False,
+        chunk_size: int = 100,
+        header_budget: _MetadataHeaderBudget | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Batch fetch headers for a list of UIDs."""
+        """Fetch bounded header chunks, optionally retaining canonical flags."""
         if not email_ids:
             return {}
 
-        # Normalize to list of strings
         str_ids = [uid.decode() if isinstance(uid, bytes) else uid for uid in email_ids]
-        uid_list = ",".join(str_ids)
-        _, data = await imap.uid("fetch", uid_list, "BODY.PEEK[HEADER]")
-
         results: dict[str, dict[str, Any]] = {}
-        for i, item in enumerate(data):
-            if not isinstance(item, bytes) or b"BODY[HEADER]" not in item:
-                continue
-            # First try to find UID in the same line (standard format)
-            uid_match = re.search(rb"UID (\d+)", item)
-            if uid_match and i + 1 < len(data) and isinstance(data[i + 1], bytearray):
-                uid = uid_match.group(1).decode()
-                raw_headers = bytes(data[i + 1])
-                metadata = self._parse_headers(uid, raw_headers)
-                if metadata:
-                    results[uid] = metadata
-            # Proton Bridge format: UID comes AFTER header data in a separate item
-            # Format: [i]=b'N FETCH (BODY[HEADER] {size}', [i+1]=bytearray(headers), [i+2]=b' UID xxx)'
-            elif i + 2 < len(data) and isinstance(data[i + 1], bytearray):
-                uid_after_match = re.search(rb"UID (\d+)", data[i + 2]) if isinstance(data[i + 2], bytes) else None
-                if uid_after_match:
+        budget = header_budget or _MetadataHeaderBudget()
+        partial = f"<0.{MAX_METADATA_HEADER_BYTES + 1}>"
+        fetch_item = f"(FLAGS BODY.PEEK[HEADER]{partial})" if include_flags else f"BODY.PEEK[HEADER]{partial}"
+        chunk_size = min(chunk_size, MAX_METADATA_HEADER_FETCH_UIDS)
+        for start in range(0, len(str_ids), chunk_size):
+            chunk = str_ids[start : start + chunk_size]
+            uid_list = ",".join(chunk)
+            response = await imap.uid("fetch", uid_list, fetch_item)
+            _raise_for_imap_command_failure(response, f"FETCH headers for {len(chunk)} UIDs")
+            _, data = response
+            for i, item in enumerate(data):
+                if not isinstance(item, bytes) or b"BODY[HEADER]" not in item:
+                    continue
+                uid_match = re.search(rb"UID (\d+)", item)
+                protocol_items = [item]
+                if i + 2 < len(data) and isinstance(data[i + 2], bytes):
+                    protocol_items.append(data[i + 2])
+                if uid_match and i + 1 < len(data) and isinstance(data[i + 1], bytearray):
+                    uid = uid_match.group(1).decode()
+                    raw_headers = bytes(data[i + 1])
+                    budget.add(raw_headers)
+                    metadata = self._parse_headers(uid, raw_headers)
+                elif i + 2 < len(data) and isinstance(data[i + 1], bytearray):
+                    uid_after_match = re.search(rb"UID (\d+)", data[i + 2]) if isinstance(data[i + 2], bytes) else None
+                    if uid_after_match is None:
+                        continue
                     uid = uid_after_match.group(1).decode()
                     raw_headers = bytes(data[i + 1])
+                    budget.add(raw_headers)
                     metadata = self._parse_headers(uid, raw_headers)
-                    if metadata:
-                        results[uid] = metadata
-
+                else:
+                    continue
+                if metadata:
+                    if include_flags:
+                        flags_match = next(
+                            (
+                                match
+                                for protocol in protocol_items
+                                if (match := re.search(rb"FLAGS \(([^)]*)\)", protocol)) is not None
+                            ),
+                            None,
+                        )
+                        metadata["_flags"] = (
+                            flags_match.group(1).decode(errors="replace").split() if flags_match is not None else []
+                        )
+                    results[uid] = metadata
         return results
 
     async def _batch_fetch_senders(
@@ -906,6 +998,7 @@ class EmailClient:
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         email_ids: list[bytes] | list[str],
         chunk_size: int = 500,
+        header_budget: _MetadataHeaderBudget | None = None,
     ) -> dict[str, str]:
         """Batch fetch the From header for all UIDs (chunked, sequential), for allowlist filtering.
 
@@ -915,26 +1008,33 @@ class EmailClient:
         if not email_ids:
             return {}
 
+        chunk_size = min(chunk_size, MAX_METADATA_HEADER_FETCH_UIDS)
         chunks = [email_ids[i : i + chunk_size] for i in range(0, len(email_ids), chunk_size)]
         senders: dict[str, str] = {}
+        budget = header_budget or _MetadataHeaderBudget()
         for chunk in chunks:
             str_ids = [uid.decode() if isinstance(uid, bytes) else uid for uid in chunk]
             uid_list = ",".join(str_ids)
-            fetch_response = await imap.uid("fetch", uid_list, "BODY.PEEK[HEADER.FIELDS (FROM)]")
-            _raise_for_imap_command_failure(fetch_response, f"FETCH From headers for UIDs {uid_list}")
+            partial = f"<0.{MAX_METADATA_HEADER_BYTES + 1}>"
+            fetch_response = await imap.uid("fetch", uid_list, f"BODY.PEEK[HEADER.FIELDS (FROM)]{partial}")
+            _raise_for_imap_command_failure(fetch_response, f"FETCH From headers for {len(chunk)} UIDs")
             _, data = fetch_response
             for i, item in enumerate(data):
                 if not isinstance(item, bytes) or b"BODY[HEADER" not in item:
                     continue
                 uid_match = re.search(rb"UID (\d+)", item)
                 if uid_match and i + 1 < len(data) and isinstance(data[i + 1], bytearray):
-                    meta = self._parse_headers(uid_match.group(1).decode(), bytes(data[i + 1]))
+                    raw_headers = bytes(data[i + 1])
+                    budget.add(raw_headers)
+                    meta = self._parse_headers(uid_match.group(1).decode(), raw_headers)
                     if meta:
                         senders[meta["email_id"]] = meta["from"]
                 elif i + 2 < len(data) and isinstance(data[i + 1], bytearray):
                     uid_after = re.search(rb"UID (\d+)", data[i + 2]) if isinstance(data[i + 2], bytes) else None
                     if uid_after:
-                        meta = self._parse_headers(uid_after.group(1).decode(), bytes(data[i + 1]))
+                        raw_headers = bytes(data[i + 1])
+                        budget.add(raw_headers)
+                        meta = self._parse_headers(uid_after.group(1).decode(), raw_headers)
                         if meta:
                             senders[meta["email_id"]] = meta["from"]
         return senders
@@ -968,7 +1068,124 @@ class EmailClient:
         uid_senders = await self._batch_fetch_senders(imap, email_ids)
         return {uid for uid in email_ids if not sender_allowed(uid_senders.get(uid, ""), allowed_senders)}
 
-    async def get_emails_metadata(
+    @staticmethod
+    def _parse_mailbox_state(response: Any) -> MailboxState:
+        _raise_for_imap_command_failure(response, "STATUS mailbox")
+        _, data = response
+        payload = b" ".join(item for item in data if isinstance(item, bytes))
+        values: dict[bytes, int] = {}
+        for name in (b"UIDVALIDITY", b"UIDNEXT", b"MESSAGES"):
+            match = re.search(rb"\b" + name + rb"\s+(\d+)\b", payload, re.IGNORECASE)
+            if match is None:
+                raise RuntimeError("STATUS mailbox did not return required bounded state")
+            values[name] = int(match.group(1))
+        if values[b"UIDVALIDITY"] < 1 or values[b"UIDNEXT"] < 1 or values[b"MESSAGES"] < 0:
+            raise RuntimeError("STATUS mailbox returned invalid state")
+        return MailboxState(
+            uidvalidity=values[b"UIDVALIDITY"],
+            uidnext=values[b"UIDNEXT"],
+            message_count=values[b"MESSAGES"],
+        )
+
+    async def _status_mailbox(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        mailbox: str,
+    ) -> MailboxState:
+        response = await imap.status(_quote_mailbox(mailbox), "(UIDVALIDITY UIDNEXT MESSAGES)")
+        return self._parse_mailbox_state(response)
+
+    async def get_mailbox_state(self, mailbox: str = "INBOX") -> MailboxState:
+        """Read the small provider state needed to qualify a complete projection."""
+        imap = await self._connect_imap()
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            return await self._status_mailbox(imap, mailbox)
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                logger.info("IMAP logout failed")
+
+    async def get_mailbox_metadata_snapshot(
+        self,
+        mailbox: str = "INBOX",
+        *,
+        maximum_window: int = MAX_INDEXED_UID_WINDOW,
+        candidate_limit: int = MAX_METADATA_CANDIDATES,
+    ) -> MailboxMetadataSnapshot:
+        """Observe one bounded recent UID window without fetching message bodies."""
+        if not 1 <= maximum_window <= candidate_limit:
+            raise ValueError("Metadata snapshot window is invalid")
+        imap = await self._connect_imap()
+        observed_at = datetime.now(UTC)
+        mailbox_info = MailboxInfo(name=mailbox, delimiter="", flags=[])
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            list_response = await imap.list(
+                '""',
+                _quote_mailbox(mailbox),  # pyright: ignore[reportArgumentType]
+            )
+            if isinstance(list_response, tuple) and str(list_response[0]).upper() == "OK":
+                for item in list_response[1]:
+                    parsed = _parse_list_response(item)
+                    if parsed is not None and parsed.name == mailbox:
+                        mailbox_info = parsed
+                        break
+            state = await self._status_mailbox(imap, mailbox)
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+            search_response = await imap.uid_search("ALL", charset=None)
+            _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
+            _, messages = search_response
+            email_ids = _normalize_search_uids(messages)
+            if len(email_ids) > candidate_limit:
+                raise MetadataQueryTooBroadError(
+                    f"query_too_broad: metadata search exceeded {candidate_limit} candidate UIDs"
+                )
+            selected_ids = sorted(email_ids, key=_uid_sort_key, reverse=True)[:maximum_window]
+            uid_dates = await self._batch_fetch_dates(imap, selected_ids)
+            metadata_by_uid = await self._batch_fetch_headers(imap, selected_ids, include_flags=True)
+            emails: list[dict[str, Any]] = []
+            for uid in selected_ids:
+                metadata = metadata_by_uid.get(uid)
+                if metadata is None:
+                    continue
+                metadata["_internal_date"] = uid_dates.get(uid)
+                emails.append(metadata)
+            final_state = await self._status_mailbox(imap, mailbox)
+            valid_epoch_uids = all(
+                email["email_id"].isdigit() and 0 < int(email["email_id"]) < final_state.uidnext for email in emails
+            )
+            same_epoch = state.uidvalidity == final_state.uidvalidity
+            if not same_epoch:
+                # Rows fetched across an epoch transition have no safe namespace.
+                emails = []
+            complete = (
+                state == final_state
+                and valid_epoch_uids
+                and len(email_ids) <= maximum_window
+                and set(uid_dates) == set(email_ids)
+                and len(emails) == len(email_ids)
+                and all(isinstance(email.get("_internal_date"), datetime) for email in emails)
+                and final_state.message_count == len(email_ids)
+            )
+            return MailboxMetadataSnapshot(
+                state=final_state,
+                mailbox=mailbox_info,
+                emails=tuple(emails),
+                complete=complete,
+                observed_at=observed_at,
+            )
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                logger.info("IMAP logout failed")
+
+    async def get_emails_metadata(  # noqa: C901 - bounded compatibility query decision tree
         self,
         page: int = 1,
         page_size: int = 10,
@@ -987,6 +1204,10 @@ class EmailClient:
         has_attachment: bool | None = None,
         allowed_senders: list[str] | None = None,
     ) -> tuple[int, list[dict[str, Any]]]:
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
         imap = await self._connect_imap()
         try:
             # Login and select mailbox
@@ -1022,22 +1243,25 @@ class EmailClient:
             # criteria such as locale-dependent date strings.
             search_text_values = (subject, body, text, from_address, to_address)
             charset = "utf-8" if any(value and not value.isascii() for value in search_text_values) else None
-            _, messages = await imap.uid_search(*search_criteria, charset=charset)
+            search_response = await imap.uid_search(*search_criteria, charset=charset)
+            _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
+            _, messages = search_response
 
             # Handle empty or None responses
             if not messages or not messages[0]:
                 logger.warning("No messages returned from search")
                 return 0, []
 
-            email_ids = messages[0].split()
+            email_ids = _normalize_search_uids(messages)
             logger.info(f"Found {len(email_ids)} email IDs")
+            header_budget = _MetadataHeaderBudget()
 
             # Sender allowlist: filter candidates BEFORE sorting/pagination so total + pages stay honest.
             if allowed_senders:
-                uid_senders = await self._batch_fetch_senders(imap, email_ids)
-                email_ids = [
-                    uid for uid in email_ids if sender_allowed(uid_senders.get(uid.decode(), ""), allowed_senders)
-                ]
+                uid_senders = await self._batch_fetch_senders(imap, email_ids, header_budget=header_budget)
+                if any(uid not in uid_senders for uid in email_ids):
+                    raise RuntimeError("Provider returned incomplete sender metadata")
+                email_ids = [uid for uid in email_ids if sender_allowed(uid_senders.get(uid, ""), allowed_senders)]
                 logger.info(f"Sender allowlist active: {len(email_ids)} of {len(uid_senders)} match")
                 if not email_ids:
                     return 0, []
@@ -1047,19 +1271,19 @@ class EmailClient:
             uid_dates = await self._batch_fetch_dates(imap, email_ids)
             fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
 
-            missing_date_count = len(email_ids) - len(uid_dates)
-            if missing_date_count:
-                logger.warning(
-                    f"Missing INTERNALDATE for {missing_date_count}/{len(email_ids)} searched UIDs; "
-                    "falling back to UID order for those messages"
+            requested_uid_set = set(email_ids)
+            returned_uid_set = set(uid_dates)
+            if returned_uid_set != requested_uid_set:
+                missing_date_count = len(requested_uid_set - returned_uid_set)
+                raise MetadataProviderObservationError(
+                    f"Provider returned incomplete INTERNALDATE metadata for {missing_date_count} UIDs"
                 )
 
-            # Keep UID SEARCH results as the source of truth. Use INTERNALDATE where
-            # available, and fall back to UID ordering for provider-specific
-            # INTERNALDATE response formats that cannot be parsed.
+            # Keep UID SEARCH results as the source of truth and require
+            # INTERNALDATE for exact provider-compatible ordering.
             if order == "desc":
                 sorted_uids = sorted(
-                    (uid.decode() for uid in email_ids),
+                    (uid.decode() if isinstance(uid, bytes) else uid for uid in email_ids),
                     key=lambda uid: (
                         uid_dates.get(uid) is not None,
                         uid_dates.get(uid) or datetime.min.replace(tzinfo=UTC),
@@ -1069,7 +1293,7 @@ class EmailClient:
                 )
             else:
                 sorted_uids = sorted(
-                    (uid.decode() for uid in email_ids),
+                    (uid.decode() if isinstance(uid, bytes) else uid for uid in email_ids),
                     key=lambda uid: (
                         uid_dates.get(uid) is None,
                         uid_dates.get(uid) or datetime.max.replace(tzinfo=UTC),
@@ -1087,7 +1311,7 @@ class EmailClient:
 
             # Phase 2: Batch fetch headers for requested page only
             fetch_headers_start = time.perf_counter()
-            metadata_by_uid = await self._batch_fetch_headers(imap, page_uids)
+            metadata_by_uid = await self._batch_fetch_headers(imap, page_uids, header_budget=header_budget)
             fetch_headers_elapsed = time.perf_counter() - fetch_headers_start
 
             logger.info(
@@ -1095,14 +1319,16 @@ class EmailClient:
                 f"{fetch_headers_elapsed:.2f}s headers ({len(page_uids)} UIDs)"
             )
 
-            # Collect page results in sorted order
-            page_emails = [metadata_by_uid[uid] for uid in page_uids if uid in metadata_by_uid]
+            missing_page_uids = [uid for uid in page_uids if uid not in metadata_by_uid]
+            if missing_page_uids:
+                raise RuntimeError("Provider returned an incomplete metadata page")
+            page_emails = [metadata_by_uid[uid] for uid in page_uids]
             return len(email_ids), page_emails
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
     def _check_email_content(self, data: list) -> bool:
         """Check if the fetched data contains actual email content."""
@@ -1208,8 +1434,8 @@ class EmailClient:
             # Ensure we logout properly
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
     async def download_attachment(
         self,
@@ -1301,8 +1527,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
     def _validate_attachment(self, file_path: str) -> Path:
         """Validate attachment file path."""
@@ -1576,8 +1802,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.debug(f"Error during logout: {e}")
+            except Exception:
+                logger.debug("IMAP logout failed")
 
     async def append_to_mailbox(
         self,
@@ -1636,8 +1862,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.debug(f"Error during logout: {e}")
+            except Exception:
+                logger.debug("IMAP logout failed")
 
     async def delete_emails(
         self,
@@ -1698,8 +1924,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
         deleted_set = set(deleted_ids)
         failed_set = set(failed_ids)
@@ -1745,8 +1971,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
         return marked_ids, failed_ids
 
@@ -1817,8 +2043,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
         moved_set = set(moved_ids)
         failed_set = set(failed_ids)
@@ -1851,8 +2077,8 @@ class EmailClient:
         finally:
             try:
                 await imap.logout()
-            except Exception as e:
-                logger.info(f"Error during logout: {e}")
+            except Exception:
+                logger.info("IMAP logout failed")
 
         return mailboxes
 

@@ -77,17 +77,24 @@ seeder and observer, so the system is not solely verifying itself.
 | Configuration | legacy TOML plus managed CLI staging, activation, explicit selection, and process restart              |
 | Managed mode  | a keyring-bound managed account reaches live IMAP; a missing selected database fails without fallback  |
 | SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                      |
-| IMAP read     | Bob can list metadata and retrieve full content by UID                                                 |
+| IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                         |
 | Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly |
 | Sent copy     | Alice receives the application-created copy in `Sent`                                                  |
 | Flags         | `mark_emails_as_read` produces `\\Seen`; saved drafts have `\\Draft` and `\\Seen`                      |
 | Mailboxes     | the observer provisions `Sent`, `Drafts`, and `Archive`; MCP discovers and uses them                   |
+| Index         | initial projection, qualified SQLite reuse, filter fallback, bounds, and restart reuse are verified    |
 | Mutations     | explicit move, automatic archive selection, draft save, and delete are observed in IMAP                |
 
 `list_emails_metadata` currently fetches headers only and therefore returns an
 empty attachment list. Attachment names are verified through
 `get_emails_content`, which fetches and parses the complete MIME message. The
 baseline records this existing contract rather than silently changing it.
+The E2E suite also inspects only non-secret projection state to verify that a
+complete five-message mailbox is persisted once, reused for a second page, and
+reused after restarting the packaged stdio process. Subject, address, flag,
+body, text, and attachment-filter requests exercise the application-owned IMAP
+fallback with exact totals, and an oversized page is rejected at the MCP schema
+boundary.
 
 ## Isolation and security
 

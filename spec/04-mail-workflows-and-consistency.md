@@ -54,7 +54,8 @@ Internal keyset order is deterministic by UID descending (or ascending when the
 public request requires it), with a fixed maximum page size.
 
 - Partial coverage is explicit and never claims mailbox completeness.
-- Partial refresh upserts observed rows and never deletes an absent row.
+- Partial refresh never infers provider removal from absence; local retention may
+  evict rows outside the explicitly observed recent window.
 - UIDVALIDITY change invalidates the affected projection before reuse.
 - Removal by absence requires a complete matching-UIDVALIDITY reconciliation or
   explicit provider/mutation evidence.
@@ -145,10 +146,36 @@ supplies definitive evidence. The application never retries an ambiguous
 mutation automatically. Provider errors are sanitized and bounded; server text,
 message content, credentials, and local internals are not echoed blindly.
 
+## Implementation Progress
+
+Effective account listing now reloads selected-mode authority through a small
+application service. The metadata listing workflow is implemented through one
+injected application query service assembled by the process-scoped composition
+root. The MCP adapter creates a typed query and no longer dispatches this tool
+directly to `ClassicEmailHandler`. The first indexed subset is intentionally conservative:
+unfiltered one-mailbox pages can use complete SQLite coverage after a provider
+state probe; provider-specific text/date/address matching, mutable flag filters,
+body/text search, and attachment heuristics remain on the application-owned
+bounded IMAP fallback.
+
+A full mailbox of at most 1,000 messages can establish complete coverage only
+when matching provider state observations bracket the refresh. Larger mailboxes
+retain a partial recent UID window, evict older local rows, and cannot answer the
+public exact total. Provider fallback rejects more than 10,000 matching
+candidate UIDs. SEARCH results must contain unique canonical single UIDs in the
+IMAP UID range; range/set syntax, zero, duplicates, and overflow are rejected
+before any FETCH. Full and From-only allowlist metadata headers use partial IMAP
+fetches limited to 64 KiB each and 4 MiB total per logical query or refresh;
+each wire FETCH is sized below that ceiling. Missing, duplicate, or mismatched
+sender or INTERNALDATE observations fail instead of producing an inexact total
+or UID-substituted ordering. Provider transport failures map to fixed bounded
+application errors. Header refresh and body retrieval use PEEK forms and therefore do not
+mark messages read.
+
 ## Validation
 
 Tests cover index eligibility and fallback, exact filtered totals, every current
-metadata filter, UIDVALIDITY invalidation, partial refresh, PEEK, account and
+metadata filter, UIDVALIDITY invalidation, bounded partial-window eviction, PEEK, account and
 sender policy, scoped expunge, concurrent unrelated `\Deleted` messages,
 per-target ordering, partial move, ambiguous APPEND/SMTP outcomes, sent-copy
 separation, and restart behavior for any workflow-specific durable state.
