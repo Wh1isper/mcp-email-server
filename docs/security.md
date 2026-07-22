@@ -4,9 +4,37 @@ An email MCP server can read private messages, modify mailboxes, send messages,
 and access local files. Review the controls on this page before exposing it to
 an MCP client or network.
 
+## Managed credential storage
+
+Managed mode requires an operating-system keyring backend and never falls back
+to TOML plaintext. SQLite stores only random opaque binding references and
+bounded lifecycle states. A create or rotation writes a new immutable keyring
+candidate, commits it as active only if the account revision still matches, and
+records the old binding as cleanup-required in that same transaction. It then
+best-effort removes the old candidate and marks cleanup complete. A crash before
+deletion therefore remains visible to `config doctor`. The active credential is
+never overwritten in place.
+
+Enter managed credentials through the masked prompt or `--password-stdin`.
+Never place them in argv. `config doctor`, account summaries, errors, logs, and
+MCP results do not expose secret values or candidate locators. A missing or
+unreadable active secret fails closed rather than selecting a legacy account or
+plaintext fallback.
+
+On POSIX systems, managed bootstrap files, their immediate parent directory,
+the SQLite database, and SQLite sidecars must be owned by the current user and
+must not grant group or world access. Symlinked or non-regular bootstrap and
+database paths are rejected. New directories and files are created with `0700`
+and `0600` permissions respectively. Correct permissions before retrying; do
+not bypass these checks by moving secrets into the catalog.
+
+The managed secret service is separate from legacy account-name-based entries.
+Its internal candidate names are intentionally not a diagnostic or user-facing
+contract.
+
 ## Credential storage
 
-Persistent configuration is stored in
+Persistent legacy configuration is stored in
 `~/.config/mcp-email-server/config.toml` by default. The `credential_storage`
 setting controls where passwords are written.
 
@@ -80,6 +108,9 @@ environment overrides unless persisting the effective runtime settings is
 intended. A normal settings save serializes that runtime view.
 
 ## Credential migration
+
+These commands migrate legacy TOML credentials only. They are rejected while
+managed mode is selected; managed credentials use `account set-secret` instead.
 
 Move all credentials represented by the stored configuration into the keyring:
 

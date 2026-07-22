@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from functools import lru_cache
 from typing import Literal
 
+from mcp_email_server.bootstrap import assert_legacy_writable
 from mcp_email_server.log import logger
 
 SERVICE = "mcp-email-server"
@@ -17,8 +18,14 @@ def _entry_key(account_name: str, role: str) -> str:
     return f"{account_name}:{role}"
 
 
-@lru_cache(maxsize=1)
 def keyring_usable() -> bool:
+    """Return whether legacy keyring storage is usable in the selected mode."""
+    assert_legacy_writable("probe the legacy credential store")
+    return _keyring_usable_cached()
+
+
+@lru_cache(maxsize=1)
+def _keyring_usable_cached() -> bool:
     """Probe the active keyring backend with a real set/get round-trip.
 
     A locked collection or denied prompt can make ``get_keyring()`` look
@@ -43,6 +50,10 @@ def keyring_usable() -> bool:
     if ok:
         logger.info(f"Keyring backend usable: {keyring.get_keyring()}")
     return ok
+
+
+# Preserve the public cache reset hook used by tests and callers replacing the backend.
+keyring_usable.cache_clear = _keyring_usable_cached.cache_clear  # type: ignore[attr-defined]
 
 
 # macOS Keychain OSStatus errSecInvalidOwnerEdit: the item exists but is owned by
@@ -98,6 +109,7 @@ def _restore_previous_secret(keyring, key: str, previous: str | None, *, force: 
 
 
 def set_secret(account_name: str, role: str, value: str) -> None:
+    assert_legacy_writable("write a legacy credential")
     import keyring
     from keyring.errors import PasswordDeleteError, PasswordSetError
 
@@ -143,6 +155,7 @@ def set_secret(account_name: str, role: str, value: str) -> None:
 
 
 def get_secret(account_name: str, role: str) -> str | None:
+    assert_legacy_writable("read a legacy credential")
     import keyring
 
     return keyring.get_password(SERVICE, _entry_key(account_name, role))
@@ -150,6 +163,7 @@ def get_secret(account_name: str, role: str) -> str | None:
 
 def delete_secret(account_name: str, role: str) -> None:
     """Best-effort delete: swallows missing-entry and missing-backend errors alike."""
+    assert_legacy_writable("delete a legacy credential")
     import keyring
     from keyring.errors import KeyringError
 
@@ -161,6 +175,7 @@ def delete_secret(account_name: str, role: str) -> None:
 
 def delete_secret_checked(account_name: str, role: str) -> Literal["deleted", "present", "unverifiable"]:
     """Delete a secret and verify whether the keyring entry remains."""
+    assert_legacy_writable("delete a legacy credential")
     import keyring
     from keyring.errors import KeyringError
 
@@ -179,5 +194,6 @@ def delete_secret_checked(account_name: str, role: str) -> Literal["deleted", "p
 
 def delete_account_credentials(account_name: str, roles: Iterable[str]) -> None:
     """Best-effort cleanup of every keyring entry for an account being removed."""
+    assert_legacy_writable("delete legacy account credentials")
     for role in roles:
         delete_secret(account_name, role)

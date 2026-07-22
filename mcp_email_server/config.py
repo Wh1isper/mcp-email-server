@@ -23,6 +23,13 @@ from pydantic_settings import (
 )
 
 from mcp_email_server import keyring_store
+from mcp_email_server.bootstrap import (
+    BOOTSTRAP_VERSION,
+    Mode,
+    assert_legacy_writable,
+    process_bootstrap,
+    read_bootstrap,
+)
 from mcp_email_server.log import logger
 
 DEFAULT_CONFIG_PATH = "~/.config/mcp-email-server/config.toml"
@@ -101,15 +108,27 @@ def _reject_sentinel_secret(secret: SecretStr, label: str) -> None:
 
 
 def _resolve_config_path() -> Path:
-    """Resolve the config path and copy the legacy default on first use."""
+    """Resolve config and migrate the old legacy default without managed side effects."""
     configured_path = os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH")
     if configured_path:
-        return Path(configured_path).expanduser().resolve()
-
-    config_path = Path(DEFAULT_CONFIG_PATH).expanduser().resolve()
-    legacy_path = Path(LEGACY_CONFIG_PATH).expanduser().resolve()
-    if config_path.exists() or not legacy_path.is_file():
+        config_path = Path(os.path.abspath(Path(configured_path).expanduser()))
+        if config_path.exists() or config_path.is_symlink():
+            read_bootstrap(config_path)
         return config_path
+
+    config_path = Path(os.path.abspath(Path(DEFAULT_CONFIG_PATH).expanduser()))
+    legacy_path = Path(os.path.abspath(Path(LEGACY_CONFIG_PATH).expanduser()))
+    if config_path.exists() or config_path.is_symlink():
+        read_bootstrap(config_path)
+        return config_path
+    if not legacy_path.is_file():
+        return config_path
+
+    # Parse before mkdir/temp/link. An explicitly managed bootstrap remains at
+    # its old location until the user deliberately selects another config path.
+    legacy_bootstrap = read_bootstrap(legacy_path)
+    if legacy_bootstrap.mode == "managed":
+        return legacy_path
 
     temporary_path: Path | None = None
     try:
@@ -366,6 +385,8 @@ class ProviderSettings(AccountAttributes):
 
 
 class Settings(BaseSettings):
+    bootstrap_version: int | None = None
+    mode: Mode = "legacy"
     emails: list[EmailSettings] = []
     providers: list[ProviderSettings] = []
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
@@ -646,6 +667,7 @@ class Settings(BaseSettings):
 
     @staticmethod
     def _write_toml(toml_file: Path, content: str) -> None:
+        assert_legacy_writable("write legacy settings", CONFIG_PATH)
         if os.name != "posix":
             toml_file.write_text(content)
             return
@@ -680,6 +702,16 @@ class Settings(BaseSettings):
             raise
 
     def store(self) -> None:
+        # Sink-level fence: reject before mkdir, keyring probe, or serialization.
+        assert_legacy_writable("write legacy settings", CONFIG_PATH)
+        # A legacy process may remain alive while another process selects managed
+        # for the next restart. Preserve that durable selection and database path
+        # rather than letting a stale runtime silently switch the bootstrap back.
+        durable_bootstrap = read_bootstrap(CONFIG_PATH)
+        self.bootstrap_version = BOOTSTRAP_VERSION
+        self.mode = durable_bootstrap.mode
+        if durable_bootstrap.db_path is not None:
+            self.db_location = durable_bootstrap.db_path.as_posix()
         toml_file_setting = self.model_config.get("toml_file")
         if isinstance(toml_file_setting, Path):
             toml_file = toml_file_setting
@@ -738,8 +770,19 @@ _settings = None
 def get_settings(reload: bool = False) -> Settings:
     global _settings
     if not _settings or reload:
-        logger.info(f"Loading settings from {CONFIG_PATH}")
-        _settings = Settings()
+        bootstrap = process_bootstrap(CONFIG_PATH)
+        logger.info(f"Loading {bootstrap.mode} settings from {CONFIG_PATH}")
+        if bootstrap.mode == "managed":
+            if bootstrap.db_path is None:
+                raise ValueError("Managed mode requires a database path")
+            # Imported lazily to keep bootstrap parsing independent and to avoid
+            # constructing Settings(), which would parse legacy rows and overlays.
+            from mcp_email_server.managed import ManagedCatalog
+
+            loaded = ManagedCatalog(bootstrap.db_path).load_settings(require_active=True)
+        else:
+            loaded = Settings()
+        _settings = loaded
     return _settings
 
 
@@ -808,6 +851,8 @@ def _cleanup_keyring_entries_for_reset() -> None:
 
 
 def delete_settings() -> None:
+    # Sink-level fence: reject before keyring cleanup or unlink.
+    assert_legacy_writable("reset legacy settings", CONFIG_PATH)
     if not CONFIG_PATH.exists():
         logger.info(f"Settings file {CONFIG_PATH} does not exist")
         return

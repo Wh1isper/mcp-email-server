@@ -46,6 +46,29 @@ By default, settings are stored at:
 Credentials use the operating system keyring when a usable backend is
 available. See [Credential storage](security.md#credential-storage).
 
+## Configure an account with the managed CLI
+
+For an explicit SQLite-backed catalog, install the command at a stable path and
+run the staged workflow:
+
+```bash
+mcp-email-server config init \
+  --database ~/.config/mcp-email-server/catalog.sqlite3
+mcp-email-server account add work \
+  --email john@example.com \
+  --full-name "John Doe" \
+  --imap-host imap.example.com
+mcp-email-server account test work incoming
+mcp-email-server config activate
+mcp-email-server config select managed
+```
+
+The account command prompts for the password without placing it in argv.
+Managed mode requires a working operating-system keyring and does not fall back
+to plaintext. Restart the MCP client after selection. See
+[Managed CLI setup](configuration.md#managed-cli-setup) for SMTP, stdin,
+diagnostics, disablement, and switching back to legacy mode.
+
 ## Configure the MCP client
 
 Add this server definition to the MCP client:

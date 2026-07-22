@@ -74,7 +74,8 @@ seeder and observer, so the system is not solely verifying itself.
 | Area          | Assertions                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------ |
 | MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                         |
-| Configuration | two accounts load from temporary TOML; SMTP-capable and IMAP-only accounts coexist                     |
+| Configuration | legacy TOML plus managed CLI staging, activation, explicit selection, and process restart              |
+| Managed mode  | a keyring-bound managed account reaches live IMAP; a missing selected database fails without fallback  |
 | SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                      |
 | IMAP read     | Bob can list metadata and retrieve full content by UID                                                 |
 | Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly |
@@ -100,8 +101,11 @@ The Compose definition:
 - never forwards messages to external mail servers.
 
 The application configuration lives in a pytest-managed temporary directory
-and contains only the fixed synthetic credentials above. Do not replace the
-synthetic accounts with real credentials or personal message data.
+and contains only the fixed synthetic credentials above. Managed subprocess
+coverage injects a test-only, process-persistent keyring backend whose file is
+also confined to that directory; production code has no plaintext managed
+fallback. Do not replace the synthetic accounts with real credentials or
+personal message data.
 
 ## Why GreenMail
 

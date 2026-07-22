@@ -1,11 +1,13 @@
 import gradio as gr
 
+from mcp_email_server.bootstrap import assert_legacy_writable
 from mcp_email_server.config import EmailSettings, clear_settings_cache, get_settings, store_settings
 from mcp_email_server.keyring_store import delete_account_credentials
 from mcp_email_server.tools.installer import install_claude_desktop, is_installed, need_update, uninstall_claude_desktop
 
 
 def create_ui():  # noqa: C901
+    assert_legacy_writable("open the legacy configuration UI")
     # Create a Gradio interface
     with gr.Blocks(title="Email Settings Configuration") as app:
         gr.Markdown("# Email Settings Configuration")

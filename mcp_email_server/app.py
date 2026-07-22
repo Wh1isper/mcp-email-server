@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import Icon, ToolAnnotations
 from pydantic import Field
 
+from mcp_email_server.bootstrap import assert_legacy_writable
 from mcp_email_server.config import (
     AccountAttributes,
     EmailSettings,
@@ -118,6 +119,7 @@ async def list_available_accounts() -> list[AccountAttributes]:
 
 @mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> str:
+    assert_legacy_writable("add an account through the legacy MCP tool")
     settings = get_settings()
     try:
         settings.add_email(email)

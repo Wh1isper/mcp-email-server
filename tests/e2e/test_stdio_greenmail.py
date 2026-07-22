@@ -5,6 +5,7 @@ import imaplib
 import os
 import re
 import smtplib
+import subprocess
 import sys
 import time
 import uuid
@@ -207,6 +208,166 @@ async def _metadata_for_subject_in_mailbox(
 
 async def _metadata_for_subject(session: ClientSession, account_name: str, subject: str) -> dict[str, Any]:
     return await _metadata_for_subject_in_mailbox(session, account_name, "INBOX", subject)
+
+
+def _run_cli(console_script: Path, env: dict[str, str], arguments: list[str], *, stdin: str | None = None) -> str:
+    completed = subprocess.run(  # noqa: S603 - fixed installed script with test-owned arguments
+        [str(console_script), *arguments],
+        cwd=Path.cwd(),
+        env=env,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    return completed.stdout
+
+
+@pytest.mark.asyncio
+async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenmail(tmp_path: Path) -> None:
+    """Prove CLI staging -> test -> activation -> restart -> live managed IMAP."""
+    _wait_until_ready()
+    app_dir = tmp_path / "managed-app"
+    app_dir.mkdir(mode=0o700)
+    app_dir.chmod(0o700)
+    config_path = app_dir / "config.toml"
+    database = app_dir / "catalog.sqlite3"
+    keyring_path = app_dir / "e2e-keyring.sqlite3"
+    console_script = Path(sys.executable).with_name("mcp-email-server")
+    assert console_script.is_file()
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_E2E_KEYRING_PATH": str(keyring_path),
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+        "PYTHON_KEYRING_BACKEND": "dev.greenmail.file_keyring.FileKeyring",
+        "PYTHONPATH": str(Path.cwd()),
+    })
+
+    _run_cli(console_script, server_env, ["config", "init", "--database", str(database)])
+    assert 'mode = "legacy"' in config_path.read_text()
+    add_arguments = [
+        "account",
+        "add",
+        "alice-managed",
+        "--email",
+        ALICE[0],
+        "--full-name",
+        "Alice Managed",
+        "--imap-host",
+        IMAP_HOST,
+        "--imap-port",
+        str(IMAP_PORT),
+        "--imap-user",
+        ALICE[0],
+        "--no-imap-ssl",
+        "--password-stdin",
+    ]
+    assert ALICE[1] not in add_arguments
+    add_output = _run_cli(console_script, server_env, add_arguments, stdin=f"{ALICE[1]}\n")
+    assert ALICE[1] not in add_output
+    test_output = _run_cli(console_script, server_env, ["account", "test", "alice-managed"])
+    assert "connectivity test passed" in test_output
+    _run_cli(console_script, server_env, ["config", "activate"])
+    assert 'mode = "legacy"' in config_path.read_text()
+    select_output = _run_cli(console_script, server_env, ["config", "select", "managed"])
+    assert "Restart" in select_output
+    assert 'mode = "managed"' in config_path.read_text()
+
+    server = StdioServerParameters(
+        command=str(console_script),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(
+            read_stream,
+            write_stream,
+            read_timeout_seconds=timedelta(seconds=15),
+        ) as session:
+            await session.initialize()
+            accounts = await _call_tool(session, "list_available_accounts", {})
+            assert [account["account_name"] for account in accounts["result"]] == ["alice-managed"]
+            assert ALICE[1] not in str(accounts)
+            mailboxes = await _call_tool(session, "list_mailboxes", {"account_name": "alice-managed"})
+            assert "INBOX" in {mailbox["name"] for mailbox in mailboxes["result"]}
+
+            # Disablement commits in a separate management process and must be
+            # observed before the next provider access in this same stdio session.
+            _run_cli(console_script, server_env, ["account", "disable", "alice-managed"])
+            denied = await session.call_tool("list_mailboxes", arguments={"account_name": "alice-managed"})
+            assert denied.isError is True
+            assert "not found" in _text_content(denied).lower()
+
+
+@pytest.mark.asyncio
+async def test_managed_stdio_missing_database_fails_closed_without_legacy_fallback(tmp_path: Path) -> None:
+    """A selected managed catalog cannot silently fall back to preserved TOML rows."""
+    app_dir = tmp_path / "managed-fail-closed"
+    app_dir.mkdir(mode=0o700)
+    app_dir.chmod(0o700)
+    config_path = app_dir / "config.toml"
+    database = app_dir / "catalog.sqlite3"
+    keyring_path = app_dir / "e2e-keyring.sqlite3"
+    console_script = Path(sys.executable).with_name("mcp-email-server")
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_E2E_KEYRING_PATH": str(keyring_path),
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+        "PYTHON_KEYRING_BACKEND": "dev.greenmail.file_keyring.FileKeyring",
+        "PYTHONPATH": str(Path.cwd()),
+    })
+    _run_cli(console_script, server_env, ["config", "init", "--database", str(database)])
+    _run_cli(
+        console_script,
+        server_env,
+        [
+            "account",
+            "add",
+            "managed-only",
+            "--email",
+            ALICE[0],
+            "--full-name",
+            "Managed Only",
+            "--imap-host",
+            IMAP_HOST,
+            "--imap-port",
+            str(IMAP_PORT),
+            "--imap-user",
+            ALICE[0],
+            "--no-imap-ssl",
+            "--password-stdin",
+        ],
+        stdin=f"{ALICE[1]}\n",
+    )
+    _run_cli(console_script, server_env, ["config", "activate"])
+    _run_cli(console_script, server_env, ["config", "select", "managed"])
+    # Preserve a complete legacy account as a fallback tripwire. Managed startup
+    # must ignore it even when the selected database disappears.
+    with config_path.open("a") as destination:
+        destination.write("\n" + CONFIG_TEMPLATE)
+    config_path.chmod(0o600)
+    missing_path = database.with_suffix(".missing")
+    database.rename(missing_path)
+
+    completed = subprocess.run(  # noqa: S603 - fixed installed script and literal stdio command
+        [str(console_script), "stdio"],
+        cwd=Path.cwd(),
+        env=server_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 1
+    assert "missing" in output.lower()
+    assert "alice-password" not in output
+    assert "alice" not in output.lower()
 
 
 @pytest.mark.asyncio

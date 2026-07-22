@@ -1,7 +1,15 @@
 # Configuration
 
-mcp-email-server loads persistent settings from a TOML file and can compose an
-additional account and global overrides from environment variables.
+mcp-email-server supports two explicitly selectable configuration modes:
+
+- `legacy` keeps account configuration in TOML and composes documented
+  environment overlays;
+- `managed` keeps non-secret account configuration in SQLite and credentials in
+  the operating system keyring.
+
+A missing configuration file or a pre-managed TOML file without `mode` remains
+`legacy` for backward compatibility. Every new bootstrap write records
+`bootstrap_version = 1` and an explicit mode.
 
 ## Configuration file
 
@@ -16,12 +24,65 @@ resolved against the server process's working directory.
 
 On first use, if the current file does not exist and a legacy file exists at
 `~/.config/zerolib/mcp_email_server/config.toml`, the legacy file is copied to
-the current location automatically.
+the current location automatically. An explicitly managed file at the old path
+is not copied as an import-time side effect.
 
-## Configuration precedence
+## Managed CLI setup
 
-The TOML file provides the base settings. Environment variables are then
-applied as follows:
+Managed setup deliberately separates catalog activation from mode selection:
+
+```bash
+mcp-email-server config init --database ~/.config/mcp-email-server/catalog.sqlite3
+
+mcp-email-server account add work \
+  --email john@example.com \
+  --full-name "John Doe" \
+  --imap-host imap.example.com \
+  --imap-user john@example.com
+
+mcp-email-server account test work incoming
+mcp-email-server config activate
+mcp-email-server config select managed
+```
+
+`account add` prompts for the IMAP password with masked input. Add SMTP with
+`--smtp-host`, `--smtp-port`, and `--smtp-user`; the command then prompts for a
+separate SMTP password. For non-interactive setup, pass `--password-stdin` and
+provide one line for IMAP, followed by one SMTP line when SMTP is configured.
+Passwords are never accepted as ordinary command-line values.
+
+`config init` creates a `STAGING` SQLite catalog and records its path while
+leaving legacy mode selected. It is rejected while managed mode is selected so
+it cannot replace the active authority with a staging database. Account creation
+is likewise limited to `STAGING`; use `account set-secret` for credential
+rotation after activation. `config activate` requires at least one
+enabled account with an active IMAP credential and a complete optional SMTP
+pair. `config select managed` accepts only an `ACTIVE` catalog. Restart every
+MCP server process after `config select`.
+
+Useful inspection and management commands are:
+
+```bash
+mcp-email-server config status
+mcp-email-server config doctor
+mcp-email-server account list
+mcp-email-server account show work
+mcp-email-server account set-secret work incoming
+mcp-email-server account disable work
+mcp-email-server config select legacy
+```
+
+Managed account and binding summaries never print secret locators or values.
+`config doctor` also verifies active secret availability without printing the
+secret or locator. Disabled accounts are revalidated and excluded before every
+provider access, including calls in an already-running stdio session. Selecting managed mode
+never deletes preserved legacy TOML rows, and selecting legacy mode never
+deletes the managed catalog.
+
+## Legacy configuration precedence
+
+The following composition applies only in `legacy` mode. The TOML file provides
+the base settings, then environment variables are applied as follows:
 
 - Global boolean and allowlist environment variables override the matching TOML
   values.
@@ -254,6 +315,10 @@ values are treated as false. Do not add surrounding whitespace to these values.
 HTTP transport variables are documented separately in
 [Transports](transports.md#streamable-http).
 
+In managed mode, `MCP_EMAIL_SERVER_CONFIG_PATH` still selects the bootstrap
+file, but legacy account, allowlist, attachment, mutation-reporting, and
+credential-storage overlays do not replace managed catalog values.
+
 ## Reset configuration
 
 Delete the configuration file and perform best-effort cleanup of referenced
@@ -263,5 +328,9 @@ keyring entries with:
 mcp-email-server reset
 ```
 
-This operation removes all persistently configured accounts. Environment-based
-configuration remains effective as long as its variables are present.
+In legacy mode this operation removes all persistently configured accounts.
+Environment-based configuration remains effective as long as its variables are
+present. In managed mode it is rejected before any TOML, database, or keyring
+mutation; select legacy and restart before intentionally resetting the legacy
+source. An unparseable bootstrap also fails closed because its selected mode
+cannot be established safely.

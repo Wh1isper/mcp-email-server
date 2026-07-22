@@ -169,6 +169,19 @@ Failure to use the selected SecretStore or secure filesystem is fatal in managed
 mode. Diagnostics identify the category and remediation without leaking paths
 beyond what the user explicitly supplied.
 
+## Implementation Progress
+
+The first vertical managed-account slice is implemented: explicit bootstrap
+selection, secure `STAGING`/`ACTIVE` catalog lifecycle, manual account setup,
+immutable keyring candidate bindings, bounded diagnostics, disablement,
+connectivity testing, legacy-writer fences, and managed account resolution by a
+restarted stdio MCP process. Unit, contract, and loopback GreenMail E2E cover
+that path and its primary fail-closed boundaries.
+
+Account field updates, re-enable, soft removal, explicit legacy import, and
+full doctor-assisted cleanup remain part of the accepted MVP contract and are
+not claimed complete by this status note.
+
 ## Validation
 
 Tests cover bootstrap defaults and overrides, explicit selection, every

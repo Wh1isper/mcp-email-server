@@ -25,17 +25,23 @@ configuration with credentials masked.
 
 ### `list_available_accounts`
 
-Lists all configured accounts with masked credentials. Use the returned
-`account_name` in other tools.
+Lists all enabled accounts from the selected configuration mode with masked
+credentials. In managed mode, disabled accounts are omitted before any
+credential lookup or provider access. Use the returned `account_name` in other
+tools.
 
 ### `add_email_account`
 
 Adds and persists an email account. The input follows the nested account schema
 documented in [Configuration](configuration.md#toml-example).
 
-Account names must be unique. This tool changes persistent configuration and
-may also move the supplied credentials into the operating system keyring,
-depending on `credential_storage`.
+Account names must be unique. In legacy mode this tool changes persistent TOML
+configuration and may also move the supplied credentials into the operating
+system keyring, depending on `credential_storage`.
+
+In managed mode this legacy writer is rejected before any TOML or keyring
+mutation. Use `mcp-email-server account add` so secrets enter through a masked
+prompt or explicit stdin and managed candidate bindings remain recoverable.
 
 ## Reading and searching
 

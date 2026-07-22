@@ -63,9 +63,48 @@ On first use, the server can copy a legacy file from:
 
 Check server logs for the resolved path.
 
+## Managed mode does not start
+
+Run bounded diagnostics from a terminal:
+
+```bash
+mcp-email-server config status
+mcp-email-server config doctor
+```
+
+Managed startup requires all of the following:
+
+- a parseable owner-only bootstrap with `bootstrap_version = 1`,
+  `mode = "managed"`, and `db_location`;
+- a present, regular, non-symlink SQLite file in an owner-only immediate parent;
+- a supported schema and an `ACTIVE` catalog;
+- complete endpoint/binding pairs for enabled accounts;
+- readable active credentials in the same operating-system keyring session.
+
+The server deliberately does not fall back to TOML accounts when any of these
+checks fails. Correct the reported category, or deliberately run
+`mcp-email-server config select legacy` and restart. If the bootstrap itself is
+unparseable, repair or restore it manually; `reset` cannot safely infer its mode
+and therefore does not unlink it.
+
+A `PENDING` binding usually means a prior keyring write failed. Restore keyring
+access and retry with:
+
+```bash
+mcp-email-server account set-secret ACCOUNT incoming
+```
+
+Use `outgoing` for an SMTP credential. A successful retry retires stale pending
+candidates. `CLEANUP_REQUIRED` means the replacement is active but an old
+candidate could not be deleted; the active account remains usable.
+
 ## The UI cannot load accounts
 
-If the UI displays a keyring error, the TOML file probably contains
+The browser UI is a legacy configuration surface. While managed mode is
+selected, it exits with guidance to use the managed `config` and `account` CLI
+commands instead.
+
+If the legacy UI displays a keyring error, the TOML file probably contains
 `__KEYRING__` markers whose secrets cannot currently be read. Unlock or restore
 the operating system keyring, approve any pending Keychain prompt, or migrate
 the credentials to plaintext after keyring access is restored:

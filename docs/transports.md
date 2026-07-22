@@ -12,9 +12,14 @@ mcp-email-server streamable-http [--host HOST] [--port PORT]
 mcp-email-server ui
 mcp-email-server reset
 mcp-email-server migrate-credentials [--to keyring|plaintext]
+mcp-email-server config {init|status|doctor|activate|select}
+mcp-email-server account {add|list|show|set-secret|test|disable}
 ```
 
-Run `mcp-email-server COMMAND --help` for the command's current options.
+Run `mcp-email-server COMMAND --help` or
+`mcp-email-server config|account COMMAND --help` for current options. Managed
+setup and mode selection are documented in
+[Configuration](configuration.md#managed-cli-setup).
 
 ## stdio
 
@@ -35,6 +40,12 @@ and output.
 
 Do not write unrelated output to stdout when wrapping a stdio server process,
 because stdout carries the MCP protocol.
+
+The process resolves the bootstrap mode at startup. An explicitly selected
+managed mode loads only an `ACTIVE` managed catalog and its keyring bindings. A
+missing, staging, corrupt, incompatible, or insecure selected catalog fails
+closed and never falls back to preserved legacy TOML accounts. Restart stdio
+after every `config select` command.
 
 ## SSE
 
@@ -150,7 +161,7 @@ When a reverse proxy terminates TLS:
 
 ## Other CLI operations
 
-Open the account configuration interface with:
+Open the legacy account configuration interface with:
 
 ```bash
 mcp-email-server ui
@@ -169,5 +180,7 @@ mcp-email-server migrate-credentials --to keyring
 mcp-email-server migrate-credentials --to plaintext
 ```
 
-Credential behavior and migration caveats are covered in
-[Security](security.md#credential-migration).
+The UI, reset, and credential migration commands are legacy configuration
+surfaces and are rejected while managed mode is selected. Managed accounts use
+the nested `config` and `account` commands. Credential behavior and migration
+caveats are covered in [Security](security.md#credential-migration).

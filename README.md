@@ -44,9 +44,9 @@ Ask the client to list the configured email accounts or recent messages.
 
 ## Other configuration methods
 
-For headless environments, containers, multiple accounts, custom TLS settings,
-and environment-variable configuration, see the
-[documentation](https://mcp-email-server.wh1isper.top/).
+For the SQLite-backed managed CLI workflow, headless environments, containers,
+multiple accounts, custom TLS settings, and environment-variable configuration,
+see the [documentation](https://mcp-email-server.wh1isper.top/).
 
 ## Documentation
 

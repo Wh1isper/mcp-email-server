@@ -206,6 +206,19 @@ honestly. The MVP has no unresolved generic operation evidence that requires a
 retention ledger. Rebuild never alters managed accounts, policies, secret
 bindings, or legacy source configuration.
 
+## Implementation Progress
+
+The managed-configuration portion of the logical model is implemented as the
+initial schema: schema metadata, one catalog, managed accounts, endpoints, and
+secret bindings. It uses foreign keys, WAL, a bounded busy timeout, optimistic
+account revisions for binding activation, and owner-only path checks. No index,
+operation, continuity, backup, body, or attachment tables were added ahead of a
+live workflow.
+
+The operational account, mailbox, placement, metadata, and coverage model
+remains accepted target behavior for the bounded index slice; it is not claimed
+implemented here.
+
 ## Validation
 
 Tests cover constraints, revisions, lifecycle transitions, binding states,
