@@ -36,6 +36,7 @@ BOB = ("bob@example.test", "bob-password")
 
 CONFIG_TEMPLATE = f"""credential_storage = "plaintext"
 enable_attachment_download = true
+allowed_recipients = ["bob@example.test"]
 
 [[emails]]
 account_name = "alice"
@@ -247,7 +248,7 @@ def _run_cli(console_script: Path, env: dict[str, str], arguments: list[str], *,
 async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenmail(tmp_path: Path) -> None:
     """Prove CLI staging -> test -> activation -> restart -> live managed IMAP."""
     _wait_until_ready()
-    _ensure_empty_mailboxes(ALICE, ["INBOX"])
+    _ensure_empty_mailboxes(ALICE, ["INBOX", "Drafts", "Archive"])
     subject = f"managed-index-{uuid.uuid4().hex}"
     _seed_message_as(BOB, ALICE[0], subject, "Managed indexed metadata")
     _wait_for_message(ALICE, "INBOX", subject)
@@ -327,6 +328,85 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
                 assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 2
                 assert connection.execute("SELECT completeness FROM index_coverage").fetchone()[0] == "COMPLETE"
 
+            managed_uid = metadata["emails"][0]["email_id"]
+            mark = await _call_tool(
+                session,
+                "mark_emails_as_read",
+                {"account_name": "alice-managed", "email_ids": [managed_uid]},
+            )
+            assert mark["result"] == "Successfully marked 1 email(s) as read"
+            assert r"\Seen" in _wait_for_message(ALICE, "INBOX", subject).flags
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                assert connection.execute("SELECT COUNT(*) FROM index_coverage").fetchone()[0] == 0
+
+            refreshed = await _call_tool(
+                session,
+                "list_emails_metadata",
+                {"account_name": "alice-managed", "page_size": 10},
+            )
+            assert refreshed["total"] == 1
+            move = await _call_tool(
+                session,
+                "move_emails",
+                {
+                    "account_name": "alice-managed",
+                    "email_ids": [managed_uid],
+                    "source_mailbox": "INBOX",
+                    "destination_mailbox": "Archive",
+                },
+            )
+            assert move["result"] == "Successfully moved 1 email(s) to Archive"
+            assert _find_message(ALICE, "INBOX", subject) is None
+            _wait_for_message(ALICE, "Archive", subject)
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                assert connection.execute("SELECT COUNT(*) FROM index_coverage").fetchone()[0] == 0
+
+            draft_subject = f"managed-draft-{uuid.uuid4().hex}"
+            saved = await _call_tool(
+                session,
+                "save_to_mailbox",
+                {
+                    "account_name": "alice-managed",
+                    "recipients": [BOB[0]],
+                    "subject": draft_subject,
+                    "body": "Managed draft body",
+                    "mailbox": "Drafts",
+                },
+            )
+            assert "Email saved to 'Drafts' successfully" in saved["result"]
+            draft = _wait_for_message(ALICE, "Drafts", draft_subject)
+            draft_page = await _call_tool(
+                session,
+                "list_emails_metadata",
+                {"account_name": "alice-managed", "mailbox": "Drafts", "page_size": 10},
+            )
+            assert draft_page["total"] == 1
+            deleted = await _call_tool(
+                session,
+                "delete_emails",
+                {
+                    "account_name": "alice-managed",
+                    "email_ids": [draft.uid],
+                    "mailbox": "Drafts",
+                },
+            )
+            assert deleted["result"] == "Successfully deleted 1 email(s)"
+            assert _find_message(ALICE, "Drafts", draft_subject) is None
+            with contextlib.closing(sqlite3.connect(database)) as connection:
+                remaining = connection.execute(
+                    """SELECT COUNT(*) FROM index_coverage c
+                       JOIN mailbox_projection m ON m.id = c.mailbox_id
+                       WHERE m.remote_name = 'Drafts'"""
+                ).fetchone()[0]
+                assert remaining == 0
+
+            invalid = await session.call_tool(
+                "mark_emails_as_read",
+                arguments={"account_name": "alice-managed", "email_ids": ["01"]},
+            )
+            assert invalid.isError is True
+            assert "canonical positive decimal" in _text_content(invalid)
+
             # Disablement commits in a separate management process and must be
             # observed before the next provider access in this same stdio session.
             _run_cli(console_script, server_env, ["account", "disable", "alice-managed"])
@@ -339,6 +419,12 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             )
             assert denied_metadata.isError is True
             assert "not found" in _text_content(denied_metadata).lower()
+            denied_mutation = await session.call_tool(
+                "mark_emails_as_read",
+                arguments={"account_name": "alice-managed", "email_ids": [managed_uid]},
+            )
+            assert denied_mutation.isError is True
+            assert "not found" in _text_content(denied_mutation).lower()
 
 
 @pytest.mark.asyncio
@@ -592,6 +678,22 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
 
             sent_copy = _wait_for_message(ALICE, "Sent", sent_subject)
             assert sent_body in sent_copy.message.get_body(preferencelist=("plain",)).get_content()
+
+            denied_subject = f"mcp-e2e-denied-send-{run_id}"
+            denied_recipient = f"missing-{run_id}@example.test"
+            denied_send = await session.call_tool(
+                "send_email",
+                arguments={
+                    "account_name": "alice",
+                    "recipients": [BOB[0], denied_recipient],
+                    "subject": denied_subject,
+                    "body": "Recipient policy must reject before SMTP",
+                },
+            )
+            assert denied_send.isError is True
+            assert "not in allowlist" in _text_content(denied_send)
+            assert _find_message(BOB, "INBOX", denied_subject) is None
+            assert _find_message(ALICE, "Sent", denied_subject) is None
 
             sent_metadata = await _metadata_for_subject(session, "bob", sent_subject)
             assert sent_metadata["sender"].endswith("<alice@example.test>") or sent_metadata["sender"] == ALICE[0]

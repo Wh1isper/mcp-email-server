@@ -71,10 +71,11 @@ Mailbox discovery is bounded and records remote name, delimiter, attributes,
 UIDVALIDITY when available, and observation time. Provider mailbox names are
 quoted and validated by the mail adapter.
 
-Body retrieval remains provider-direct and bounded. It uses IMAP PEEK unless
-`mark_as_read=true`, in which case the explicit flag mutation is reported
-separately if needed. Batch results preserve requested count, retrieved count,
-and failed IDs.
+Body retrieval remains provider-direct and bounded and always uses IMAP PEEK.
+When `mark_as_read=true`, successfully retrieved UIDs then enter the application
+mark-read workflow as a separate effect with fresh authority resolution and
+projection invalidation. A mark failure never discards retrieved bodies. Batch
+results preserve requested count, retrieved count, and failed IDs.
 
 Attachment discovery and download remain provider-direct. Filenames are
 untrusted, output is confined to an approved private workspace, writes are
@@ -171,6 +172,16 @@ sender or INTERNALDATE observations fail instead of producing an inexact total
 or UID-substituted ordering. Provider transport failures map to fixed bounded
 application errors. Header refresh and body retrieval use PEEK forms and therefore do not
 mark messages read.
+
+Mark-read, save/APPEND, move, archive, delete, SMTP delivery, and Sent-copy now
+run through injected workflow services. The classic provider adapter returns
+per-target succeeded/failed/unknown evidence and never replays an ambiguous
+effect. Services re-resolve selected-mode authority before every independent
+provider effect, including archive discovery-to-move and SMTP-to-Sent-copy
+boundaries. Known or possible effects invalidate only affected mailbox coverage;
+a projection failure adds reconciliation status without replacing provider
+evidence. Public all-known-success strings remain unchanged, while partial and
+ambiguous results use the accepted tagged-text mapping.
 
 ## Validation
 

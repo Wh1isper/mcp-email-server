@@ -487,3 +487,46 @@ def test_version_one_managed_catalog_migrates_once_and_preserves_catalog_rows(tm
     assert version == SCHEMA_VERSION
     assert lifecycle == "STAGING"
     assert "index_coverage" in tables
+
+
+def test_mutation_invalidation_removes_only_selected_mailbox_coverage(tmp_path: Path) -> None:
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+    for mailbox in ("INBOX", "Archive"):
+        index.write_snapshot(
+            account_id,
+            mailbox,
+            delimiter="/",
+            attributes=[],
+            uidvalidity=10,
+            uidnext=2,
+            message_count=1,
+            emails=[_email(1)],
+            complete=True,
+            observed_at=NOW,
+        )
+
+    index.invalidate_mailboxes(account_id, ("INBOX",))
+
+    assert (
+        index.read_complete(
+            account_id,
+            "INBOX",
+            uidvalidity=10,
+            uidnext=2,
+            message_count=1,
+        )
+        is None
+    )
+    assert (
+        index.read_complete(
+            account_id,
+            "Archive",
+            uidvalidity=10,
+            uidnext=2,
+            message_count=1,
+        )
+        is not None
+    )
+    with closing(sqlite3.connect(index.path)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM message_metadata_projection").fetchone()[0] == 2

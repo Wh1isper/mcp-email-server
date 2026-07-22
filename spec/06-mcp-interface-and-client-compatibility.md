@@ -162,6 +162,17 @@ stdio GreenMail suite verifies schema serialization, pagination, totals, filter
 fallback, projection reuse in one process and after restart, and bounded input
 failure.
 
+All explicit compose and mutation tools now map typed application outcomes back
+to their existing string content type. All-known-success literals are unchanged.
+Partial batches expose input-ordered `succeeded`, `failed`, and `unknown`
+sections; SMTP recipients and Sent-copy status remain separate. Commands enforce
+one bounded canonical UID batch and bounded mailbox, recipient, content, and
+attachment inputs before provider access. Managed GreenMail coverage proves
+mutation wiring, projection invalidation, lifecycle disablement, real IMAP state
+changes, and recipient-policy rejection before SMTP. Provider adapter tests
+preserve mixed accepted/rejected SMTP recipients because the GreenMail test
+configuration accepts arbitrary local recipients.
+
 ## Validation
 
 Contract tests freeze tool names, schemas, descriptions, visibility behavior,

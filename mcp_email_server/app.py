@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from datetime import datetime
-from email.utils import getaddresses
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -8,6 +7,21 @@ from mcp.types import Icon, ToolAnnotations
 from pydantic import Field
 
 from mcp_email_server.application.metadata import ListEmailMetadataQuery
+from mcp_email_server.application.mutations import (
+    APPLICATION_LIMITS,
+    AppendMutationOutcome,
+    ArchiveCommand,
+    ArchiveMutationOutcome,
+    BatchMutationOutcome,
+    DeleteCommand,
+    MarkReadCommand,
+    MoveCommand,
+    RecipientPolicyDeniedError,
+    SaveToMailboxCommand,
+    SendCommand,
+    SendMutationOutcome,
+    TargetMutationOutcome,
+)
 from mcp_email_server.bootstrap import assert_legacy_writable
 from mcp_email_server.config import (
     AccountAttributes,
@@ -15,7 +29,6 @@ from mcp_email_server.config import (
     ProviderSettings,
     clear_settings_cache,
     get_settings,
-    normalize_address,
 )
 from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
@@ -24,6 +37,7 @@ from mcp_email_server.emails.models import (
     EmailMetadataPageResponse,
     MailboxInfo,
 )
+from mcp_email_server.log import logger
 from mcp_email_server.runtime import get_application_runtime
 
 AnyFunction = Callable[..., Any]
@@ -38,6 +52,71 @@ async def list_email_metadata(query: ListEmailMetadataQuery) -> EmailMetadataPag
     return await get_application_runtime().metadata.execute(query)
 
 
+async def send_email_command(command: SendCommand) -> SendMutationOutcome:
+    return await get_application_runtime().mutations.send.execute(command)
+
+
+async def save_to_mailbox_command(command: SaveToMailboxCommand) -> AppendMutationOutcome:
+    return await get_application_runtime().mutations.save_to_mailbox.execute(command)
+
+
+async def delete_emails_command(command: DeleteCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.delete.execute(command)
+
+
+async def mark_read_command(command: MarkReadCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.mark_read.execute(command)
+
+
+async def move_emails_command(command: MoveCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.move.execute(command)
+
+
+async def archive_emails_command(command: ArchiveCommand) -> ArchiveMutationOutcome:
+    return await get_application_runtime().mutations.archive.execute(command)
+
+
+def _ordered_target_sections(
+    outcomes: tuple[TargetMutationOutcome, ...],
+    *,
+    include_unknown_detail: bool,
+) -> list[str]:
+    """Format contiguous statuses without reordering input-aligned outcomes."""
+    sections: list[str] = []
+    current_status: str | None = None
+    current_targets: list[str] = []
+    for item in outcomes:
+        if item.status != current_status and current_targets:
+            sections.append(f"{current_status}: {', '.join(current_targets)}")
+            current_targets = []
+        current_status = item.status
+        target = item.target
+        if include_unknown_detail and item.status == "unknown" and item.detail is not None:
+            target = f"{target} ({item.detail})"
+        current_targets.append(target)
+    if current_targets:
+        sections.append(f"{current_status}: {', '.join(current_targets)}")
+    return sections
+
+
+def _tagged_batch_result(outcome: BatchMutationOutcome) -> str:
+    sections = _ordered_target_sections(outcome.outcomes, include_unknown_detail=True)
+    if outcome.reconciliation_needed:
+        sections.append("warning: reconciliation needed")
+    return "; ".join(sections)
+
+
+def _tagged_send_result(outcome: SendMutationOutcome) -> str:
+    sections = _ordered_target_sections(outcome.delivery, include_unknown_detail=False)
+    sent_copy = outcome.sent_copy.status
+    if outcome.sent_copy.mailbox:
+        sent_copy = f"{sent_copy} ({outcome.sent_copy.mailbox})"
+    sections.append(f"sent-copy: {sent_copy}")
+    if outcome.reconciliation_needed:
+        sections.append("warning: reconciliation needed")
+    return "; ".join(sections)
+
+
 def _has_send_capable_account() -> bool:
     settings = get_settings()
     return any(isinstance(account, EmailSettings) and account.can_send for account in settings.get_accounts())
@@ -49,25 +128,6 @@ def _has_allowed_recipients() -> bool:
 
 def _has_allowed_senders() -> bool:
     return bool(get_settings().allowed_senders)
-
-
-def _enforce_recipient_allowlist(
-    recipients: list[str],
-    cc: list[str] | None,
-    bcc: list[str] | None,
-) -> None:
-    """Raise ValueError if any To/CC/BCC address is not in a configured allowlist.
-
-    No-op when the allowlist is empty (all recipients permitted).
-    """
-    allowed = get_settings().allowed_recipients
-    if not allowed:
-        return
-    allowed_set = set(allowed)
-    candidates = [*recipients, *(cc or []), *(bcc or [])]
-    blocked = [addr for _, addr in getaddresses(candidates) if normalize_address(addr) not in allowed_set]
-    if blocked:
-        raise ValueError(f"Recipient(s) not in allowlist: {', '.join(blocked)}. Allowed: {', '.join(allowed)}")
 
 
 class VisibilityAwareFastMCP(FastMCP):
@@ -270,7 +330,29 @@ async def get_emails_content(
     ] = 20000,
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
-    return await handler.get_emails_content(email_ids, mailbox, mark_as_read, body_offset, max_body_length)
+    response = await handler.get_emails_content(email_ids, mailbox, False, body_offset, max_body_length)
+    if mark_as_read and response.emails:
+        mark_ids = tuple(dict.fromkeys(item.email_id for item in response.emails))
+        try:
+            for offset in range(0, len(mark_ids), APPLICATION_LIMITS.mutation_uids):
+                outcome = await mark_read_command(
+                    MarkReadCommand(
+                        account_name=account_name,
+                        email_ids=mark_ids[offset : offset + APPLICATION_LIMITS.mutation_uids],
+                        mailbox=mailbox,
+                    )
+                )
+                if any(item.status != "succeeded" for item in outcome.outcomes) or outcome.reconciliation_needed:
+                    logger.warning(f"Content retrieval mark-as-read result: {_tagged_batch_result(outcome)}")
+                if outcome.reconciliation_needed or any(item.status == "unknown" for item in outcome.outcomes):
+                    # Unknown or failed projection reconciliation may represent
+                    # cancellation; do not start another independent batch.
+                    break
+        except Exception as exc:
+            # Preserve the documented retrieval contract: marking is a separate
+            # best-effort mutation and never discards successfully read bodies.
+            logger.warning(f"Content retrieval mark-as-read failed: {type(exc).__name__}")
+    return response
 
 
 @mcp.tool(
@@ -299,7 +381,11 @@ async def list_allowed_senders() -> list[str]:
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
+    description=(
+        "Send one email using the specified account. Supports reply threading. Partial or ambiguous SMTP "
+        "delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy "
+        "outcome separately; ambiguous effects are not retried automatically."
+    ),
     visible_if=_has_send_capable_account,
 )
 async def send_email(
@@ -348,23 +434,33 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
-    _enforce_recipient_allowlist(recipients, cc, bcc)
-    handler = dispatch_handler(account_name)
-    await handler.send_email(
-        recipients,
-        subject,
-        body,
-        cc,
-        bcc,
-        html,
-        attachments,
-        in_reply_to,
-        references,
-        reply_to,
-    )
-    recipient_str = ", ".join(recipients)
-    attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
-    return f"Email sent successfully to {recipient_str}{attachment_info}"
+    try:
+        outcome = await send_email_command(
+            SendCommand(
+                account_name=account_name,
+                recipients=tuple(recipients),
+                subject=subject,
+                body=body,
+                cc=tuple(cc or ()),
+                bcc=tuple(bcc or ()),
+                html=html,
+                attachments=tuple(attachments or ()),
+                in_reply_to=in_reply_to,
+                references=references,
+                reply_to=reply_to,
+            )
+        )
+    except RecipientPolicyDeniedError as exc:
+        raise ValueError("Recipient(s) not in allowlist") from exc
+    if (
+        all(item.status == "succeeded" for item in outcome.delivery)
+        and outcome.sent_copy.status in ("succeeded", "skipped")
+        and not outcome.reconciliation_needed
+    ):
+        recipient_str = ", ".join(recipients)
+        attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
+        return f"Email sent successfully to {recipient_str}{attachment_info}"
+    return f"Email delivery [{_tagged_send_result(outcome)}]"
 
 
 @mcp.tool(
@@ -372,7 +468,8 @@ async def send_email(
     "Shares recipient, body, attachment, and threading parameters with send_email; "
     "adds mailbox and flags, and does not support reply_to. "
     "Default folder is Drafts with \\Draft and \\Seen flags. "
-    "Pure IMAP operation — works without SMTP configuration.",
+    "Pure IMAP operation — works without SMTP configuration. An ambiguous APPEND is reported as unknown "
+    "and is not retried automatically.",
 )
 async def save_to_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -427,30 +524,38 @@ async def save_to_mailbox(
         ),
     ] = None,
 ) -> str:
-    _enforce_recipient_allowlist(recipients, cc, bcc)
-    handler = dispatch_handler(account_name)
-    result = await handler.save_to_mailbox(
-        recipients,
-        subject,
-        body,
-        mailbox,
-        cc,
-        bcc,
-        html,
-        attachments,
-        in_reply_to,
-        references,
-        flags,
-    )
-    # result format: "<message-id>|uid:<imap-uid>"
-    parts = result.split("|uid:")
-    message_id = parts[0]
-    email_id = parts[1] if len(parts) > 1 else "unknown"
-    return f"Email saved to '{mailbox}' successfully. Message-Id: {message_id}, email_id: {email_id}"
+    try:
+        outcome = await save_to_mailbox_command(
+            SaveToMailboxCommand(
+                account_name=account_name,
+                recipients=tuple(recipients),
+                subject=subject,
+                body=body,
+                mailbox=mailbox,
+                cc=tuple(cc or ()),
+                bcc=tuple(bcc or ()),
+                html=html,
+                attachments=tuple(attachments or ()),
+                in_reply_to=in_reply_to,
+                references=references,
+                flags=tuple(flags) if flags is not None else None,
+            )
+        )
+    except RecipientPolicyDeniedError as exc:
+        raise ValueError("Recipient(s) not in allowlist") from exc
+    if outcome.status == "succeeded" and not outcome.reconciliation_needed:
+        email_id = outcome.uid or "unknown"
+        return f"Email saved to '{mailbox}' successfully. Message-Id: {outcome.message_id}, email_id: {email_id}"
+    detail = f" ({outcome.detail})" if outcome.status == "unknown" and outcome.detail else ""
+    warning = "; warning: reconciliation needed" if outcome.reconciliation_needed else ""
+    return f"Email save [{outcome.status}{detail}: {mailbox}; Message-Id: {outcome.message_id}{warning}]"
 
 
 @mcp.tool(
-    description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
+    description=(
+        "Delete one or more emails by email_id using target-scoped UID EXPUNGE. Use list_emails_metadata first. "
+        "Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically."
+    )
 )
 async def delete_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -460,17 +565,18 @@ async def delete_emails(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to delete emails from.")] = "INBOX",
 ) -> str:
-    handler = dispatch_handler(account_name)
-    deleted_ids, failed_ids = await handler.delete_emails(email_ids, mailbox)
-
-    result = f"Successfully deleted {len(deleted_ids)} email(s)"
-    if failed_ids:
-        result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
-    return result
+    outcome = await delete_emails_command(DeleteCommand(account_name, tuple(email_ids), mailbox))
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        return f"Successfully deleted {len(succeeded)} email(s)"
+    return f"Delete result [{_tagged_batch_result(outcome)}]"
 
 
 @mcp.tool(
-    description="Mark one or more emails as read by their email_id. Use list_emails_metadata first to get the email_id."
+    description=(
+        "Mark one or more emails as read by email_id. Use list_emails_metadata first. Partial or ambiguous "
+        "effects report per-ID succeeded/failed/unknown status and are not retried automatically."
+    )
 )
 async def mark_emails_as_read(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -480,17 +586,18 @@ async def mark_emails_as_read(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
 ) -> str:
-    handler = dispatch_handler(account_name)
-    marked_ids, failed_ids = await handler.mark_emails_as_read(email_ids, mailbox)
-
-    result = f"Successfully marked {len(marked_ids)} email(s) as read"
-    if failed_ids:
-        result += f", failed to mark {len(failed_ids)} email(s): {', '.join(failed_ids)}"
-    return result
+    outcome = await mark_read_command(MarkReadCommand(account_name, tuple(email_ids), mailbox))
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        return f"Successfully marked {len(succeeded)} email(s) as read"
+    return f"Mark-read result [{_tagged_batch_result(outcome)}]"
 
 
 @mcp.tool(
-    description="Move one or more emails between IMAP folders by their email_id. Use list_emails_metadata first to get the email_id and list_mailboxes to discover available folders."
+    description=(
+        "Move one or more emails between IMAP folders by email_id. Use list_emails_metadata and list_mailboxes "
+        "first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried."
+    )
 )
 async def move_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -503,19 +610,20 @@ async def move_emails(
         str, Field(default="INBOX", description="The source mailbox containing the emails.")
     ] = "INBOX",
 ) -> str:
-    handler = dispatch_handler(account_name)
-    moved_ids, failed_ids = await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
-
-    result = f"Successfully moved {len(moved_ids)} email(s) to {destination_mailbox}"
-    if failed_ids:
-        result += f", failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
-    return result
+    outcome = await move_emails_command(
+        MoveCommand(account_name, tuple(email_ids), source_mailbox, destination_mailbox)
+    )
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        return f"Successfully moved {len(succeeded)} email(s) to {destination_mailbox}"
+    return f"Move result [{_tagged_batch_result(outcome)}]"
 
 
 @mcp.tool(
     description="Archive one or more emails by moving them to the account's Archive folder, "
     "auto-detected via the RFC 6154 \\Archive flag (falling back to common names like Archive or "
-    "[Gmail]/All Mail). Use list_emails_metadata first to get the email_id."
+    "[Gmail]/All Mail). Use list_emails_metadata first. Partial or ambiguous effects report per-ID "
+    "succeeded/failed/unknown status and are not retried automatically."
 )
 async def archive_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -525,13 +633,11 @@ async def archive_emails(
     ],
     mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox containing the emails.")] = "INBOX",
 ) -> str:
-    handler = dispatch_handler(account_name)
-    archived_ids, failed_ids, archive_folder = await handler.archive_emails(email_ids, mailbox)
-
-    result = f"Successfully archived {len(archived_ids)} email(s) to {archive_folder}"
-    if failed_ids:
-        result += f", failed to archive {len(failed_ids)} email(s): {', '.join(failed_ids)}"
-    return result
+    outcome = await archive_emails_command(ArchiveCommand(account_name, tuple(email_ids), mailbox))
+    succeeded = outcome.batch.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.batch.reconciliation_needed:
+        return f"Successfully archived {len(succeeded)} email(s) to {outcome.archive_mailbox}"
+    return f"Archive result [{_tagged_batch_result(outcome.batch)}; mailbox: {outcome.archive_mailbox}]"
 
 
 @mcp.tool(

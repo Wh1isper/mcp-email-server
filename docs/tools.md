@@ -120,8 +120,10 @@ If a body extends beyond the requested window, the returned body ends with
 `max_body_length`.
 
 The batch response reports requested and retrieved counts and includes
-`failed_ids` for messages that could not be fetched. A failure to apply
-`mark_as_read` is logged but does not discard successfully retrieved content.
+`failed_ids` for messages that could not be fetched. Body retrieval always uses
+IMAP PEEK. When requested, successfully retrieved IDs are marked through the
+same application mutation workflow as `mark_emails_as_read`; a mark failure is
+logged but does not discard successfully retrieved content.
 
 ## Composing messages
 
@@ -138,7 +140,11 @@ This tool is visible only when at least one configured account has SMTP
 settings. The selected `account_name` must itself be send-capable.
 
 If a recipient allowlist is configured, every To, CC, and BCC address must be
-allowed.
+allowed. SMTP delivery reports accepted, rejected, and unknown recipients
+separately when the result is partial or ambiguous. Saving the Sent copy is a
+second IMAP effect and is reported in its own `sent-copy` section; a failed or
+unknown copy never changes an accepted delivery into a failure. Do not retry the
+whole send to repair a Sent copy.
 
 ### `save_to_mailbox`
 
@@ -153,7 +159,10 @@ message ID. It includes an assigned IMAP `email_id` only when the server returns
 RFC 4315 `APPENDUID`; otherwise the value is `unknown`, and the target mailbox
 must be searched before a later operation can address the saved message.
 
-The same recipient allowlist used by `send_email` applies to this tool.
+The same recipient allowlist used by `send_email` applies to this tool. A known
+APPEND success without `APPENDUID` returns `email_id: unknown`. A lost APPEND
+result is instead tagged `unknown`; the server does not replay it because that
+could create a duplicate draft.
 
 ## Mailbox and mutation tools
 
@@ -191,8 +200,27 @@ advertise `UIDPLUS`: the server flags and expunges only the requested UIDs with
 `UID EXPUNGE` and never sends mailbox-wide `EXPUNGE`. Without `UIDPLUS`, the
 operation fails before adding the `\Deleted` flag.
 
-Mutation tools return successful and failed counts. When a sender allowlist is
-active, blocked messages are never changed. See
+An all-known-success mutation keeps the existing success sentence. Partial or
+ambiguous results use tagged `succeeded`, `failed`, and `unknown` sections in
+input order. Unknown targets can include a fixed substep tag such as `store`,
+`copy`, or `expunge-after-copy`. `unknown` means the provider effect may have
+started but its final result was lost; the server does not replay it
+automatically. A
+`reconciliation needed` warning means the provider outcome is authoritative but
+the rebuildable local metadata projection could not be invalidated.
+
+Mutation requests accept 1 to 100 unique canonical positive decimal IMAP UIDs.
+Mailbox names are limited to 1,024 UTF-8 bytes. Compose requests allow at most
+100 total To/CC/BCC entries of at most 1,024 UTF-8 bytes each; every entry must
+contain exactly one address. Compose requests also allow a 64 KiB UTF-8 subject,
+a 1 MiB UTF-8 body, and 20 attachments. Threading and Reply-To values
+are limited to 64 KiB each. Each attachment path is limited to 4,096 bytes,
+each existing attachment to 25 MiB, and their combined size to 50 MiB. Saved
+messages accept at most 100 flags of 128 bytes each before protocol syntax
+validation. Mailbox names, recipient/header values, and subjects reject control
+characters before provider access.
+
+When a sender allowlist is active, blocked messages are never changed. See
 [Sender allowlist](security.md#sender-allowlist) for the privacy behavior of
 blocked IDs.
 

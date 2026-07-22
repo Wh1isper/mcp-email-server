@@ -155,15 +155,17 @@ service and the prior direct handler bypass is removed. During migration:
 
 ## Implementation Progress
 
-Effective-account listing and `list_emails_metadata` now enter process-scoped
-application services from the MCP adapter. The metadata query service receives
-narrow account-authority, provider-factory, and operational-projection ports; it
-owns index eligibility, lifecycle revalidation, refresh, and bounded fallback.
-Concrete legacy/managed configuration, `ClassicEmailHandler`, and SQLite index
-construction live in local adapters assembled by `mcp_email_server.runtime`.
-Service tests use injected fakes, while adapter, provider, SQLite, MCP contract,
-and GreenMail stdio tests cover the concrete boundaries.
+Effective-account listing, `list_emails_metadata`, and all explicit mutation
+and compose tools now enter process-scoped application services from the MCP
+adapter. Metadata and workflow-specific mutation services receive narrow
+account-authority, provider-factory, and operational-projection ports. They own
+lifecycle revalidation, bounds, replay decisions, index invalidation, and
+compatible result mapping. Concrete legacy/managed configuration,
+`ClassicEmailHandler`, and SQLite index construction live in local adapters
+assembled by `mcp_email_server.runtime`. Service tests use injected fakes, while
+adapter, provider, SQLite, MCP contract, and GreenMail stdio tests cover the
+concrete boundaries.
 
-The remaining read and mutation paths still use compatibility dispatch and are
-not considered migrated until their MCP adapter paths call workflow-specific
-application services under the same composition root.
+The remaining body, attachment, and mailbox-discovery paths still use
+compatibility dispatch and are not considered migrated until their MCP adapter
+paths call application services under the same composition root.

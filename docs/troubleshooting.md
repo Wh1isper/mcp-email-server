@@ -208,8 +208,10 @@ accounts, not the selected one.
 
 ## SMTP delivery succeeds but saving to Sent fails
 
-SMTP delivery and the IMAP append are separate operations. List the provider's
-folders with `list_mailboxes`, then configure the exact folder:
+SMTP delivery and the IMAP append are separate operations. A tagged result can
+therefore show accepted recipients together with `sent-copy: failed` or
+`sent-copy: unknown`. Do not resend the message to repair the copy. List the
+provider's folders with `list_mailboxes`, then configure the exact folder:
 
 ```toml
 [[emails]]
@@ -289,6 +291,18 @@ another client.
 When a server lacks both native `MOVE` and `UIDPLUS`, `move_emails` also rejects
 the COPY-and-delete fallback before copying. Use the provider's native client or
 upgrade/configure the server to support `MOVE` or `UIDPLUS`.
+
+## A mutation result contains `unknown` or `reconciliation needed`
+
+`unknown` means the remote effect may have started but the connection did not
+return authoritative completion evidence. The server deliberately does not
+retry. Inspect the target mailbox, flags, Message-ID, or provider delivery
+records before deciding whether a narrow manual retry is safe.
+
+`reconciliation needed` means the remote outcome is known, but invalidating the
+local metadata projection failed. The projection is disposable; correct the
+operational database problem and refresh metadata. Do not undo or repeat the
+provider effect merely to repair local index state.
 
 ## HTTP requests are rejected by `Host` or `Origin` validation
 

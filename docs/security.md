@@ -250,6 +250,20 @@ The sender allowlist is local filtering, not sender authentication. A spoofed
 `From` header can match. Continue to rely on provider-side SPF, DKIM, DMARC,
 and spam controls.
 
+## Mutation replay safety
+
+IMAP and SMTP connections can fail after a remote server has accepted an
+effect but before this process receives the result. Such targets are reported
+as `unknown`, not silently retried or rewritten as known failures. Repeating an
+unknown send, APPEND, MOVE, delete, or flag update can duplicate delivery or
+apply an effect twice; inspect the provider mailbox or delivery evidence first.
+
+Scoped delete and the COPY/delete move fallback require `UIDPLUS` and use only
+`UID EXPUNGE`. They never use mailbox-wide `EXPUNGE`, which could commit another
+client's pending deletions. Metadata projection invalidation is rebuildable: if
+it fails after a provider effect, the result keeps the provider evidence and
+adds a reconciliation warning instead of claiming rollback.
+
 ## Attachment access
 
 Attachment downloads are disabled by default because the tool writes data from

@@ -521,8 +521,8 @@ class TestClassicEmailHandler:
             )
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_mark_as_read_true(self, classic_handler):
-        """Test that get_emails_content passes mark_as_read=True to the underlying client."""
+    async def test_get_emails_content_defers_mark_as_read_to_application(self, classic_handler):
+        """The classic read adapter never performs the separate mutation."""
         now = datetime.now(UTC)
         email_data = {
             "email_id": "123",
@@ -546,7 +546,7 @@ class TestClassicEmailHandler:
 
             assert len(result.emails) == 1
             mock_get_body.assert_called_once_with(
-                "123", "INBOX", True, allowed_senders=[], body_offset=0, max_body_length=20000
+                "123", "INBOX", False, allowed_senders=[], body_offset=0, max_body_length=20000
             )
 
     @pytest.mark.asyncio
@@ -626,7 +626,7 @@ class TestClassicEmailHandler:
         assert mock_get.call_args.kwargs.get("allowed_senders") == ["*@example.com"]
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_no_allowlist_passes_mark_through(self, classic_handler):
+    async def test_get_emails_content_no_allowlist_still_defers_marking(self, classic_handler):
         now = datetime.now(UTC)
         alice = {
             "email_id": "1",
@@ -645,8 +645,8 @@ class TestClassicEmailHandler:
                 with patch.object(classic_handler.incoming_client, "mark_emails_as_read", mock_mark):
                     result = await classic_handler.get_emails_content(["1"], mark_as_read=True)
         assert result.retrieved_count == 1
-        assert mock_get.call_args.args[2] is True  # mark passed through to fetch
-        mock_mark.assert_not_called()  # no deferred batch-mark when not filtering
+        assert mock_get.call_args.args[2] is False
+        mock_mark.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_emails_passes_allowlist_and_report_flag(self, classic_handler):
@@ -729,21 +729,15 @@ class TestEmailClientGetEmailBodyById:
         mock_imap.uid.assert_called_once_with("fetch", "123", "BODY.PEEK[]")
 
     @pytest.mark.asyncio
-    async def test_get_email_body_by_id_marks_as_read_after_successful_parse(self, email_client, mock_imap):
-        """Test mark_as_read=True stores \\Seen after a successful parse."""
-        mock_imap.uid = AsyncMock(
-            side_effect=[
-                ("OK", [b"FETCH BODY[]", bytearray(self._raw_email())]),
-                ("OK", [b"STORE +FLAGS (\\Seen)"]),
-            ]
-        )
+    async def test_get_email_body_by_id_never_owns_mark_as_read_effect(self, email_client, mock_imap):
+        """Even the compatibility argument leaves marking to the application service."""
+        mock_imap.uid = AsyncMock(return_value=("OK", [b"FETCH BODY[]", bytearray(self._raw_email())]))
 
         with patch.object(email_client, "_imap_connect", return_value=mock_imap):
             result = await email_client.get_email_body_by_id("123", mark_as_read=True)
 
         assert result is not None
-        assert mock_imap.uid.call_args_list[0].args == ("fetch", "123", "BODY.PEEK[]")
-        assert mock_imap.uid.call_args_list[1].args == ("store", "123", "+FLAGS", r"(\Seen)")
+        mock_imap.uid.assert_called_once_with("fetch", "123", "BODY.PEEK[]")
 
     @pytest.mark.asyncio
     async def test_get_email_body_by_id_does_not_mark_as_read_when_parse_fails(self, email_client, mock_imap):
@@ -756,23 +750,6 @@ class TestEmailClientGetEmailBodyById:
 
         assert result is None
         mock_imap.uid.assert_called_once_with("fetch", "123", "BODY.PEEK[]")
-
-    @pytest.mark.asyncio
-    async def test_get_email_body_by_id_continues_when_mark_as_read_store_fails(self, email_client, mock_imap):
-        """Test STORE failure is logged while retrieval still succeeds."""
-        mock_imap.uid = AsyncMock(
-            side_effect=[
-                ("OK", [b"FETCH BODY[]", bytearray(self._raw_email())]),
-                ("NO", [b"STORE failed"]),
-            ]
-        )
-
-        with patch.object(email_client, "_imap_connect", return_value=mock_imap):
-            result = await email_client.get_email_body_by_id("123", mark_as_read=True)
-
-        assert result is not None
-        assert result["email_id"] == "123"
-        assert mock_imap.uid.call_count == 2
 
     @pytest.mark.asyncio
     async def test_get_email_body_by_id_blocked_sender_returns_none_without_reading_body(self, email_client, mock_imap):
@@ -1030,8 +1007,8 @@ class TestGetEmailsContentEdgeCases:
         assert result.retrieved_count == 0
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_passes_mark_as_read(self, classic_handler):
-        """mark_as_read is forwarded to the read path (which marks only allowed messages)."""
+    async def test_get_emails_content_compatibility_mark_flag_does_not_reach_read_adapter(self, classic_handler):
+        """The application layer owns the post-read mark effect."""
         now = datetime.now(UTC)
         email_data = {
             "email_id": "1",
@@ -1048,4 +1025,4 @@ class TestGetEmailsContentEdgeCases:
             with patch.object(classic_handler.incoming_client, "get_email_body_by_id", mock_get):
                 result = await classic_handler.get_emails_content(["1"], mark_as_read=True)
         assert result.retrieved_count == 1
-        assert mock_get.call_args.args == ("1", "INBOX", True)
+        assert mock_get.call_args.args == ("1", "INBOX", False)
