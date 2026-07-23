@@ -579,8 +579,37 @@ async def test_connectivity_failure_is_typed_and_sanitized() -> None:
 
     assert result.role == "outgoing"
     assert result.status == "failed"
-    assert result.message == "Connection test failed"
+    assert result.category == "credential_unavailable"
+    assert result.message == "Connection test failed before provider access; inspect account and credential state"
     assert "secret" not in result.message
+
+
+@pytest.mark.parametrize(("entry_count", "accepted"), [(1_000, True), (1_001, False)])
+def test_managed_policy_update_enforces_policy_entry_limit(entry_count: int, accepted: bool) -> None:
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(
+        mode="legacy",
+        db_path=Path("catalog.sqlite3"),
+    )
+    catalog = Mock()
+    catalog.update_policy.return_value = 2
+    backend.open_catalog.return_value = catalog
+    policy = ManagedPolicy(
+        revision=1,
+        enable_attachment_download=False,
+        allowed_recipients=tuple(f"user-{index}@example.test" for index in range(entry_count)),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+
+    if accepted:
+        result = PolicyManagementService(backend).update(policy)
+        assert len(result.allowed_recipients) == 1_000
+        catalog.update_policy.assert_called_once()
+    else:
+        with pytest.raises(ManagementError, match="recipient policy has too many entries"):
+            PolicyManagementService(backend).update(policy)
+        catalog.update_policy.assert_not_called()
 
 
 def test_managed_policy_update_uses_legacy_canonicalization() -> None:

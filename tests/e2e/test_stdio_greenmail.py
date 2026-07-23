@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import imaplib
+import importlib.metadata
 import os
 import re
 import smtplib
@@ -407,7 +408,9 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
                 arguments={"account_name": "alice-managed", "email_ids": ["01"]},
             )
             assert invalid.isError is True
-            assert "canonical positive decimal" in _text_content(invalid)
+            validation_error = _text_content(invalid)
+            assert "email_ids.0" in validation_error
+            assert "pattern" in validation_error.lower()
 
             # Disablement commits in a separate management process and must be
             # observed before the next provider access in this same stdio session.
@@ -775,6 +778,7 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
         ) as session:
             initialized = await session.initialize()
             assert initialized.serverInfo.name == "email"
+            assert initialized.serverInfo.version == importlib.metadata.version("mcp-email-server")
 
             tools = await session.list_tools()
             tool_names = {tool.name for tool in tools.tools}

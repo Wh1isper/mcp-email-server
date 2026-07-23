@@ -81,9 +81,14 @@ activation from racing a cleanup delete.
 
 Enter managed credentials through the masked prompt or `--password-stdin`.
 Never place them in argv. `config doctor`, account summaries, errors, logs, and
-MCP results do not expose secret values or candidate locators. A missing or
-unreadable active secret fails closed rather than selecting a legacy account or
-plaintext fallback.
+MCP results do not expose secret values or candidate locators. The CLI `--json`
+mode uses reviewed presentation fields rather than recursively serializing
+application objects; it likewise omits secret values, candidate locators,
+database paths, and import preview tokens. Secret-writing JSON commands require
+`--password-stdin` only to preserve a single result document and remain
+user-operated; JSON does not make an agent a safe credential channel. A missing
+or unreadable active secret fails closed rather than selecting a legacy account
+or plaintext fallback.
 
 Managed bootstrap/catalog support requires POSIX ownership, no-follow,
 directory-descriptor, and advisory-lock primitives. Bootstrap files, their

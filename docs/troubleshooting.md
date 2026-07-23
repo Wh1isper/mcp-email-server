@@ -74,9 +74,13 @@ Run bounded diagnostics from a terminal:
 ```bash
 mcp-email-server config status
 mcp-email-server config doctor
+# For agent/user automation:
+mcp-email-server config status --json
+mcp-email-server config doctor --json
 ```
 
-Managed startup requires all of the following:
+JSON callers should branch on `schema_version`, `ok`, `command`, and stable data
+or error codes rather than matching message prose. Managed startup requires all of the following:
 
 - a parseable owner-only bootstrap with `bootstrap_version = 1`,
   `mode = "managed"`, and `db_location`;
@@ -88,7 +92,9 @@ Managed startup requires all of the following:
 The server deliberately does not fall back to TOML accounts when any of these
 checks fails. `config status` still returns bounded bootstrap state and
 `catalog_status=unavailable` when the selected database is missing, corrupt,
-incompatible, or insecure. In that state, deliberately run `mcp-email-server
+incompatible, or insecure. A fresh installation reports
+`catalog_status=not_configured`; an agent must hand setup back to the user rather
+than collecting credentials. In an unavailable state, deliberately run `mcp-email-server
 config select legacy` and restart; this recovery transition uses a revisioned
 bootstrap compare-and-swap and does not open the failed catalog. If the bootstrap
 itself is unparseable, repair or restore it manually; `reset` cannot safely infer
@@ -101,8 +107,12 @@ access and retry with:
 mcp-email-server account set-secret ACCOUNT incoming
 ```
 
-Use `outgoing` for an SMTP credential. A successful retry retires stale pending
-candidates. `CLEANUP_REQUIRED` means a replacement or detachment committed but
+Use `outgoing` for an SMTP credential. Connectivity checks report only bounded
+categories: `timeout`, `endpoint_unavailable`, `credential_unavailable`,
+`authentication_or_provider_rejected`, or `tls_or_connection_failed`. Follow the
+safe remediation message; raw provider exceptions are intentionally hidden. A
+successful retry retires stale pending candidates. `CLEANUP_REQUIRED` means a
+replacement or detachment committed but
 an old candidate could not be deleted. Restore keyring access and run:
 
 ```bash

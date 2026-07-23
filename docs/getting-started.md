@@ -138,7 +138,9 @@ is intentionally absent from MCP; use the local UI or your own terminal.
 After restarting the client:
 
 1. Ask it to list available email accounts. This calls
-   `list_available_accounts`.
+   `list_available_accounts`; select an entry with `can_receive=true` and require
+   `can_send=true` before sending. If the list is empty, the agent should hand
+   setup back to you and must not ask for a credential.
 2. Ask it to list recent messages for the configured account. This calls
    `list_emails_metadata`.
 3. If SMTP is configured through the managed workflow, make a non-destructive

@@ -268,7 +268,7 @@ def test_cli_reset_and_migrate_are_fenced_with_guidance(monkeypatch, tmp_path, f
     fake_keyring.calls.clear()
     runner = CliRunner()
 
-    reset_result = runner.invoke(app, ["reset"])
+    reset_result = runner.invoke(app, ["reset", "--confirm", "RESET"])
     migrate_result = runner.invoke(app, ["migrate-credentials", "--to", "plaintext"])
 
     assert reset_result.exit_code == 1

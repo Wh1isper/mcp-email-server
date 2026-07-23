@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -12,6 +13,7 @@ class ApplicationLimits:
     configured_accounts: int = 1_000
     policy_entries: int = 1_000
     account_name_bytes: int = 256
+    account_description_bytes: int = 4 * 1_024
     recipients: int = 100
     address_bytes: int = 1_024
     mailbox_bytes: int = 1_024
@@ -43,6 +45,17 @@ class ApplicationLimits:
 
 
 APPLICATION_LIMITS = ApplicationLimits()
+_CANONICAL_IMAP_UID = re.compile(r"[1-9][0-9]*\Z")
+
+
+def validate_imap_uid(value: object, *, field_name: str = "email_id") -> str:
+    """Return one canonical positive decimal ASCII IMAP UID within RFC range."""
+
+    if not isinstance(value, str) or _CANONICAL_IMAP_UID.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a canonical positive decimal IMAP UID")
+    if int(value) > APPLICATION_LIMITS.maximum_imap_uid:
+        raise ValueError(f"{field_name} exceeds the maximum IMAP UID")
+    return value
 
 
 def contains_c0_or_del(value: str) -> bool:

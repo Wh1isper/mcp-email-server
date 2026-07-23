@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -131,6 +132,10 @@ async def test_raw_stdio_initialization_catalog_stdout_purity_and_idle_eof(tmp_p
     async with _server(tmp_path) as server:
         initialized = await server.initialize()
         assert initialized["result"]["protocolVersion"] == "2025-06-18"
+        assert initialized["result"]["serverInfo"] == {
+            "name": "email",
+            "version": importlib.metadata.version("mcp-email-server"),
+        }
 
         requests = (
             (2, "tools/list", "tools"),

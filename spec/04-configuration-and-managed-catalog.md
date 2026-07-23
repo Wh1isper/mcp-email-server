@@ -79,7 +79,42 @@ Hard purge and name reuse are deferred.
 
 Connectivity tests use the same current authority, late secret resolution,
 provider TLS policy, limits, and redaction as mail workflows. They do not save a
-credential, enable an account, or activate a catalog as a side effect.
+credential, enable an account, or activate a catalog as a side effect. Failures
+retain one bounded stable category (`timeout`, `endpoint_unavailable`,
+`credential_unavailable`, `authentication_or_provider_rejected`, or
+`tls_or_connection_failed`) plus safe remediation, never a raw provider message.
+Endpoint presence is checked before role-specific secret resolution, and typed
+provider authentication, timeout, and transport failures retain their category.
+Endpoint port range and mutually exclusive implicit-TLS/STARTTLS modes are
+validated before CLI secret collection and again at the application boundary.
+
+## Agent-readable CLI Results
+
+Every finite `config` and `account` command, plus legacy `reset` and credential
+migration, supports a leaf `--json` result mode. Success emits exactly one UTF-8
+JSON document with schema version, stable command identifier, explicit data, and
+an always-present warning array. Parsed application failures emit one document
+with a stable error code and bounded message while preserving the nonzero exit
+status. Framework usage errors that occur before command dispatch remain Click
+errors in this version.
+
+Presentation DTOs explicitly select safe fields; they never recursively expose
+application dataclasses, local configuration/database paths, preview tokens,
+secret values, or secret locators. Credential-migration JSON exposes bounded
+cleanup counts, completion state, and warning codes rather than reusable keyring
+entry names; exact entries remain a human-facing text diagnostic. Bootstrap
+failures are mapped to bounded path-free remediation before entering
+agent-readable JSON. Interactive legacy import apply rejects JSON mode because its reviewed
+preview and same-process confirmation cannot be represented as one result
+document. Secret-writing commands require `--password-stdin` when JSON mode is
+selected so a prompt cannot corrupt stdout; this supports user-owned automation
+and does not authorize an agent to receive credentials.
+
+Default text output remains the human interface. Account list JSON includes an
+explicit empty array, account show includes all mutable non-secret fields, and
+status includes catalog presence, restart requirement, lifecycle/schema/revision,
+account counts, and credential-state counts. Destructive legacy reset requires
+exact `RESET` confirmation in both output modes.
 
 ## Managed Policy
 
@@ -162,10 +197,11 @@ application services, not only CLI/UI command checks.
 
 ## Management Status and Doctor
 
-Bounded status reports mode, bootstrap revision, selected path in a safely
-displayable form, catalog lifecycle/schema/revision, account counts by lifecycle,
-incomplete credential states, and restart requirement. A missing, corrupt,
-incompatible, or insecure selected catalog produces a bounded unavailable
+Bounded status reports mode, bootstrap revision, selected-catalog presence,
+catalog lifecycle/schema/revision, account counts by lifecycle, incomplete
+credential states, and restart requirement. Agent-readable CLI output omits the
+local catalog path; richer user-operated interfaces may show a safely displayable
+path. A missing, corrupt, incompatible, or insecure selected catalog produces a bounded unavailable
 category while preserving the bootstrap state needed to select legacy; status
 does not silently fall back. Doctor performs opt-in bounded checks for
 bootstrap, file security, schema, binding consistency, secret resolution, and
@@ -180,14 +216,20 @@ SQL, raw provider responses, or reusable locators.
    and restart semantics are distinct and covered through CLI and UI.
 3. Every account, policy, lifecycle, import, binding, and bootstrap mutation
    rejects stale revisions with a bounded current summary; account and policy
-   cardinality limits are enforced on both read and write boundaries.
+   cardinality limits are enforced on both read and write boundaries, including
+   the full 1,000-entry recipient and sender policy limit.
 4. Soft removal disables provider work and permanently reserves the normalized
    name in this delivery.
-5. The MCP catalog contains no account writer in either mode; legacy setup is
+5. Every finite management command has a tested single-document JSON success
+   contract; dispatched failures have stable codes, no secret/locator fields, and
+   preserve exit semantics.
+6. CLI endpoint/state preflight occurs before secret input, and connectivity
+   failures expose only the approved stable categories and remediation.
+7. The MCP catalog contains no account writer in either mode; legacy setup is
    available only through securely interactive CLI/UI with migration guidance.
-6. Import preview is deterministic and secret-free; apply rejects source or
+8. Import preview is deterministic and secret-free; apply rejects source or
    target drift before creating a mixed endpoint/credential result.
-7. Partial import and external cleanup failures return recoverable durable state
+9. Partial import and external cleanup failures return recoverable durable state
    without claiming cross-store atomicity.
-8. CLI and UI expose equivalent managed capabilities and application semantics;
-   neither edits legacy TOML as its normal management model.
+10. CLI and UI expose equivalent managed capabilities and application semantics;
+    neither edits legacy TOML as its normal management model.

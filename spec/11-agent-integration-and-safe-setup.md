@@ -46,7 +46,8 @@ The integration may help an agent:
 - explain provider-specific app-password prerequisites without requesting the
   value;
 - verify non-secret post-setup state after the user completes the handoff;
-- run bounded doctor/status commands only when their output contract is safe;
+- run bounded doctor/status commands in their leaf `--json` mode and branch on
+  stable fields/codes rather than parsing prose;
 - provide the correct MCP client configuration after setup without embedding
   credentials.
 
@@ -60,7 +61,17 @@ here and ask me to verify status.
 ```
 
 The exact command is version-aware and comes from checked project documentation,
-not an invented shell sequence.
+not an invented shell sequence. For the matching V2 release, bounded agent-run
+checks use `mcp-email-server config status --json` and `mcp-email-server config
+doctor --json`. The agent validates `schema_version`, `ok`, and `command`, treats
+unknown schemas/codes as unsupported, and summarizes only approved lifecycle,
+count, restart, binding-health, problem, and handoff fields. It never infers
+permission to run another command merely because that command also supports JSON.
+
+JSON mode is a presentation contract, not a broader authority grant. Account,
+policy, import, reset, migration, and credential commands remain user-operated;
+secret-writing JSON commands requiring stdin exist for user-owned automation and
+MUST NOT be used to route secrets through an agent.
 
 ## Forbidden Agent Behavior
 
@@ -75,8 +86,8 @@ The skill/plugin MUST NOT:
 - invoke keyring or `SecretStore` backends directly;
 - launch the UI in a way that relays its bootstrap fragment through model-visible
   output, or copy the bootstrap URL into chat;
-- claim that host approval, tool annotations, or elicitation makes secret-bearing
-  tool calls safe;
+- claim that host approval, tool annotations, JSON output, or elicitation makes
+  secret-bearing tool calls safe;
 - install binaries/plugins, modify shell startup files, or change MCP client
   configuration without explicit user intent and a visible diff/summary;
 - download or execute unpinned helper code merely to perform account setup;
@@ -177,7 +188,8 @@ only non-secret lifecycle and connectivity categories.
    password” always hand off to user-operated CLI/UI and never request or retain
    the value in chat.
 4. The integration can perform only documented bounded non-secret status/version
-   checks without direct TOML, SQLite, keyring, or `SecretStore` access.
+   checks without direct TOML, SQLite, keyring, or `SecretStore` access; status
+   and doctor use the tested JSON envelope and reject unknown schema versions.
 5. Static scans and behavioral tests find no credential placeholders, secret
    forwarding, bootstrap-token relay, opaque remote scripts, telemetry, or
    remote-management behavior.

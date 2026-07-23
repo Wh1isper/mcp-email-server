@@ -8,7 +8,13 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_email_server.config import EmailServer
-from mcp_email_server.emails.classic import EmailClient, _create_smtp_ssl_context, _html_to_text, _imap_login
+from mcp_email_server.emails.classic import (
+    EmailClient,
+    ImapAuthenticationError,
+    _create_smtp_ssl_context,
+    _html_to_text,
+    _imap_login,
+)
 
 
 @pytest.fixture
@@ -115,7 +121,7 @@ class TestImapLogin:
         imap = AsyncMock()
         imap.login = AsyncMock(return_value=MagicMock(result="NO", lines=[b"Incorrect login credentials"]))
 
-        with pytest.raises(ConnectionError) as exc_info:
+        with pytest.raises(ImapAuthenticationError) as exc_info:
             await _imap_login(imap, "user@example.com", "secret")
 
         message = str(exc_info.value)
@@ -128,10 +134,50 @@ class TestImapLogin:
         imap = AsyncMock()
         imap.login = AsyncMock(return_value=MagicMock(result="BAD", lines=[b"bad byte: \xff"]))
 
-        with pytest.raises(ConnectionError) as exc_info:
+        with pytest.raises(ImapAuthenticationError) as exc_info:
             await _imap_login(imap, "user@example.com", "secret")
 
         assert str(exc_info.value) == "IMAP login failed (BAD)"
+
+
+@pytest.mark.asyncio
+async def test_imap_login_timeout_preserves_timeout_category() -> None:
+    imap = AsyncMock()
+    imap.login = AsyncMock(side_effect=TimeoutError("provider detail"))
+
+    with pytest.raises(TimeoutError, match="provider detail"):
+        await _imap_login(imap, "user@example.com", "secret")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email_id", ["1\r\nNOOP", "1 2", "1:*", "1,2", "0", "01", str(2**32), "\u0661"])
+async def test_low_level_read_uid_sinks_reject_before_imap_io(email_client: EmailClient, email_id: str) -> None:
+    connect = AsyncMock(side_effect=AssertionError("invalid UID must not open IMAP"))
+
+    with patch.object(email_client, "_connect_imap", connect):
+        with pytest.raises(ValueError, match=r"canonical|maximum"):
+            await email_client.get_email_body_by_id(email_id)
+        with pytest.raises(ValueError, match=r"canonical|maximum"):
+            await email_client.fetch_attachment(email_id, "file.txt")
+
+    connect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_low_level_mutation_uid_sinks_reject_before_imap_io(email_client: EmailClient) -> None:
+    connect = AsyncMock(side_effect=AssertionError("invalid UID must not open IMAP"))
+
+    with patch.object(email_client, "_connect_imap", connect):
+        for operation in (
+            email_client.delete_emails_with_outcome,
+            email_client.mark_emails_as_read_with_outcome,
+        ):
+            with pytest.raises(ValueError, match="canonical"):
+                await operation(["1:*"])
+        with pytest.raises(ValueError, match="canonical"):
+            await email_client.move_emails_with_outcome(["1:*"], "INBOX", "Archive")
+
+    connect.assert_not_awaited()
 
 
 class TestEmailClient:

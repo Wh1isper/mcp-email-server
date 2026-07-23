@@ -43,6 +43,41 @@ def test_effective_account_query_service_uses_injected_source() -> None:
     source.list_effective_accounts.assert_called_once_with()
 
 
+def test_effective_account_discovery_projects_stable_non_secret_capabilities() -> None:
+    source = MagicMock()
+    account = _account().model_copy(update={"outgoing": _account().incoming})
+    source.list_effective_accounts.return_value = [account]
+    service = EffectiveAccountQueryService(source)
+
+    discovered = service.discover()
+    selected = service.discover_one("work")
+
+    assert discovered == [selected]
+    assert discovered[0].model_dump(mode="json") == {
+        "account_name": "work",
+        "account_type": "email",
+        "description": "",
+        "email_address": "user@example.test",
+        "can_receive": True,
+        "can_send": True,
+    }
+    assert "incoming" not in discovered[0].model_dump()
+    assert "updated_at" not in discovered[0].model_dump()
+
+
+def test_effective_account_discovery_rejects_oversized_description(monkeypatch) -> None:
+    source = MagicMock()
+    source.list_effective_accounts.return_value = [_account().model_copy(update={"description": "éé"})]
+    monkeypatch.setattr(
+        accounts_module,
+        "APPLICATION_LIMITS",
+        replace(accounts_module.APPLICATION_LIMITS, account_description_bytes=3),
+    )
+
+    with pytest.raises(EffectiveConfigurationLimitError, match="account description"):
+        EffectiveAccountQueryService(source).discover()
+
+
 def test_effective_account_query_rejects_count_above_shared_limit(monkeypatch) -> None:
     source = MagicMock()
     source.list_effective_accounts.return_value = [_account().masked(), _account().masked()]

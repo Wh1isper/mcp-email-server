@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from mcp.types import TextContent
 
 from mcp_email_server import app as app_module
 from mcp_email_server.app import (
@@ -21,7 +22,7 @@ from mcp_email_server.app import (
     save_to_mailbox,
     send_email,
 )
-from mcp_email_server.application.accounts import EffectiveConfiguration
+from mcp_email_server.application.accounts import AvailableAccount, EffectiveConfiguration
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
@@ -88,13 +89,44 @@ class TestMcpTools:
 
         with patch(
             "mcp_email_server.app.list_effective_accounts",
-            return_value=[email_settings.masked(), provider_settings.masked()],
+            return_value=[
+                AvailableAccount(
+                    account_name=email_settings.account_name,
+                    account_type="email",
+                    description=email_settings.description,
+                    email_address=email_settings.email_address,
+                    can_receive=True,
+                    can_send=True,
+                ),
+                AvailableAccount(
+                    account_name=provider_settings.account_name,
+                    account_type="provider",
+                    description=provider_settings.description,
+                    can_receive=False,
+                    can_send=False,
+                ),
+            ],
         ) as list_accounts:
             result = await list_available_accounts()
 
-        assert len(result) == 2
-        assert result[0].account_name == "test_email"
-        assert result[1].account_name == "test_provider"
+        assert [account.model_dump(mode="json") for account in result] == [
+            {
+                "account_name": "test_email",
+                "account_type": "email",
+                "description": "",
+                "email_address": "test@example.com",
+                "can_receive": True,
+                "can_send": True,
+            },
+            {
+                "account_name": "test_provider",
+                "account_type": "provider",
+                "description": "",
+                "email_address": None,
+                "can_receive": False,
+                "can_send": False,
+            },
+        ]
         list_accounts.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -871,3 +903,58 @@ async def test_save_tool_does_not_claim_success_for_ambiguous_append() -> None:
     assert result == (
         "Email save [unknown (append): Drafts; Message-Id: <draft@example.test>; warning: reconciliation needed]"
     )
+
+
+@pytest.mark.asyncio
+async def test_account_discovery_text_and_structured_content_are_consistent() -> None:
+    accounts = [
+        AvailableAccount(
+            account_name="work",
+            account_type="email",
+            description="Primary account",
+            email_address="user@example.test",
+            can_receive=True,
+            can_send=True,
+        ),
+        AvailableAccount(
+            account_name="legacy-provider",
+            account_type="provider",
+            description="Unsupported provider",
+            can_receive=False,
+            can_send=False,
+        ),
+    ]
+    with patch("mcp_email_server.app.list_effective_accounts", return_value=accounts):
+        content, structured = await app_module.mcp.call_tool("list_available_accounts", {})
+
+    assert structured == {"result": [account.model_dump(mode="json") for account in accounts]}
+    assert all(isinstance(block, TextContent) for block in content)
+    assert [json.loads(block.text) for block in content if isinstance(block, TextContent)] == structured["result"]
+
+
+@pytest.mark.asyncio
+async def test_tool_annotations_expose_agent_safety_and_retry_hints() -> None:
+    tools = {tool.name: tool for tool in await app_module.mcp.list_tools()}
+
+    assert tools["list_available_accounts"].annotations is not None
+    assert tools["list_available_accounts"].annotations.model_dump(exclude_none=True) == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+    assert tools["send_email"].annotations is not None
+    assert tools["send_email"].annotations.model_dump(exclude_none=True) == {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+    assert tools["delete_emails"].annotations is not None
+    assert tools["delete_emails"].annotations.model_dump(exclude_none=True) == {
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+    assert all(tool.annotations is not None for tool in tools.values())

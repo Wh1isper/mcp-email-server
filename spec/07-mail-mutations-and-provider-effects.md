@@ -31,8 +31,12 @@ preserve input order.
 
 ## Public Numeric IDs
 
-Existing public message IDs identify the current mailbox UID for compatibility.
-They do not carry the UIDVALIDITY observed during a prior listing. Before a
+Existing public message IDs identify one canonical positive decimal ASCII mailbox
+UID for compatibility. Zero, leading zero, non-ASCII digits, signs, UID ranges or
+sets, control characters, and values above the IMAP UID limit are rejected before
+provider access. The low-level provider entry repeats that validation before
+opening IMAP as defense in depth. IDs do not carry the UIDVALIDITY observed during
+a prior listing. Before a
 mutation the service selects the current account/mailbox, obtains current
 UIDVALIDITY where feasible, and avoids using stale projected placement as proof.
 It does not claim to detect every listing-epoch race. An epoch-bound public
@@ -48,7 +52,9 @@ Partial target outcomes are returned individually.
 ## Save or Append
 
 Saving a message to a mailbox is an IMAP APPEND effect. The request bounds
-headers, recipients, subject, body, encoded message bytes, and destination.
+headers, recipients, subject, body, encoded message bytes, attachments, and
+destination. File attachments preserve their inferred MIME main type and subtype
+rather than being coerced into `application/*`.
 Success requires positive APPEND evidence. If APPEND succeeds but UID mapping or
 projection update is unavailable, the result remains success with an unknown
 placement/projection warning rather than resubmitting.

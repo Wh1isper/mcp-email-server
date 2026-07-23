@@ -34,7 +34,40 @@ A complete version-controlled contract snapshot/assertion covers every exported:
 - success and tagged partial-result shape.
 
 Tests fail on addition, removal, schema drift, or description drift unless the
-change is intentionally reviewed as a public contract change.
+change is intentionally reviewed as a public contract change. MCP initialization
+advertises the installed `mcp-email-server` application version, never the MCP
+SDK dependency version, and raw protocol tests lock that identity.
+
+## Agent Discovery and Tool Hints
+
+Account discovery projects configuration models into one explicit non-secret
+DTO. Each item contains only `account_name`, `account_type`, `description`, an
+optional email identity, and `can_receive`/`can_send` capabilities. Description
+bytes have an application-owned 4 KiB ceiling and the output schema exposes the
+same structural bound. Text content, `structuredContent`, the account resource,
+and output schema describe the same
+fields; persistence models, timestamps, endpoints, masked credential objects,
+and provider internals do not cross this boundary. An empty list directs the
+agent to hand setup to the user-operated CLI/UI and never request credentials.
+
+Every tool publishes all four standard MCP annotation hints. They are reviewed
+against worst-case behavior across optional parameters:
+
+- local/remote discovery reads are read-only and idempotent; provider reads are
+  open-world while local authority reads are not;
+- `get_emails_content` is not marked read-only because `mark_as_read=true` can
+  change remote flags, but that flag effect is idempotent;
+- send and append are non-read-only, non-idempotent, open-world additions rather
+  than destructive replacement;
+- mark-read is a non-destructive idempotent remote mutation;
+- delete, move, and archive are destructive, non-idempotent remote mutations;
+- attachment download is a non-idempotent filesystem write that may replace the
+  caller-selected destination.
+
+Annotations are advisory planning and approval hints. They are never treated as
+an authorization, credential, policy, idempotency-proof, or safe-retry boundary;
+descriptions and typed unknown outcomes continue to forbid automatic replay after
+ambiguous effects.
 
 ## No-secret and No-management Boundary
 
@@ -77,7 +110,9 @@ MCP-specific ceilings include:
 - maximum per-item and aggregate metadata/body detail;
 - maximum target IDs, recipients, headers, and message bytes;
 - maximum warnings, failures, unknown outcomes, and error-detail bytes;
-- bounded string lengths for account/mailbox/path/query fields;
+- bounded string lengths for account/description/mailbox/path/query fields;
+- canonical positive decimal ASCII UID patterns, ranges, and collection sizes,
+  revalidated at both application and low-level provider entry points;
 - maximum effective account and recipient/sender policy discovery cardinality;
 - command/provider deadlines where safely enforceable.
 
@@ -137,6 +172,10 @@ A public catalog change requires:
 Removal of `add_email_account` is the explicit security exception: preserving a
 credential-bearing MCP compatibility shim would violate the no-secret boundary.
 Release notes and agent/CLI/UI guidance provide migration rather than emulation.
+The V2 pre-release correction from polymorphic configuration output to the
+explicit account-discovery DTO, and the addition of reviewed annotations, are
+intentional catalog changes covered by exact snapshots and raw protocol tests;
+they do not change the no-management boundary.
 
 The current numeric message ID stays a compatibility field without claiming
 UIDVALIDITY provenance. Introducing an epoch-bound identifier is additive or
@@ -158,9 +197,13 @@ model.
    error-detail bounds are tested at, below, and above each limit.
 5. Partial results preserve order and distinguish known failure, unknown effect,
    provider success with local warning, and sent-copy outcome.
-6. Raw protocol tests prove stdout purity, initialization/catalog behavior,
-   malformed/oversized handling, cancellation, EOF, and cleanup.
+6. Raw protocol tests prove application-version identity, stdout purity,
+   initialization/catalog behavior, malformed/oversized handling, cancellation,
+   EOF, and cleanup.
 7. GreenMail stdio E2E exercises representative read and mutation workflows
    through actual MCP framing, not only helper calls.
-8. The catalog contains no MCP App, account/credential management, agent
+8. Every tool has reviewed read-only, destructive, idempotent, and open-world
+   hints, and account discovery text/structured/schema representations agree on
+   the explicit non-secret capability DTO.
+9. The catalog contains no MCP App, account/credential management, agent
    installation, or graphical management resource.

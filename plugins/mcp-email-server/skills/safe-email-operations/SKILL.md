@@ -22,8 +22,8 @@ Do not launch `mcp-email-server ui` for the user. Its one-time bootstrap URL mus
 1. Read [safe commands and handoffs](references/safe-commands.md).
 2. Establish the installed application version using only the bounded version check. This plugin release is `0.0.1` and is intended for application `0.0.1`.
 3. If versions differ, stop using release-specific commands. Offer version-matched guidance or an explicit application upgrade; never upgrade silently.
-4. Run only a documented, bounded `version`, `config status`, or `config doctor` check. Do not inspect process environment, configuration files, databases, keyrings, browser history, or raw logs.
-5. For every setup or credential change, stop automation and hand control to the user in their own terminal or browser. Wait until the user says the operation is complete before offering a bounded status or doctor check.
+4. Run only the bounded version check, `config status --json`, or `config doctor --json`. Validate the documented JSON schema and command identifier before summarizing approved fields. JSON support on any other command does not authorize its use. Do not inspect process environment, configuration files, databases, keyrings, browser history, or raw logs.
+5. For every setup or credential change, stop automation and hand control to the user in their own terminal or browser. Wait until the user says the operation is complete before offering a bounded JSON status or doctor check.
 6. Provide MCP client configuration only after setup, with no credentials or UI bootstrap data, and only after explicit user intent with a visible diff or summary.
 
 If a supposedly bounded command emits unexpected sensitive-looking data, do not quote or preserve it. Stop and tell the user to inspect the output locally.

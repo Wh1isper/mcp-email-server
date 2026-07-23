@@ -19,6 +19,13 @@ BindingRole = Literal["incoming", "outgoing"]
 SecretSourceClass = Literal["plaintext", "keyring"]
 CredentialMutationStatus = Literal["active", "active_cleanup_required", "pending_repair_required"]
 CredentialRemovalStatus = Literal["removed", "removed_cleanup_required"]
+ConnectivityFailureCategory = Literal[
+    "timeout",
+    "endpoint_unavailable",
+    "credential_unavailable",
+    "authentication_or_provider_rejected",
+    "tls_or_connection_failed",
+]
 CredentialRepairStatus = Literal[
     "active",
     "active_cleanup_required",
@@ -32,6 +39,14 @@ LegacyCredentialStorage = Literal["keyring", "plaintext"]
 
 class ManagementError(RuntimeError):
     """A management workflow failed without exposing sensitive internals."""
+
+
+class ConnectivityCheckError(ManagementError):
+    """A provider connectivity check failed with a bounded stable category."""
+
+    def __init__(self, category: ConnectivityFailureCategory, message: str) -> None:
+        self.category: ConnectivityFailureCategory = category
+        super().__init__(message)
 
 
 class RevisionConflictError(ManagementError):
@@ -124,6 +139,7 @@ class ConnectivityResult:
     role: BindingRole
     status: Literal["ok", "failed"]
     message: str
+    category: ConnectivityFailureCategory | None = None
 
 
 @dataclass(frozen=True)
@@ -560,7 +576,8 @@ class CatalogLifecycleService(_ConfiguredCatalogService):
         )
 
 
-def _validate_endpoint(endpoint: EmailServer | EndpointSummary, *, role: BindingRole) -> None:
+def validate_endpoint(endpoint: EmailServer | EndpointSummary, *, role: BindingRole) -> None:
+    """Validate one non-secret endpoint consistently across CLI, UI, and services."""
     validate_controlled_string(
         endpoint.host,
         field_name=f"{role} host",
@@ -571,6 +588,10 @@ def _validate_endpoint(endpoint: EmailServer | EndpointSummary, *, role: Binding
         field_name=f"{role} user name",
         maximum_bytes=APPLICATION_LIMITS.address_bytes,
     )
+    if not 1 <= endpoint.port <= 65535:
+        raise ManagementError(f"{role.title()} port must be between 1 and 65535")
+    if endpoint.use_ssl and endpoint.start_ssl:
+        raise ManagementError(f"{role.title()} implicit TLS and STARTTLS are mutually exclusive")
 
 
 def _validate_secret(value: object, *, role: BindingRole) -> str:
@@ -614,13 +635,13 @@ class ManagedAccountService(_ConfiguredCatalogService):
                 field_name="sent folder",
                 maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
             )
-        _validate_endpoint(command.incoming, role="incoming")
+        validate_endpoint(command.incoming, role="incoming")
         incoming_secret = _unwrap_secret(command.incoming_secret, role="incoming")
         if (command.outgoing is None) != (command.outgoing_secret is None):
             raise ManagementError("Outgoing endpoint and credential must be provided together")
         outgoing_secret: str | None = None
         if command.outgoing is not None and command.outgoing_secret is not None:
-            _validate_endpoint(command.outgoing, role="outgoing")
+            validate_endpoint(command.outgoing, role="outgoing")
             outgoing_secret = _unwrap_secret(command.outgoing_secret, role="outgoing")
         catalog = self._catalog()
         catalog.add_account(
@@ -672,9 +693,9 @@ class ManagedAccountService(_ConfiguredCatalogService):
         incoming = command.incoming.apply(current.incoming) if command.incoming is not None else None
         outgoing = command.outgoing.apply(current.outgoing) if command.outgoing is not None else None
         if incoming is not None:
-            _validate_endpoint(incoming, role="incoming")
+            validate_endpoint(incoming, role="incoming")
         if outgoing is not None:
-            _validate_endpoint(outgoing, role="outgoing")
+            validate_endpoint(outgoing, role="outgoing")
         return catalog.update_account(
             command.name,
             expected_revision=command.expected_revision,
@@ -1010,9 +1031,9 @@ class PolicyManagementService(_ConfiguredCatalogService):
         return self._catalog().policy()
 
     def update(self, policy: ManagedPolicy) -> ManagedPolicy:
-        if len(policy.allowed_recipients) > APPLICATION_LIMITS.recipients:
+        if len(policy.allowed_recipients) > APPLICATION_LIMITS.policy_entries:
             raise ManagementError("Managed recipient policy has too many entries")
-        if len(policy.allowed_senders) > APPLICATION_LIMITS.recipients:
+        if len(policy.allowed_senders) > APPLICATION_LIMITS.policy_entries:
             raise ManagementError("Managed sender policy has too many entries")
         raw_recipients = tuple(
             validate_controlled_string(
@@ -1064,8 +1085,22 @@ class ConnectivityValidationService(_ConfiguredCatalogService):
                 await self._backend.test_connection(self._catalog(), name, role)
         except asyncio.CancelledError:
             raise
-        except (TimeoutError, ManagementError):
-            return ConnectivityResult(role=role, status="failed", message="Connection test failed")
+        except TimeoutError:
+            return ConnectivityResult(
+                role=role,
+                status="failed",
+                message="Connection test timed out; verify the endpoint and network, then retry",
+                category="timeout",
+            )
+        except ConnectivityCheckError as exc:
+            return ConnectivityResult(role=role, status="failed", message=str(exc), category=exc.category)
+        except ManagementError:
+            return ConnectivityResult(
+                role=role,
+                status="failed",
+                message="Connection test failed before provider access; inspect account and credential state",
+                category="credential_unavailable",
+            )
         return ConnectivityResult(role=role, status="ok", message="Connection succeeded")
 
 

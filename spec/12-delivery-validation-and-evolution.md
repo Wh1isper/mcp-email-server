@@ -85,16 +85,19 @@ redaction on unexpected failures.
 
 ### Interface contracts
 
-- MCP: complete catalog snapshot and raw protocol behavior.
-- CLI: command help/options, confirmations, stdin/masked secrets, conflict and
-  cleanup results, no-secret output.
+- MCP: complete catalog snapshot, application-version identity, reviewed tool
+  annotations, text/structured discovery equivalence, and raw protocol behavior.
+- CLI: command help/options, confirmations, stdin/masked secrets, one parsed JSON
+  success envelope for every finite command, stable errors, conflict/cleanup
+  results, path-free agent diagnostics, and no-secret output.
 - Web backend: exact routes, authentication/session/CSRF/Host/Origin/CORS,
   headers, rate limits, body/response limits, and service mapping.
 - Frontend: lint, typecheck, component/unit tests, secret-state clearing,
   conflict review, accessibility semantics, and deterministic production build.
-- Agent integration: canonical skill validation, Codex/Claude Code installation
-  fixtures, vendor-copy drift checks, version mismatch, safe handoff scenarios,
-  and forbidden secret/bootstrap-token behavior.
+- Agent integration: canonical skill validation, bounded JSON status/doctor
+  parsing, Codex/Claude Code installation fixtures, vendor-copy drift checks,
+  version mismatch, safe handoff scenarios, and forbidden secret/bootstrap-token
+  behavior.
 
 ### End to end
 

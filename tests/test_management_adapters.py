@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import traceback
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import aiosmtplib
@@ -11,8 +13,15 @@ import pytest
 from mcp_email_server import keyring_store
 from mcp_email_server.adapters import management as management_module
 from mcp_email_server.adapters.management import LocalManagementBackend
-from mcp_email_server.application.management import LegacyAccountSnapshot, ManagementError
+from mcp_email_server.application.management import (
+    ConnectivityCheckError,
+    EndpointSummary,
+    LegacyAccountSnapshot,
+    ManagementError,
+)
 from mcp_email_server.config import EmailSettings
+from mcp_email_server.emails.classic import ImapAuthenticationError
+from mcp_email_server.managed import ManagedCatalog
 
 
 def _legacy_raw() -> dict[str, object]:
@@ -159,11 +168,20 @@ async def test_connection_checks_incoming_mailboxes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [asyncio.CancelledError(), RuntimeError("provider secret detail")])
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (asyncio.CancelledError(), None),
+        (ImapAuthenticationError("provider secret detail"), "authentication_or_provider_rejected"),
+        (TimeoutError("provider secret detail"), "timeout"),
+        (RuntimeError("provider secret detail"), "tls_or_connection_failed"),
+    ],
+)
 async def test_connection_propagates_cancellation_and_sanitizes_provider_failure(
     monkeypatch: pytest.MonkeyPatch,
     email_settings: EmailSettings,
     error: BaseException,
+    category: str | None,
 ) -> None:
     catalog = Mock()
     catalog.load_account.return_value = email_settings
@@ -171,14 +189,15 @@ async def test_connection_propagates_cancellation_and_sanitizes_provider_failure
     handler.list_mailboxes = AsyncMock(side_effect=error)
     monkeypatch.setattr(management_module, "ClassicEmailHandler", Mock(return_value=handler))
 
-    expected = type(error) if isinstance(error, asyncio.CancelledError) else ManagementError
+    expected = type(error) if isinstance(error, asyncio.CancelledError) else ConnectivityCheckError
     with pytest.raises(expected) as caught:
         await LocalManagementBackend().test_connection(catalog, "test_account", "incoming")
 
     if isinstance(error, asyncio.CancelledError):
         assert caught.value is error
     else:
-        assert str(caught.value) == "incoming connectivity test failed: RuntimeError"
+        assert isinstance(caught.value, ConnectivityCheckError)
+        assert caught.value.category == category
         assert "provider secret detail" not in str(caught.value)
 
 
@@ -220,6 +239,34 @@ async def test_connection_logs_in_to_outgoing_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_connection_classifies_real_catalog_without_smtp_before_secret_resolution(tmp_path: Path) -> None:
+    parent = tmp_path / "managed"
+    parent.mkdir(mode=0o700)
+    if os.name == "posix":
+        parent.chmod(0o700)
+    catalog = ManagedCatalog.initialize(parent / "catalog.sqlite3")
+    catalog.add_account(
+        name="alice",
+        full_name="Alice",
+        email_address="alice@example.test",
+        incoming=EndpointSummary(
+            host="imap.example.test",
+            port=993,
+            use_ssl=True,
+            start_ssl=False,
+            verify_ssl=True,
+            user_name="alice@example.test",
+        ),
+        outgoing=None,
+    )
+
+    with pytest.raises(ConnectivityCheckError, match=r"^Outgoing endpoint is unavailable") as caught:
+        await LocalManagementBackend().test_connection(catalog, "alice", "outgoing")
+
+    assert caught.value.category == "endpoint_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_connection_preserves_missing_outgoing_capability(
     monkeypatch: pytest.MonkeyPatch,
     email_settings: EmailSettings,
@@ -231,5 +278,6 @@ async def test_connection_preserves_missing_outgoing_capability(
     handler.outgoing_client = None
     monkeypatch.setattr(management_module, "ClassicEmailHandler", Mock(return_value=handler))
 
-    with pytest.raises(ManagementError, match=r"^Managed account has no outgoing endpoint$"):
+    with pytest.raises(ConnectivityCheckError, match=r"^Outgoing endpoint is unavailable") as caught:
         await LocalManagementBackend().test_connection(catalog, "test_account", "outgoing")
+    assert caught.value.category == "endpoint_unavailable"

@@ -10,6 +10,7 @@ from pydantic import TypeAdapter
 from mcp_email_server.application.limits import (
     APPLICATION_LIMITS,
     validate_controlled_string,
+    validate_imap_uid,
     validate_serialized_result,
 )
 from mcp_email_server.application.metadata import RuntimeMode
@@ -198,8 +199,7 @@ def _validate_email_ids(values: tuple[str, ...]) -> None:
     if not values or len(values) > MAX_CONTENT_EMAIL_IDS:
         raise ValueError(f"email_ids must contain between 1 and {MAX_CONTENT_EMAIL_IDS} values")
     for value in values:
-        if not value.isdigit() or value.startswith("0") or int(value) > APPLICATION_LIMITS.maximum_imap_uid:
-            raise ValueError("email_ids must contain canonical positive decimal IMAP UIDs")
+        validate_imap_uid(value, field_name="email_ids item")
 
 
 _MAILBOX_LIST_ADAPTER = TypeAdapter(list[MailboxInfo])

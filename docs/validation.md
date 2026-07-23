@@ -115,10 +115,22 @@ the wheel rebuilt from the sdist without Node and the original release wheel.
 The credential-bearing publish job receives only the checksum-verified artifacts
 and cannot rebuild them.
 
+The management CLI contract suite invokes every finite `config` and `account`
+command plus reset and credential migration in JSON mode. It parses the complete
+stdout as one document and checks schema version, command identity, success,
+explicit data/warnings, secret absence, and nonzero single-document validation
+failures. A migration cleanup regression verifies that JSON exposes counts and
+warning codes without keyring entry locators. Connectivity tests use a real
+managed catalog for the missing-SMTP
+preflight and typed provider failures for authentication, timeout, and transport
+categories.
+
 The normal test suite also launches a raw newline-delimited JSON-RPC harness
-without the MCP client SDK. It checks initialization and exact catalog
-serialization, stdout purity, malformed UTF-8/JSON and oversized-frame recovery,
-cancellation propagation, idle and in-flight EOF, and process-owned artifact
+without the MCP client SDK. It checks installed application-version identity,
+initialization and exact catalog serialization (including annotations), account
+discovery text/structured equivalence, stdout purity, malformed UTF-8/JSON and
+oversized-frame recovery, cancellation propagation, idle and in-flight EOF, and
+process-owned artifact
 cleanup.
 
 Run the baseline locally before pushing relevant mail or stdio changes; the

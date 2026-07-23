@@ -175,11 +175,12 @@ def test_only_bounded_non_secret_agent_checks_are_allowed():
     agent_section, user_section = commands.split("## User-operated management", 1)
 
     assert "mcp-email-server --version" in agent_section
-    assert "mcp-email-server config status" in agent_section
-    assert "mcp-email-server config doctor" in agent_section
+    assert "mcp-email-server config status --json" in agent_section
+    assert "mcp-email-server config doctor --json" in agent_section
     assert "mcp-email-server ui" not in agent_section
     assert "account add" not in agent_section
     assert "account set-secret" not in agent_section
+    assert "JSON support on another CLI command does not authorize" in agent_section
     assert "mcp-email-server ui" in user_section
     assert "agent must not execute" in user_section.lower()
     assert "environment dumps" in commands

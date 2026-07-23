@@ -275,10 +275,12 @@ left untouched in every case.
 The repository publishes one optional `safe-email-operations` guidance plugin
 through the Codex and Claude Code marketplace manifests. The plugin does not
 install or run the Python application, expose a management API, or receive
-credentials. It permits only bounded version/status/doctor checks and hands all
-account creation or credential entry back to the user-operated terminal or
-local browser. It must never launch the UI, copy its bootstrap URL, edit the
-catalog directly, or accept a secret in chat.
+credentials. It permits only the bounded version check plus `config status
+--json` and `config doctor --json`, validates the JSON schema/command fields, and
+hands all account creation or credential entry back to the user-operated terminal
+or local browser. JSON availability on another command does not grant the agent
+permission to run it. The plugin must never launch the UI, copy its bootstrap URL,
+edit the catalog directly, or accept a secret in chat.
 
 Before installation, pin and inspect the official repository release, both
 marketplace manifests, the plugin manifest, and the canonical skill. Plugin

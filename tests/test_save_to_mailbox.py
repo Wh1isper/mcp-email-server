@@ -192,6 +192,23 @@ class TestComposeMessage:
         assert msg.get_content_type() == "multipart/mixed"
 
 
+def test_compose_message_preserves_attachment_mime_main_type(email_client, tmp_path) -> None:
+    image = tmp_path / "pixel.png"
+    payload = b"\x89PNG\r\n\x1a\ncontent"
+    image.write_bytes(payload)
+
+    message = email_client.compose_message(
+        recipients=["r@example.com"],
+        subject="Image",
+        body="see attached",
+        attachments=[str(image)],
+    )
+    attachment = next(part for part in message.walk() if part.get_filename() == "pixel.png")
+
+    assert attachment.get_content_type() == "image/png"
+    assert attachment.get_payload(decode=True) == payload
+
+
 class TestComposeMessageBccHeader:
     """Tests for BCC header inclusion in compose_message."""
 

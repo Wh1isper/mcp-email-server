@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,9 +11,21 @@ from click import Command, Group, Option
 from typer.main import get_command
 from typer.testing import CliRunner
 
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.management import (
+    AccountCreationResult,
+    AccountDetails,
+    AccountRemovalResult,
     ConnectivityResult,
+    CredentialCleanupReport,
+    CredentialMutationResult,
+    CredentialRemovalResult,
     CredentialRepairResult,
+    DoctorReport,
+    EndpointSummary,
+    IndexHealth,
+    LegacyCredentialMigrationResult,
+    ManagedPolicy,
 )
 from mcp_email_server.bootstrap import read_bootstrap, write_bootstrap
 from mcp_email_server.cli import app
@@ -529,3 +542,404 @@ verify_ssl = true
     assert applied.exit_code == 1
     assert "credential is unavailable" in applied.output
     assert ManagedCatalog(database).list_accounts() == []
+
+
+def _json_document(result: object) -> dict[str, object]:
+    output = result.output
+    assert isinstance(output, str)
+    return json.loads(output)
+
+
+def test_cli_json_mode_exposes_stable_non_secret_management_results(monkeypatch, tmp_path, fake_keyring) -> None:
+    parent = _private_directory(tmp_path / "json-cli")
+    config_path = parent / "config.toml"
+    database = parent / "catalog.sqlite3"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    runner = CliRunner()
+
+    initialized = runner.invoke(app, ["config", "init", "--database", str(database), "--json"])
+    added = runner.invoke(app, [*_base_account_args(), "--json"], input="incoming-secret\n")
+    status = runner.invoke(app, ["config", "status", "--json"])
+    doctor = runner.invoke(app, ["config", "doctor", "--json"])
+    listed = runner.invoke(app, ["account", "list", "--json"])
+    shown = runner.invoke(app, ["account", "show", "alice", "--json"])
+
+    for result in (initialized, added, status, doctor, listed, shown):
+        assert result.exit_code == 0, result.output
+        document = _json_document(result)
+        assert document["schema_version"] == 1
+        assert document["ok"] is True
+        assert document["warnings"] == []
+        assert "incoming-secret" not in result.output
+
+    assert _json_document(initialized)["command"] == "config.init"
+    assert _json_document(status)["data"]["catalog_status"] == "available"  # type: ignore[index]
+    assert _json_document(status)["data"]["restart_required"] is False  # type: ignore[index]
+    assert _json_document(doctor)["data"]["catalog_revision"] == 2  # type: ignore[index]
+    accounts = _json_document(listed)["data"]["accounts"]  # type: ignore[index]
+    assert accounts == [
+        {
+            "name": "alice",
+            "email_address": "alice@example.test",
+            "enabled": True,
+            "revision": 2,
+            "has_outgoing": False,
+            "incoming_binding": "ACTIVE",
+            "outgoing_binding": None,
+        }
+    ]
+    details = _json_document(shown)["data"]
+    assert details["incoming"]["host"] == "imap.example.test"  # type: ignore[index]
+    assert details["incoming"]["use_ssl"] is True  # type: ignore[index]
+    assert details["outgoing"] is None  # type: ignore[index]
+
+
+def test_cli_json_error_is_single_document_and_preflight_precedes_secret_read(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / "missing" / "config.toml"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    read_secret = MagicMock(side_effect=AssertionError("secret must not be read"))
+    monkeypatch.setattr("mcp_email_server.cli._read_secret", read_secret)
+
+    result = CliRunner().invoke(app, [*_base_account_args(), "--json"], input="unused-secret\n")
+
+    assert result.exit_code == 1
+    document = _json_document(result)
+    assert document == {
+        "schema_version": 1,
+        "ok": False,
+        "command": "account.add",
+        "error": {
+            "code": "management_error",
+            "message": "No managed database is configured. Run `mcp-email-server config init --database PATH`.",
+            "details": {},
+        },
+        "warnings": [],
+    }
+    read_secret.assert_not_called()
+
+
+def test_agent_readable_status_error_omits_bootstrap_path(monkeypatch, tmp_path: Path) -> None:
+    parent = _private_directory(tmp_path / "private-owner-name")
+    config_path = parent / "private-config.toml"
+    config_path.write_text("[local_app\n", encoding="utf-8")
+    if os.name == "posix":
+        config_path.chmod(0o600)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+
+    result = CliRunner().invoke(app, ["config", "status", "--json"])
+
+    assert result.exit_code == 1
+    document = _json_document(result)
+    assert document["error"]["message"] == "Bootstrap configuration could not be read"  # type: ignore[index]
+    assert str(config_path) not in result.output
+    assert "private-owner-name" not in result.output
+
+
+def test_json_mode_maps_account_validation_errors_to_single_documents(monkeypatch) -> None:
+    management = MagicMock()
+    management.accounts.show.return_value = SimpleNamespace(revision=7, outgoing=None)
+    management.credentials.set.side_effect = ValueError("account name must not contain control characters")
+    management.accounts.update.side_effect = ValueError("full name must not contain control characters")
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+    runner = CliRunner()
+
+    set_secret = runner.invoke(
+        app,
+        ["account", "set-secret", "alice", "incoming", "--password-stdin", "--json"],
+        input="private-value\n",
+    )
+    updated = runner.invoke(
+        app,
+        ["account", "update", "alice", "--expected-revision", "7", "--full-name", "Alice", "--json"],
+    )
+
+    for result, command in ((set_secret, "account.set-secret"), (updated, "account.update")):
+        assert result.exit_code == 1
+        document = _json_document(result)
+        assert document["command"] == command
+        assert document["error"]["code"] == "invalid_input"  # type: ignore[index]
+        assert "private-value" not in result.output
+
+    management.accounts.update.side_effect = ValueError("é" * APPLICATION_LIMITS.error_detail_bytes)
+    bounded = runner.invoke(
+        app,
+        ["account", "update", "alice", "--expected-revision", "7", "--full-name", "Alice", "--json"],
+    )
+    message = _json_document(bounded)["error"]["message"]  # type: ignore[index]
+    assert isinstance(message, str)
+    assert len(message.encode("utf-8")) <= APPLICATION_LIMITS.error_detail_bytes
+    assert message.endswith("...")
+
+
+def test_every_finite_management_command_emits_one_json_success_document(monkeypatch, tmp_path: Path) -> None:
+    endpoint = EndpointSummary(
+        host="imap.example.test",
+        port=993,
+        use_ssl=True,
+        start_ssl=False,
+        verify_ssl=True,
+        user_name="alice@example.test",
+    )
+    doctor = DoctorReport(
+        lifecycle="STAGING",
+        schema_version=1,
+        catalog_revision=7,
+        account_count=1,
+        enabled_account_count=1,
+        pending_bindings=0,
+        cleanup_required_bindings=0,
+        repair_required_bindings=0,
+        problems=(),
+    )
+    policy = ManagedPolicy(
+        revision=3,
+        enable_attachment_download=False,
+        allowed_recipients=(),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+    account = AccountDetails(
+        name="alice",
+        full_name="Alice",
+        email_address="alice@example.test",
+        enabled=True,
+        revision=7,
+        save_to_sent=True,
+        sent_folder_name=None,
+        incoming=endpoint,
+        outgoing=None,
+        incoming_binding="ACTIVE",
+        outgoing_binding=None,
+    )
+    credential = CredentialMutationResult(status="active", revision=8)
+    management = MagicMock()
+    management.lifecycle.status.return_value = SimpleNamespace(
+        mode="legacy",
+        selected_catalog="configured",
+        bootstrap_revision=2,
+        restart_required=False,
+        report=doctor,
+        catalog_problem=None,
+    )
+    management.lifecycle.doctor.return_value = doctor
+    management.index_health.get.return_value = IndexHealth("healthy", 1, 0, ())
+    management.policy.get.return_value = policy
+    management.policy.update.return_value = policy
+    management.credentials.cleanup.return_value = CredentialCleanupReport(0, 0, 0)
+    management.legacy_import.preview.return_value = SimpleNamespace(
+        source_fingerprint="fingerprint",
+        target_revision=7,
+        target_policy_revision=3,
+        has_conflicts=False,
+        accounts=(),
+        source_policy=policy,
+        policy_action="unchanged",
+        unsupported_provider_names=(),
+    )
+    management.accounts.create.return_value = AccountCreationResult(credential, None)
+    management.accounts.list.return_value = []
+    management.accounts.show.return_value = account
+    management.accounts.update.return_value = 8
+    management.accounts.disable.return_value = 8
+    management.accounts.enable.return_value = 9
+    management.accounts.soft_remove.return_value = AccountRemovalResult(8, 1, 1, 0)
+    management.credentials.set.return_value = credential
+    management.credentials.repair.return_value = CredentialRepairResult("active", 8)
+    management.credentials.remove.return_value = CredentialRemovalResult("removed", 8)
+    management.connectivity.execute = AsyncMock(
+        return_value=ConnectivityResult("incoming", "ok", "Connection succeeded")
+    )
+    management.legacy_compatibility.migrate_credentials.return_value = LegacyCredentialMigrationResult(
+        account_count=1,
+        remaining_entries=(),
+        unverifiable_entries=(),
+        keyring_service="mcp-email-server",
+    )
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+    runner = CliRunner()
+    invocations = [
+        ("config.init", ["config", "init", "--database", str(tmp_path / "catalog.sqlite3"), "--json"], None),
+        ("config.status", ["config", "status", "--json"], None),
+        ("config.doctor", ["config", "doctor", "--json"], None),
+        ("config.index-health", ["config", "index-health", "--json"], None),
+        ("config.policy", ["config", "policy", "--json"], None),
+        ("config.update-policy", ["config", "update-policy", "--expected-revision", "3", "--json"], None),
+        ("config.cleanup-credentials", ["config", "cleanup-credentials", "--json"], None),
+        ("config.import-legacy", ["config", "import-legacy", "--json"], None),
+        ("config.activate", ["config", "activate", "--json"], None),
+        ("config.select", ["config", "select", "legacy", "--json"], None),
+        ("account.add", [*_base_account_args(), "--json"], "incoming-secret\n"),
+        (
+            "account.set-secret",
+            ["account", "set-secret", "alice", "incoming", "--password-stdin", "--json"],
+            "incoming-secret\n",
+        ),
+        ("account.list", ["account", "list", "--json"], None),
+        ("account.show", ["account", "show", "alice", "--json"], None),
+        (
+            "account.update",
+            ["account", "update", "alice", "--expected-revision", "7", "--full-name", "Alice", "--json"],
+            None,
+        ),
+        ("account.disable", ["account", "disable", "alice", "--expected-revision", "7", "--json"], None),
+        ("account.enable", ["account", "enable", "alice", "--expected-revision", "8", "--json"], None),
+        (
+            "account.remove",
+            ["account", "remove", "alice", "--expected-revision", "7", "--confirm", "alice", "--json"],
+            None,
+        ),
+        (
+            "account.repair-secret",
+            ["account", "repair-secret", "alice", "incoming", "resume", "--expected-revision", "7", "--json"],
+            None,
+        ),
+        (
+            "account.remove-secret",
+            ["account", "remove-secret", "alice", "incoming", "--expected-revision", "7", "--json"],
+            None,
+        ),
+        ("account.test", ["account", "test", "alice", "incoming", "--json"], None),
+        ("reset", ["reset", "--confirm", "RESET", "--json"], None),
+        ("migrate-credentials", ["migrate-credentials", "--json"], None),
+    ]
+
+    for command, arguments, stdin in invocations:
+        result = runner.invoke(app, arguments, input=stdin)
+        assert result.exit_code == 0, f"{command}: {result.output}"
+        document = _json_document(result)
+        assert document["schema_version"] == 1
+        assert document["ok"] is True
+        assert document["command"] == command
+        assert isinstance(document["data"], dict)
+        assert isinstance(document["warnings"], list)
+        assert "incoming-secret" not in result.output
+
+
+def test_migrate_credentials_json_reports_cleanup_without_secret_locators(monkeypatch) -> None:
+    management = MagicMock()
+    management.legacy_compatibility.migrate_credentials.return_value = LegacyCredentialMigrationResult(
+        account_count=2,
+        remaining_entries=("alice:incoming",),
+        unverifiable_entries=("bob:outgoing",),
+        keyring_service="mcp-email-server",
+    )
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+
+    result = CliRunner().invoke(app, ["migrate-credentials", "--to", "plaintext", "--json"])
+
+    assert result.exit_code == 0, result.output
+    document = _json_document(result)
+    assert document["data"] == {
+        "target": "plaintext",
+        "account_count": 2,
+        "remaining_entry_count": 1,
+        "unverifiable_entry_count": 1,
+        "cleanup_complete": False,
+    }
+    assert [warning["code"] for warning in document["warnings"]] == [
+        "keyring_entries_remaining",
+        "keyring_cleanup_unverifiable",
+    ]
+    assert "alice:incoming" not in result.output
+    assert "bob:outgoing" not in result.output
+    assert "mcp-email-server" not in result.output
+
+
+def test_all_finite_management_commands_advertise_json_mode() -> None:
+    root = get_command(app)
+    assert isinstance(root, Group)
+    command_groups = {
+        "config": {
+            "init",
+            "status",
+            "doctor",
+            "index-health",
+            "policy",
+            "update-policy",
+            "cleanup-credentials",
+            "import-legacy",
+            "activate",
+            "select",
+        },
+        "account": {
+            "add",
+            "set-secret",
+            "list",
+            "show",
+            "update",
+            "disable",
+            "enable",
+            "remove",
+            "repair-secret",
+            "remove-secret",
+            "test",
+        },
+    }
+    for group_name, command_names in command_groups.items():
+        group = root.commands[group_name]
+        assert isinstance(group, Group)
+        for command_name in command_names:
+            command = group.commands[command_name]
+            assert isinstance(command, Command)
+            options = {
+                option for parameter in command.params if isinstance(parameter, Option) for option in parameter.opts
+            }
+            assert "--json" in options, f"{group_name} {command_name}"
+
+    for command_name in ("reset", "migrate-credentials"):
+        command = root.commands[command_name]
+        assert isinstance(command, Command)
+        options = {option for parameter in command.params if isinstance(parameter, Option) for option in parameter.opts}
+        assert "--json" in options
+
+
+def test_reset_requires_exact_confirmation_and_supports_json(monkeypatch) -> None:
+    management = MagicMock()
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+    runner = CliRunner()
+
+    missing = runner.invoke(app, ["reset"])
+    wrong = runner.invoke(app, ["reset", "--confirm", "reset"])
+    confirmed = runner.invoke(app, ["reset", "--confirm", "RESET", "--json"])
+
+    assert missing.exit_code == 2
+    assert wrong.exit_code == 1
+    assert "exactly RESET" in wrong.output
+    assert confirmed.exit_code == 0, confirmed.output
+    assert _json_document(confirmed)["data"] == {
+        "reset": True,
+        "scope": "persistent_legacy_configuration",
+    }
+    management.legacy_compatibility.reset.assert_called_once_with()
+
+
+def test_account_add_validates_non_secret_endpoint_before_secret_read(monkeypatch, tmp_path) -> None:
+    parent = _private_directory(tmp_path / "preflight")
+    config_path = parent / "config.toml"
+    database = parent / "catalog.sqlite3"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    runner = CliRunner()
+    assert runner.invoke(app, ["config", "init", "--database", str(database)]).exit_code == 0
+    read_secret = MagicMock(side_effect=AssertionError("secret must not be read"))
+    monkeypatch.setattr("mcp_email_server.cli._read_secret", read_secret)
+
+    result = runner.invoke(app, [*_base_account_args(), "--imap-starttls", "--json"], input="unused\n")
+
+    assert result.exit_code == 1
+    document = _json_document(result)
+    assert document["error"]["message"] == "Incoming implicit TLS and STARTTLS are mutually exclusive"  # type: ignore[index]
+    read_secret.assert_not_called()

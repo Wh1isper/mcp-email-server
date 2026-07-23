@@ -6,13 +6,13 @@ The agent may run only these bounded, non-secret application checks:
 
 ```text
 mcp-email-server --version
-mcp-email-server config status
-mcp-email-server config doctor
+mcp-email-server config status --json
+mcp-email-server config doctor --json
 ```
 
-Run the version check first. The plugin and application versions should match (`0.0.1` for this release). If the executable does not support the listed command or the versions differ, stop and use documentation from the installed application release; do not guess a replacement command. Status and doctor output may be summarized only as non-secret lifecycle, account-count, binding-health, cleanup, and connectivity categories.
+Run the version check first. The plugin and application versions should match (`0.0.1` for this release). If the executable does not support the listed command or the versions differ, stop and use documentation from the installed application release; do not guess a replacement command. Parse status and doctor only when `schema_version` is `1`, `ok` is true, and `command` matches the requested check. Treat an unknown schema, command, or error code as unsupported. Summarize only non-secret mode, catalog status, restart requirement, lifecycle/schema/revision, account counts, binding-health counts, and bounded problems or handoff hints; never expose or infer omitted fields.
 
-Do not augment these checks with environment dumps, filesystem searches, configuration/database reads, keyring queries, raw logs, network probes, or MCP calls.
+Do not augment these checks with environment dumps, filesystem searches, configuration/database reads, keyring queries, raw logs, network probes, or MCP calls. JSON support on another CLI command does not authorize the agent to run it.
 
 ## User-operated management
 
@@ -33,7 +33,7 @@ mcp-email-server account set-secret --help
 
 Secret prompts belong to that user-controlled terminal. Do not ask the user to pipe, forward, capture, paste, or save their input for the agent. Account names and endpoint settings are not permission to receive credentials.
 
-After the user reports completion, offer only `config status` or `config doctor`. MCP remains a mail-workflow surface, not an account or credential management surface.
+After the user reports completion, offer only `config status --json` or `config doctor --json`. MCP remains a mail-workflow surface, not an account or credential management surface.
 
 ## Provider prerequisites
 

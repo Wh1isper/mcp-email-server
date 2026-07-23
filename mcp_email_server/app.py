@@ -1,13 +1,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from importlib.metadata import version
 from typing import Annotated, Literal
 
 import anyio
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from mcp_email_server.application.accounts import EffectiveConfiguration
+from mcp_email_server.application.accounts import AvailableAccount, EffectiveConfiguration
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.metadata import ListEmailMetadataQuery
 from mcp_email_server.application.mutations import (
@@ -29,7 +31,6 @@ from mcp_email_server.application.reads import (
     GetEmailContentQuery,
     ListMailboxesQuery,
 )
-from mcp_email_server.config import AccountAttributes
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
@@ -39,12 +40,12 @@ from mcp_email_server.emails.models import (
 from mcp_email_server.runtime import close_application_runtime, get_application_runtime
 
 MAX_IMAP_UID_CHARACTERS = len(str(APPLICATION_LIMITS.maximum_imap_uid))
-UidInput = Annotated[str, Field(max_length=MAX_IMAP_UID_CHARACTERS)]
+UidInput = Annotated[str, Field(max_length=MAX_IMAP_UID_CHARACTERS, pattern=r"^[1-9][0-9]*$")]
 AddressInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.address_bytes)]
 AttachmentPathInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.attachment_path_bytes)]
 FlagInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.flag_bytes)]
 AccountDiscoveryResult = Annotated[
-    list[AccountAttributes],
+    list[AvailableAccount],
     Field(max_length=APPLICATION_LIMITS.configured_accounts),
 ]
 PolicyDiscoveryResult = Annotated[
@@ -53,8 +54,8 @@ PolicyDiscoveryResult = Annotated[
 ]
 
 
-def list_effective_accounts() -> list[AccountAttributes]:
-    return get_application_runtime().accounts.execute()
+def list_effective_accounts() -> list[AvailableAccount]:
+    return get_application_runtime().accounts.discover()
 
 
 async def list_email_metadata(query: ListEmailMetadataQuery) -> EmailMetadataPageResponse:
@@ -152,20 +153,70 @@ async def _application_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, obj
 
 
 mcp = FastMCP("email", lifespan=_application_lifespan)
+# FastMCP 1.x does not expose its low-level server version in the constructor.
+mcp._mcp_server.version = version("mcp-email-server")  # pyright: ignore[reportPrivateUsage]
+
+_READ_ONLY_LOCAL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+_READ_ONLY_REMOTE = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+_NONDESTRUCTIVE_REMOTE_MUTATION = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+_IDEMPOTENT_REMOTE_MUTATION = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+_DESTRUCTIVE_REMOTE_MUTATION = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+_FILESYSTEM_WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
 
 
-@mcp.resource("email://{account_name}")
-async def get_account(account_name: str) -> AccountAttributes | None:
-    return get_application_runtime().accounts.get(account_name)
+@mcp.resource(
+    "email://{account_name}",
+    description="Return stable non-secret discovery capabilities for one configured account.",
+)
+async def get_account(account_name: str) -> AvailableAccount | None:
+    return get_application_runtime().accounts.discover_one(account_name)
 
 
-@mcp.tool(description="List all configured email accounts with masked credentials.")
+@mcp.tool(
+    description=(
+        "List configured accounts as stable non-secret capability records. Use only accounts with "
+        "can_receive=true for mail reads and can_send=true for send_email. If the result is empty, ask the "
+        "user to run `mcp-email-server ui` or the user-operated CLI; never ask for credentials in chat."
+    ),
+    annotations=_READ_ONLY_LOCAL,
+)
 async def list_available_accounts() -> AccountDiscoveryResult:
     return list_effective_accounts()
 
 
 @mcp.tool(
-    description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content."
+    description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.",
+    annotations=_READ_ONLY_REMOTE,
 )
 async def list_emails_metadata(
     account_name: Annotated[
@@ -213,7 +264,7 @@ async def list_emails_metadata(
     ] = None,
     order: Annotated[
         Literal["asc", "desc"],
-        Field(default=None, description="Order emails by field. `asc` or `desc`."),
+        Field(default=None, description="Sort matching emails by date: oldest first (`asc`) or newest first (`desc`)."),
     ] = "desc",
     mailbox: Annotated[
         str,
@@ -283,7 +334,11 @@ async def list_emails_metadata(
 
 
 @mcp.tool(
-    description="Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
+    description=(
+        "Get the full content (including body) of one or more emails by their email_id. Use "
+        "list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags."
+    ),
+    annotations=_IDEMPOTENT_REMOTE_MUTATION,
 )
 async def get_emails_content(
     account_name: Annotated[
@@ -294,7 +349,7 @@ async def get_emails_content(
         Field(
             min_length=1,
             max_length=APPLICATION_LIMITS.content_email_ids,
-            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids.",
+            description="One or more email_id values to retrieve, supplied as an array (obtained from list_emails_metadata).",
         ),
     ],
     mailbox: Annotated[
@@ -351,6 +406,7 @@ async def get_emails_content(
         "List the configured recipient allowlist — the addresses that send_email is permitted to "
         "send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted."
     ),
+    annotations=_READ_ONLY_LOCAL,
 )
 async def list_allowed_recipients() -> PolicyDiscoveryResult:
     return list(effective_configuration().allowed_recipients)
@@ -364,6 +420,7 @@ async def list_allowed_recipients() -> PolicyDiscoveryResult:
         "tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Returns an empty list "
         "when unrestricted."
     ),
+    annotations=_READ_ONLY_LOCAL,
 )
 async def list_allowed_senders() -> PolicyDiscoveryResult:
     return list(effective_configuration().allowed_senders)
@@ -375,6 +432,7 @@ async def list_allowed_senders() -> PolicyDiscoveryResult:
         "delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy "
         "outcome separately; ambiguous effects are not retried automatically."
     ),
+    annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
 )
 async def send_email(
     account_name: Annotated[
@@ -479,6 +537,7 @@ async def send_email(
     "Default folder is Drafts with \\Draft and \\Seen flags. "
     "Pure IMAP operation — works without SMTP configuration. An ambiguous APPEND is reported as unknown "
     "and is not retried automatically.",
+    annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
 )
 async def save_to_mailbox(
     account_name: Annotated[
@@ -582,7 +641,8 @@ async def save_to_mailbox(
     description=(
         "Delete one or more emails by email_id using target-scoped UID EXPUNGE. Use list_emails_metadata first. "
         "Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically."
-    )
+    ),
+    annotations=_DESTRUCTIVE_REMOTE_MUTATION,
 )
 async def delete_emails(
     account_name: Annotated[
@@ -616,7 +676,8 @@ async def delete_emails(
     description=(
         "Mark one or more emails as read by email_id. Use list_emails_metadata first. Partial or ambiguous "
         "effects report per-ID succeeded/failed/unknown status and are not retried automatically."
-    )
+    ),
+    annotations=_IDEMPOTENT_REMOTE_MUTATION,
 )
 async def mark_emails_as_read(
     account_name: Annotated[
@@ -650,7 +711,8 @@ async def mark_emails_as_read(
     description=(
         "Move one or more emails between IMAP folders by email_id. Use list_emails_metadata and list_mailboxes "
         "first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried."
-    )
+    ),
+    annotations=_DESTRUCTIVE_REMOTE_MUTATION,
 )
 async def move_emails(
     account_name: Annotated[
@@ -693,7 +755,8 @@ async def move_emails(
     description="Archive one or more emails by moving them to the account's Archive folder, "
     "auto-detected via the RFC 6154 \\Archive flag (falling back to common names like Archive or "
     "[Gmail]/All Mail). Use list_emails_metadata first. Partial or ambiguous effects report per-ID "
-    "succeeded/failed/unknown status and are not retried automatically."
+    "succeeded/failed/unknown status and are not retried automatically.",
+    annotations=_DESTRUCTIVE_REMOTE_MUTATION,
 )
 async def archive_emails(
     account_name: Annotated[
@@ -724,7 +787,8 @@ async def archive_emails(
 
 
 @mcp.tool(
-    description="List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails."
+    description="List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails.",
+    annotations=_READ_ONLY_REMOTE,
 )
 async def list_mailboxes(
     account_name: Annotated[
@@ -754,6 +818,7 @@ async def list_mailboxes(
 
 @mcp.tool(
     description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+    annotations=_FILESYSTEM_WRITE,
 )
 async def download_attachment(
     account_name: Annotated[

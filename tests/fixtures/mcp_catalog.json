@@ -1,56 +1,70 @@
 {
-    "prompts": [],
-    "resource_templates": [
-        {
-            "description": "",
-            "mimeType": "text/plain",
-            "name": "get_account",
-            "uriTemplate": "email://{account_name}"
-        }
-    ],
-    "resources": [],
     "tools": [
         {
-            "description": "List all configured email accounts with masked credentials.",
+            "name": "list_available_accounts",
+            "description": "List configured accounts as stable non-secret capability records. Use only accounts with can_receive=true for mail reads and can_send=true for send_email. If the result is empty, ask the user to run `mcp-email-server ui` or the user-operated CLI; never ask for credentials in chat.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_available_accountsArguments",
                 "type": "object"
             },
-            "name": "list_available_accounts",
             "outputSchema": {
                 "$defs": {
-                    "AccountAttributes": {
+                    "AvailableAccount": {
+                        "description": "Stable non-secret capabilities for one account exposed to agents.",
                         "properties": {
                             "account_name": {
+                                "maxLength": 256,
                                 "title": "Account Name",
                                 "type": "string"
                             },
-                            "created_at": {
-                                "format": "date-time",
-                                "title": "Created At",
+                            "account_type": {
+                                "enum": ["email", "provider", "unknown"],
+                                "title": "Account Type",
                                 "type": "string"
                             },
                             "description": {
-                                "default": "",
+                                "maxLength": 4096,
                                 "title": "Description",
                                 "type": "string"
                             },
-                            "updated_at": {
-                                "format": "date-time",
-                                "title": "Updated At",
-                                "type": "string"
+                            "email_address": {
+                                "anyOf": [
+                                    {
+                                        "maxLength": 1024,
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "default": null,
+                                "title": "Email Address"
+                            },
+                            "can_receive": {
+                                "title": "Can Receive",
+                                "type": "boolean"
+                            },
+                            "can_send": {
+                                "title": "Can Send",
+                                "type": "boolean"
                             }
                         },
-                        "required": ["account_name"],
-                        "title": "AccountAttributes",
+                        "required": [
+                            "account_name",
+                            "account_type",
+                            "description",
+                            "can_receive",
+                            "can_send"
+                        ],
+                        "title": "AvailableAccount",
                         "type": "object"
                     }
                 },
                 "properties": {
                     "result": {
                         "items": {
-                            "$ref": "#/$defs/AccountAttributes"
+                            "$ref": "#/$defs/AvailableAccount"
                         },
                         "maxItems": 1000,
                         "title": "Result",
@@ -60,9 +74,16 @@
                 "required": ["result"],
                 "title": "list_available_accountsOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false
             }
         },
         {
+            "name": "list_emails_metadata",
             "description": "List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.",
             "inputSchema": {
                 "properties": {
@@ -70,101 +91,6 @@
                         "description": "The name of the email account.",
                         "maxLength": 256,
                         "title": "Account Name",
-                        "type": "string"
-                    },
-                    "answered": {
-                        "anyOf": [
-                            {
-                                "type": "boolean"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Filter by replied status: True=replied, False=not replied, None=all.",
-                        "title": "Answered"
-                    },
-                    "before": {
-                        "anyOf": [
-                            {
-                                "format": "date-time",
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Retrieve emails before this datetime (UTC).",
-                        "title": "Before"
-                    },
-                    "body": {
-                        "anyOf": [
-                            {
-                                "maxLength": 65536,
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Search for text in the email body (IMAP BODY).",
-                        "title": "Body"
-                    },
-                    "flagged": {
-                        "anyOf": [
-                            {
-                                "type": "boolean"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Filter by flagged/starred status: True=flagged, False=unflagged, None=all.",
-                        "title": "Flagged"
-                    },
-                    "from_address": {
-                        "anyOf": [
-                            {
-                                "maxLength": 1024,
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Filter emails by sender address.",
-                        "title": "From Address"
-                    },
-                    "has_attachment": {
-                        "anyOf": [
-                            {
-                                "type": "boolean"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Filter by attachment presence: True=has attachment, False=none, None=all (multipart/mixed heuristic; may miss inline images or yield false positives).",
-                        "title": "Has Attachment"
-                    },
-                    "mailbox": {
-                        "default": "INBOX",
-                        "description": "The mailbox to search.",
-                        "maxLength": 1024,
-                        "title": "Mailbox",
-                        "type": "string"
-                    },
-                    "order": {
-                        "default": "desc",
-                        "description": "Order emails by field. `asc` or `desc`.",
-                        "enum": ["asc", "desc"],
-                        "title": "Order",
                         "type": "string"
                     },
                     "page": {
@@ -182,18 +108,19 @@
                         "title": "Page Size",
                         "type": "integer"
                     },
-                    "seen": {
+                    "before": {
                         "anyOf": [
                             {
-                                "type": "boolean"
+                                "format": "date-time",
+                                "type": "string"
                             },
                             {
                                 "type": "null"
                             }
                         ],
                         "default": null,
-                        "description": "Filter by read status: True=read, False=unread, None=all.",
-                        "title": "Seen"
+                        "description": "Retrieve emails before this datetime (UTC).",
+                        "title": "Before"
                     },
                     "since": {
                         "anyOf": [
@@ -223,10 +150,10 @@
                         "description": "Filter emails by subject.",
                         "title": "Subject"
                     },
-                    "text": {
+                    "from_address": {
                         "anyOf": [
                             {
-                                "maxLength": 65536,
+                                "maxLength": 1024,
                                 "type": "string"
                             },
                             {
@@ -234,8 +161,8 @@
                             }
                         ],
                         "default": null,
-                        "description": "Search for text in the entire message \u2014 headers and body (IMAP TEXT).",
-                        "title": "Text"
+                        "description": "Filter emails by sender address.",
+                        "title": "From Address"
                     },
                     "to_address": {
                         "anyOf": [
@@ -250,30 +177,111 @@
                         "default": null,
                         "description": "Filter emails by recipient address.",
                         "title": "To Address"
+                    },
+                    "order": {
+                        "default": "desc",
+                        "description": "Sort matching emails by date: oldest first (`asc`) or newest first (`desc`).",
+                        "enum": ["asc", "desc"],
+                        "title": "Order",
+                        "type": "string"
+                    },
+                    "mailbox": {
+                        "default": "INBOX",
+                        "description": "The mailbox to search.",
+                        "maxLength": 1024,
+                        "title": "Mailbox",
+                        "type": "string"
+                    },
+                    "seen": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Filter by read status: True=read, False=unread, None=all.",
+                        "title": "Seen"
+                    },
+                    "flagged": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Filter by flagged/starred status: True=flagged, False=unflagged, None=all.",
+                        "title": "Flagged"
+                    },
+                    "answered": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Filter by replied status: True=replied, False=not replied, None=all.",
+                        "title": "Answered"
+                    },
+                    "body": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Search for text in the email body (IMAP BODY).",
+                        "title": "Body"
+                    },
+                    "text": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Search for text in the entire message \u2014 headers and body (IMAP TEXT).",
+                        "title": "Text"
+                    },
+                    "has_attachment": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Filter by attachment presence: True=has attachment, False=none, None=all (multipart/mixed heuristic; may miss inline images or yield false positives).",
+                        "title": "Has Attachment"
                     }
                 },
                 "required": ["account_name"],
                 "title": "list_emails_metadataArguments",
                 "type": "object"
             },
-            "name": "list_emails_metadata",
             "outputSchema": {
                 "$defs": {
                     "EmailMetadata": {
                         "description": "Email metadata",
                         "properties": {
-                            "attachments": {
-                                "items": {
-                                    "type": "string"
-                                },
-                                "title": "Attachments",
-                                "type": "array"
-                            },
-                            "date": {
-                                "format": "date-time",
-                                "title": "Date",
-                                "type": "string"
-                            },
                             "email_id": {
                                 "title": "Email Id",
                                 "type": "string"
@@ -290,6 +298,14 @@
                                 "default": null,
                                 "title": "Message Id"
                             },
+                            "subject": {
+                                "title": "Subject",
+                                "type": "string"
+                            },
+                            "sender": {
+                                "title": "Sender",
+                                "type": "string"
+                            },
                             "recipients": {
                                 "items": {
                                     "type": "string"
@@ -297,13 +313,17 @@
                                 "title": "Recipients",
                                 "type": "array"
                             },
-                            "sender": {
-                                "title": "Sender",
+                            "date": {
+                                "format": "date-time",
+                                "title": "Date",
                                 "type": "string"
                             },
-                            "subject": {
-                                "title": "Subject",
-                                "type": "string"
+                            "attachments": {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "title": "Attachments",
+                                "type": "array"
                             }
                         },
                         "required": [
@@ -320,6 +340,14 @@
                 },
                 "description": "Paged email metadata response",
                 "properties": {
+                    "page": {
+                        "title": "Page",
+                        "type": "integer"
+                    },
+                    "page_size": {
+                        "title": "Page Size",
+                        "type": "integer"
+                    },
                     "before": {
                         "anyOf": [
                             {
@@ -331,21 +359,6 @@
                             }
                         ],
                         "title": "Before"
-                    },
-                    "emails": {
-                        "items": {
-                            "$ref": "#/$defs/EmailMetadata"
-                        },
-                        "title": "Emails",
-                        "type": "array"
-                    },
-                    "page": {
-                        "title": "Page",
-                        "type": "integer"
-                    },
-                    "page_size": {
-                        "title": "Page Size",
-                        "type": "integer"
                     },
                     "since": {
                         "anyOf": [
@@ -369,6 +382,13 @@
                             }
                         ],
                         "title": "Subject"
+                    },
+                    "emails": {
+                        "items": {
+                            "$ref": "#/$defs/EmailMetadata"
+                        },
+                        "title": "Emails",
+                        "type": "array"
                     },
                     "total": {
                         "title": "Total",
@@ -394,10 +414,17 @@
                 ],
                 "title": "EmailMetadataPageResponse",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
             }
         },
         {
-            "description": "Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first to get the email_id.",
+            "name": "get_emails_content",
+            "description": "Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -406,17 +433,11 @@
                         "title": "Account Name",
                         "type": "string"
                     },
-                    "body_offset": {
-                        "default": 0,
-                        "description": "Character offset into each email body to start reading from. Use together with max_body_length to page through long emails: if a returned body ends with the '...[TRUNCATED]' marker, fetch the next chunk with body_offset += max_body_length.",
-                        "minimum": 0,
-                        "title": "Body Offset",
-                        "type": "integer"
-                    },
                     "email_ids": {
-                        "description": "List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids.",
+                        "description": "One or more email_id values to retrieve, supplied as an array (obtained from list_emails_metadata).",
                         "items": {
                             "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
                             "type": "string"
                         },
                         "maxItems": 500,
@@ -437,6 +458,13 @@
                         "title": "Mark As Read",
                         "type": "boolean"
                     },
+                    "body_offset": {
+                        "default": 0,
+                        "description": "Character offset into each email body to start reading from. Use together with max_body_length to page through long emails: if a returned body ends with the '...[TRUNCATED]' marker, fetch the next chunk with body_offset += max_body_length.",
+                        "minimum": 0,
+                        "title": "Body Offset",
+                        "type": "integer"
+                    },
                     "max_body_length": {
                         "default": 20000,
                         "description": "Maximum number of body characters to return, counted from body_offset. If the body extends past this window, the '...[TRUNCATED]' marker is appended after the requested body window.",
@@ -450,28 +478,11 @@
                 "title": "get_emails_contentArguments",
                 "type": "object"
             },
-            "name": "get_emails_content",
             "outputSchema": {
                 "$defs": {
                     "EmailBodyResponse": {
                         "description": "Single email body response - extends EmailMetadata with body content",
                         "properties": {
-                            "attachments": {
-                                "items": {
-                                    "type": "string"
-                                },
-                                "title": "Attachments",
-                                "type": "array"
-                            },
-                            "body": {
-                                "title": "Body",
-                                "type": "string"
-                            },
-                            "date": {
-                                "format": "date-time",
-                                "title": "Date",
-                                "type": "string"
-                            },
                             "email_id": {
                                 "title": "Email Id",
                                 "type": "string"
@@ -488,6 +499,14 @@
                                 "default": null,
                                 "title": "Message Id"
                             },
+                            "subject": {
+                                "title": "Subject",
+                                "type": "string"
+                            },
+                            "sender": {
+                                "title": "Sender",
+                                "type": "string"
+                            },
                             "recipients": {
                                 "items": {
                                     "type": "string"
@@ -495,12 +514,20 @@
                                 "title": "Recipients",
                                 "type": "array"
                             },
-                            "sender": {
-                                "title": "Sender",
+                            "date": {
+                                "format": "date-time",
+                                "title": "Date",
                                 "type": "string"
                             },
-                            "subject": {
-                                "title": "Subject",
+                            "attachments": {
+                                "items": {
+                                    "type": "string"
+                                },
+                                "title": "Attachments",
+                                "type": "array"
+                            },
+                            "body": {
+                                "title": "Body",
                                 "type": "string"
                             }
                         },
@@ -519,17 +546,20 @@
                 },
                 "description": "Batch content, optionally handed off as a private local JSON artifact.",
                 "properties": {
-                    "content_omitted": {
-                        "default": false,
-                        "title": "Content Omitted",
-                        "type": "boolean"
-                    },
                     "emails": {
                         "items": {
                             "$ref": "#/$defs/EmailBodyResponse"
                         },
                         "title": "Emails",
                         "type": "array"
+                    },
+                    "requested_count": {
+                        "title": "Requested Count",
+                        "type": "integer"
+                    },
+                    "retrieved_count": {
+                        "title": "Retrieved Count",
+                        "type": "integer"
                     },
                     "failed_ids": {
                         "items": {
@@ -538,17 +568,10 @@
                         "title": "Failed Ids",
                         "type": "array"
                     },
-                    "output_bytes": {
-                        "anyOf": [
-                            {
-                                "type": "integer"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "title": "Output Bytes"
+                    "content_omitted": {
+                        "default": false,
+                        "title": "Content Omitted",
+                        "type": "boolean"
                     },
                     "output_file_path": {
                         "anyOf": [
@@ -562,18 +585,6 @@
                         "default": null,
                         "title": "Output File Path"
                     },
-                    "output_lifetime": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "title": "Output Lifetime"
-                    },
                     "output_media_type": {
                         "anyOf": [
                             {
@@ -585,6 +596,18 @@
                         ],
                         "default": null,
                         "title": "Output Media Type"
+                    },
+                    "output_bytes": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "title": "Output Bytes"
                     },
                     "output_sha256": {
                         "anyOf": [
@@ -598,13 +621,17 @@
                         "default": null,
                         "title": "Output Sha256"
                     },
-                    "requested_count": {
-                        "title": "Requested Count",
-                        "type": "integer"
-                    },
-                    "retrieved_count": {
-                        "title": "Retrieved Count",
-                        "type": "integer"
+                    "output_lifetime": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "title": "Output Lifetime"
                     }
                 },
                 "required": [
@@ -615,16 +642,22 @@
                 ],
                 "title": "EmailContentBatchResponse",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
             }
         },
         {
+            "name": "list_allowed_recipients",
             "description": "List the configured recipient allowlist \u2014 the addresses that send_email is permitted to send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_recipientsArguments",
                 "type": "object"
             },
-            "name": "list_allowed_recipients",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -639,16 +672,22 @@
                 "required": ["result"],
                 "title": "list_allowed_recipientsOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false
             }
         },
         {
+            "name": "list_allowed_senders",
             "description": "List the configured inbound sender allowlist \u2014 the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_sendersArguments",
                 "type": "object"
             },
-            "name": "list_allowed_senders",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -663,9 +702,16 @@
                 "required": ["result"],
                 "title": "list_allowed_sendersOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false
             }
         },
         {
+            "name": "send_email",
             "description": "Send one email using the specified account. Supports reply threading. Partial or ambiguous SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy outcome separately; ambiguous effects are not retried automatically.",
             "inputSchema": {
                 "properties": {
@@ -675,41 +721,22 @@
                         "title": "Account Name",
                         "type": "string"
                     },
-                    "attachments": {
-                        "anyOf": [
-                            {
-                                "items": {
-                                    "maxLength": 4096,
-                                    "type": "string"
-                                },
-                                "maxItems": 20,
-                                "type": "array"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
-                        "title": "Attachments"
+                    "recipients": {
+                        "description": "A list of recipient email addresses.",
+                        "items": {
+                            "maxLength": 1024,
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Recipients",
+                        "type": "array"
                     },
-                    "bcc": {
-                        "anyOf": [
-                            {
-                                "items": {
-                                    "maxLength": 1024,
-                                    "type": "string"
-                                },
-                                "maxItems": 100,
-                                "type": "array"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "A list of BCC email addresses.",
-                        "title": "Bcc"
+                    "subject": {
+                        "description": "The subject of the email.",
+                        "maxLength": 65536,
+                        "title": "Subject",
+                        "type": "string"
                     },
                     "body": {
                         "description": "The body of the email.",
@@ -735,11 +762,47 @@
                         "description": "A list of CC email addresses.",
                         "title": "Cc"
                     },
+                    "bcc": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of BCC email addresses.",
+                        "title": "Bcc"
+                    },
                     "html": {
                         "default": false,
                         "description": "Whether to send the email as HTML (True) or plain text (False).",
                         "title": "Html",
                         "type": "boolean"
+                    },
+                    "attachments": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 4096,
+                                    "type": "string"
+                                },
+                                "maxItems": 20,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
+                        "title": "Attachments"
                     },
                     "in_reply_to": {
                         "anyOf": [
@@ -754,17 +817,6 @@
                         "default": null,
                         "description": "Message-ID of the email being replied to. Enables proper threading in email clients.",
                         "title": "In Reply To"
-                    },
-                    "recipients": {
-                        "description": "A list of recipient email addresses.",
-                        "items": {
-                            "maxLength": 1024,
-                            "type": "string"
-                        },
-                        "maxItems": 100,
-                        "minItems": 1,
-                        "title": "Recipients",
-                        "type": "array"
                     },
                     "references": {
                         "anyOf": [
@@ -793,19 +845,12 @@
                         "default": null,
                         "description": "Email address to set as the Reply-To header. When set, email clients will reply to this address instead of the From address.",
                         "title": "Reply To"
-                    },
-                    "subject": {
-                        "description": "The subject of the email.",
-                        "maxLength": 65536,
-                        "title": "Subject",
-                        "type": "string"
                     }
                 },
                 "required": ["account_name", "recipients", "subject", "body"],
                 "title": "send_emailArguments",
                 "type": "object"
             },
-            "name": "send_email",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -816,9 +861,16 @@
                 "required": ["result"],
                 "title": "send_emailOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
             }
         },
         {
+            "name": "save_to_mailbox",
             "description": "Compose an email and save it to an IMAP folder (e.g., Drafts). Shares recipient, body, attachment, and threading parameters with send_email; adds mailbox and flags, and does not support reply_to. Default folder is Drafts with \\Draft and \\Seen flags. Pure IMAP operation \u2014 works without SMTP configuration. An ambiguous APPEND is reported as unknown and is not retried automatically.",
             "inputSchema": {
                 "properties": {
@@ -828,46 +880,34 @@
                         "title": "Account Name",
                         "type": "string"
                     },
-                    "attachments": {
-                        "anyOf": [
-                            {
-                                "items": {
-                                    "maxLength": 4096,
-                                    "type": "string"
-                                },
-                                "maxItems": 20,
-                                "type": "array"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
-                        "title": "Attachments"
+                    "recipients": {
+                        "description": "A list of recipient email addresses.",
+                        "items": {
+                            "maxLength": 1024,
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Recipients",
+                        "type": "array"
                     },
-                    "bcc": {
-                        "anyOf": [
-                            {
-                                "items": {
-                                    "maxLength": 1024,
-                                    "type": "string"
-                                },
-                                "maxItems": 100,
-                                "type": "array"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "A list of BCC email addresses.",
-                        "title": "Bcc"
+                    "subject": {
+                        "description": "The subject of the email.",
+                        "maxLength": 65536,
+                        "title": "Subject",
+                        "type": "string"
                     },
                     "body": {
                         "description": "The body of the email.",
                         "maxLength": 1048576,
                         "title": "Body",
+                        "type": "string"
+                    },
+                    "mailbox": {
+                        "default": "Drafts",
+                        "description": "The IMAP folder to save to (e.g., 'Drafts', 'INBOX.Drafts', 'Templates').",
+                        "maxLength": 1024,
+                        "title": "Mailbox",
                         "type": "string"
                     },
                     "cc": {
@@ -888,6 +928,76 @@
                         "description": "A list of CC email addresses.",
                         "title": "Cc"
                     },
+                    "bcc": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of BCC email addresses.",
+                        "title": "Bcc"
+                    },
+                    "html": {
+                        "default": false,
+                        "description": "Whether the email body is HTML (True) or plain text (False).",
+                        "title": "Html",
+                        "type": "boolean"
+                    },
+                    "attachments": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 4096,
+                                    "type": "string"
+                                },
+                                "maxItems": 20,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
+                        "title": "Attachments"
+                    },
+                    "in_reply_to": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Message-ID of the email being replied to. Enables proper threading in email clients.",
+                        "title": "In Reply To"
+                    },
+                    "references": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Space-separated Message-IDs for the thread chain.",
+                        "title": "References"
+                    },
                     "flags": {
                         "anyOf": [
                             {
@@ -905,71 +1015,12 @@
                         "default": null,
                         "description": "IMAP flags to set on the message. Defaults to ['\\Draft', '\\Seen']. Common flags: '\\Draft', '\\Seen', '\\Flagged'.",
                         "title": "Flags"
-                    },
-                    "html": {
-                        "default": false,
-                        "description": "Whether the email body is HTML (True) or plain text (False).",
-                        "title": "Html",
-                        "type": "boolean"
-                    },
-                    "in_reply_to": {
-                        "anyOf": [
-                            {
-                                "maxLength": 65536,
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Message-ID of the email being replied to. Enables proper threading in email clients.",
-                        "title": "In Reply To"
-                    },
-                    "mailbox": {
-                        "default": "Drafts",
-                        "description": "The IMAP folder to save to (e.g., 'Drafts', 'INBOX.Drafts', 'Templates').",
-                        "maxLength": 1024,
-                        "title": "Mailbox",
-                        "type": "string"
-                    },
-                    "recipients": {
-                        "description": "A list of recipient email addresses.",
-                        "items": {
-                            "maxLength": 1024,
-                            "type": "string"
-                        },
-                        "maxItems": 100,
-                        "minItems": 1,
-                        "title": "Recipients",
-                        "type": "array"
-                    },
-                    "references": {
-                        "anyOf": [
-                            {
-                                "maxLength": 65536,
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "default": null,
-                        "description": "Space-separated Message-IDs for the thread chain.",
-                        "title": "References"
-                    },
-                    "subject": {
-                        "description": "The subject of the email.",
-                        "maxLength": 65536,
-                        "title": "Subject",
-                        "type": "string"
                     }
                 },
                 "required": ["account_name", "recipients", "subject", "body"],
                 "title": "save_to_mailboxArguments",
                 "type": "object"
             },
-            "name": "save_to_mailbox",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -980,9 +1031,16 @@
                 "required": ["result"],
                 "title": "save_to_mailboxOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
             }
         },
         {
+            "name": "delete_emails",
             "description": "Delete one or more emails by email_id using target-scoped UID EXPUNGE. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
                 "properties": {
@@ -996,6 +1054,7 @@
                         "description": "List of email_id to delete (obtained from list_emails_metadata).",
                         "items": {
                             "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
                             "type": "string"
                         },
                         "maxItems": 100,
@@ -1015,7 +1074,6 @@
                 "title": "delete_emailsArguments",
                 "type": "object"
             },
-            "name": "delete_emails",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -1026,9 +1084,16 @@
                 "required": ["result"],
                 "title": "delete_emailsOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
             }
         },
         {
+            "name": "mark_emails_as_read",
             "description": "Mark one or more emails as read by email_id. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
                 "properties": {
@@ -1042,6 +1107,7 @@
                         "description": "List of email_id to mark as read (obtained from list_emails_metadata).",
                         "items": {
                             "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
                             "type": "string"
                         },
                         "maxItems": 100,
@@ -1061,7 +1127,6 @@
                 "title": "mark_emails_as_readArguments",
                 "type": "object"
             },
-            "name": "mark_emails_as_read",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -1072,9 +1137,16 @@
                 "required": ["result"],
                 "title": "mark_emails_as_readOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
             }
         },
         {
+            "name": "move_emails",
             "description": "Move one or more emails between IMAP folders by email_id. Use list_emails_metadata and list_mailboxes first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried.",
             "inputSchema": {
                 "properties": {
@@ -1084,22 +1156,23 @@
                         "title": "Account Name",
                         "type": "string"
                     },
-                    "destination_mailbox": {
-                        "description": "The destination mailbox/folder to move emails to.",
-                        "maxLength": 1024,
-                        "title": "Destination Mailbox",
-                        "type": "string"
-                    },
                     "email_ids": {
                         "description": "List of email_id to move (obtained from list_emails_metadata).",
                         "items": {
                             "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
                             "type": "string"
                         },
                         "maxItems": 100,
                         "minItems": 1,
                         "title": "Email Ids",
                         "type": "array"
+                    },
+                    "destination_mailbox": {
+                        "description": "The destination mailbox/folder to move emails to.",
+                        "maxLength": 1024,
+                        "title": "Destination Mailbox",
+                        "type": "string"
                     },
                     "source_mailbox": {
                         "default": "INBOX",
@@ -1117,7 +1190,6 @@
                 "title": "move_emailsArguments",
                 "type": "object"
             },
-            "name": "move_emails",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -1128,9 +1200,16 @@
                 "required": ["result"],
                 "title": "move_emailsOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
             }
         },
         {
+            "name": "archive_emails",
             "description": "Archive one or more emails by moving them to the account's Archive folder, auto-detected via the RFC 6154 \\Archive flag (falling back to common names like Archive or [Gmail]/All Mail). Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
                 "properties": {
@@ -1144,6 +1223,7 @@
                         "description": "List of email_id to archive (obtained from list_emails_metadata).",
                         "items": {
                             "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
                             "type": "string"
                         },
                         "maxItems": 100,
@@ -1163,7 +1243,6 @@
                 "title": "archive_emailsArguments",
                 "type": "object"
             },
-            "name": "archive_emails",
             "outputSchema": {
                 "properties": {
                     "result": {
@@ -1174,9 +1253,16 @@
                 "required": ["result"],
                 "title": "archive_emailsOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
             }
         },
         {
+            "name": "list_mailboxes",
             "description": "List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails.",
             "inputSchema": {
                 "properties": {
@@ -1205,12 +1291,15 @@
                 "title": "list_mailboxesArguments",
                 "type": "object"
             },
-            "name": "list_mailboxes",
             "outputSchema": {
                 "$defs": {
                     "MailboxInfo": {
                         "description": "IMAP mailbox/folder information",
                         "properties": {
+                            "name": {
+                                "title": "Name",
+                                "type": "string"
+                            },
                             "delimiter": {
                                 "title": "Delimiter",
                                 "type": "string"
@@ -1221,10 +1310,6 @@
                                 },
                                 "title": "Flags",
                                 "type": "array"
-                            },
-                            "name": {
-                                "title": "Name",
-                                "type": "string"
                             }
                         },
                         "required": ["name", "delimiter", "flags"],
@@ -1244,9 +1329,16 @@
                 "required": ["result"],
                 "title": "list_mailboxesOutput",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
             }
         },
         {
+            "name": "download_attachment",
             "description": "Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
             "inputSchema": {
                 "properties": {
@@ -1256,16 +1348,22 @@
                         "title": "Account Name",
                         "type": "string"
                     },
+                    "email_id": {
+                        "description": "The email ID (obtained from list_emails_metadata or get_emails_content).",
+                        "maxLength": 10,
+                        "title": "Email Id",
+                        "type": "string"
+                    },
                     "attachment_name": {
                         "description": "The name of the attachment to download (as shown in the attachments list).",
                         "maxLength": 4096,
                         "title": "Attachment Name",
                         "type": "string"
                     },
-                    "email_id": {
-                        "description": "The email ID (obtained from list_emails_metadata or get_emails_content).",
-                        "maxLength": 10,
-                        "title": "Email Id",
+                    "save_path": {
+                        "description": "The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
+                        "maxLength": 4096,
+                        "title": "Save Path",
                         "type": "string"
                     },
                     "mailbox": {
@@ -1273,12 +1371,6 @@
                         "description": "The mailbox to search in (default: INBOX).",
                         "maxLength": 1024,
                         "title": "Mailbox",
-                        "type": "string"
-                    },
-                    "save_path": {
-                        "description": "The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
-                        "maxLength": 4096,
-                        "title": "Save Path",
                         "type": "string"
                     }
                 },
@@ -1291,29 +1383,28 @@
                 "title": "download_attachmentArguments",
                 "type": "object"
             },
-            "name": "download_attachment",
             "outputSchema": {
                 "description": "Attachment download response",
                 "properties": {
-                    "attachment_name": {
-                        "title": "Attachment Name",
-                        "type": "string"
-                    },
                     "email_id": {
                         "title": "Email Id",
+                        "type": "string"
+                    },
+                    "attachment_name": {
+                        "title": "Attachment Name",
                         "type": "string"
                     },
                     "mime_type": {
                         "title": "Mime Type",
                         "type": "string"
                     },
-                    "saved_path": {
-                        "title": "Saved Path",
-                        "type": "string"
-                    },
                     "size": {
                         "title": "Size",
                         "type": "integer"
+                    },
+                    "saved_path": {
+                        "title": "Saved Path",
+                        "type": "string"
                     }
                 },
                 "required": [
@@ -1325,7 +1416,23 @@
                 ],
                 "title": "AttachmentDownloadResponse",
                 "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
             }
         }
-    ]
+    ],
+    "resources": [],
+    "resource_templates": [
+        {
+            "name": "get_account",
+            "uriTemplate": "email://{account_name}",
+            "description": "Return stable non-secret discovery capabilities for one configured account.",
+            "mimeType": "text/plain"
+        }
+    ],
+    "prompts": []
 }

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Literal, Protocol, TypeVar
 from mcp_email_server.application.limits import (
     APPLICATION_LIMITS,
     validate_controlled_string,
+    validate_imap_uid,
     validate_optional_controlled_string,
     validate_serialized_result,
 )
@@ -21,7 +21,6 @@ MutationProviderPurpose = Literal["incoming", "outgoing", "sent-copy"]
 SentCopyStatus = Literal["skipped", "succeeded", "failed", "unknown"]
 
 
-_CANONICAL_UID = re.compile(r"[1-9][0-9]*\Z")
 ProviderResultT = TypeVar("ProviderResultT")
 
 
@@ -334,10 +333,7 @@ def _validate_email_ids(email_ids: tuple[str, ...]) -> None:
     if len(set(email_ids)) != len(email_ids):
         raise ValueError("email_ids must not contain duplicates")
     for email_id in email_ids:
-        if _CANONICAL_UID.fullmatch(email_id) is None:
-            raise ValueError("email_ids must contain canonical positive decimal IMAP UIDs")
-        if int(email_id) > APPLICATION_LIMITS.maximum_imap_uid:
-            raise ValueError("email_ids contain an out-of-range IMAP UID")
+        validate_imap_uid(email_id, field_name="email_ids item")
 
 
 def _validate_recipients(recipients: tuple[str, ...]) -> None:

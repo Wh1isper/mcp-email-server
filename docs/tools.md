@@ -29,19 +29,29 @@ callers; aggregate recipient and payload limits also remain application-owned.
 
 ## Account resource
 
-The resource URI `email://{account_name}` returns the selected account's
-configuration with credentials masked.
+The resource URI `email://{account_name}` returns the same stable non-secret
+capability record used by account discovery. It does not return configuration or
+masked credential objects.
 
 ## Account tools
 
 ### `list_available_accounts`
 
-Lists all enabled accounts from the selected configuration mode with masked
-credentials. In managed mode, disabled accounts are omitted before any
-credential lookup or provider access. Use the returned `account_name` in other
-tools. The output schema and application boundary allow at most 1,000 accounts;
-the canonical JSON must also fit the shared 8 MiB response ceiling. Oversized
-authority data is rejected with `limit_exceeded` rather than truncated.
+Lists all enabled accounts from the selected configuration mode as explicit
+capability records. Each record contains `account_name`, `account_type`,
+`description`, optional `email_address`, `can_receive`, and `can_send`. Account
+descriptions are limited to 4 KiB of UTF-8 data and expose the same structural
+bound in the output schema. In managed mode, disabled accounts are omitted before any credential lookup or provider
+access. Use only an account with `can_receive=true` for mail reads and
+`can_send=true` for `send_email`. Text content, structured content, and the output
+schema describe the same fields.
+
+If the result is empty, account setup is unavailable over MCP. The agent should
+ask the user to run `mcp-email-server ui` or the documented interactive CLI in
+their own terminal and must never request or relay credentials. The output schema
+and application boundary allow at most 1,000 accounts; the canonical JSON must
+also fit the shared 8 MiB response ceiling. Oversized authority data is rejected
+with `limit_exceeded` rather than truncated.
 
 MCP exposes no account, endpoint, policy, catalog, or credential mutation tool in
 either mode. Use `mcp-email-server ui` or the user-operated `config` and
@@ -54,6 +64,31 @@ covered by an exact catalog contract test.
 absent from Local Email App V2 rather than renamed. See
 [Upgrading to Local Email App V2](getting-started.md#upgrading-to-local-email-app-v2)
 for client discovery and configuration migration steps.
+
+## Agent planning annotations
+
+Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
+`idempotentHint`, and `openWorldHint` values:
+
+| Tools                                                                        | Read-only | Destructive | Idempotent | Open world |
+| ---------------------------------------------------------------------------- | --------- | ----------- | ---------- | ---------- |
+| `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders` | yes       | no          | yes        | no         |
+| `list_emails_metadata`, `list_mailboxes`                                     | yes       | no          | yes        | yes        |
+| `get_emails_content`                                                         | no        | no          | yes        | yes        |
+| `send_email`, `save_to_mailbox`                                              | no        | no          | no         | yes        |
+| `mark_emails_as_read`                                                        | no        | no          | yes        | yes        |
+| `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`      | no        | yes         | no         | yes        |
+
+`get_emails_content` is conservatively non-read-only because
+`mark_as_read=true` changes remote flags. Download is destructive because the
+caller-selected destination may be replaced. Send and append create externally
+meaningful effects but do not delete or replace an existing mailbox item, so
+their destructive hint is false while their read-only and idempotent hints are
+also false.
+
+Annotations are advisory host/agent planning hints, not authorization or a
+safe-retry guarantee. Tool descriptions, current policy, typed outcomes, and the
+rule against replay after an ambiguous effect remain authoritative.
 
 ## Reading and searching
 
@@ -135,8 +170,10 @@ If a body extends beyond the requested window, the returned body ends with
 
 The batch response reports requested and retrieved counts and includes
 `failed_ids` for messages that could not be fetched. A request accepts 1 to 500
-canonical positive decimal IMAP UIDs; zero, signs, ranges, sets, and values above
-the IMAP UID limit are rejected before provider access. Raw messages above 50
+canonical positive decimal ASCII IMAP UIDs; zero, leading zero, non-ASCII digits,
+signs, ranges, sets, and values above the IMAP UID limit are rejected before
+provider access. The provider adapter repeats this validation before opening an
+IMAP connection as defense in depth. Raw messages above 50
 MiB are rejected before MIME parsing. The production provider also counts each
 returned body's UTF-8 bytes before retaining it and stops immediately if the
 batch would exceed the 50 MiB aggregate body budget; the application validates
@@ -256,8 +293,10 @@ Mailbox names are limited to 1,024 UTF-8 bytes. Compose requests allow at most
 contain exactly one address. Compose requests also allow a 64 KiB UTF-8 subject,
 a 1 MiB UTF-8 body, and 20 attachments. Threading and Reply-To values
 are limited to 64 KiB each. Each attachment path is limited to 4,096 bytes,
-each existing attachment to 25 MiB, and their combined size to 50 MiB. Saved
-messages accept at most 100 flags of 128 bytes each before protocol syntax
+each existing attachment to 25 MiB, and their combined size to 50 MiB. Outbound
+attachments preserve the inferred MIME main type and subtype (for example,
+`image/png` remains `image/png`) instead of coercing every file to
+`application/*`. Saved messages accept at most 100 flags of 128 bytes each before protocol syntax
 validation. Mailbox names, recipient/header values, and subjects reject control
 characters before provider access.
 
@@ -298,7 +337,9 @@ operation.
 
 ## Stable tool catalog
 
-The tool list is static for the lifetime of a server process. `send_email`,
+MCP initialization reports the installed `mcp-email-server` application version
+in `serverInfo.version`, not the MCP SDK dependency version. The tool list is
+static for the lifetime of a server process. `send_email`,
 `list_allowed_recipients`, `list_allowed_senders`, and `download_attachment` are
 always advertised. Account existence, enabled state, SMTP capability, and
 current policies are enforced when each tool is called. The two allowlist tools

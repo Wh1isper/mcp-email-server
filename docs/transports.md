@@ -15,8 +15,8 @@ mcp-email-server stdio
 mcp-email-server sse [--host HOST] [--port PORT]
 mcp-email-server streamable-http [--host HOST] [--port PORT]
 mcp-email-server ui [--no-open] [--port PORT]
-mcp-email-server reset
-mcp-email-server migrate-credentials [--to keyring|plaintext]
+mcp-email-server reset --confirm RESET [--json]
+mcp-email-server migrate-credentials [--to keyring|plaintext] [--json]
 mcp-email-server config {init|status|doctor|index-health|policy|update-policy|cleanup-credentials|import-legacy|activate|select}
 mcp-email-server account {add|set-secret|repair-secret|list|show|update|disable|enable|remove|remove-secret|test}
 ```
@@ -24,7 +24,12 @@ mcp-email-server account {add|set-secret|repair-secret|list|show|update|disable|
 Run `mcp-email-server COMMAND --help` or
 `mcp-email-server config|account COMMAND --help` for current options. Managed
 setup and mode selection are documented in
-[Configuration](configuration.md#managed-cli-setup).
+[Configuration](configuration.md#managed-cli-setup). Every finite nested
+management command has a leaf `--json` option, for example
+`mcp-email-server config status --json`; see
+[Machine-readable CLI output](configuration.md#machine-readable-cli-output).
+`--help`, `--version`, transports, and the foreground UI remain text/protocol
+interfaces rather than CLI result documents.
 
 ## stdio
 
@@ -193,7 +198,7 @@ graceful session invalidation and shutdown.
 Remove persistent legacy configuration with:
 
 ```bash
-mcp-email-server reset
+mcp-email-server reset --confirm RESET
 ```
 
 Move credentials between the TOML file and operating system keyring with:
@@ -203,8 +208,11 @@ mcp-email-server migrate-credentials --to keyring
 mcp-email-server migrate-credentials --to plaintext
 ```
 
+Reset deletes every persistent legacy account and performs best-effort cleanup
+of its referenced keyring entries, so exact uppercase confirmation is mandatory.
 Reset and credential migration are legacy compatibility operations and are
-rejected while managed mode is selected. The UI and nested `config`/`account`
+rejected while managed mode is selected. Both support one-document `--json`
+results for user-owned automation. The UI and nested `config`/`account`
 commands are equivalent managed management adapters; the UI can also guide an
 explicit import while legacy mode is selected. Credential behavior and migration
 caveats are covered in [Security](security.md#credential-migration).

@@ -4,12 +4,14 @@ import asyncio
 import tomllib
 from pathlib import Path
 
+from aiosmtplib.errors import SMTPAuthenticationError
 from pydantic import ValidationError
 
 from mcp_email_server import keyring_store
 from mcp_email_server.application.management import (
     BindingRole,
     BootstrapSnapshot,
+    ConnectivityCheckError,
     EndpointSummary,
     IndexHealth,
     LegacyAccountSnapshot,
@@ -42,7 +44,7 @@ from mcp_email_server.config import (
     normalize_address_list,
     normalize_pattern_list,
 )
-from mcp_email_server.emails.classic import ClassicEmailHandler
+from mcp_email_server.emails.classic import ClassicEmailHandler, ImapAuthenticationError
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
 
 
@@ -53,7 +55,7 @@ class LocalManagementBackend:
         try:
             bootstrap = read_bootstrap()
         except BootstrapError as exc:
-            raise ManagementError(str(exc)) from exc
+            raise ManagementError("Bootstrap configuration could not be read") from exc
         running = process_bootstrap(bootstrap.path)
         return BootstrapSnapshot(
             mode=bootstrap.mode,
@@ -84,7 +86,7 @@ class LocalManagementBackend:
         except BootstrapRevisionError as exc:
             raise RevisionConflictError("bootstrap") from exc
         except (BootstrapError, OSError) as exc:
-            raise ManagementError(str(exc)) from exc
+            raise ManagementError("Bootstrap selection could not be updated") from exc
 
     @staticmethod
     def _read_legacy_raw() -> dict[str, object]:
@@ -275,6 +277,11 @@ class LocalManagementBackend:
 
     async def test_connection(self, catalog: ManagedCatalogPort, name: str, role: BindingRole) -> None:
         try:
+            if role == "outgoing" and catalog.show_account(name).outgoing is None:
+                raise ConnectivityCheckError(  # noqa: TRY301
+                    "endpoint_unavailable",
+                    "Outgoing endpoint is unavailable; configure SMTP before testing",
+                )
             account = catalog.load_account(name, roles=(role,))
             handler = ClassicEmailHandler(account)
             if role == "incoming":
@@ -282,7 +289,10 @@ class LocalManagementBackend:
                 return
             outgoing = account.outgoing
             if handler.outgoing_client is None or outgoing is None:
-                raise ManagementError("Managed account has no outgoing endpoint")  # noqa: TRY301
+                raise ConnectivityCheckError(  # noqa: TRY301
+                    "endpoint_unavailable",
+                    "Outgoing endpoint is unavailable; configure SMTP before testing",
+                )
 
             import aiosmtplib
 
@@ -297,7 +307,25 @@ class LocalManagementBackend:
                 await smtp.login(outgoing.user_name, outgoing.password.get_secret_value())
         except asyncio.CancelledError:
             raise
+        except ConnectivityCheckError:
+            raise
         except Exception as exc:
-            if isinstance(exc, ManagementError):
-                raise
-            raise ManagementError(f"{role} connectivity test failed: {type(exc).__name__}") from None
+            if isinstance(exc, TimeoutError):
+                raise ConnectivityCheckError(
+                    "timeout",
+                    "Connection test timed out; verify the endpoint and network, then retry",
+                ) from None
+            if isinstance(exc, ManagedCatalogError):
+                raise ConnectivityCheckError(
+                    "credential_unavailable",
+                    "Credential is unavailable; inspect or repair the account binding",
+                ) from None
+            if isinstance(exc, ImapAuthenticationError | SMTPAuthenticationError):
+                raise ConnectivityCheckError(
+                    "authentication_or_provider_rejected",
+                    "Authentication or provider policy rejected the connection",
+                ) from None
+            raise ConnectivityCheckError(
+                "tls_or_connection_failed",
+                "TLS or network connection failed; verify endpoint and TLS settings",
+            ) from None

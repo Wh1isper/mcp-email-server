@@ -10,9 +10,10 @@ import time
 import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime
+from email import encoders
 from email.header import Header
 from email.message import Message
-from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.parser import BytesParser
@@ -27,7 +28,7 @@ import aiosmtplib
 from aiosmtplib.errors import SMTPNotSupported, SMTPRecipientRefused, SMTPResponseException
 from bs4 import BeautifulSoup
 
-from mcp_email_server.application.limits import APPLICATION_LIMITS
+from mcp_email_server.application.limits import APPLICATION_LIMITS, validate_imap_uid
 from mcp_email_server.application.metadata import (
     MAX_METADATA_SNAPSHOT_ROWS,
     MailboxMetadataSnapshot,
@@ -74,6 +75,14 @@ class MetadataPayloadTooLargeError(ValueError):
     """Provider-controlled headers exceeded the bounded metadata budget."""
 
 
+class ImapAuthenticationError(ConnectionError):
+    """An IMAP server rejected authentication without exposing provider detail."""
+
+
+class ImapTransportError(ConnectionError):
+    """An IMAP login failed at the transport boundary."""
+
+
 class _MetadataHeaderBudget:
     def __init__(self) -> None:
         self.total_bytes = 0
@@ -95,6 +104,13 @@ _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
 
 # RFC 3501 system flags (except \Recent which is read-only) + custom keyword atoms
 _VALID_IMAP_FLAG = re.compile(r"^\\[A-Za-z]+$|^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def _validate_imap_uids(email_ids: list[str]) -> None:
+    """Reject non-canonical UIDs before any low-level IMAP operation."""
+
+    for email_id in email_ids:
+        validate_imap_uid(email_id)
 
 
 def _validate_flags(flags: list[str]) -> str:
@@ -462,14 +478,14 @@ async def _imap_login(
     """
     try:
         response = await imap.login(user_name, password)
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, TimeoutError):
         raise
     except Exception:
-        raise ConnectionError("IMAP login failed (TRANSPORT)") from None
+        raise ImapTransportError("IMAP login failed (TRANSPORT)") from None
     status = _imap_status(response)
     if status == "OK":
         return
-    raise ConnectionError(f"IMAP login failed ({status})")
+    raise ImapAuthenticationError(f"IMAP login failed ({status})")
 
 
 def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
@@ -1438,6 +1454,7 @@ class EmailClient:
         max_body_length: int = MAX_BODY_LENGTH,
     ) -> dict[str, Any] | None:
         del mark_as_read  # Compatibility argument; the application owns the mutation.
+        validate_imap_uid(email_id)
         imap = await self._connect_imap()
         try:
             # Login and select mailbox
@@ -1508,6 +1525,7 @@ class EmailClient:
         Returns:
             A dictionary with download result information.
         """
+        validate_imap_uid(email_id)
         imap = await self._connect_imap()
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
@@ -1628,13 +1646,16 @@ class EmailClient:
         if total_bytes > MAX_TOTAL_ATTACHMENT_BYTES:
             raise ValueError(f"attachments exceed {MAX_TOTAL_ATTACHMENT_BYTES} bytes in total")
 
-    def _create_attachment_part(self, path: Path, file_data: bytes) -> MIMEApplication:
+    def _create_attachment_part(self, path: Path, file_data: bytes) -> MIMEBase:
         """Create a MIME attachment part from already bounded bytes."""
         mime_type, _ = mimetypes.guess_type(str(path))
         if mime_type is None:
             mime_type = "application/octet-stream"
+        main_type, sub_type = mime_type.split("/", 1)
 
-        attachment_part = MIMEApplication(file_data, _subtype=mime_type.split("/")[1])
+        attachment_part = MIMEBase(main_type, sub_type)
+        attachment_part.set_payload(file_data)
+        encoders.encode_base64(attachment_part)
         attachment_part.add_header(
             "Content-Disposition",
             "attachment",
@@ -2235,6 +2256,7 @@ class EmailClient:
         report_blocked_mutations: bool = False,
     ) -> BatchMutationOutcome:
         """Delete scoped UIDs while preserving STORE and UID EXPUNGE evidence."""
+        _validate_imap_uids(email_ids)
         imap = await self._connect_imap()
         outcomes: dict[str, TargetMutationOutcome] = {}
         try:
@@ -2312,6 +2334,7 @@ class EmailClient:
         report_blocked_mutations: bool = False,
     ) -> BatchMutationOutcome:
         """Set \\Seen once per UID and retain cancellation evidence."""
+        _validate_imap_uids(email_ids)
         imap = await self._connect_imap()
         outcomes: list[TargetMutationOutcome] = []
         try:
@@ -2374,6 +2397,7 @@ class EmailClient:
         report_blocked_mutations: bool = False,
     ) -> BatchMutationOutcome:
         """Move UIDs with native MOVE or scoped COPY/STORE/UID EXPUNGE evidence."""
+        _validate_imap_uids(email_ids)
         imap = await self._connect_imap()
         outcomes: dict[str, TargetMutationOutcome] = {}
         try:

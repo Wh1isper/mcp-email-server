@@ -115,6 +115,45 @@ mcp-email-server config cleanup-credentials
 mcp-email-server config select legacy
 ```
 
+### Machine-readable CLI output
+
+Every finite `config` and `account` command supports a leaf `--json` option, as
+do `reset` and `migrate-credentials`. Put it after the command:
+
+```bash
+mcp-email-server config status --json
+mcp-email-server config doctor --json
+mcp-email-server account list --json
+mcp-email-server account show work --json
+```
+
+A dispatched success writes one JSON document to stdout with
+`schema_version`, `ok`, a stable `command` identifier, command-specific `data`,
+and an always-present `warnings` array. A dispatched application failure keeps
+its nonzero exit status and writes one document with a stable `error.code`, safe
+`message`, and reviewed non-secret `details`. Click usage errors such as a
+missing required option happen before command dispatch and remain normal Click
+errors in this release.
+
+JSON presentation fields are explicit rather than generic dataclass dumps. They
+do not include local configuration or database paths, import preview tokens,
+secret values, or secret locators. Credential migration JSON reports cleanup
+counts, completion state, and warning codes; exact keyring entry names remain
+available only in the human-facing text result. Bootstrap parse/write failures
+use bounded remediation rather than embedding the private path. `config status --json` reports `catalog_status` as `not_configured`,
+`available`, or `unavailable`, includes `restart_required`, and nests the bounded
+doctor report when available. Empty `account list --json` results use
+`{"accounts": []}` rather than silent output. `account show --json` includes all
+mutable non-secret identity, endpoint/TLS, Sent-copy, revision, and binding
+fields so automation can review before a revisioned write.
+
+`account add --json` and `account set-secret --json` require
+`--password-stdin`; this prevents an interactive prompt from corrupting the
+single JSON document. It is intended for user-owned automation, not for sending
+a credential through an agent. Interactive `config import-legacy --apply`
+rejects `--json` because review and same-process confirmation cannot be reduced
+to one result document; JSON preview without `--apply` is supported.
+
 Managed account and binding summaries never print secret locators or values.
 Account-create commands carry non-secret endpoint summaries separately from
 `SecretStr` credential fields; command representation and equality exclude those
@@ -131,11 +170,21 @@ preserving first occurrence order. `config update-policy` preserves omitted
 fields; pass an empty value to `--allowed-recipients` or `--allowed-senders` to
 clear that list. Every update requires the revision shown by `config policy`.
 
+Endpoint ports must be between 1 and 65535, and implicit TLS cannot be combined
+with STARTTLS. `account add` checks the selected catalog and these non-secret
+endpoint rules before prompting or reading a credential; application services
+revalidate them for every caller.
+
 `account repair-secret` never accepts a secret. It explicitly resumes or rolls
 back the single already-staged ambiguous candidate at the supplied account
 revision. `config index-health` prints bounded rebuildable-projection status and
 problems. `account test ACCOUNT [incoming|outgoing]` exits nonzero for a typed
-connection failure and never prints a success sentence in that case.
+connection failure and never prints a success sentence in that case. JSON
+failures use one of `timeout`, `endpoint_unavailable`, `credential_unavailable`,
+`authentication_or_provider_rejected`, or `tls_or_connection_failed`; messages
+contain bounded remediation rather than provider exception text. An outgoing test
+checks for a configured SMTP endpoint before resolving its credential, and typed
+IMAP/SMTP authentication and timeout failures retain the correct category.
 
 ### Managed account lifecycle
 
@@ -483,7 +532,7 @@ Delete the configuration file and perform best-effort cleanup of referenced
 keyring entries with:
 
 ```bash
-mcp-email-server reset
+mcp-email-server reset --confirm RESET
 ```
 
 In legacy mode this operation removes all persistently configured accounts.
