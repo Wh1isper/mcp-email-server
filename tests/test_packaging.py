@@ -20,6 +20,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 
 pty: ModuleType | None
 try:
@@ -150,6 +151,25 @@ def _static_digest(files: dict[str, bytes]) -> str:
     return digest.hexdigest()
 
 
+def _workflow_job_runs(path: Path, job_name: str) -> list[str]:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(workflow, dict)
+    jobs = workflow.get("jobs")
+    assert isinstance(jobs, dict)
+    job = jobs.get(job_name)
+    assert isinstance(job, dict)
+    steps = job.get("steps")
+    assert isinstance(steps, list)
+    runs: list[str] = []
+    for step in steps:
+        assert isinstance(step, dict)
+        command = step.get("run")
+        if command is not None:
+            assert isinstance(command, str)
+            runs.append(command.strip())
+    return runs
+
+
 def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     assert uv is not None
@@ -165,6 +185,25 @@ def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) ->
         )
     sdist = next(distributions.glob("*.tar.gz"))
     wheel = next(distributions.glob("*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_names = set(archive.namelist())
+        wheel_runtime = {
+            name: archive.read(name)
+            for name in wheel_names
+            if name.startswith("mcp_email_server/") and not name.endswith("/")
+        }
+    expected_runtime = {
+        path.relative_to(REPOSITORY).as_posix(): path.read_bytes()
+        for path in (REPOSITORY / "mcp_email_server").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    assert wheel_runtime == expected_runtime
+    assert all(
+        name.startswith("mcp_email_server/") or name.split("/", maxsplit=1)[0].endswith(".dist-info")
+        for name in wheel_names
+    )
+    assert len([name for name in wheel_names if name.endswith(".dist-info/licenses/LICENSE")]) == 1
+
     packaged = _static_files(wheel)
     staged = {
         path.relative_to(REPOSITORY / STATIC_PREFIX).as_posix(): path.read_bytes()
@@ -190,12 +229,35 @@ def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) ->
         "frontend/e2e/local-management.spec.ts",
         "frontend/playwright.config.ts",
         "mcp_email_server/web_ui/static/index.html",
+        "mcp_email_server/web_ui/static/THIRD_PARTY_NOTICES.md",
+        ".agents/plugins/marketplace.json",
+        ".claude-plugin/marketplace.json",
+        ".github/actions/setup-python-env/action.yml",
+        ".github/workflows/main.yml",
+        ".github/workflows/on-release-main.yml",
+        ".pre-commit-config.yaml",
+        "codecov.yaml",
+        "plugins/mcp-email-server/.codex-plugin/plugin.json",
+        "plugins/mcp-email-server/.claude-plugin/plugin.json",
+        "plugins/mcp-email-server/skills/safe-email-operations/SKILL.md",
+        "plugins/mcp-email-server/skills/safe-email-operations/references/installation.md",
+        "plugins/mcp-email-server/skills/safe-email-operations/references/safe-commands.md",
+        "dev/build_frontend.py",
+        "dev/set_release_version.py",
+        "dev/install_claude_desktop.py",
+        "dev/claude_desktop_config.json",
+        "dev/greenmail/compose.yml",
+        "dev/greenmail/file_keyring.py",
+        "dev/greenmail/run-e2e.sh",
+        "LICENSE",
     ):
         assert (source / required).is_file()
     assert not (source / "frontend/node_modules").exists()
     assert not (source / "frontend/dist").exists()
     assert not (source / "frontend/test-results").exists()
     assert not (source / "frontend/playwright-report").exists()
+    assert not list(source.rglob("__pycache__"))
+    assert not list(source.rglob("*.pyc"))
 
     blockers = tmp_path / "blockers"
     blockers.mkdir()
@@ -283,3 +345,17 @@ def test_isolated_wheel_and_local_uvx_serve_authenticated_ui(tmp_path: Path) -> 
         _assert_authenticated_ui(uvx_launch_url)
     finally:
         _stop_ui(uvx_process, uvx_terminal)
+
+
+def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
+    main = REPOSITORY / ".github/workflows/main.yml"
+    release = REPOSITORY / ".github/workflows/on-release-main.yml"
+
+    assert _workflow_job_runs(main, "documentation") == ["make docs-test"]
+    assert _workflow_job_runs(main, "artifacts") == ["make build", "make verify-dist"]
+
+    release_runs = _workflow_job_runs(release, "publish")
+    build_index = release_runs.index("make build")
+    verify_index = release_runs.index("make verify-dist")
+    publish_index = release_runs.index("uv publish")
+    assert build_index < verify_index < publish_index

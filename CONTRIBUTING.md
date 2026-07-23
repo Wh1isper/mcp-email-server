@@ -127,9 +127,12 @@ to loopback, and removes it after the test. See the
 [validation guide](https://mcp-email-server.wh1isper.top/validation/) for the
 covered flows and limitations.
 
-The CI pipeline runs the unit test suite against every supported Python version,
-runs the locked real-browser management E2E, and runs the GreenMail baseline
-once for pull requests and pushes to `main`. Relevant changes should still run
+The CI pipeline runs quality and strict documentation checks, the unit test
+suite against every supported Python version, the locked frontend and
+real-browser management E2E, and the GreenMail baseline once for pull requests
+and pushes to `main`. It also builds one release-format wheel/sdist pair and runs
+`make verify-dist` against those exact bytes, including the Node-free from-sdist
+rebuild and installed/`uvx` UI smokes. Relevant changes should still run
 `make test-browser` and `make test-e2e` locally before they are pushed so
 failures can be diagnosed without waiting for CI.
 

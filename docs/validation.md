@@ -68,10 +68,13 @@ so one-time launch material cannot enter browser artifacts.
 
 ## Continuous integration
 
-The main GitHub Actions workflow runs the locked frontend build and rejects
-staged-asset drift, installs locked Chromium, runs `make test-browser`, and runs
-`make test-e2e` once on `ubuntu-latest` for every pull request and push to
-`main`. The GreenMail job has a 10-minute outer
+The main GitHub Actions workflow runs quality checks, a strict documentation
+build, the Python version matrix, the locked frontend build with staged-asset
+drift rejection, locked-Chromium browser E2E, and GreenMail once on
+`ubuntu-latest` for every pull request and push to `main`. A dedicated artifact
+job runs the same authoritative `make build` then `make verify-dist` sequence as
+the release workflow, so CI validates one exact wheel/sdist pair rather than
+independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
 repeated for every interpreter version. The release workflow repeats the
