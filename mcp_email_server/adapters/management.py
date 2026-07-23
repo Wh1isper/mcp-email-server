@@ -200,8 +200,8 @@ class LocalManagementBackend:
         if value == keyring_store.SENTINEL:
             try:
                 value = keyring_store.get_secret(account_name, role)
-            except Exception as exc:
-                raise ManagementError("Stored legacy credential backend is unavailable") from exc
+            except Exception:
+                raise ManagementError("Stored legacy credential backend is unavailable") from None
             if value is None:
                 raise ManagementError("Stored legacy credential is unavailable")
         if not value:
