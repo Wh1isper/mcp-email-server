@@ -115,7 +115,8 @@ Before delivery, all of the following pass from a clean checkout:
    committed package metadata, before publish without rewriting version metadata
    or the lockfile;
 2. formatting, lint, type checking, lock consistency, and full Python tests with
-   configured coverage threshold;
+   combined in-process/subprocess statement-and-branch coverage at or above the
+   configured 80% aggregate threshold, plus an 80% changed-line Codecov target;
 3. documentation strict build and link/cross-reference validation;
 4. GreenMail stdio E2E;
 5. frontend `npm ci`, lint, typecheck, unit tests, and production build;

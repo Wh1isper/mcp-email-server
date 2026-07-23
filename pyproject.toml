@@ -44,12 +44,13 @@ Documentation = "https://mcp-email-server.wh1isper.top/"
 [dependency-groups]
 dev = [
     "uv==0.11.29",
+    "coverage[toml]>=7.10.0",
     "pytest>=7.2.0",
     "pytest-asyncio>=0.25.3",
     "pre-commit>=2.20.0",
     "deptry>=0.22.0",
     "pyright>=1.1.0",
-    "pytest-cov>=4.0.0",
+    "pytest-cov>=7.0.0",
     "ruff>=0.9.2",
     "mkdocs>=1.4.2",
     "mkdocs-material>=8.5.10",
@@ -165,9 +166,13 @@ ignore = [
 preview = true
 
 [tool.coverage.report]
+fail_under = 80
+precision = 2
 skip_empty = true
 
 [tool.coverage.run]
 branch = true
+parallel = true
+patch = ["subprocess"]
 source = ["mcp_email_server"]
 omit = ["mcp_email_server/ui.py"]

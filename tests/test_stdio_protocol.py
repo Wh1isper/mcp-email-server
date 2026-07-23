@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from mcp_email_server import stdio as stdio_module
 from mcp_email_server.stdio import STDIO_FRAME_BYTES
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -149,6 +150,45 @@ async def test_raw_stdio_initialization_catalog_stdout_purity_and_idle_eof(tmp_p
         await server.close_stdin()
         assert await server.wait() == 0
         assert all(frame["jsonrpc"] == "2.0" for frame in server.frames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chunks", "recovered_frame"),
+    [
+        ([b"abcde", b"discarded-tail\nok\n"], b"ok\n"),
+        ([b"abcde", b""], None),
+    ],
+)
+async def test_bounded_reader_discards_chunked_oversized_frame_until_newline_or_eof(
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[bytes],
+    recovered_frame: bytes | None,
+) -> None:
+    remaining = iter(chunks)
+    reads = 0
+
+    async def read_chunk(_file_descriptor: int, *, use_readiness: bool) -> bytes:
+        nonlocal reads
+        del use_readiness
+        reads += 1
+        try:
+            return next(remaining)
+        except StopIteration:
+            return b""
+
+    monkeypatch.setattr(stdio_module, "STDIO_FRAME_BYTES", 4)
+    monkeypatch.setattr(stdio_module, "_read_chunk", read_chunk)
+    reader = stdio_module._BoundedFrameReader(0, use_readiness=False)
+
+    assert await reader.read() is stdio_module._OVERSIZED
+    assert reads == 2
+    if recovered_frame is None:
+        assert await reader.read() is None
+        assert reads == 3
+    else:
+        assert await reader.read() == recovered_frame
+        assert reads == 2
 
 
 @pytest.mark.asyncio

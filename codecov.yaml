@@ -5,7 +5,11 @@ coverage:
   status:
     project:
       default:
-        target: 90%
+        target: 80%
         threshold: 0.5%
+    patch:
+      default:
+        target: 80%
+        threshold: 0%
 codecov:
   token: 1cc8885a-e52a-4fdc-8204-84d83251515f

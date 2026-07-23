@@ -98,6 +98,13 @@ make docs-test
 make test-browser
 ```
 
+`make test` combines coverage from the main pytest process and Python
+subprocesses, then enforces the 80% aggregate project baseline. Codecov also
+requires 80% coverage for changed lines. A focused diagnostic run may use
+`--cov-fail-under=0`, but the complete suite must pass the configured threshold
+before submission. Add tests for meaningful behavior and failure or security
+boundaries rather than percentage-only execution.
+
 Frontend changes require Node 22.12 or later. Rebuild and stage the locked React
 assets before the Python checks:
 

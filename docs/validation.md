@@ -36,6 +36,29 @@ Docker:
 make test
 ```
 
+## Automated coverage policy
+
+`make test` measures statement and branch coverage for `mcp_email_server`,
+including instrumented Python subprocesses started by the raw stdio and CLI
+tests. Coverage data from those processes is combined into the same XML report
+as in-process tests, so process-boundary behavior is not treated as unexecuted
+code.
+
+The complete local suite enforces an 80% aggregate minimum. Codecov applies an
+80% project target with a 0.5 percentage-point tolerance for environment noise
+and a strict 80% target for changed lines. These values are an enforceable
+baseline, not a ceiling: changes should test meaningful success, failure, and
+security boundaries rather than add assertions solely to reach a percentage.
+The baseline can be raised as coverage improves without excluding production
+modules from measurement.
+
+A deliberately focused coverage run does not represent the complete project and
+may override the aggregate gate for diagnosis:
+
+```bash
+uv run pytest tests/test_stdio_protocol.py --cov --cov-fail-under=0
+```
+
 ## Local UI and package validation
 
 Changes to the management UI run three layers in the regular suite:
@@ -127,7 +150,7 @@ plaintext TOML file containing only synthetic test credentials. Python's
 standard-library `smtplib`, `imaplib`, and MIME parser act as an independent
 seeder and observer, so the system is not solely verifying itself.
 
-## Coverage
+## GreenMail coverage
 
 | Area          | Assertions                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------------ |
