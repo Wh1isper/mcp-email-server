@@ -1,38 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar
 
+from mcp_email_server.application.limits import (
+    APPLICATION_LIMITS,
+    validate_controlled_string,
+    validate_optional_controlled_string,
+    validate_serialized_result,
+)
 from mcp_email_server.application.metadata import RuntimeMode
 
 MutationStatus = Literal["succeeded", "failed", "unknown"]
+MutationProviderPurpose = Literal["incoming", "outgoing", "sent-copy"]
 SentCopyStatus = Literal["skipped", "succeeded", "failed", "unknown"]
 
 
-@dataclass(frozen=True)
-class ApplicationLimits:
-    mutation_uids: int = 100
-    account_name_bytes: int = 256
-    recipients: int = 100
-    address_bytes: int = 1_024
-    mailbox_bytes: int = 1_024
-    subject_bytes: int = 64 * 1_024
-    body_bytes: int = 1 * 1_024 * 1_024
-    header_bytes: int = 64 * 1_024
-    attachments: int = 20
-    attachment_path_bytes: int = 4_096
-    flags: int = 100
-    flag_bytes: int = 128
-    attachment_bytes: int = 25 * 1_024 * 1_024
-    total_attachment_bytes: int = 50 * 1_024 * 1_024
-    maximum_imap_uid: int = 2**32 - 1
-
-
-APPLICATION_LIMITS = ApplicationLimits()
 _CANONICAL_UID = re.compile(r"[1-9][0-9]*\Z")
+ProviderResultT = TypeVar("ProviderResultT")
 
 
 class MutationProviderError(RuntimeError):
@@ -45,6 +35,11 @@ class MutationProjectionError(RuntimeError):
 
 class RecipientPolicyDeniedError(PermissionError):
     """Current account authority denies one or more message recipients."""
+
+
+async def _bounded_provider_effect(operation: Awaitable[ProviderResultT]) -> ProviderResultT:
+    async with asyncio.timeout(APPLICATION_LIMITS.provider_timeout_seconds):
+        return await operation
 
 
 @dataclass(frozen=True)
@@ -68,12 +63,23 @@ class BatchMutationOutcome:
     outcomes: tuple[TargetMutationOutcome, ...]
     reconciliation_needed: bool = False
 
+    def __post_init__(self) -> None:
+        if not self.reconciliation_needed and any(item.status == "unknown" for item in self.outcomes):
+            object.__setattr__(self, "reconciliation_needed", True)
+
     def targets(self, status: MutationStatus) -> list[str]:
         return [outcome.target for outcome in self.outcomes if outcome.status == status]
 
     @property
     def effect_may_have_started(self) -> bool:
         return any(outcome.status in ("succeeded", "unknown") for outcome in self.outcomes)
+
+
+def _timeout_batch(targets: tuple[str, ...]) -> BatchMutationOutcome:
+    return BatchMutationOutcome(
+        tuple(TargetMutationOutcome(target, "unknown", "provider-timeout") for target in targets),
+        reconciliation_needed=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,10 @@ class AppendMutationOutcome:
     mailbox: str | None = None
     detail: str | None = None
     reconciliation_needed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.status == "unknown" and not self.reconciliation_needed:
+            object.__setattr__(self, "reconciliation_needed", True)
 
 
 @dataclass(frozen=True)
@@ -108,6 +118,11 @@ class SendMutationOutcome:
     delivery: tuple[TargetMutationOutcome, ...]
     sent_copy: SentCopyMutationOutcome
     reconciliation_needed: bool = False
+
+    def __post_init__(self) -> None:
+        ambiguous = any(item.status == "unknown" for item in self.delivery) or self.sent_copy.status == "unknown"
+        if ambiguous and not self.reconciliation_needed:
+            object.__setattr__(self, "reconciliation_needed", True)
 
     def recipients(self, status: MutationStatus) -> list[str]:
         return [outcome.target for outcome in self.delivery if outcome.status == status]
@@ -202,8 +217,13 @@ class SaveToMailboxCommand(ComposeCommand):
                 raise ValueError("flags must contain strings")
             if len(self.flags) > APPLICATION_LIMITS.flags:
                 raise ValueError(f"flags must contain at most {APPLICATION_LIMITS.flags} values")
-            if any(len(flag.encode("utf-8")) > APPLICATION_LIMITS.flag_bytes for flag in self.flags):
-                raise ValueError(f"a flag exceeds {APPLICATION_LIMITS.flag_bytes} bytes")
+            for flag in self.flags:
+                validate_controlled_string(
+                    flag,
+                    field_name="flag",
+                    maximum_bytes=APPLICATION_LIMITS.flag_bytes,
+                    allow_empty=True,
+                )
 
 
 @dataclass(frozen=True)
@@ -271,7 +291,13 @@ class MutationProviderAccess:
 
 
 class MutationProviderFactory(Protocol):
-    def open(self, account_name: str, *, expected_mode: RuntimeMode) -> MutationProviderAccess: ...
+    def open(
+        self,
+        account_name: str,
+        *,
+        expected_mode: RuntimeMode,
+        purpose: MutationProviderPurpose,
+    ) -> MutationProviderAccess: ...
 
 
 class MutationProjection(Protocol):
@@ -283,25 +309,19 @@ class MutationProjectionFactory(Protocol):
 
 
 def _validate_account_name(account_name: str) -> None:
-    if not isinstance(account_name, str):
-        raise ValueError("account_name must be a string")  # noqa: TRY004 - stable validation contract
-    if not account_name.strip():
-        raise ValueError("account_name must not be empty")
-    if _contains_control_character(account_name):
-        raise ValueError("account_name must not contain control characters")
-    if len(account_name.encode("utf-8")) > APPLICATION_LIMITS.account_name_bytes:
-        raise ValueError(f"account_name exceeds {APPLICATION_LIMITS.account_name_bytes} bytes")
+    validate_controlled_string(
+        account_name,
+        field_name="account_name",
+        maximum_bytes=APPLICATION_LIMITS.account_name_bytes,
+    )
 
 
 def validate_mailbox_name(mailbox: str) -> None:
-    if not isinstance(mailbox, str):
-        raise ValueError("mailbox must be a string")  # noqa: TRY004 - stable validation contract
-    if not mailbox.strip():
-        raise ValueError("mailbox must not be empty")
-    if _contains_control_character(mailbox):
-        raise ValueError("mailbox must not contain control characters")
-    if len(mailbox.encode("utf-8")) > APPLICATION_LIMITS.mailbox_bytes:
-        raise ValueError(f"mailbox exceeds {APPLICATION_LIMITS.mailbox_bytes} bytes")
+    validate_controlled_string(
+        mailbox,
+        field_name="mailbox",
+        maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
+    )
 
 
 def _validate_email_ids(email_ids: tuple[str, ...]) -> None:
@@ -329,23 +349,25 @@ def _validate_recipients(recipients: tuple[str, ...]) -> None:
         raise ValueError(f"recipient batch must contain at most {APPLICATION_LIMITS.recipients} values")
     if any(not isinstance(recipient, str) for recipient in recipients):
         raise ValueError("recipient values must be strings")
-    if any(not recipient.strip() for recipient in recipients):
-        raise ValueError("recipient values must not be empty")
-    if any(_contains_control_character(recipient) for recipient in recipients):
-        raise ValueError("recipient values must not contain control characters")
-    if any(len(recipient.encode("utf-8")) > APPLICATION_LIMITS.address_bytes for recipient in recipients):
-        raise ValueError(f"a recipient value exceeds {APPLICATION_LIMITS.address_bytes} bytes")
+    for recipient in recipients:
+        validate_controlled_string(
+            recipient,
+            field_name="recipient value",
+            maximum_bytes=APPLICATION_LIMITS.address_bytes,
+        )
     if any(len([address for _, address in getaddresses([recipient]) if address]) != 1 for recipient in recipients):
         raise ValueError("each recipient value must contain exactly one email address")
 
 
 def _validate_content(subject: str, body: str, attachments: tuple[str, ...]) -> None:
-    if not isinstance(subject, str) or not isinstance(body, str):
-        raise ValueError("subject and body must be strings")  # noqa: TRY004 - stable validation contract
-    if _contains_control_character(subject):
-        raise ValueError("subject must not contain control characters")
-    if len(subject.encode("utf-8")) > APPLICATION_LIMITS.subject_bytes:
-        raise ValueError(f"subject exceeds {APPLICATION_LIMITS.subject_bytes} bytes")
+    if not isinstance(body, str):
+        raise ValueError("body must be a string")  # noqa: TRY004 - stable validation contract
+    validate_controlled_string(
+        subject,
+        field_name="subject",
+        maximum_bytes=APPLICATION_LIMITS.subject_bytes,
+        allow_empty=True,
+    )
     if len(body.encode("utf-8")) > APPLICATION_LIMITS.body_bytes:
         raise ValueError(f"body exceeds {APPLICATION_LIMITS.body_bytes} bytes")
     _validate_attachments(attachments)
@@ -358,8 +380,11 @@ def _validate_attachments(attachments: tuple[str, ...]) -> None:
         raise ValueError("attachment paths must be strings")
     total_size = 0
     for raw_path in attachments:
-        if len(raw_path.encode("utf-8")) > APPLICATION_LIMITS.attachment_path_bytes:
-            raise ValueError(f"an attachment path exceeds {APPLICATION_LIMITS.attachment_path_bytes} bytes")
+        validate_controlled_string(
+            raw_path,
+            field_name="attachment path",
+            maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
+        )
         path = Path(raw_path)
         try:
             metadata = path.stat()
@@ -377,16 +402,11 @@ def _validate_attachments(attachments: tuple[str, ...]) -> None:
 
 
 def _validate_optional_header(name: str, value: str | None) -> None:
-    if value is not None and not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    if value is not None and _contains_control_character(value):
-        raise ValueError(f"{name} must not contain control characters")
-    if value is not None and len(value.encode("utf-8")) > APPLICATION_LIMITS.header_bytes:
-        raise ValueError(f"{name} exceeds {APPLICATION_LIMITS.header_bytes} bytes")
-
-
-def _contains_control_character(value: str) -> bool:
-    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    validate_optional_controlled_string(
+        value,
+        field_name=name,
+        maximum_bytes=APPLICATION_LIMITS.header_bytes,
+    )
 
 
 def _recipient_policy_allows(recipient: str, allowed: tuple[str, ...]) -> bool:
@@ -413,6 +433,140 @@ def _validate_recipient_policy(command: ComposeCommand, account: MutationAccount
         raise RecipientPolicyDeniedError("recipient policy denied one or more addresses")
 
 
+def _result_limit_error() -> MutationProviderError:
+    return MutationProviderError("limit_exceeded: mutation provider result exceeds application limits")
+
+
+def _validate_result_string(
+    value: object,
+    *,
+    field_name: str,
+    maximum_bytes: int,
+    allow_empty: bool = False,
+) -> str:
+    try:
+        return validate_controlled_string(
+            value,
+            field_name=field_name,
+            maximum_bytes=maximum_bytes,
+            allow_empty=allow_empty,
+        )
+    except ValueError:
+        raise _result_limit_error() from None
+
+
+def _validate_result_detail(detail: str | None) -> None:
+    try:
+        validate_optional_controlled_string(
+            detail,
+            field_name="mutation detail",
+            maximum_bytes=APPLICATION_LIMITS.error_detail_bytes,
+        )
+    except ValueError:
+        raise _result_limit_error() from None
+
+
+def _outcome_payload(outcome: TargetMutationOutcome) -> dict[str, object]:
+    return {"target": outcome.target, "status": outcome.status, "detail": outcome.detail}
+
+
+def _validate_target_outcomes(outcomes: tuple[TargetMutationOutcome, ...]) -> None:
+    if len(outcomes) > APPLICATION_LIMITS.warning_items:
+        raise _result_limit_error()
+    for outcome in outcomes:
+        _validate_result_string(
+            outcome.target,
+            field_name="mutation target",
+            maximum_bytes=APPLICATION_LIMITS.address_bytes,
+        )
+        if outcome.status not in ("succeeded", "failed", "unknown"):
+            raise _result_limit_error()
+        _validate_result_detail(outcome.detail)
+
+
+def _validate_result_payload(payload: object) -> None:
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    try:
+        validate_serialized_result(serialized)
+    except ValueError:
+        raise _result_limit_error() from None
+
+
+def _validate_batch_result(outcome: BatchMutationOutcome) -> BatchMutationOutcome:
+    _validate_target_outcomes(outcome.outcomes)
+    _validate_result_payload({
+        "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+        "reconciliation_needed": outcome.reconciliation_needed,
+    })
+    return outcome
+
+
+def _validate_append_result(outcome: AppendMutationOutcome) -> AppendMutationOutcome:
+    if outcome.status not in ("succeeded", "failed", "unknown"):
+        raise _result_limit_error()
+    _validate_result_string(
+        outcome.message_id,
+        field_name="message_id",
+        maximum_bytes=APPLICATION_LIMITS.header_bytes,
+        allow_empty=True,
+    )
+    if outcome.uid is not None:
+        try:
+            _validate_email_ids((outcome.uid,))
+        except ValueError:
+            raise _result_limit_error() from None
+    if outcome.mailbox is not None:
+        _validate_result_string(
+            outcome.mailbox,
+            field_name="result mailbox",
+            maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
+        )
+    _validate_result_detail(outcome.detail)
+    _validate_result_payload({
+        "status": outcome.status,
+        "message_id": outcome.message_id,
+        "uid": outcome.uid,
+        "mailbox": outcome.mailbox,
+        "detail": outcome.detail,
+        "reconciliation_needed": outcome.reconciliation_needed,
+    })
+    return outcome
+
+
+def _validate_delivery_result(outcome: DeliveryMutationOutcome) -> DeliveryMutationOutcome:
+    _validate_target_outcomes(outcome.outcomes)
+    _validate_result_payload({"outcomes": [_outcome_payload(item) for item in outcome.outcomes]})
+    return outcome
+
+
+def _validate_sent_copy_result(outcome: SentCopyMutationOutcome) -> SentCopyMutationOutcome:
+    if outcome.status not in ("skipped", "succeeded", "failed", "unknown"):
+        raise _result_limit_error()
+    if outcome.mailbox is not None:
+        _validate_result_string(
+            outcome.mailbox,
+            field_name="sent-copy mailbox",
+            maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
+        )
+    _validate_result_detail(outcome.detail)
+    return outcome
+
+
+def _validate_send_result(outcome: SendMutationOutcome) -> SendMutationOutcome:
+    _validate_target_outcomes(outcome.delivery)
+    _validate_sent_copy_result(outcome.sent_copy)
+    _validate_result_payload({
+        "delivery": [_outcome_payload(item) for item in outcome.delivery],
+        "sent_copy": {
+            "status": outcome.sent_copy.status,
+            "mailbox": outcome.sent_copy.mailbox,
+            "detail": outcome.sent_copy.detail,
+        },
+        "reconciliation_needed": outcome.reconciliation_needed,
+    })
+    return outcome
+
+
 class _MutationWorkflow:
     def __init__(
         self,
@@ -427,8 +581,13 @@ class _MutationWorkflow:
     def _resolve(self, account_name: str) -> MutationAccountSnapshot:
         return self._accounts.resolve(account_name)
 
-    def _open(self, account: MutationAccountSnapshot) -> MutationProviderAccess:
-        return self._providers.open(account.account_name, expected_mode=account.mode)
+    def _open(
+        self,
+        account: MutationAccountSnapshot,
+        *,
+        purpose: MutationProviderPurpose = "incoming",
+    ) -> MutationProviderAccess:
+        return self._providers.open(account.account_name, expected_mode=account.mode, purpose=purpose)
 
     async def _invalidate(
         self,
@@ -450,11 +609,20 @@ class MarkReadService(_MutationWorkflow):
         command.validate()
         account = self._resolve(command.account_name)
         access = self._open(account)
-        outcome = await access.provider.mark_read(command, access.account)
+        try:
+            outcome = _validate_batch_result(
+                await _bounded_provider_effect(access.provider.mark_read(command, access.account))
+            )
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
         if not outcome.effect_may_have_started:
             return outcome
         invalidated = await self._invalidate(access.account, (command.mailbox,))
-        return BatchMutationOutcome(outcome.outcomes, reconciliation_needed=not invalidated)
+        return _validate_batch_result(
+            BatchMutationOutcome(
+                outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+            )
+        )
 
 
 class SaveToMailboxService(_MutationWorkflow):
@@ -464,17 +632,32 @@ class SaveToMailboxService(_MutationWorkflow):
         _validate_recipient_policy(command, account)
         access = self._open(account)
         _validate_recipient_policy(command, access.account)
-        outcome = await access.provider.save_to_mailbox(command, access.account)
+        try:
+            outcome = _validate_append_result(
+                await _bounded_provider_effect(access.provider.save_to_mailbox(command, access.account))
+            )
+        except TimeoutError:
+            outcome = _validate_append_result(
+                AppendMutationOutcome(
+                    status="unknown",
+                    message_id="",
+                    mailbox=command.mailbox,
+                    detail="provider-timeout",
+                    reconciliation_needed=True,
+                )
+            )
         if outcome.status not in ("succeeded", "unknown"):
             return outcome
         invalidated = await self._invalidate(access.account, (command.mailbox,))
-        return AppendMutationOutcome(
-            status=outcome.status,
-            message_id=outcome.message_id,
-            uid=outcome.uid,
-            mailbox=outcome.mailbox,
-            detail=outcome.detail,
-            reconciliation_needed=not invalidated,
+        return _validate_append_result(
+            AppendMutationOutcome(
+                status=outcome.status,
+                message_id=outcome.message_id,
+                uid=outcome.uid,
+                mailbox=outcome.mailbox,
+                detail=outcome.detail,
+                reconciliation_needed=outcome.reconciliation_needed or not invalidated,
+            )
         )
 
 
@@ -483,11 +666,20 @@ class DeleteService(_MutationWorkflow):
         command.validate()
         account = self._resolve(command.account_name)
         access = self._open(account)
-        outcome = await access.provider.delete(command, access.account)
+        try:
+            outcome = _validate_batch_result(
+                await _bounded_provider_effect(access.provider.delete(command, access.account))
+            )
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
         if not outcome.effect_may_have_started:
             return outcome
         invalidated = await self._invalidate(access.account, (command.mailbox,))
-        return BatchMutationOutcome(outcome.outcomes, reconciliation_needed=not invalidated)
+        return _validate_batch_result(
+            BatchMutationOutcome(
+                outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+            )
+        )
 
 
 class MoveService(_MutationWorkflow):
@@ -495,11 +687,20 @@ class MoveService(_MutationWorkflow):
         command.validate()
         account = self._resolve(command.account_name)
         access = self._open(account)
-        outcome = await access.provider.move(command, access.account)
+        try:
+            outcome = _validate_batch_result(
+                await _bounded_provider_effect(access.provider.move(command, access.account))
+            )
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
         if not outcome.effect_may_have_started:
             return outcome
         invalidated = await self._invalidate(access.account, (command.source_mailbox, command.destination_mailbox))
-        return BatchMutationOutcome(outcome.outcomes, reconciliation_needed=not invalidated)
+        return _validate_batch_result(
+            BatchMutationOutcome(
+                outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -513,7 +714,12 @@ class ArchiveService(_MutationWorkflow):
         command.validate()
         account = self._resolve(command.account_name)
         discovery = self._open(account)
-        archive_mailbox = await discovery.provider.find_archive_mailbox(command.source_mailbox)
+        try:
+            archive_mailbox = await _bounded_provider_effect(
+                discovery.provider.find_archive_mailbox(command.source_mailbox)
+            )
+        except TimeoutError:
+            raise MutationProviderError("archive mailbox discovery timed out") from None
         move = MoveCommand(
             account_name=command.account_name,
             email_ids=command.email_ids,
@@ -522,12 +728,31 @@ class ArchiveService(_MutationWorkflow):
         )
         move.validate()
         # Re-resolve selected-mode authority immediately before the move effect.
-        access = self._providers.open(command.account_name, expected_mode=account.mode)
-        outcome = await access.provider.move(move, access.account)
+        access = self._providers.open(
+            command.account_name,
+            expected_mode=account.mode,
+            purpose="incoming",
+        )
+        try:
+            outcome = _validate_batch_result(await _bounded_provider_effect(access.provider.move(move, access.account)))
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
         if outcome.effect_may_have_started:
             invalidated = await self._invalidate(access.account, (command.source_mailbox, archive_mailbox))
-            outcome = BatchMutationOutcome(outcome.outcomes, reconciliation_needed=not invalidated)
-        return ArchiveMutationOutcome(outcome, archive_mailbox)
+            outcome = _validate_batch_result(
+                BatchMutationOutcome(
+                    outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+                )
+            )
+        result = ArchiveMutationOutcome(outcome, archive_mailbox)
+        _validate_result_payload({
+            "batch": {
+                "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+                "reconciliation_needed": outcome.reconciliation_needed,
+            },
+            "archive_mailbox": archive_mailbox,
+        })
+        return result
 
 
 class SendService(_MutationWorkflow):
@@ -535,44 +760,86 @@ class SendService(_MutationWorkflow):
         command.validate()
         account = self._resolve(command.account_name)
         _validate_recipient_policy(command, account)
-        access = self._open(account)
+        access = self._open(account, purpose="outgoing")
         _validate_recipient_policy(command, access.account)
-        delivery = await access.provider.send(command, access.account)
+        try:
+            delivery = _validate_delivery_result(
+                await _bounded_provider_effect(access.provider.send(command, access.account))
+            )
+        except TimeoutError:
+            recipients = (*command.recipients, *command.cc, *command.bcc)
+            return _validate_send_result(
+                SendMutationOutcome(
+                    tuple(TargetMutationOutcome(recipient, "unknown", "provider-timeout") for recipient in recipients),
+                    SentCopyMutationOutcome("skipped"),
+                    reconciliation_needed=True,
+                )
+            )
         if not delivery.has_accepted_recipient or delivery.sent_message is None:
-            return SendMutationOutcome(delivery.outcomes, SentCopyMutationOutcome("skipped"))
+            return _validate_send_result(SendMutationOutcome(delivery.outcomes, SentCopyMutationOutcome("skipped")))
 
         # Saving the copy is a separate provider effect and therefore gets a fresh
         # lifecycle/credential resolution. SMTP delivery is never rewritten.
         try:
-            sent_access = self._providers.open(command.account_name, expected_mode=account.mode)
+            sent_access = self._providers.open(
+                command.account_name,
+                expected_mode=account.mode,
+                purpose="sent-copy",
+            )
         except Exception:
             # SMTP delivery is already authoritative. Lifecycle or credential
             # failure before opening the independent copy cannot erase it.
-            return SendMutationOutcome(
-                delivery.outcomes,
-                SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
+            return _validate_send_result(
+                SendMutationOutcome(
+                    delivery.outcomes,
+                    SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
+                )
             )
         try:
-            sent_copy = await sent_access.provider.save_sent_copy(delivery.sent_message, command.bcc)
-        except (MutationProviderError, asyncio.CancelledError):
+            sent_copy = await _bounded_provider_effect(
+                sent_access.provider.save_sent_copy(delivery.sent_message, command.bcc)
+            )
+        except MutationProviderError:
             # Typed APPEND-boundary cancellation is returned by the provider;
             # escaped setup/cancellation happened before APPEND started.
-            return SendMutationOutcome(
-                delivery.outcomes,
-                SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
+            return _validate_send_result(
+                SendMutationOutcome(
+                    delivery.outcomes,
+                    SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
+                )
+            )
+        except TimeoutError:
+            return _validate_send_result(
+                SendMutationOutcome(
+                    delivery.outcomes,
+                    SentCopyMutationOutcome("unknown", detail="provider-timeout"),
+                    reconciliation_needed=True,
+                )
+            )
+        except asyncio.CancelledError:
+            # Provider adapters use typed unknown outcomes once APPEND may have
+            # started; an escaped cancellation is therefore pre-effect setup.
+            return _validate_send_result(
+                SendMutationOutcome(
+                    delivery.outcomes,
+                    SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
+                )
             )
         except Exception:
             # Treat an untyped provider escape conservatively rather than claim
             # that an APPEND definitely did not happen.
-            return SendMutationOutcome(
-                delivery.outcomes,
-                SentCopyMutationOutcome("unknown", detail="sent-copy"),
+            return _validate_send_result(
+                SendMutationOutcome(
+                    delivery.outcomes,
+                    SentCopyMutationOutcome("unknown", detail="sent-copy"),
+                )
             )
+        sent_copy = _validate_sent_copy_result(sent_copy)
         reconciliation_needed = False
         if sent_copy.status in ("succeeded", "unknown") and sent_copy.mailbox is not None:
             invalidated = await self._invalidate(sent_access.account, (sent_copy.mailbox,))
             reconciliation_needed = not invalidated
-        return SendMutationOutcome(delivery.outcomes, sent_copy, reconciliation_needed)
+        return _validate_send_result(SendMutationOutcome(delivery.outcomes, sent_copy, reconciliation_needed))
 
 
 @dataclass(frozen=True)

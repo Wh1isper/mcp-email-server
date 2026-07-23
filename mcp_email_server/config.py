@@ -23,6 +23,7 @@ from pydantic_settings import (
 )
 
 from mcp_email_server import keyring_store
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.bootstrap import (
     BOOTSTRAP_VERSION,
     Mode,
@@ -81,12 +82,12 @@ def sender_allowed(sender: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(addrs[0], pattern.lower()) for pattern in patterns)
 
 
-def _normalize_address_list(raw: Iterable[str]) -> list[str]:
+def normalize_address_list(raw: Iterable[str]) -> list[str]:
     """Normalize each address, drop empties, de-duplicate (order-preserving)."""
     return list(dict.fromkeys(a for a in (normalize_address(x) for x in raw) if a))
 
 
-def _normalize_pattern_list(raw: Iterable[str]) -> list[str]:
+def normalize_pattern_list(raw: Iterable[str]) -> list[str]:
     """Lowercase, strip, de-duplicate (order-preserving). Glob characters are preserved."""
     return list(dict.fromkeys(p.strip().lower() for p in raw if p.strip()))
 
@@ -440,9 +441,9 @@ class Settings(BaseSettings):
         # TOML normalisation is unconditional (safe during migration loads too): it
         # only reshapes values already in the file, independent of env state.
         if self.allowed_recipients:
-            self.allowed_recipients = _normalize_address_list(self.allowed_recipients)
+            self.allowed_recipients = normalize_address_list(self.allowed_recipients)
         if self.allowed_senders:
-            self.allowed_senders = _normalize_pattern_list(self.allowed_senders)
+            self.allowed_senders = normalize_pattern_list(self.allowed_senders)
 
         if not migration_load:
             self._apply_env_overrides()
@@ -469,11 +470,11 @@ class Settings(BaseSettings):
         # Environment variable overrides TOML (comma-separated); an empty string clears the allowlist.
         env_allowed = os.getenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS")
         if env_allowed is not None:
-            self.allowed_recipients = _normalize_address_list(env_allowed.split(","))
+            self.allowed_recipients = normalize_address_list(env_allowed.split(","))
 
         env_senders = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
         if env_senders is not None:
-            self.allowed_senders = _normalize_pattern_list(env_senders.split(","))
+            self.allowed_senders = normalize_pattern_list(env_senders.split(","))
 
         self._inject_env_account()
 
@@ -605,6 +606,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def check_unique_account_names(self) -> Settings:
+        if len(self.emails) + len(self.providers) > APPLICATION_LIMITS.configured_accounts:
+            raise ValueError(f"Configured accounts exceed the limit of {APPLICATION_LIMITS.configured_accounts}")
+        if len(self.allowed_recipients) > APPLICATION_LIMITS.policy_entries:
+            raise ValueError(f"Allowed recipients exceed the limit of {APPLICATION_LIMITS.policy_entries}")
+        if len(self.allowed_senders) > APPLICATION_LIMITS.policy_entries:
+            raise ValueError(f"Allowed senders exceed the limit of {APPLICATION_LIMITS.policy_entries}")
         account_names = set()
         for email in self.emails:
             if email.account_name in account_names:

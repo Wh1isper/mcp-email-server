@@ -128,7 +128,10 @@ classified unknown unless the protocol proves success or failure.
 
 Retries are allowed only for operations proven idempotent under the same current
 authority and request identity. Non-idempotent APPEND, SMTP delivery, move, or
-delete is not automatically replayed after unknown.
+delete is not automatically replayed after unknown. Every public aggregate that
+contains an `unknown` target, APPEND, delivery, or sent-copy outcome sets
+`reconciliation_needed=true` as a model invariant; successful projection
+invalidation cannot clear provider ambiguity.
 
 ## Result Bounds and Error Safety
 

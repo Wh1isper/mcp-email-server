@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from mcp_email_server.application.accounts import EffectiveConfiguration
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.metadata import ListEmailMetadataQuery
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
@@ -27,13 +28,7 @@ from mcp_email_server.application.reads import (
     GetEmailContentQuery,
     ListMailboxesQuery,
 )
-from mcp_email_server.bootstrap import assert_legacy_writable
-from mcp_email_server.config import (
-    AccountAttributes,
-    EmailSettings,
-    clear_settings_cache,
-    get_settings,
-)
+from mcp_email_server.config import AccountAttributes
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailContentBatchResponse,
@@ -41,6 +36,20 @@ from mcp_email_server.emails.models import (
     MailboxInfo,
 )
 from mcp_email_server.runtime import close_application_runtime, get_application_runtime
+
+MAX_IMAP_UID_CHARACTERS = len(str(APPLICATION_LIMITS.maximum_imap_uid))
+UidInput = Annotated[str, Field(max_length=MAX_IMAP_UID_CHARACTERS)]
+AddressInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.address_bytes)]
+AttachmentPathInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.attachment_path_bytes)]
+FlagInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.flag_bytes)]
+AccountDiscoveryResult = Annotated[
+    list[AccountAttributes],
+    Field(max_length=APPLICATION_LIMITS.configured_accounts),
+]
+PolicyDiscoveryResult = Annotated[
+    list[str],
+    Field(max_length=APPLICATION_LIMITS.policy_entries),
+]
 
 
 def list_effective_accounts() -> list[AccountAttributes]:
@@ -149,34 +158,17 @@ async def get_account(account_name: str) -> AccountAttributes | None:
 
 
 @mcp.tool(description="List all configured email accounts with masked credentials.")
-async def list_available_accounts() -> list[AccountAttributes]:
+async def list_available_accounts() -> AccountDiscoveryResult:
     return list_effective_accounts()
-
-
-@mcp.tool(description="Add a new email account configuration to the settings.")
-async def add_email_account(email: EmailSettings) -> str:
-    assert_legacy_writable("add an account through the legacy MCP tool")
-    settings = get_settings()
-    try:
-        settings.add_email(email)
-        settings.store()
-    except Exception:
-        # add_email() reassigns settings.emails, and pydantic's validate_assignment
-        # applies the new value BEFORE running the check_unique_account_names
-        # after-validator — so even a rejected duplicate-name add leaves the cached
-        # instance mutated. store() can also mutate-then-fail (e.g. a locked
-        # keychain in explicit keyring mode). Either way, discard the cache so later
-        # tool calls don't see a phantom/corrupted account that isn't actually on disk.
-        clear_settings_cache()
-        raise
-    return f"Successfully added email account '{email.account_name}'"
 
 
 @mcp.tool(
     description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content."
 )
 async def list_emails_metadata(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
     page: Annotated[
         int,
         Field(default=1, ge=1, description="The page number to retrieve (starting from 1)."),
@@ -193,17 +185,42 @@ async def list_emails_metadata(
         datetime | None,
         Field(default=None, description="Retrieve emails since this datetime (UTC)."),
     ] = None,
-    subject: Annotated[str | None, Field(default=None, description="Filter emails by subject.")] = None,
-    from_address: Annotated[str | None, Field(default=None, description="Filter emails by sender address.")] = None,
+    subject: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.query_bytes,
+            description="Filter emails by subject.",
+        ),
+    ] = None,
+    from_address: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.address_bytes,
+            description="Filter emails by sender address.",
+        ),
+    ] = None,
     to_address: Annotated[
         str | None,
-        Field(default=None, description="Filter emails by recipient address."),
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.address_bytes,
+            description="Filter emails by recipient address.",
+        ),
     ] = None,
     order: Annotated[
         Literal["asc", "desc"],
         Field(default=None, description="Order emails by field. `asc` or `desc`."),
     ] = "desc",
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to search.")] = "INBOX",
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox to search.",
+        ),
+    ] = "INBOX",
     seen: Annotated[
         bool | None,
         Field(default=None, description="Filter by read status: True=read, False=unread, None=all."),
@@ -218,11 +235,19 @@ async def list_emails_metadata(
     ] = None,
     body: Annotated[
         str | None,
-        Field(default=None, description="Search for text in the email body (IMAP BODY)."),
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.query_bytes,
+            description="Search for text in the email body (IMAP BODY).",
+        ),
     ] = None,
     text: Annotated[
         str | None,
-        Field(default=None, description="Search for text in the entire message — headers and body (IMAP TEXT)."),
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.query_bytes,
+            description="Search for text in the entire message — headers and body (IMAP TEXT).",
+        ),
     ] = None,
     has_attachment: Annotated[
         bool | None,
@@ -259,14 +284,25 @@ async def list_emails_metadata(
     description="Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
 )
 async def get_emails_content(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
     email_ids: Annotated[
-        list[str],
+        list[UidInput],
         Field(
-            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids."
+            min_length=1,
+            max_length=APPLICATION_LIMITS.content_email_ids,
+            description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids.",
         ),
     ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox to retrieve emails from.",
+        ),
+    ] = "INBOX",
     mark_as_read: Annotated[
         bool,
         Field(
@@ -314,7 +350,7 @@ async def get_emails_content(
         "send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted."
     ),
 )
-async def list_allowed_recipients() -> list[str]:
+async def list_allowed_recipients() -> PolicyDiscoveryResult:
     return list(effective_configuration().allowed_recipients)
 
 
@@ -327,7 +363,7 @@ async def list_allowed_recipients() -> list[str]:
         "when unrestricted."
     ),
 )
-async def list_allowed_senders() -> list[str]:
+async def list_allowed_senders() -> PolicyDiscoveryResult:
     return list(effective_configuration().allowed_senders)
 
 
@@ -339,26 +375,44 @@ async def list_allowed_senders() -> list[str]:
     ),
 )
 async def send_email(
-    account_name: Annotated[str, Field(description="The name of the email account to send from.")],
-    recipients: Annotated[list[str], Field(description="A list of recipient email addresses.")],
-    subject: Annotated[str, Field(description="The subject of the email.")],
-    body: Annotated[str, Field(description="The body of the email.")],
+    account_name: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.account_name_bytes,
+            description="The name of the email account to send from.",
+        ),
+    ],
+    recipients: Annotated[
+        list[AddressInput],
+        Field(
+            min_length=1, max_length=APPLICATION_LIMITS.recipients, description="A list of recipient email addresses."
+        ),
+    ],
+    subject: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.subject_bytes, description="The subject of the email."),
+    ],
+    body: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.body_bytes, description="The body of the email."),
+    ],
     cc: Annotated[
-        list[str] | None,
-        Field(default=None, description="A list of CC email addresses."),
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of CC email addresses."),
     ] = None,
     bcc: Annotated[
-        list[str] | None,
-        Field(default=None, description="A list of BCC email addresses."),
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of BCC email addresses."),
     ] = None,
     html: Annotated[
         bool,
         Field(default=False, description="Whether to send the email as HTML (True) or plain text (False)."),
     ] = False,
     attachments: Annotated[
-        list[str] | None,
+        list[AttachmentPathInput] | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.attachments,
             description="A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
         ),
     ] = None,
@@ -366,6 +420,7 @@ async def send_email(
         str | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
             description="Message-ID of the email being replied to. Enables proper threading in email clients.",
         ),
     ] = None,
@@ -373,6 +428,7 @@ async def send_email(
         str | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
             description="Space-separated Message-IDs for the thread chain. Usually includes in_reply_to plus ancestors.",
         ),
     ] = None,
@@ -380,6 +436,7 @@ async def send_email(
         str | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
             description="Email address to set as the Reply-To header. When set, email clients will reply to this address instead of the From address.",
         ),
     ] = None,
@@ -422,33 +479,48 @@ async def send_email(
     "and is not retried automatically.",
 )
 async def save_to_mailbox(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
-    recipients: Annotated[list[str], Field(description="A list of recipient email addresses.")],
-    subject: Annotated[str, Field(description="The subject of the email.")],
-    body: Annotated[str, Field(description="The body of the email.")],
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    recipients: Annotated[
+        list[AddressInput],
+        Field(
+            min_length=1, max_length=APPLICATION_LIMITS.recipients, description="A list of recipient email addresses."
+        ),
+    ],
+    subject: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.subject_bytes, description="The subject of the email."),
+    ],
+    body: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.body_bytes, description="The body of the email."),
+    ],
     mailbox: Annotated[
         str,
         Field(
             default="Drafts",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
             description="The IMAP folder to save to (e.g., 'Drafts', 'INBOX.Drafts', 'Templates').",
         ),
     ] = "Drafts",
     cc: Annotated[
-        list[str] | None,
-        Field(default=None, description="A list of CC email addresses."),
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of CC email addresses."),
     ] = None,
     bcc: Annotated[
-        list[str] | None,
-        Field(default=None, description="A list of BCC email addresses."),
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of BCC email addresses."),
     ] = None,
     html: Annotated[
         bool,
         Field(default=False, description="Whether the email body is HTML (True) or plain text (False)."),
     ] = False,
     attachments: Annotated[
-        list[str] | None,
+        list[AttachmentPathInput] | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.attachments,
             description="A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
         ),
     ] = None,
@@ -456,6 +528,7 @@ async def save_to_mailbox(
         str | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
             description="Message-ID of the email being replied to. Enables proper threading in email clients.",
         ),
     ] = None,
@@ -463,13 +536,15 @@ async def save_to_mailbox(
         str | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
             description="Space-separated Message-IDs for the thread chain.",
         ),
     ] = None,
     flags: Annotated[
-        list[str] | None,
+        list[FlagInput] | None,
         Field(
             default=None,
+            max_length=APPLICATION_LIMITS.flags,
             description=r"IMAP flags to set on the message. Defaults to ['\Draft', '\Seen']. Common flags: '\Draft', '\Seen', '\Flagged'.",
         ),
     ] = None,
@@ -508,12 +583,25 @@ async def save_to_mailbox(
     )
 )
 async def delete_emails(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
-    email_ids: Annotated[
-        list[str],
-        Field(description="List of email_id to delete (obtained from list_emails_metadata)."),
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
     ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to delete emails from.")] = "INBOX",
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to delete (obtained from list_emails_metadata).",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox to delete emails from.",
+        ),
+    ] = "INBOX",
 ) -> str:
     outcome = await delete_emails_command(DeleteCommand(account_name, tuple(email_ids), mailbox))
     succeeded = outcome.targets("succeeded")
@@ -529,12 +617,25 @@ async def delete_emails(
     )
 )
 async def mark_emails_as_read(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
-    email_ids: Annotated[
-        list[str],
-        Field(description="List of email_id to mark as read (obtained from list_emails_metadata)."),
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
     ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox containing the emails.")] = "INBOX",
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to mark as read (obtained from list_emails_metadata).",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox containing the emails.",
+        ),
+    ] = "INBOX",
 ) -> str:
     outcome = await mark_read_command(MarkReadCommand(account_name, tuple(email_ids), mailbox))
     succeeded = outcome.targets("succeeded")
@@ -550,14 +651,31 @@ async def mark_emails_as_read(
     )
 )
 async def move_emails(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
-    email_ids: Annotated[
-        list[str],
-        Field(description="List of email_id to move (obtained from list_emails_metadata)."),
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
     ],
-    destination_mailbox: Annotated[str, Field(description="The destination mailbox/folder to move emails to.")],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to move (obtained from list_emails_metadata).",
+        ),
+    ],
+    destination_mailbox: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The destination mailbox/folder to move emails to.",
+        ),
+    ],
     source_mailbox: Annotated[
-        str, Field(default="INBOX", description="The source mailbox containing the emails.")
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The source mailbox containing the emails.",
+        ),
     ] = "INBOX",
 ) -> str:
     outcome = await move_emails_command(
@@ -576,12 +694,25 @@ async def move_emails(
     "succeeded/failed/unknown status and are not retried automatically."
 )
 async def archive_emails(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
-    email_ids: Annotated[
-        list[str],
-        Field(description="List of email_id to archive (obtained from list_emails_metadata)."),
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
     ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The source mailbox containing the emails.")] = "INBOX",
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to archive (obtained from list_emails_metadata).",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The source mailbox containing the emails.",
+        ),
+    ] = "INBOX",
 ) -> str:
     outcome = await archive_emails_command(ArchiveCommand(account_name, tuple(email_ids), mailbox))
     succeeded = outcome.batch.targets("succeeded")
@@ -594,14 +725,24 @@ async def archive_emails(
     description="List available mailboxes/folders for an email account. Returns folder names, hierarchy delimiters, and flags. Useful for discovering folder names before moving emails."
 )
 async def list_mailboxes(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
     pattern: Annotated[
         str,
-        Field(default="*", description="IMAP LIST pattern. Use '*' for all folders, 'INBOX.*' for INBOX children."),
+        Field(
+            default="*",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="IMAP LIST pattern. Use '*' for all folders, 'INBOX.*' for INBOX children.",
+        ),
     ] = "*",
     reference: Annotated[
         str,
-        Field(default="", description="IMAP LIST reference name (namespace prefix). Usually empty."),
+        Field(
+            default="",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="IMAP LIST reference name (namespace prefix). Usually empty.",
+        ),
     ] = "",
 ) -> list[MailboxInfo]:
     return await list_mailboxes_query(
@@ -613,20 +754,37 @@ async def list_mailboxes(
     description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
 )
 async def download_attachment(
-    account_name: Annotated[str, Field(description="The name of the email account.")],
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
     email_id: Annotated[
-        str, Field(description="The email ID (obtained from list_emails_metadata or get_emails_content).")
+        str,
+        Field(
+            max_length=MAX_IMAP_UID_CHARACTERS,
+            description="The email ID (obtained from list_emails_metadata or get_emails_content).",
+        ),
     ],
     attachment_name: Annotated[
-        str, Field(description="The name of the attachment to download (as shown in the attachments list).")
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.attachment_path_bytes,
+            description="The name of the attachment to download (as shown in the attachments list).",
+        ),
     ],
     save_path: Annotated[
         str,
         Field(
-            description="The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended."
+            max_length=APPLICATION_LIMITS.attachment_path_bytes,
+            description="The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
         ),
     ],
-    mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
+    mailbox: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox to search in (default: INBOX).",
+        ),
+    ] = "INBOX",
 ) -> AttachmentDownloadResponse:
     return await download_attachment_command(
         DownloadAttachmentCommand(

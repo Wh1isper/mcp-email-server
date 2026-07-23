@@ -6,14 +6,15 @@ for a local MCP client unless a network transport is specifically required.
 ## CLI commands
 
 ```text
+mcp-email-server --version
 mcp-email-server stdio
 mcp-email-server sse [--host HOST] [--port PORT]
 mcp-email-server streamable-http [--host HOST] [--port PORT]
-mcp-email-server ui
+mcp-email-server ui [--no-open] [--port PORT]
 mcp-email-server reset
 mcp-email-server migrate-credentials [--to keyring|plaintext]
-mcp-email-server config {init|status|doctor|cleanup-credentials|import-legacy|activate|select}
-mcp-email-server account {add|set-secret|list|show|update|disable|enable|remove|remove-secret|test}
+mcp-email-server config {init|status|doctor|index-health|policy|update-policy|cleanup-credentials|import-legacy|activate|select}
+mcp-email-server account {add|set-secret|repair-secret|list|show|update|disable|enable|remove|remove-secret|test}
 ```
 
 Run `mcp-email-server COMMAND --help` or
@@ -167,13 +168,22 @@ When a reverse proxy terminates TLS:
 
 ## Other CLI operations
 
-Open the legacy account configuration interface with:
+Open the foreground managed management interface with:
 
 ```bash
-mcp-email-server ui
+mcp-email-server ui [--no-open] [--port PORT]
 ```
 
-Remove persistent configuration with:
+The UI always binds exactly to `127.0.0.1`; port `0` is the default. It does
+not read `MCP_HOST`, `MCP_PORT`, HTTP transport allowlists, or framework sharing
+and debug settings. `--no-open` suppresses browser launch and prints the
+one-time fragment URL only to an attached stdout/stderr TTY. The same TTY-only
+fallback is used when automatic browser launch reports failure. Without an
+attached TTY, startup fails before serving instead of sending the token through
+a pipe or log. Keep the process in the foreground and use SIGINT or SIGTERM for
+graceful session invalidation and shutdown.
+
+Remove persistent legacy configuration with:
 
 ```bash
 mcp-email-server reset
@@ -186,7 +196,8 @@ mcp-email-server migrate-credentials --to keyring
 mcp-email-server migrate-credentials --to plaintext
 ```
 
-The UI, reset, and credential migration commands are legacy configuration
-surfaces and are rejected while managed mode is selected. Managed accounts use
-the nested `config` and `account` commands. Credential behavior and migration
+Reset and credential migration are legacy compatibility operations and are
+rejected while managed mode is selected. The UI and nested `config`/`account`
+commands are equivalent managed management adapters; the UI can also guide an
+explicit import while legacy mode is selected. Credential behavior and migration
 caveats are covered in [Security](security.md#credential-migration).

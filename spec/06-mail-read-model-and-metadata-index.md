@@ -100,7 +100,9 @@ Body reads:
   and potentially stricter aggregate limits;
 - preserve caller order and return per-item typed outcomes;
 - use IMAP PEEK semantics and do not mark messages read as a side effect;
-- bound per-message and aggregate fetched bytes before parsing and serialization;
+- enforce a running UTF-8 body-byte budget in the provider adapter before each
+  result is retained, then independently revalidate per-message and aggregate
+  bytes at the application response boundary;
 - sanitize decode/parser errors and never persist bodies or raw MIME in SQLite.
 
 Marking read is a separate mutation under spec 07.
@@ -135,10 +137,12 @@ bounded cleanup warning without deleting an unverified path.
 ## Index Writes and Failures
 
 Projection writes occur after provider reads and outside provider sessions when
-possible. A provider-qualified result remains usable if projection persistence
-fails; the response adds a bounded projection warning. Busy, corrupt, insecure,
-or incompatible index state never causes fabricated cached data or legacy-mode
-fallback.
+possible. In both modes, a validated provider-qualified result remains usable if
+subsequent projection persistence fails; the response adds the fixed bounded
+`projection_write_failed` warning without exception detail. Projection open/read
+failures before usable provider evidence still follow the mode-specific
+fail-closed/fallback rules. Busy, corrupt, insecure, or incompatible index state
+never causes fabricated cached data or legacy-mode fallback.
 
 Retention limits rows, header bytes, accounts/mailboxes per maintenance pass,
 and deletion batches. Rebuild affects only projection tables and never managed

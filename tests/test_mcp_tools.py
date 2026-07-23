@@ -1,11 +1,12 @@
+import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from mcp_email_server import app as app_module
 from mcp_email_server.app import (
-    add_email_account,
     archive_emails,
     delete_emails,
     download_attachment,
@@ -21,6 +22,7 @@ from mcp_email_server.app import (
     send_email,
 )
 from mcp_email_server.application.accounts import EffectiveConfiguration
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     ArchiveMutationOutcome,
@@ -94,97 +96,6 @@ class TestMcpTools:
         assert result[0].account_name == "test_email"
         assert result[1].account_name == "test_provider"
         list_accounts.assert_called_once_with()
-
-    @pytest.mark.asyncio
-    async def test_add_email_account(self):
-        """Test add_email_account MCP tool."""
-        # Create test email settings
-        email_settings = EmailSettings(
-            account_name="test_account",
-            full_name="Test User",
-            email_address="test@example.com",
-            incoming=EmailServer(
-                user_name="test_user",
-                password="test_password",
-                host="imap.example.com",
-                port=993,
-                use_ssl=True,
-            ),
-            outgoing=EmailServer(
-                user_name="test_user",
-                password="test_password",
-                host="smtp.example.com",
-                port=465,
-                use_ssl=True,
-            ),
-        )
-
-        # Mock the get_settings function
-        mock_settings = MagicMock()
-
-        with patch("mcp_email_server.app.get_settings", return_value=mock_settings):
-            # Call the function
-            result = await add_email_account(email_settings)
-
-            # Verify the return value
-            assert result == "Successfully added email account 'test_account'"
-
-            # Verify add_email and store were called correctly
-            mock_settings.add_email.assert_called_once_with(email_settings)
-            mock_settings.store.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_add_email_account_duplicate_name_does_not_corrupt_cache(self, tmp_path, monkeypatch):
-        """A rejected duplicate-name add must not leave a mutated account list cached.
-
-        Settings.add_email() reassigns settings.emails, and pydantic's
-        validate_assignment applies the new value BEFORE the
-        check_unique_account_names after-validator raises — so a naive
-        `settings.add_email(email); settings.store()` sequence leaves the cached
-        Settings instance corrupted even though the raise happened before store().
-        """
-        import mcp_email_server.config as config_module
-        from mcp_email_server.config import Settings
-
-        cfg = tmp_path / "config.toml"
-        monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
-        config_module._settings = None
-
-        email_settings = EmailSettings(
-            account_name="dup",
-            full_name="Test User",
-            email_address="test@example.com",
-            incoming=EmailServer(user_name="test_user", password="test_password", host="imap.example.com", port=993),
-        )
-        duplicate = EmailSettings(
-            account_name="dup",
-            full_name="Someone Else",
-            email_address="other@example.com",
-            incoming=EmailServer(user_name="other_user", password="other_password", host="imap.other.com", port=993),
-        )
-
-        try:
-            await add_email_account(email_settings)
-
-            with pytest.raises(Exception, match="Duplicate account name"):
-                await add_email_account(duplicate)
-
-            # The cache must have been discarded, not left holding two "dup" entries.
-            reloaded = config_module.get_settings()
-            assert [e.account_name for e in reloaded.emails] == ["dup"]
-
-            # A subsequent, non-conflicting add must succeed rather than tripping
-            # over a corrupted duplicate that was never actually persisted.
-            new_account = EmailSettings(
-                account_name="brand_new",
-                full_name="New User",
-                email_address="new@example.com",
-                incoming=EmailServer(user_name="new_user", password="new_password", host="imap.new.com", port=993),
-            )
-            result = await add_email_account(new_account)
-            assert result == "Successfully added email account 'brand_new'"
-        finally:
-            config_module._settings = None
 
     @pytest.mark.asyncio
     async def test_list_emails_metadata(self):
@@ -415,16 +326,53 @@ class TestMcpTools:
             assert query_handler.await_args.args[0].mailbox == "Sent"
 
     @pytest.mark.asyncio
-    async def test_tool_catalog_is_stable_for_all_account_capabilities(self):
-        """Clients always receive the complete static tool catalog."""
-        tool_names = {tool.name for tool in await app_module.mcp.list_tools()}
+    async def test_complete_mcp_catalog_matches_exact_fixture(self):
+        """Names, descriptions, schemas, annotations, prompts, and resources stay explicit."""
+        actual = {
+            "tools": [tool.model_dump(mode="json", exclude_none=True) for tool in await app_module.mcp.list_tools()],
+            "resources": [
+                resource.model_dump(mode="json", exclude_none=True)
+                for resource in await app_module.mcp.list_resources()
+            ],
+            "resource_templates": [
+                template.model_dump(mode="json", exclude_none=True)
+                for template in await app_module.mcp.list_resource_templates()
+            ],
+            "prompts": [
+                prompt.model_dump(mode="json", exclude_none=True) for prompt in await app_module.mcp.list_prompts()
+            ],
+        }
+        expected = json.loads((Path(__file__).parent / "fixtures" / "mcp_catalog.json").read_text())
 
-        assert "send_email" in tool_names
-        assert "save_to_mailbox" in tool_names
-        assert "list_emails_metadata" in tool_names
-        assert "get_emails_content" in tool_names
-        assert "list_allowed_recipients" in tool_names
-        assert "list_allowed_senders" in tool_names
+        assert actual == expected
+        assert "add_email_account" not in {tool["name"] for tool in actual["tools"]}
+
+    @pytest.mark.asyncio
+    async def test_mcp_schemas_advertise_central_string_and_collection_limits(self):
+        tools = {tool.name: tool.inputSchema["properties"] for tool in await app_module.mcp.list_tools()}
+        for properties in tools.values():
+            account_name = properties.get("account_name")
+            if account_name is not None:
+                assert account_name["maxLength"] == APPLICATION_LIMITS.account_name_bytes
+
+        content_ids = tools["get_emails_content"]["email_ids"]
+        assert content_ids["maxItems"] == APPLICATION_LIMITS.content_email_ids
+        assert content_ids["items"]["maxLength"] == len(str(APPLICATION_LIMITS.maximum_imap_uid))
+        for tool_name in ("delete_emails", "mark_emails_as_read", "move_emails", "archive_emails"):
+            ids = tools[tool_name]["email_ids"]
+            assert ids["maxItems"] == APPLICATION_LIMITS.mutation_uids
+            assert ids["items"]["maxLength"] == len(str(APPLICATION_LIMITS.maximum_imap_uid))
+
+        send = tools["send_email"]
+        assert send["recipients"]["maxItems"] == APPLICATION_LIMITS.recipients
+        assert send["recipients"]["items"]["maxLength"] == APPLICATION_LIMITS.address_bytes
+        assert send["attachments"]["anyOf"][0]["maxItems"] == APPLICATION_LIMITS.attachments
+        assert send["attachments"]["anyOf"][0]["items"]["maxLength"] == APPLICATION_LIMITS.attachment_path_bytes
+        assert send["subject"]["maxLength"] == APPLICATION_LIMITS.subject_bytes
+        assert send["body"]["maxLength"] == APPLICATION_LIMITS.body_bytes
+        flags = tools["save_to_mailbox"]["flags"]["anyOf"][0]
+        assert flags["maxItems"] == APPLICATION_LIMITS.flags
+        assert flags["items"]["maxLength"] == APPLICATION_LIMITS.flag_bytes
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -704,8 +652,6 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_send_email_no_allowlist_allows_any_recipient(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_recipients = []
         command_handler = AsyncMock(
             return_value=SendMutationOutcome(
                 (TargetMutationOutcome("anyone@example.com", "succeeded"),),
@@ -713,7 +659,6 @@ class TestMcpTools:
             )
         )
         with (
-            patch("mcp_email_server.app.get_settings", return_value=mock_settings),
             patch("mcp_email_server.app.send_email_command", command_handler),
         ):
             result = await send_email(account_name="test", recipients=["anyone@example.com"], subject="S", body="B")
@@ -755,8 +700,6 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_send_email_allows_listed_recipient_with_display_name(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_recipients = ["alice@example.com"]
         command_handler = AsyncMock(
             return_value=SendMutationOutcome(
                 (TargetMutationOutcome("Alice <Alice@Example.com>", "succeeded"),),
@@ -764,7 +707,6 @@ class TestMcpTools:
             )
         )
         with (
-            patch("mcp_email_server.app.get_settings", return_value=mock_settings),
             patch("mcp_email_server.app.send_email_command", command_handler),
         ):
             await send_email(
@@ -787,13 +729,10 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_save_to_mailbox_allows_listed_recipient(self):
-        mock_settings = MagicMock()
-        mock_settings.allowed_recipients = ["alice@example.com"]
         command_handler = AsyncMock(
             return_value=AppendMutationOutcome("succeeded", "<mid@example.com>", uid="42", mailbox="Drafts")
         )
         with (
-            patch("mcp_email_server.app.get_settings", return_value=mock_settings),
             patch("mcp_email_server.app.save_to_mailbox_command", command_handler),
         ):
             result = await save_to_mailbox(account_name="test", recipients=["alice@example.com"], subject="S", body="B")
@@ -871,7 +810,9 @@ async def test_mutation_tool_preserves_input_order_across_status_tags() -> None:
     with patch("mcp_email_server.app.mark_read_command", command_handler):
         result = await mark_emails_as_read("test", ["1", "2", "3"])
 
-    assert result == "Mark-read result [failed: 1; succeeded: 2; unknown: 3 (store-unknown)]"
+    assert result == (
+        "Mark-read result [failed: 1; succeeded: 2; unknown: 3 (store-unknown); warning: reconciliation needed]"
+    )
 
 
 @pytest.mark.asyncio
@@ -896,7 +837,7 @@ async def test_send_tool_preserves_recipient_order_across_status_tags() -> None:
 
     assert result == (
         "Email delivery [failed: first@example.test; succeeded: second@example.test; "
-        "unknown: third@example.test; sent-copy: skipped]"
+        "unknown: third@example.test; sent-copy: skipped; warning: reconciliation needed]"
     )
 
 
@@ -908,11 +849,7 @@ async def test_send_tool_keeps_delivery_success_when_sent_copy_fails() -> None:
             SentCopyMutationOutcome("failed", "Sent", "append"),
         )
     )
-    mock_settings = MagicMock(allowed_recipients=[])
-    with (
-        patch("mcp_email_server.app.get_settings", return_value=mock_settings),
-        patch("mcp_email_server.app.send_email_command", command_handler),
-    ):
+    with patch("mcp_email_server.app.send_email_command", command_handler):
         result = await send_email("test", ["recipient@example.test"], "Subject", "body")
 
     assert result == "Email delivery [succeeded: recipient@example.test; sent-copy: failed (Sent)]"
@@ -928,11 +865,9 @@ async def test_save_tool_does_not_claim_success_for_ambiguous_append() -> None:
             detail="append",
         )
     )
-    mock_settings = MagicMock(allowed_recipients=[])
-    with (
-        patch("mcp_email_server.app.get_settings", return_value=mock_settings),
-        patch("mcp_email_server.app.save_to_mailbox_command", command_handler),
-    ):
+    with patch("mcp_email_server.app.save_to_mailbox_command", command_handler):
         result = await save_to_mailbox("test", ["recipient@example.test"], "Draft", "body")
 
-    assert result == "Email save [unknown (append): Drafts; Message-Id: <draft@example.test>]"
+    assert result == (
+        "Email save [unknown (append): Drafts; Message-Id: <draft@example.test>; warning: reconciliation needed]"
+    )

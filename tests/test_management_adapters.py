@@ -4,6 +4,7 @@ from copy import deepcopy
 
 import pytest
 
+from mcp_email_server import keyring_store
 from mcp_email_server.adapters.management import LocalManagementBackend
 from mcp_email_server.application.management import ManagementError
 
@@ -44,3 +45,23 @@ def test_legacy_secret_resolution_rejects_changed_source_snapshot(monkeypatch: p
 
     with pytest.raises(ManagementError, match=r"source changed.*preview and retry"):
         backend.resolve_legacy_secret("alice", "incoming", expected)
+
+
+def test_legacy_snapshot_exposes_only_credential_source_class() -> None:
+    backend = LocalManagementBackend()
+    raw = _legacy_raw()
+    account = backend._parse_legacy_accounts(raw)[0]
+    plaintext = backend._legacy_account_snapshot(account)
+    incoming = raw["emails"]
+    assert isinstance(incoming, list)
+    account_raw = incoming[0]
+    assert isinstance(account_raw, dict)
+    endpoint = account_raw["incoming"]
+    assert isinstance(endpoint, dict)
+    endpoint["password"] = keyring_store.SENTINEL
+    keyring_account = backend._parse_legacy_accounts(raw)[0]
+    keyring = backend._legacy_account_snapshot(keyring_account)
+
+    assert plaintext.incoming_secret_source == "plaintext"  # noqa: S105 - source class
+    assert keyring.incoming_secret_source == "keyring"  # noqa: S105 - source class
+    assert "legacy-secret" not in repr(plaintext)

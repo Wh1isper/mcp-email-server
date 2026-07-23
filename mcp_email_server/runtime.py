@@ -12,6 +12,7 @@ from mcp_email_server.application.management import ManagementServices
 from mcp_email_server.application.metadata import MetadataQueryService
 from mcp_email_server.application.mutations import MutationServices
 from mcp_email_server.application.reads import ReadServices
+from mcp_email_server.large_results import LocalLargeResultWriter, local_large_results_supported
 
 
 @dataclass(frozen=True)
@@ -24,9 +25,12 @@ class ApplicationRuntime:
     metadata: MetadataQueryService
     mutations: MutationServices
     reads: ReadServices
+    large_results: LocalLargeResultWriter | None
 
     async def aclose(self) -> None:
-        """Close process-scoped resources; current adapters own only operation-scoped handles."""
+        """Close process-scoped resources and remove private result artifacts."""
+        if self.large_results is not None:
+            await self.large_results.aclose()
 
 
 @cache
@@ -39,6 +43,9 @@ def get_application_runtime() -> ApplicationRuntime:
         LocalMutationProjectionFactory(mutation_backend),
     )
     read_backend = LocalReadBackend()
+    # Inline bounded reads and the management plane remain available; only
+    # oversized spill fails closed when owner-only local storage is absent.
+    large_results = LocalLargeResultWriter() if local_large_results_supported() else None
     return ApplicationRuntime(
         accounts=EffectiveAccountQueryService(metadata_backend),
         configuration=EffectiveConfigurationQueryService(metadata_backend),
@@ -54,7 +61,9 @@ def get_application_runtime() -> ApplicationRuntime:
             read_backend,
             mutation_services.mark_read,
             LocalArtifactWriter(),
+            large_results,
         ),
+        large_results=large_results,
     )
 
 

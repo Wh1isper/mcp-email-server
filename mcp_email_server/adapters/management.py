@@ -11,14 +11,24 @@ from mcp_email_server.application.management import (
     BindingRole,
     BootstrapSnapshot,
     EndpointSummary,
+    IndexHealth,
     LegacyAccountSnapshot,
     LegacySourceSnapshot,
     ManagedCatalogPort,
     ManagementError,
     ManagementMode,
+    RevisionConflictError,
+    SecretSourceClass,
 )
-from mcp_email_server.bootstrap import BootstrapError, configured_path, read_bootstrap, write_bootstrap
-from mcp_email_server.config import EmailSettings, ProviderSettings, _normalize_address_list, _normalize_pattern_list
+from mcp_email_server.bootstrap import (
+    BootstrapError,
+    BootstrapRevisionError,
+    configured_path,
+    process_bootstrap,
+    read_bootstrap,
+    write_bootstrap,
+)
+from mcp_email_server.config import EmailSettings, ProviderSettings, normalize_address_list, normalize_pattern_list
 from mcp_email_server.emails.classic import ClassicEmailHandler
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
 
@@ -31,7 +41,14 @@ class LocalManagementBackend:
             bootstrap = read_bootstrap()
         except BootstrapError as exc:
             raise ManagementError(str(exc)) from exc
-        return BootstrapSnapshot(mode=bootstrap.mode, db_path=bootstrap.db_path)
+        running = process_bootstrap(bootstrap.path)
+        return BootstrapSnapshot(
+            mode=bootstrap.mode,
+            db_path=bootstrap.db_path,
+            revision=bootstrap.revision,
+            running_mode=running.mode,
+            running_db_path=running.db_path,
+        )
 
     def initialize_catalog(self, path: Path) -> ManagedCatalogPort:
         try:
@@ -44,9 +61,15 @@ class LocalManagementBackend:
     def open_catalog(self, path: Path) -> ManagedCatalogPort:
         return ManagedCatalog(path)
 
-    def write_selection(self, mode: ManagementMode, db_path: Path | None) -> None:
+    def write_selection(self, mode: ManagementMode, db_path: Path | None, *, expected_revision: int) -> None:
         try:
-            write_bootstrap(mode=mode, db_path=db_path)
+            write_bootstrap(
+                mode=mode,
+                db_path=db_path,
+                expected_revision=expected_revision,
+            )
+        except BootstrapRevisionError as exc:
+            raise RevisionConflictError("bootstrap") from exc
         except (BootstrapError, OSError) as exc:
             raise ManagementError(str(exc)) from exc
 
@@ -76,7 +99,11 @@ class LocalManagementBackend:
         return accounts
 
     @staticmethod
-    def _legacy_account_snapshot(account: EmailSettings) -> LegacyAccountSnapshot:
+    def _legacy_secret_source(value: str) -> SecretSourceClass:
+        return "keyring" if value == keyring_store.SENTINEL else "plaintext"
+
+    @classmethod
+    def _legacy_account_snapshot(cls, account: EmailSettings) -> LegacyAccountSnapshot:
         return LegacyAccountSnapshot(
             name=account.account_name,
             full_name=account.full_name,
@@ -89,6 +116,7 @@ class LocalManagementBackend:
                 start_ssl=account.incoming.start_ssl,
                 verify_ssl=account.incoming.verify_ssl,
             ),
+            incoming_secret_source=cls._legacy_secret_source(account.incoming.password.get_secret_value()),
             outgoing=EndpointSummary(
                 host=account.outgoing.host,
                 port=account.outgoing.port,
@@ -99,6 +127,11 @@ class LocalManagementBackend:
             )
             if account.outgoing is not None
             else None,
+            outgoing_secret_source=(
+                cls._legacy_secret_source(account.outgoing.password.get_secret_value())
+                if account.outgoing is not None
+                else None
+            ),
             save_to_sent=account.save_to_sent,
             sent_folder_name=account.sent_folder_name,
         )
@@ -132,8 +165,8 @@ class LocalManagementBackend:
             accounts=tuple(self._legacy_account_snapshot(account) for account in accounts),
             unsupported_provider_names=tuple(sorted(provider.account_name for provider in providers)),
             enable_attachment_download=attachment_download,
-            allowed_recipients=tuple(_normalize_address_list(recipients)),
-            allowed_senders=tuple(_normalize_pattern_list(senders)),
+            allowed_recipients=tuple(normalize_address_list(recipients)),
+            allowed_senders=tuple(normalize_pattern_list(senders)),
             report_blocked_mutations=report_blocked,
         )
 
@@ -162,9 +195,20 @@ class LocalManagementBackend:
             raise ManagementError("Stored legacy credential is empty")
         return value
 
+    def index_health(self, catalog: ManagedCatalogPort) -> IndexHealth:
+        try:
+            return catalog.index_health()
+        except ManagementError:
+            return IndexHealth(
+                status="unavailable",
+                indexed_accounts=0,
+                pending_operations=0,
+                problems=("index_unavailable",),
+            )
+
     async def test_connection(self, catalog: ManagedCatalogPort, name: str, role: BindingRole) -> None:
         try:
-            account = catalog.load_account(name)
+            account = catalog.load_account(name, roles=(role,))
             handler = ClassicEmailHandler(account)
             if role == "incoming":
                 await handler.list_mailboxes()

@@ -186,6 +186,36 @@ mailbox and candidate counts, body/attachment bytes, mutation batches,
 concurrency, timeout/deadline, database rows, error details, and aggregate
 serialized results.
 
+## Local Oversized-Result Handoff
+
+Because every supported transport is a local single-user process, a bounded
+application workflow MAY spill an otherwise valid result that exceeds the
+inline serialized-result ceiling into a process-owned temporary artifact. This
+is an explicit result variant, not an exception to provider/request limits:
+
+- provider work, item counts, individual fields, and aggregate raw bytes remain
+  bounded before spill;
+- the artifact directory is allocated lazily on the first spill write, randomly
+  named, owner-only, process-scoped, and outside the
+  repository/configuration/catalog trees;
+- files are created no-follow and exclusive with owner-only permissions, have a
+  bounded byte size and integrity digest, and are revalidated after write;
+- the inline DTO contains only a bounded preview/status, exact artifact path,
+  media type, byte count, digest, and process-lifetime notice;
+- no generic file-read, file-listing, download route, or remote URL is added;
+  an already-authorized local MCP host may inspect the returned path through its
+  own filesystem capability;
+- graceful shutdown removes artifacts and their private directory; startup MAY
+  perform bounded, ownership-verified cleanup of stale crash remnants;
+- secret values are never eligible for spill, while message content retains the
+  same local sensitivity classification as an inline result.
+
+A spill failure or unsupported filesystem platform returns a typed bounded
+error and never falls back to an oversized protocol response. Spill capability
+is optional at runtime: its absence does not disable bounded inline reads or the
+management plane. CLI/UI use this variant only for workflows that already expose
+the same content; the management UI does not gain mail access.
+
 ## Error and Cancellation Rules
 
 Infrastructure errors map once to typed application errors. Public adapters
@@ -211,3 +241,6 @@ protocol evidence and reports unknown when cancellation prevents certainty.
    covered without claiming nonexistent long-lived ownership.
 8. Architecture and catalog tests prove no MCP adapter or service registration
    path exposes account or credential management in either mode.
+9. Oversized-result tests prove bounded inline output, private no-follow
+   artifacts, digest/size integrity, process cleanup, spill-failure behavior, and
+   absence of a generic file or remote-download surface.

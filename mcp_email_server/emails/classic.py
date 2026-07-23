@@ -27,6 +27,7 @@ import aiosmtplib
 from aiosmtplib.errors import SMTPNotSupported, SMTPRecipientRefused, SMTPResponseException
 from bs4 import BeautifulSoup
 
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.metadata import (
     MAX_METADATA_SNAPSHOT_ROWS,
     MailboxMetadataSnapshot,
@@ -35,7 +36,6 @@ from mcp_email_server.application.metadata import (
     MetadataQueryTooBroadError,
 )
 from mcp_email_server.application.mutations import (
-    APPLICATION_LIMITS,
     AppendMutationOutcome,
     BatchMutationOutcome,
     DeliveryMutationOutcome,
@@ -58,10 +58,10 @@ from mcp_email_server.log import logger
 
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
-MAX_METADATA_CANDIDATES = 10_000
+MAX_METADATA_CANDIDATES = APPLICATION_LIMITS.metadata_candidates
 MAX_INDEXED_UID_WINDOW = MAX_METADATA_SNAPSHOT_ROWS
-MAX_METADATA_HEADER_BYTES = 64 * 1024
-MAX_METADATA_HEADER_TOTAL_BYTES = 4 * 1024 * 1024
+MAX_METADATA_HEADER_BYTES = APPLICATION_LIMITS.header_bytes
+MAX_METADATA_HEADER_TOTAL_BYTES = APPLICATION_LIMITS.aggregate_header_bytes
 MAX_METADATA_HEADER_FETCH_UIDS = MAX_METADATA_HEADER_TOTAL_BYTES // (MAX_METADATA_HEADER_BYTES + 1)
 MAX_IMAP_UID = 2**32 - 1
 MAX_METADATA_UID_SEARCH_BYTES = MAX_METADATA_CANDIDATES * 11

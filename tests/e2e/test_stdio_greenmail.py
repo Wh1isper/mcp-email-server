@@ -25,6 +25,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
+from mcp_email_server.managed import SCHEMA_VERSION
+
 pytestmark = pytest.mark.e2e
 
 SMTP_HOST = "127.0.0.1"
@@ -325,7 +327,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             assert metadata["total"] == 1
             assert metadata["emails"][0]["subject"] == subject
             with contextlib.closing(sqlite3.connect(database)) as connection:
-                assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
+                assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION
                 assert connection.execute("SELECT completeness FROM index_coverage").fetchone()[0] == "COMPLETE"
 
             managed_uid = metadata["emails"][0]["email_id"]
@@ -535,7 +537,8 @@ async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_gr
     applied = _run_cli(
         console_script,
         server_env,
-        ["config", "import-legacy", "--apply", "--confirm", "IMPORT"],
+        ["config", "import-legacy", "--apply"],
+        stdin="IMPORT\n",
     )
     assert "created=alice,bob" in applied
     assert config_path.read_bytes() == stored_source

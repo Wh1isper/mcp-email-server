@@ -2,9 +2,12 @@
 
 ## Authority Selection
 
-Bootstrap configuration contains the explicit mode and, for managed mode, the
-selected catalog path. It contains no managed account configuration or secret.
-The process reads it once, validates it, and freezes the result.
+Bootstrap configuration contains the explicit mode, selected catalog path, and
+an independent monotonic bootstrap revision. It contains no managed account
+configuration or secret. The process reads it once, validates it, and freezes
+the result. Management writes compare the expected bootstrap revision while
+holding a bounded owner-only no-follow sibling lock before atomic replacement;
+the catalog revision remains a separate concurrency domain.
 
 Selection rules:
 
@@ -32,12 +35,19 @@ absent -> staging -> active
 ```
 
 - **initialize** creates a secure staging catalog idempotently or reports a typed
-  conflict with an existing incompatible target.
+  conflict with an existing incompatible target. Idempotent adoption is limited
+  to the exact requested path when it remains an owner-only, structurally valid
+  `STAGING` catalog; it preserves all staging data and revisions. A bootstrap
+  compare-and-swap or persistence failure after catalog commit leaves that
+  catalog available for an explicit retry rather than deleting it.
 - **staging** permits management and import but cannot serve mail workflows.
 - **activate** validates schema, security, required configuration, and invariant
   consistency before a revisioned transition to active.
-- **select** atomically updates bootstrap authority after the active catalog is
-  revalidated.
+- **select managed** revalidates the exact active catalog revision, then
+  compare-and-swaps bootstrap authority.
+- **select legacy** compare-and-swaps bootstrap authority without opening the
+  selected managed catalog, so an unavailable catalog does not block explicit
+  recovery.
 - The running process continues using its frozen prior selection and tells the
   operator that restart is required.
 
@@ -59,7 +69,9 @@ Managed account operations are available through the shared application service:
 Every mutation supplies the expected account or catalog revision. On mismatch,
 it returns a typed conflict containing only a bounded current non-secret summary
 and requires the caller to review/retry. The UI MUST NOT auto-replay a stale
-mutation.
+mutation. Live legacy and managed authority is capped at 1,000 configured
+accounts; managed creation checks that aggregate inside the catalog transaction.
+Recipient and sender policy collections are each capped at 1,000 entries.
 
 Soft removal preserves the stable identity, audit timestamps, binding cleanup
 state, and normalized-name tombstone. It disables provider work immediately.
@@ -80,9 +92,12 @@ least:
 - relevant request/result limits where configurable;
 - sent-copy behavior and safe fallback choices.
 
-Policy updates are revisioned. Permissive changes do not bypass capability or
-input validation. Restrictive changes take effect on the next independent
-effect because authority is revalidated at operation boundaries.
+Policy updates are revisioned. Recipient addresses are extracted, trimmed,
+lowercased, empty-filtered, and stably deduplicated; sender glob patterns are
+trimmed, lowercased, empty-filtered, and stably deduplicated. Managed updates and
+legacy composition use the same canonicalizers. Permissive changes do not bypass
+capability or input validation. Restrictive changes take effect on the next
+independent effect because authority is revalidated at operation boundaries.
 
 ## Legacy Mode
 
@@ -113,8 +128,10 @@ and returns a deterministic non-secret plan:
 - source fingerprint and expiry/creation time;
 - planned creates, safe matches, conflicts, skips, and warnings;
 - endpoint and policy summaries without secret values or reusable locators;
-- whether each required credential can be resolved at apply time;
-- target catalog identifier and expected catalog/account revisions.
+- each required credential role and its source class (`plaintext` or `keyring`),
+  without probing source availability;
+- target catalog identifier and exact expected catalog, policy, and account
+  revisions.
 
 The fingerprint covers all source fields that affect apply, including effective
 endpoint configuration and secret source identity without revealing its value.
@@ -122,8 +139,13 @@ endpoint configuration and secret source identity without revealing its value.
 ### Apply
 
 Apply requires explicit confirmation plus the exact preview token/fingerprint and
-expected target revisions. It re-reads both source and target. Any material drift
-returns `preview_stale` before secret or catalog writes.
+expected target revisions. CLI apply prints the complete non-secret plan before
+reading confirmation in the same process; UI apply binds confirmation to its
+one-time preview token. Apply re-reads both source and target before each required
+credential resolution and destination write. It advances only revisions caused by
+its own successful steps; unrelated fresh reads never replace reviewed expected
+revisions. Any material drift returns `preview_stale` before the next secret or
+catalog write.
 
 For each bounded item it uses the credential candidate protocol and minimal
 revisioned catalog transactions. A failure returns typed per-item outcomes and
@@ -140,9 +162,12 @@ application services, not only CLI/UI command checks.
 
 ## Management Status and Doctor
 
-Bounded status reports mode, selected path in a safely displayable form, catalog
-lifecycle/schema/revision, account counts by lifecycle, incomplete credential
-states, and restart requirement. Doctor performs opt-in bounded checks for
+Bounded status reports mode, bootstrap revision, selected path in a safely
+displayable form, catalog lifecycle/schema/revision, account counts by lifecycle,
+incomplete credential states, and restart requirement. A missing, corrupt,
+incompatible, or insecure selected catalog produces a bounded unavailable
+category while preserving the bootstrap state needed to select legacy; status
+does not silently fall back. Doctor performs opt-in bounded checks for
 bootstrap, file security, schema, binding consistency, secret resolution, and
 provider connectivity. Results expose categories and remediation, never values,
 SQL, raw provider responses, or reusable locators.
@@ -151,10 +176,11 @@ SQL, raw provider responses, or reusable locators.
 
 1. Missing bootstrap retains only the historical implicit-legacy rule; explicit
    managed selection fails closed with no fallback.
-2. Initialize, activate, select, and restart semantics are distinct and covered
-   through CLI and UI.
-3. Every account, policy, lifecycle, import, and binding mutation rejects stale
-   revisions with a bounded current summary.
+2. Initialize, activate, bootstrap-CAS selection, unavailable-catalog recovery,
+   and restart semantics are distinct and covered through CLI and UI.
+3. Every account, policy, lifecycle, import, binding, and bootstrap mutation
+   rejects stale revisions with a bounded current summary; account and policy
+   cardinality limits are enforced on both read and write boundaries.
 4. Soft removal disables provider work and permanently reserves the normalized
    name in this delivery.
 5. The MCP catalog contains no account writer in either mode; legacy setup is

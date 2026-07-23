@@ -8,7 +8,8 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import TypeVar
 
-from mcp_email_server import config as config_module
+from mcp_email_server.adapters.authority import resolve_local_account
+from mcp_email_server.application.management import BindingRole
 from mcp_email_server.application.metadata import RuntimeMode
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
@@ -22,12 +23,12 @@ from mcp_email_server.application.mutations import (
     MutationProjectionError,
     MutationProviderAccess,
     MutationProviderError,
+    MutationProviderPurpose,
     SaveToMailboxCommand,
     SendCommand,
     SentCopyMutationOutcome,
 )
-from mcp_email_server.bootstrap import process_bootstrap
-from mcp_email_server.config import EmailSettings, ProviderSettings, Settings, get_settings
+from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ClassicEmailHandler, _validate_flags
 from mcp_email_server.metadata_index import MetadataIndex, MetadataIndexError
 
@@ -173,11 +174,8 @@ class ClassicMutationProvider:
         # BCC belongs only in the local copy and must be added after SMTP submission.
         if bcc and sent_message["Bcc"] is None:
             sent_message["Bcc"] = ", ".join(bcc)
-        client = self._handler.outgoing_client
-        if client is None:
-            return SentCopyMutationOutcome("failed", detail="smtp-config-changed")
         return await _bounded_mutation_call(
-            client.append_to_sent_with_outcome(
+            self._handler.incoming_client.append_to_sent_with_outcome(
                 sent_message,
                 self._handler.email_settings.incoming,
                 self._handler.sent_folder_name,
@@ -208,29 +206,23 @@ class LocalMutationBackend:
     def _resolve(
         account_name: str,
         *,
+        roles: tuple[BindingRole, ...] = (),
         expected_mode: RuntimeMode | None = None,
     ) -> _ResolvedMutationAccount:
-        mode = process_bootstrap(config_module.CONFIG_PATH).mode
-        if expected_mode is not None and mode != expected_mode:
-            raise RuntimeError("Configuration mode changed; restart required")
-        settings = get_settings(reload=mode == "managed")
-        account = settings.get_account(account_name)
-        if isinstance(account, ProviderSettings):
-            raise NotImplementedError
-        if not isinstance(account, EmailSettings):
-            account_names = [item.account_name for item in settings.get_accounts()]
-            raise ValueError(  # noqa: TRY004 - preserve the public unknown-account category
-                f"Account {account_name} not found, available accounts: {account_names}"
-            )
+        resolved = (
+            resolve_local_account(account_name, roles=roles, expected_mode=expected_mode)
+            if roles
+            else resolve_local_account(account_name, expected_mode=expected_mode)
+        )
         return _ResolvedMutationAccount(
-            account=account,
-            settings=settings,
+            account=resolved.account,
+            settings=resolved.settings,
             snapshot=MutationAccountSnapshot(
-                account_name=account.account_name,
-                mode=mode,
-                allowed_senders=tuple(settings.allowed_senders),
-                allowed_recipients=tuple(settings.allowed_recipients),
-                report_blocked_mutations=settings.report_blocked_mutations,
+                account_name=resolved.account.account_name,
+                mode=resolved.mode,
+                allowed_senders=tuple(resolved.settings.allowed_senders),
+                allowed_recipients=tuple(resolved.settings.allowed_recipients),
+                report_blocked_mutations=resolved.settings.report_blocked_mutations,
             ),
         )
 
@@ -242,8 +234,15 @@ class LocalMutationBackend:
     ) -> MutationAccountSnapshot:
         return self._resolve(account_name, expected_mode=expected_mode).snapshot
 
-    def open(self, account_name: str, *, expected_mode: RuntimeMode) -> MutationProviderAccess:
-        resolved = self._resolve(account_name, expected_mode=expected_mode)
+    def open(
+        self,
+        account_name: str,
+        *,
+        expected_mode: RuntimeMode,
+        purpose: MutationProviderPurpose,
+    ) -> MutationProviderAccess:
+        roles: tuple[BindingRole, ...] = ("outgoing",) if purpose == "outgoing" else ("incoming",)
+        resolved = self._resolve(account_name, roles=roles, expected_mode=expected_mode)
         return MutationProviderAccess(
             account=resolved.snapshot,
             provider=ClassicMutationProvider(ClassicEmailHandler(resolved.account)),

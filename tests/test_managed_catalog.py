@@ -6,18 +6,23 @@ import stat
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
 import pytest
 
+from mcp_email_server import managed as managed_module
 from mcp_email_server.config import EmailServer
 from mcp_email_server.managed import (
+    _SCHEMA_V1,
+    SCHEMA_VERSION,
     SQLITE_BUSY_TIMEOUT_MS,
     WAL_RETRY_BUSY_TIMEOUT_MS,
     ManagedCatalog,
     ManagedCatalogError,
+    ManagedCatalogInitializationConflictError,
     ManagedCatalogSecurityError,
     _enable_wal,
 )
@@ -98,6 +103,34 @@ def _add_account(catalog: ManagedCatalog, *, outgoing: bool = False) -> None:
     )
 
 
+def test_managed_catalog_enforces_account_and_policy_cardinality(monkeypatch, tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    _add_account(catalog)
+    monkeypatch.setattr(
+        managed_module,
+        "APPLICATION_LIMITS",
+        replace(managed_module.APPLICATION_LIMITS, configured_accounts=1, policy_entries=1),
+    )
+
+    with pytest.raises(ManagedCatalogError, match="account count"):
+        catalog.add_account(
+            name="bob",
+            full_name="Bob",
+            email_address="bob@example.test",
+            incoming=_server(),
+            outgoing=None,
+        )
+    with pytest.raises(ManagedCatalogError, match="recipient policy"):
+        catalog.update_policy(
+            expected_revision=catalog.catalog_revision(),
+            enable_attachment_download=False,
+            allowed_recipients=("first@example.test", "second@example.test"),
+            allowed_senders=(),
+            report_blocked_mutations=False,
+        )
+    assert len(catalog.list_accounts()) == 1
+
+
 def test_initialize_creates_minimal_private_staging_catalog(tmp_path):
     catalog = _catalog(tmp_path)
 
@@ -125,6 +158,139 @@ def test_initialize_creates_minimal_private_staging_catalog(tmp_path):
         assert stat.S_IMODE(catalog.path.parent.stat().st_mode) == 0o700
 
 
+def test_initialize_adopts_existing_staging_catalog_without_resetting_state(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    policy = catalog.policy()
+    catalog.update_policy(
+        expected_revision=policy.revision,
+        enable_attachment_download=True,
+        allowed_recipients=("alice@example.test",),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+    revision = catalog.catalog_revision()
+
+    adopted = ManagedCatalog.initialize(catalog.path)
+
+    assert adopted.path == catalog.path
+    assert adopted.lifecycle() == "STAGING"
+    assert adopted.catalog_revision() == revision
+    assert adopted.policy().allowed_recipients == ("alice@example.test",)
+
+
+def test_initialize_rejects_active_catalog_without_modifying_it(tmp_path: Path) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "secret")
+    catalog.activate()
+    revision = catalog.catalog_revision()
+
+    with pytest.raises(ManagedCatalogInitializationConflictError, match="not in the staging lifecycle"):
+        ManagedCatalog.initialize(catalog.path)
+
+    assert catalog.lifecycle() == "ACTIVE"
+    assert catalog.catalog_revision() == revision
+    assert catalog.list_accounts()[0].name == "alice"
+
+
+def test_initialize_rejects_foreign_existing_file_without_modifying_it(tmp_path: Path) -> None:
+    parent = tmp_path / "foreign"
+    parent.mkdir(mode=0o700)
+    path = parent / "catalog.sqlite3"
+    original = b"not a managed sqlite catalog"
+    path.write_bytes(original)
+    path.chmod(0o600)
+
+    with pytest.raises(ManagedCatalogInitializationConflictError, match="not a compatible managed catalog"):
+        ManagedCatalog.initialize(path)
+
+    assert path.read_bytes() == original
+
+
+def test_v1_catalog_migrates_normalized_identity_and_repair_state_schema(tmp_path: Path) -> None:
+    parent = tmp_path / "v1"
+    parent.mkdir(mode=0o700)
+    path = parent / "catalog.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript(_SCHEMA_V1)
+        connection.execute("INSERT INTO schema_metadata VALUES (1, 1)")
+        connection.execute("INSERT INTO catalog VALUES ('local', 'STAGING', 1, 0, '[]', '[]', 0)")
+        connection.execute(
+            """INSERT INTO managed_account
+               VALUES ('account-1', 'local', ' Alice ', 'Alice', 'alice@example.test', 1, 1, 1, NULL, NULL)"""
+        )
+        connection.execute(
+            """INSERT INTO endpoint
+               VALUES ('account-1', 'incoming', 'imap.example.test', 993, 1, 0, 1, 'alice@example.test')"""
+        )
+        connection.commit()
+    path.chmod(0o600)
+
+    catalog = ManagedCatalog(path, secret_store=FakeSecretStore())
+    assert catalog.show_account("alice").name == " Alice "
+
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT normalized_name FROM managed_account").fetchone()[0] == "alice"
+
+
+def test_v1_migration_rolls_back_version_and_schema_when_invariants_fail(tmp_path: Path) -> None:
+    parent = tmp_path / "invalid-v1"
+    parent.mkdir(mode=0o700)
+    path = parent / "catalog.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript(_SCHEMA_V1)
+        connection.execute("INSERT INTO schema_metadata VALUES (1, 1)")
+        connection.execute("INSERT INTO catalog VALUES ('local', 'STAGING', 1, 0, '[]', '[]', 0)")
+        connection.execute(
+            """INSERT INTO endpoint
+               VALUES ('missing-account', 'incoming', 'imap.example.test', 993, 1, 0, 1, 'alice@example.test')"""
+        )
+        connection.commit()
+    path.chmod(0o600)
+    catalog = ManagedCatalog(path, secret_store=FakeSecretStore())
+
+    for _attempt in range(2):
+        with pytest.raises(ManagedCatalogError, match="invalid references"):
+            catalog.lifecycle()
+        with closing(sqlite3.connect(path)) as connection:
+            assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
+            assert connection.execute("PRAGMA foreign_key_check").fetchone() is not None
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(managed_account)")}
+            assert "normalized_name" not in columns
+
+
+def test_v2_open_rejects_persistent_invariant_corruption(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path, FakeSecretStore())
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            """INSERT INTO endpoint
+               VALUES ('missing-account', 'incoming', 'imap.example.test', 993, 1, 0, 1, 'alice@example.test')"""
+        )
+        connection.commit()
+
+    with pytest.raises(ManagedCatalogError, match="invalid references"):
+        catalog.lifecycle()
+
+
+def test_normalized_name_and_tombstone_prevent_reuse(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path, FakeSecretStore())
+    _add_account(catalog)
+    revision = catalog.show_account("ALICE").revision
+    catalog.soft_remove_account(" alice ", expected_revision=revision)
+
+    with pytest.raises(ManagedCatalogError, match="already exists"):
+        catalog.add_account(
+            name="\uff21\uff2c\uff29\uff23\uff25",
+            full_name="Another Alice",
+            email_address="other@example.test",
+            incoming=_server(),
+            outgoing=None,
+        )
+
+
 def test_add_and_activate_round_trip_never_persists_secret(tmp_path):
     store = FakeSecretStore()
     catalog = _catalog(tmp_path, store)
@@ -136,7 +302,9 @@ def test_add_and_activate_round_trip_never_persists_secret(tmp_path):
 
     account = settings.emails[0]
     assert account.account_name == "alice"
-    assert account.incoming.password.get_secret_value() == "super-secret-password"
+    assert account.incoming.password.get_secret_value() == ""
+    resolved = catalog.load_account("alice", roles=("incoming",), require_active_catalog=True)
+    assert resolved.incoming.password.get_secret_value() == "super-secret-password"
     assert b"super-secret-password" not in catalog.path.read_bytes()
     assert catalog.lifecycle() == "ACTIVE"
 
@@ -186,7 +354,11 @@ def test_outgoing_endpoint_requires_active_outgoing_binding(tmp_path):
 
     catalog.set_secret("alice", "outgoing", "outgoing-secret")
     catalog.activate()
-    account = catalog.load_settings().emails[0]
+    account = catalog.load_account(
+        "alice",
+        roles=("incoming", "outgoing"),
+        require_active_catalog=True,
+    )
     assert account.outgoing is not None
     assert account.outgoing.password.get_secret_value() == "outgoing-secret"
 
@@ -218,11 +390,14 @@ def test_secret_write_failure_leaves_repairable_pending_binding(tmp_path):
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
 
-    with pytest.raises(ManagedCatalogError, match="backend unavailable"):
-        catalog.set_secret("alice", "incoming", "secret")
+    result = catalog.set_secret("alice", "incoming", "secret")
 
+    assert result.status == "pending_repair_required"
+    assert result.cleanup_required == 1
     report = catalog.doctor()
-    assert report.pending_bindings == 1
+    assert report.pending_bindings == 0
+    assert report.cleanup_required_bindings == 0
+    assert report.repair_required_bindings == 1
     assert report.problems == ("account_incomplete:alice:incoming",)
 
 
@@ -248,6 +423,178 @@ def test_revision_conflict_cleans_candidate_and_preserves_no_active_binding(tmp_
     assert catalog.doctor().pending_bindings == 0
 
 
+@pytest.mark.parametrize("authority_change", ["disable", "policy"])
+def test_selected_account_rejects_authority_change_while_secret_resolves(
+    tmp_path: Path,
+    authority_change: str,
+) -> None:
+    entered = Event()
+    release = Event()
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    result = catalog.set_secret("alice", "incoming", "active-secret")
+    catalog.activate()
+
+    def block_get(_locator: str) -> None:
+        entered.set()
+        assert release.wait(timeout=5)
+
+    store.on_get = block_get
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            catalog.resolve_account,
+            "alice",
+            roles=("incoming",),
+            require_active_catalog=True,
+        )
+        assert entered.wait(timeout=5)
+        if authority_change == "disable":
+            catalog.disable_account("alice", expected_revision=result.revision)
+        else:
+            policy = catalog.policy()
+            catalog.update_policy(
+                expected_revision=policy.revision,
+                enable_attachment_download=True,
+                allowed_recipients=(),
+                allowed_senders=(),
+                report_blocked_mutations=False,
+            )
+        release.set()
+        with pytest.raises(ManagedCatalogError, match=r"changed|disabled"):
+            future.result(timeout=5)
+
+
+def test_explicit_repair_can_resume_an_ambiguous_candidate(tmp_path: Path) -> None:
+    store = FakeSecretStore()
+    store.fail_put = True
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    result = catalog.set_secret("alice", "incoming", "candidate-secret")
+    assert result.status == "pending_repair_required"
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        locator = connection.execute(
+            "SELECT opaque_locator FROM secret_binding WHERE status = 'PENDING_REPAIR_REQUIRED'"
+        ).fetchone()[0]
+    store.values[locator] = "candidate-secret"
+    store.fail_put = False
+
+    repaired = catalog.repair_secret(
+        "ALICE",
+        "incoming",
+        action="resume",
+        expected_revision=result.revision,
+    )
+
+    assert repaired.status == "active"
+    assert repaired.revision == result.revision + 1
+    assert catalog.load_account("alice").incoming.password.get_secret_value() == "candidate-secret"
+    assert catalog.doctor().repair_required_bindings == 0
+
+
+def test_explicit_repair_rollback_detaches_before_external_cleanup(tmp_path: Path) -> None:
+    observed: list[str] = []
+    holder: list[ManagedCatalog] = []
+
+    def observe_delete(locator: str) -> None:
+        with closing(sqlite3.connect(holder[0].path)) as connection:
+            observed.append(
+                connection.execute(
+                    "SELECT status FROM secret_binding WHERE opaque_locator = ?",
+                    (locator,),
+                ).fetchone()[0]
+            )
+
+    store = FakeSecretStore(on_delete=observe_delete)
+    store.fail_put = True
+    catalog = _catalog(tmp_path, store)
+    holder.append(catalog)
+    _add_account(catalog)
+    result = catalog.set_secret("alice", "incoming", "candidate-secret")
+
+    repaired = catalog.repair_secret(
+        "alice",
+        "incoming",
+        action="rollback",
+        expected_revision=result.revision,
+    )
+
+    assert repaired.status == "rolled_back"
+    assert observed == ["CLEANUP_REQUIRED"]
+    assert catalog.doctor().repair_required_bindings == 0
+
+
+def test_repair_rollback_returns_committed_result_when_secret_cleanup_raises(tmp_path: Path) -> None:
+    def fail_delete(_locator: str) -> None:
+        raise ManagedCatalogError("injected secret cleanup failure")
+
+    store = FakeSecretStore(on_delete=fail_delete)
+    store.fail_put = True
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    pending = catalog.set_secret("alice", "incoming", "candidate-secret")
+
+    repaired = catalog.repair_secret(
+        "alice",
+        "incoming",
+        action="rollback",
+        expected_revision=pending.revision,
+    )
+
+    assert repaired.status == "rolled_back_cleanup_required"
+    assert repaired.revision == pending.revision + 1
+    assert repaired.cleanup_required == 1
+    assert catalog.show_account("alice").incoming_binding == "CLEANUP_REQUIRED"
+
+
+def test_repair_resume_returns_committed_result_when_cleanup_bookkeeping_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    active = catalog.set_secret("alice", "incoming", "old-secret")
+    store.fail_put = True
+    pending = catalog.set_secret(
+        "alice",
+        "incoming",
+        "candidate-secret",
+        expected_revision=active.revision,
+    )
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        locator = connection.execute(
+            "SELECT opaque_locator FROM secret_binding WHERE status = 'PENDING_REPAIR_REQUIRED'"
+        ).fetchone()[0]
+    store.values[locator] = "candidate-secret"
+    store.fail_put = False
+    original_connection = catalog._connection
+    calls = 0
+
+    def fail_finalization():
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise ManagedCatalogError("injected finalization failure")
+        return original_connection()
+
+    monkeypatch.setattr(catalog, "_connection", fail_finalization)
+
+    repaired = catalog.repair_secret(
+        "alice",
+        "incoming",
+        action="resume",
+        expected_revision=pending.revision,
+    )
+
+    assert repaired.status == "active_cleanup_required"
+    assert repaired.revision == pending.revision + 1
+    assert repaired.cleanup_required == 1
+    monkeypatch.setattr(catalog, "_connection", original_connection)
+    assert catalog.load_account("alice").incoming.password.get_secret_value() == "candidate-secret"
+    assert catalog.doctor().cleanup_required_bindings == 1
+
+
 def test_successful_retry_claims_pending_binding_before_external_cleanup(tmp_path):
     observed_statuses: list[str] = []
     catalog_holder: list[ManagedCatalog] = []
@@ -265,14 +612,18 @@ def test_successful_retry_claims_pending_binding_before_external_cleanup(tmp_pat
     catalog_holder.append(catalog)
     _add_account(catalog)
     store.fail_put = True
-    with pytest.raises(ManagedCatalogError):
-        catalog.set_secret("alice", "incoming", "first-secret")
+    first = catalog.set_secret("alice", "incoming", "first-secret")
+    assert first.status == "pending_repair_required"
     store.fail_put = False
 
     catalog.set_secret("alice", "incoming", "replacement-secret")
 
-    assert observed_statuses == ["CLEANUP_REQUIRED"]
-    assert catalog.doctor().pending_bindings == 0
+    # Ambiguous candidates require explicit repair and are never reclaimed by a
+    # later successful writer as if they were ordinary cleanup work.
+    assert observed_statuses == []
+    report = catalog.doctor()
+    assert report.pending_bindings == 0
+    assert report.repair_required_bindings == 1
     assert catalog.list_accounts()[0].incoming_binding == "ACTIVE"
 
 
@@ -299,8 +650,8 @@ def test_concurrent_rotation_cannot_activate_a_candidate_claimed_for_cleanup(tmp
         with pytest.raises(ManagedCatalogError, match="changed"):
             candidate_b.result(timeout=5)
 
-    settings = catalog.load_settings(require_active=False)
-    assert settings.emails[0].incoming.password.get_secret_value() == "candidate-a"
+    resolved = catalog.load_account("alice", roles=("incoming",))
+    assert resolved.incoming.password.get_secret_value() == "candidate-a"
     assert catalog.doctor().pending_bindings == 0
     assert catalog.doctor().cleanup_required_bindings == 0
 
@@ -313,12 +664,42 @@ def test_rotation_activates_new_secret_before_old_cleanup_and_reports_failure(tm
     old_locator = next(iter(store.values))
     store.fail_delete = True
 
-    catalog.set_secret("alice", "incoming", "new-secret")
+    result = catalog.set_secret("alice", "incoming", "new-secret")
 
-    settings = catalog.load_settings(require_active=False)
-    assert settings.emails[0].incoming.password.get_secret_value() == "new-secret"
+    assert result.status == "active_cleanup_required"
+    resolved = catalog.load_account("alice", roles=("incoming",))
+    assert resolved.incoming.password.get_secret_value() == "new-secret"
     assert old_locator in store.delete_calls
     assert catalog.doctor().cleanup_required_bindings == 1
+
+
+def test_rotation_returns_committed_result_when_cleanup_bookkeeping_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "old-secret")
+    original_connection = catalog._connection
+    calls = 0
+
+    def fail_finalization():
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise ManagedCatalogError("injected finalization failure")
+        return original_connection()
+
+    monkeypatch.setattr(catalog, "_connection", fail_finalization)
+
+    result = catalog.set_secret("alice", "incoming", "new-secret")
+
+    assert result.status == "active_cleanup_required"
+    assert result.cleanup_required == 1
+    monkeypatch.setattr(catalog, "_connection", original_connection)
+    resolved = catalog.load_account("alice", roles=("incoming",))
+    assert resolved.incoming.password.get_secret_value() == "new-secret"
 
 
 def test_disabled_account_is_excluded_from_runtime_without_secret_access(tmp_path):
@@ -344,7 +725,7 @@ def test_missing_or_unreadable_active_secret_fails_closed(tmp_path):
     store.values.clear()
 
     with pytest.raises(ManagedCatalogError, match="missing"):
-        catalog.load_settings()
+        catalog.load_account("alice", roles=("incoming",), require_active_catalog=True)
 
 
 def test_active_catalog_rejects_new_account_without_harming_existing_snapshot(tmp_path):
@@ -382,7 +763,7 @@ def test_rotation_crash_before_cleanup_remains_doctor_visible(tmp_path):
     with pytest.raises(SimulatedCrash):
         catalog.set_secret("alice", "incoming", "new-secret")
 
-    assert catalog.load_settings(require_active=False).emails[0].incoming.password.get_secret_value() == "new-secret"
+    assert catalog.load_account("alice", roles=("incoming",)).incoming.password.get_secret_value() == "new-secret"
     assert catalog.doctor().cleanup_required_bindings == 1
 
 
@@ -491,6 +872,7 @@ def test_disable_and_reenable_validate_secrets_outside_write_transaction(tmp_pat
     _add_account(catalog, outgoing=True)
     catalog.set_secret("alice", "incoming", "incoming-secret")
     catalog.set_secret("alice", "outgoing", "outgoing-secret")
+    transaction_states.clear()
     revision = catalog.show_account("alice").revision
     disabled_revision = catalog.disable_account("alice", expected_revision=revision)
 
@@ -514,11 +896,12 @@ def test_reenable_rechecks_revision_after_secret_resolution(tmp_path: Path) -> N
             connection.execute("UPDATE managed_account SET revision = revision + 1 WHERE name = 'alice'")
             connection.commit()
 
-    store = FakeSecretStore(on_get=race)
+    store = FakeSecretStore()
     catalog = _catalog(tmp_path, store)
     catalog_holder.append(catalog)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
+    store.on_get = race
     revision = catalog.show_account("alice").revision
     disabled_revision = catalog.disable_account("alice", expected_revision=revision)
 
@@ -545,7 +928,7 @@ def test_soft_remove_retains_identity_endpoints_bindings_and_projection(tmp_path
         )
         connection.commit()
 
-    catalog.soft_remove_account("alice", expected_revision=revision)
+    result = catalog.soft_remove_account("alice", expected_revision=revision)
 
     assert catalog.list_accounts() == []
     with pytest.raises(ManagedCatalogError, match="not found"):
@@ -559,11 +942,120 @@ def test_soft_remove_retains_identity_endpoints_bindings_and_projection(tmp_path
             (account_id,),
         ).fetchone()
         projection_count = connection.execute("SELECT COUNT(*) FROM mailbox_projection").fetchone()[0]
+        binding_status = connection.execute(
+            "SELECT status FROM secret_binding WHERE account_id = ?", (account_id,)
+        ).fetchone()[0]
     assert row[0] == 0
     assert row[1] is not None
     assert row[2:] == (1, 1)
     assert projection_count == 1
-    assert store.values
+    assert binding_status == "SUPERSEDED"
+    assert store.values == {}
+    assert result.revision == revision + 1
+    assert result.credentials_examined == 1
+    assert result.credentials_cleaned == 1
+    assert result.cleanup_required == 0
+
+
+def test_soft_remove_claims_every_candidate_state_before_bounded_external_cleanup(tmp_path: Path) -> None:
+    observed_statuses: list[str] = []
+    catalog_holder: list[ManagedCatalog] = []
+
+    def observe_delete(locator: str) -> None:
+        with closing(sqlite3.connect(catalog_holder[0].path)) as connection:
+            observed_statuses.append(
+                connection.execute("SELECT status FROM secret_binding WHERE opaque_locator = ?", (locator,)).fetchone()[
+                    0
+                ]
+            )
+
+    store = FakeSecretStore(on_delete=observe_delete)
+    catalog = _catalog(tmp_path, store)
+    catalog_holder.append(catalog)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "active-secret")
+    account_id, revision = catalog.account_revision("alice")
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        for status in ("PENDING", "CLEANUP_REQUIRED", "PENDING_REPAIR_REQUIRED"):
+            binding_id = f"binding-{status.lower()}"
+            locator = f"locator-{status.lower()}"
+            connection.execute(
+                """INSERT INTO secret_binding(id, account_id, role, status, opaque_locator)
+                   VALUES (?, ?, 'outgoing', ?, ?)""",
+                (binding_id, account_id, status, locator),
+            )
+            store.values[locator] = f"value-{status.lower()}"
+        connection.commit()
+
+    result = catalog.soft_remove_account("alice", expected_revision=revision)
+
+    assert observed_statuses == ["CLEANUP_REQUIRED"] * 4
+    assert result.credentials_examined == 4
+    assert result.credentials_cleaned == 4
+    assert result.cleanup_required == 0
+    assert store.values == {}
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM secret_binding WHERE account_id = ? AND status != 'SUPERSEDED'",
+                (account_id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_soft_remove_leaves_failed_deletes_globally_recoverable(tmp_path: Path) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "secret")
+    _, revision = catalog.account_revision("alice")
+    store.fail_delete = True
+
+    result = catalog.soft_remove_account("alice", expected_revision=revision)
+
+    assert result.credentials_cleaned == 0
+    assert result.cleanup_required == 1
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        assert (
+            connection.execute("SELECT status FROM secret_binding WHERE status != 'SUPERSEDED'").fetchone()[0]
+            == "CLEANUP_REQUIRED"
+        )
+    store.fail_delete = False
+    report = catalog.cleanup_credentials()
+    assert report.cleaned == 1
+    assert report.remaining == 0
+    assert store.values == {}
+
+
+def test_soft_remove_returns_committed_result_when_cleanup_bookkeeping_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "secret")
+    _, revision = catalog.account_revision("alice")
+    original_connection = catalog._connection
+    calls = 0
+
+    def fail_finalization():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise ManagedCatalogError("injected finalization failure")
+        return original_connection()
+
+    monkeypatch.setattr(catalog, "_connection", fail_finalization)
+
+    result = catalog.soft_remove_account("alice", expected_revision=revision)
+
+    assert result.revision == revision + 1
+    assert result.credentials_cleaned == 0
+    assert result.cleanup_required == 1
+    monkeypatch.setattr(catalog, "_connection", original_connection)
+    assert catalog.list_accounts() == []
 
 
 def test_secret_removal_detaches_binding_before_external_delete(tmp_path: Path) -> None:
@@ -585,12 +1077,45 @@ def test_secret_removal_detaches_binding_before_external_delete(tmp_path: Path) 
     revision = catalog.show_account("alice").revision
     disabled_revision = catalog.disable_account("alice", expected_revision=revision)
 
-    cleaned = catalog.remove_secret("alice", "incoming", expected_revision=disabled_revision)
+    result = catalog.remove_secret("alice", "incoming", expected_revision=disabled_revision)
 
-    assert cleaned is True
+    assert result.status == "removed"
+    assert result.revision == disabled_revision + 1
+    assert result.cleanup_required == 0
     assert observed_statuses == ["CLEANUP_REQUIRED"]
     assert catalog.show_account("alice").incoming_binding == "SUPERSEDED"
     assert catalog.show_account("alice").revision == disabled_revision + 1
+
+
+def test_secret_removal_reports_committed_cleanup_reconciliation_on_finalization_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "secret")
+    revision = catalog.show_account("alice").revision
+    disabled_revision = catalog.disable_account("alice", expected_revision=revision)
+    original_connection = catalog._connection
+    calls = 0
+
+    def fail_finalization():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise ManagedCatalogError("injected finalization failure")
+        return original_connection()
+
+    monkeypatch.setattr(catalog, "_connection", fail_finalization)
+
+    result = catalog.remove_secret("alice", "incoming", expected_revision=disabled_revision)
+
+    assert result.status == "removed_cleanup_required"
+    assert result.revision == disabled_revision + 1
+    assert result.cleanup_required == 1
+    monkeypatch.setattr(catalog, "_connection", original_connection)
+    assert catalog.show_account("alice").incoming_binding == "CLEANUP_REQUIRED"
 
 
 def test_secret_removal_rejects_enabled_account_without_external_delete(tmp_path: Path) -> None:
@@ -651,6 +1176,39 @@ def test_doctor_cleanup_claims_candidates_before_delete_and_never_deletes_active
     assert store.values == {active_locator: "active-secret"}
 
 
+def test_managed_catalog_fails_closed_without_secure_filesystem_primitives(monkeypatch, tmp_path):
+    monkeypatch.setattr("mcp_email_server.managed._SECURE_CATALOG_FILES_SUPPORTED", False)
+    parent = tmp_path / "managed"
+
+    with pytest.raises(ManagedCatalogSecurityError, match="platform cannot enforce"):
+        ManagedCatalog.initialize(parent / "catalog.sqlite3")
+
+    assert not parent.exists()
+
+
+def test_managed_catalog_rejects_symlinked_and_writable_ancestor_chain(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    with pytest.raises(ManagedCatalogSecurityError, match="parent chain"):
+        ManagedCatalog.initialize(linked / "catalog.sqlite3")
+    assert not (real / "catalog.sqlite3").exists()
+
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o777)
+    unsafe.chmod(0o777)
+    private = unsafe / "private"
+    private.mkdir(mode=0o700)
+    with pytest.raises(ManagedCatalogSecurityError, match="ancestor permissions"):
+        ManagedCatalog.initialize(private / "catalog.sqlite3")
+    assert not (private / "catalog.sqlite3").exists()
+
+
 def test_insecure_database_permissions_are_rejected(tmp_path):
     catalog = _catalog(tmp_path)
     if os.name != "posix":
@@ -658,6 +1216,65 @@ def test_insecure_database_permissions_are_rejected(tmp_path):
     catalog.path.chmod(0o644)
 
     with pytest.raises(ManagedCatalogSecurityError, match="owner-only"):
+        catalog.lifecycle()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
+def test_catalog_sidecar_and_lock_symlinks_are_rejected(tmp_path: Path, suffix: str) -> None:
+    catalog = _catalog(tmp_path)
+    entry = Path(f"{catalog.path}{suffix}")
+    entry.unlink(missing_ok=True)
+    target = catalog.path.parent / f"target-{suffix.removeprefix('.').removeprefix('-')}"
+    target.write_bytes(b"preserve")
+    target.chmod(0o600)
+    try:
+        entry.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    with pytest.raises(ManagedCatalogSecurityError, match="symlink"):
+        catalog.lifecycle()
+
+    assert target.read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
+def test_catalog_sidecar_and_lock_permissions_are_rejected(tmp_path: Path, suffix: str) -> None:
+    catalog = _catalog(tmp_path)
+    entry = Path(f"{catalog.path}{suffix}")
+    entry.unlink(missing_ok=True)
+    entry.write_bytes(b"unsafe")
+    entry.chmod(0o644)
+
+    with pytest.raises(ManagedCatalogSecurityError, match="owner-only"):
+        catalog.lifecycle()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
+def test_catalog_sidecar_and_lock_hard_links_are_rejected(tmp_path: Path, suffix: str) -> None:
+    catalog = _catalog(tmp_path)
+    entry = Path(f"{catalog.path}{suffix}")
+    entry.unlink(missing_ok=True)
+    target = catalog.path.parent / f"target-{suffix.removeprefix('.').removeprefix('-')}"
+    target.write_bytes(b"unsafe")
+    target.chmod(0o600)
+    try:
+        os.link(target, entry)
+    except OSError:
+        pytest.skip("hard links unavailable")
+
+    with pytest.raises(ManagedCatalogSecurityError, match="hard links"):
+        catalog.lifecycle()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
+def test_catalog_sidecar_and_lock_non_regular_entries_are_rejected(tmp_path: Path, suffix: str) -> None:
+    catalog = _catalog(tmp_path)
+    entry = Path(f"{catalog.path}{suffix}")
+    entry.unlink(missing_ok=True)
+    entry.mkdir()
+
+    with pytest.raises(ManagedCatalogSecurityError, match="regular file"):
         catalog.lifecycle()
 
 

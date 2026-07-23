@@ -32,13 +32,53 @@ Docker:
 make test
 ```
 
+## Local UI and package validation
+
+Changes to the management UI run three layers in the regular suite:
+
+1. React lint, TypeScript checking, unit tests, and deterministic Vite staging
+   through `make frontend`; the checked-in `frontend/embedded-assets.json` binds
+   the frontend sources and staging script to exact packaged asset hashes so
+   `make frontend-check` also works without Node or `frontend/dist`;
+2. backend route tests for one-time bootstrap, replay/expiry/concurrency/rate
+   limiting, exact Host/Origin, CSRF, Fetch Metadata, JSON/body bounds, strict
+   headers, logout/shutdown, explicit management DTOs, revision summaries, and
+   absence of mail/generic routes;
+3. distribution tests that inventory wheel and sdist assets, rebuild a wheel
+   from the sdist with failing `node`/`npm` shims, compare static hashes, install
+   the wheel into an isolated environment, and serve the authenticated UI on an
+   ephemeral loopback port.
+
+Critical browser flows are exercised with locked Playwright/Chromium against a
+real CLI process launched under a PTY: fragment removal and bootstrap exchange,
+cookie-session reload, stale-link replay, staging initialization, account
+creation/lifecycle, credential rotation and conflict review, import preview/apply,
+keyboard operation, secret-state clearing, logout, and process shutdown. Run:
+
+```bash
+cd frontend && npx playwright install chromium
+make test-browser
+```
+
+The browser gate runs on a POSIX host and requires the `script` PTY utility
+(`util-linux` on the CI runner). The test uses only synthetic credentials, a
+temporary file-backed test keyring,
+and private temporary catalog paths. Screenshots, video, and traces are disabled
+so one-time launch material cannot enter browser artifacts.
+
 ## Continuous integration
 
-The main GitHub Actions workflow runs `make test-e2e` once on `ubuntu-latest`
-with Python 3.13 for every pull request and push to `main`. The job has a
-10-minute outer timeout in addition to the per-request MCP deadline. The regular
-Python 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail
-is not repeated for every interpreter version.
+The main GitHub Actions workflow runs the locked frontend build and rejects
+staged-asset drift, installs locked Chromium, runs `make test-browser`, and runs
+`make test-e2e` once on `ubuntu-latest` for every pull request and push to
+`main`. The GreenMail job has a 10-minute outer
+timeout in addition to the per-request MCP deadline. The regular Python
+3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
+repeated for every interpreter version. The release workflow repeats the
+frontend, static, Python, docs, browser, package, and GreenMail gates. It then
+builds `dist/`, runs `make verify-dist` against those exact wheel/sdist bytes
+(including authenticated isolated-install and local-wheel `uvx` UI smokes), and
+publishes only that unchanged directory.
 
 Run the baseline locally before pushing relevant mail or stdio changes; the
 shared CI check is not a replacement for local diagnosis.

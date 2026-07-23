@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from mcp_email_server.application import limits as limits_module
+from mcp_email_server.application import metadata as metadata_module
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.metadata import (
     ListEmailMetadataQuery,
     MailboxMetadataSnapshot,
@@ -12,10 +17,11 @@ from mcp_email_server.application.metadata import (
     MetadataAccountSnapshot,
     MetadataProjectionError,
     MetadataProviderAccess,
+    MetadataProviderError,
     MetadataProviderObservationError,
     MetadataQueryService,
 )
-from mcp_email_server.emails.models import EmailMetadataPageResponse, MailboxInfo
+from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, MailboxInfo
 
 NOW = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
 
@@ -144,7 +150,7 @@ async def test_complete_provider_snapshot_is_persisted_and_returns_compatible_ex
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["legacy", "managed"])
-async def test_projection_write_failure_is_optional_only_in_legacy_mode(mode: str) -> None:
+async def test_projection_write_failure_preserves_validated_provider_evidence(mode: str) -> None:
     service, _accounts, _providers, _projections, provider, projection = _service(mode)
     provider.mailbox_snapshot.return_value = MailboxMetadataSnapshot(
         state=MailboxState(7, 2, 1),
@@ -153,14 +159,15 @@ async def test_projection_write_failure_is_optional_only_in_legacy_mode(mode: st
         complete=True,
         observed_at=NOW,
     )
-    projection.write_snapshot.side_effect = MetadataProjectionError("write failed")
+    projection.write_snapshot.side_effect = MetadataProjectionError("write failed with private path")
 
-    if mode == "managed":
-        with pytest.raises(MetadataProjectionError, match="write failed"):
-            await service.execute(ListEmailMetadataQuery(account_name="work"))
-    else:
-        response = await service.execute(ListEmailMetadataQuery(account_name="work"))
-        assert response.total == 1
+    response = await service.execute(ListEmailMetadataQuery(account_name="work"))
+
+    assert response.total == 1
+    assert [email.email_id for email in response.emails] == ["1"]
+    assert response.warnings == ["projection_write_failed"]
+    assert "private path" not in response.model_dump_json()
+    provider.list_metadata.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -282,3 +289,116 @@ async def test_query_bounds_are_enforced_before_account_or_provider_access(
         await service.execute(query)
     accounts.resolve.assert_not_called()
     providers.open.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        ListEmailMetadataQuery(account_name="work\x7f"),
+        ListEmailMetadataQuery(account_name="work", mailbox="INBOX\x00"),
+        ListEmailMetadataQuery(account_name="work", subject="subject\x1f"),
+        ListEmailMetadataQuery(account_name="work", from_address="from@example.test\x7f"),
+        ListEmailMetadataQuery(account_name="work", to_address="to@example.test\x00"),
+        ListEmailMetadataQuery(account_name="work", body="body\x1f"),
+        ListEmailMetadataQuery(account_name="work", text="text\x7f"),
+    ],
+)
+def test_metadata_controlled_query_fields_reject_c0_and_del(query: ListEmailMetadataQuery) -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        query.validate()
+
+
+def test_metadata_text_query_uses_utf8_byte_limit() -> None:
+    ListEmailMetadataQuery(
+        account_name="work",
+        text="é" * (APPLICATION_LIMITS.query_bytes // 2),
+    ).validate()
+
+    with pytest.raises(ValueError, match="exceeds"):
+        ListEmailMetadataQuery(
+            account_name="work",
+            text="é" * (APPLICATION_LIMITS.query_bytes // 2) + "a",
+        ).validate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("ceiling_delta", "valid"), [(1, True), (0, True), (-1, False)])
+async def test_metadata_serialized_result_limit_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    ceiling_delta: int,
+    valid: bool,
+) -> None:
+    service, _accounts, _providers, _projections, provider, _projection = _service()
+    response = _fallback_response("needle")
+    provider.list_metadata.return_value = response
+    serialized_size = len(response.model_dump_json().encode("utf-8"))
+    monkeypatch.setattr(
+        limits_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, serialized_response_bytes=serialized_size + ceiling_delta),
+    )
+
+    if valid:
+        assert await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle")) == response
+    else:
+        with pytest.raises(MetadataProviderObservationError, match="serialized result"):
+            await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("header_delta", "valid"), [(-1, True), (0, True), (1, False)])
+async def test_metadata_aggregate_header_limit_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    header_delta: int,
+    valid: bool,
+) -> None:
+    service, _accounts, _providers, _projections, provider, _projection = _service()
+    email_dict = _email(1)
+    response = EmailMetadataPageResponse(
+        page=1,
+        page_size=1,
+        before=None,
+        since=None,
+        subject="needle",
+        emails=[EmailMetadata.from_email(email_dict)],
+        total=1,
+    )
+    provider.list_metadata.return_value = response
+    item = response.emails[0]
+    header_size = (
+        len(item.email_id.encode("utf-8"))
+        + len((item.message_id or "").encode("utf-8"))
+        + len(item.subject.encode("utf-8"))
+        + len(item.sender.encode("utf-8"))
+        + sum(len(value.encode("utf-8")) for value in item.recipients)
+        + sum(len(value.encode("utf-8")) for value in item.attachments)
+    )
+    monkeypatch.setattr(
+        metadata_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, aggregate_header_bytes=header_size - header_delta),
+    )
+
+    if valid:
+        assert (await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle"))).total == 1
+    else:
+        with pytest.raises(MetadataProviderObservationError, match="aggregate size"):
+            await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle"))
+
+
+@pytest.mark.asyncio
+async def test_metadata_provider_fallback_has_application_deadline(monkeypatch) -> None:
+    monkeypatch.setattr(
+        metadata_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    service, _accounts, _providers, _projections, provider, _projection = _service()
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    provider.list_metadata.side_effect = hang
+
+    with pytest.raises(MetadataProviderError, match="timed out"):
+        await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle"))

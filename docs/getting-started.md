@@ -22,29 +22,26 @@ Run:
 uvx mcp-email-server@latest ui
 ```
 
-The command opens a local configuration interface in the browser. Add an email
-account with the following information:
+The foreground command binds exactly to `127.0.0.1` on an ephemeral port and
+opens one process-specific browser link. The link contains a one-time token in
+its URL fragment; the frontend removes the fragment before exchanging it for a
+local session. Keep the terminal open while using the UI. Use `--no-open` to
+suppress browser launch or `--port PORT` to request a fixed loopback port.
 
-- A unique account name used by MCP tools, such as `work`.
-- The display name and email address.
-- IMAP host, port, username, and password.
-- Optional SMTP host, port, username, and password.
+On first use:
 
-Leave the SMTP host empty to create an IMAP-only account. IMAP-only accounts can
-still modify mailboxes; see [IMAP-only accounts](guides.md#imap-only-accounts).
+1. initialize a staging catalog at a private local path such as
+   `~/.config/mcp-email-server/catalog.sqlite3`;
+2. add an account with its IMAP endpoint and optional SMTP endpoint;
+3. enter each credential in the password field;
+4. test connectivity, review policy and health, then validate and activate;
+5. explicitly select managed mode and restart every MCP client process.
 
-The UI covers common implicit-TLS IMAP and SMTP configurations. Use TOML or
-environment variables for advanced settings such as IMAP STARTTLS, custom
-certificate verification, allowlists, or a custom Sent mailbox.
-
-By default, settings are stored at:
-
-```text
-~/.config/mcp-email-server/config.toml
-```
-
-Credentials use the operating system keyring when a usable backend is
-available. See [Credential storage](security.md#credential-storage).
+Managed credentials require a usable operating-system keyring and never fall
+back to plaintext. The UI also supports account lifecycle, credential rotation
+and repair, policy, legacy-import preview/apply, doctor, and index health. It is
+not a mail client and never exposes message content. The same recovery and
+headless operations remain available through the managed CLI below.
 
 ## Configure an account with the managed CLI
 
@@ -64,8 +61,10 @@ mcp-email-server config select managed
 ```
 
 The account command prompts for the password without placing it in argv.
-Managed mode requires a working operating-system keyring and does not fall back
-to plaintext. Restart the MCP client after selection. See
+Managed mode requires a working operating-system keyring plus the POSIX
+owner/no-follow/locking primitives described in [Security](security.md), and does
+not fall back to plaintext or weaker filesystem checks. Restart the MCP client
+after selection. See
 [Managed CLI setup](configuration.md#managed-cli-setup) for SMTP, stdin,
 diagnostics, disablement, and switching back to legacy mode.
 
@@ -86,9 +85,9 @@ Add this server definition to the MCP client:
 
 Restart the client after changing its configuration.
 
-The UI also includes an installer for Claude Desktop on supported desktop
-platforms. The explicit JSON configuration above works with Claude Desktop and
-other clients that use the same `mcpServers` format.
+The explicit JSON configuration above works with Claude Desktop and other
+clients that use the same `mcpServers` format. Account and credential management
+is intentionally absent from MCP; use the local UI or your own terminal.
 
 ## Verify the connection
 
@@ -168,9 +167,9 @@ The password in this example remains plaintext in the MCP client configuration
 and process environment; `credential_storage` does not protect it. Prefer the
 client, CI, or container platform's secret injection mechanism. If a literal
 value is unavoidable, restrict the configuration file's permissions and keep
-it out of version control and diagnostic output. Do not use the UI or
-`add_email_account` in the same secret-bearing process unless persisting the
-effective environment settings is intended.
+it out of version control and diagnostic output. Environment-composited legacy
+accounts are runtime compatibility inputs; migrate them explicitly rather than
+pasting their secrets into chat or asking an MCP client to manage accounts.
 
 ## Next steps
 

@@ -78,10 +78,12 @@ MCP-specific ceilings include:
 - maximum target IDs, recipients, headers, and message bytes;
 - maximum warnings, failures, unknown outcomes, and error-detail bytes;
 - bounded string lengths for account/mailbox/path/query fields;
+- maximum effective account and recipient/sender policy discovery cardinality;
 - command/provider deadlines where safely enforceable.
 
 Before returning, the adapter serializes or estimates with the canonical encoder
-and rejects/reduces only according to the documented result policy. It cannot
+and rejects, reduces, or returns the explicit process-private oversized-result
+handoff owned by spec 03 according to the documented result policy. It cannot
 return an unbounded Python value merely because request cardinality was bounded.
 Errors are shorter than the normal response ceiling and never include raw
 provider responses, SQL, traceback, secret, body, or unintended local path.
@@ -150,8 +152,8 @@ model.
    locator, or management operation; `add_email_account` is absent.
 3. Tool visibility is static while current mode, lifecycle, policy, binding, and
    capability are enforced at invocation.
-4. Schema, application, provider-work, serialized-response, and error-detail
-   bounds are tested at, below, and above each limit.
+4. Schema, application, provider-work, serialized-response, spill-artifact, and
+   error-detail bounds are tested at, below, and above each limit.
 5. Partial results preserve order and distinguish known failure, unknown effect,
    provider success with local warning, and sent-copy outcome.
 6. Raw protocol tests prove stdout purity, initialization/catalog behavior,

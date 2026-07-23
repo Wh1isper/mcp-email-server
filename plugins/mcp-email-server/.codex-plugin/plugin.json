@@ -1,0 +1,23 @@
+{
+    "name": "mcp-email-server",
+    "version": "0.0.1",
+    "description": "Safe, non-secret setup and diagnostic guidance for mcp-email-server.",
+    "author": {
+        "name": "wh1isper",
+        "url": "https://github.com/Wh1isper"
+    },
+    "homepage": "https://mcp-email-server.wh1isper.top/",
+    "repository": "https://github.com/Wh1isper/mcp-email-server",
+    "license": "MIT",
+    "keywords": ["email", "mcp", "security"],
+    "skills": "./skills/",
+    "interface": {
+        "displayName": "Safe Email Operations",
+        "shortDescription": "Safe mcp-email-server setup handoff and diagnostics",
+        "longDescription": "Checks only bounded, non-secret application state and sends all credential entry to the user-operated interactive CLI or authenticated local UI.",
+        "developerName": "wh1isper",
+        "category": "Developer Tools",
+        "capabilities": ["Read"],
+        "websiteURL": "https://mcp-email-server.wh1isper.top/"
+    }
+}

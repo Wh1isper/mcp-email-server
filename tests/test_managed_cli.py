@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from click import Command, Group, Option
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from mcp_email_server.bootstrap import read_bootstrap
+from mcp_email_server.application.management import (
+    ConnectivityResult,
+    CredentialRepairResult,
+)
+from mcp_email_server.bootstrap import read_bootstrap, write_bootstrap
 from mcp_email_server.cli import app
-from mcp_email_server.managed import ManagedCatalog
+from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
 
 
 def _private_directory(path: Path) -> Path:
@@ -72,6 +79,24 @@ def test_cli_managed_setup_activation_and_selection(monkeypatch, tmp_path, fake_
     assert read_bootstrap(config_path).db_path == database
 
 
+def test_cli_can_select_legacy_when_selected_managed_catalog_is_missing(monkeypatch, tmp_path) -> None:
+    parent = _private_directory(tmp_path / "recovery")
+    config_path = parent / "config.toml"
+    missing_database = parent / "missing.sqlite3"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    write_bootstrap(mode="managed", db_path=missing_database, path=config_path)
+    runner = CliRunner()
+
+    status = runner.invoke(app, ["config", "status"])
+    selected = runner.invoke(app, ["config", "select", "legacy"])
+
+    assert status.exit_code == 0, status.output
+    assert "catalog_status=unavailable" in status.output
+    assert selected.exit_code == 0, selected.output
+    assert read_bootstrap(config_path).mode == "legacy"
+    assert not missing_database.exists()
+
+
 def test_config_init_does_not_select_managed(monkeypatch, tmp_path):
     parent = _private_directory(tmp_path / "app")
     config_path = parent / "config.toml"
@@ -85,7 +110,77 @@ def test_config_init_does_not_select_managed(monkeypatch, tmp_path):
     assert ManagedCatalog(database).lifecycle() == "STAGING"
 
 
-def test_select_managed_rejects_missing_active_secret(monkeypatch, tmp_path, fake_keyring):
+def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tmp_path) -> None:
+    parent = _private_directory(tmp_path / "policy-cli")
+    config_path = parent / "config.toml"
+    database = parent / "catalog.sqlite3"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    runner = CliRunner()
+    assert runner.invoke(app, ["config", "init", "--database", str(database)]).exit_code == 0
+
+    initial = runner.invoke(app, ["config", "policy"])
+    updated = runner.invoke(
+        app,
+        [
+            "config",
+            "update-policy",
+            "--expected-revision",
+            "1",
+            "--enable-attachment-download",
+            "--allowed-recipients",
+            "BOB@EXAMPLE.TEST, Alice <ALICE@example.test>",
+            "--allowed-senders",
+            "*@EXAMPLE.TEST,*@example.test",
+            "--report-blocked-mutations",
+        ],
+    )
+    health = runner.invoke(app, ["config", "index-health"])
+
+    assert initial.exit_code == 0, initial.output
+    assert "revision=1" in initial.output
+    assert "allowed_recipients=none" in initial.output
+    assert updated.exit_code == 0, updated.output
+    assert "revision 2" in updated.output
+    policy = ManagedCatalog(database).policy()
+    assert policy.allowed_recipients == ("bob@example.test", "alice@example.test")
+    assert policy.allowed_senders == ("*@example.test",)
+    assert health.exit_code == 0, health.output
+    assert "status=" in health.output
+    assert "pending_operations=" in health.output
+
+
+def test_cli_repair_and_failed_connectivity_have_typed_exit_semantics(monkeypatch) -> None:
+    management = MagicMock()
+    management.credentials.repair.return_value = CredentialRepairResult("active", 6, 0)
+    management.connectivity.execute = AsyncMock(
+        return_value=ConnectivityResult("incoming", "failed", "Connection test failed")
+    )
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+    runner = CliRunner()
+
+    repaired = runner.invoke(
+        app,
+        ["account", "repair-secret", "alice", "incoming", "resume", "--expected-revision", "5"],
+    )
+    failed = runner.invoke(app, ["account", "test", "alice", "incoming"])
+
+    assert repaired.exit_code == 0, repaired.output
+    assert repaired.output == "state=active\nrevision=6\ncleanup_required=0\n"
+    management.credentials.repair.assert_called_once_with(
+        "alice",
+        "incoming",
+        action="resume",
+        expected_revision=5,
+    )
+    assert failed.exit_code == 1
+    assert "Error: Connection test failed" in failed.output
+    assert "passed" not in failed.output
+
+
+def test_select_managed_validates_binding_metadata_without_resolving_secret(monkeypatch, tmp_path, fake_keyring):
     parent = _private_directory(tmp_path / "app")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -98,10 +193,11 @@ def test_select_managed_rejects_missing_active_secret(monkeypatch, tmp_path, fak
 
     selected = runner.invoke(app, ["config", "select", "managed"])
 
-    assert selected.exit_code == 1
-    assert "missing" in selected.output.lower()
+    assert selected.exit_code == 0
     assert "incoming-secret" not in selected.output
-    assert read_bootstrap(config_path).mode == "legacy"
+    assert read_bootstrap(config_path).mode == "managed"
+    with pytest.raises(ManagedCatalogError, match="missing"):
+        ManagedCatalog(database).load_account("alice", roles=("incoming",), require_active_catalog=True)
 
 
 def test_account_add_has_no_secret_argv_option() -> None:
@@ -110,13 +206,23 @@ def test_account_add_has_no_secret_argv_option() -> None:
     account = root.commands["account"]
     assert isinstance(account, Group)
     add = account.commands["add"]
+    repair = account.commands["repair-secret"]
+    config = root.commands["config"]
     assert isinstance(add, Command)
+    assert isinstance(repair, Command)
+    assert isinstance(config, Group)
+    assert {"policy", "update-policy", "index-health"} <= set(config.commands)
     option_names = {option for parameter in add.params if isinstance(parameter, Option) for option in parameter.opts}
+    repair_options = {
+        option for parameter in repair.params if isinstance(parameter, Option) for option in parameter.opts
+    }
 
     rejected = CliRunner().invoke(app, [*_base_account_args()[:-1], "--password", "secret"])
 
     assert "--password-stdin" in option_names
     assert "--password" not in option_names
+    assert "--password" not in repair_options
+    assert "--password-stdin" not in repair_options
     assert rejected.exit_code != 0
     assert "No such option" in rejected.output
 
@@ -347,15 +453,17 @@ api_key = "provider-secret"
     assert fake_keyring._store == keyring_before_preview
     assert config_path.read_bytes() == source_after_init
 
-    missing_confirmation = runner.invoke(app, ["config", "import-legacy", "--apply"])
+    missing_confirmation = runner.invoke(app, ["config", "import-legacy", "--apply"], input="NO\n")
     applied = runner.invoke(
         app,
-        ["config", "import-legacy", "--apply", "--confirm", "IMPORT"],
+        ["config", "import-legacy", "--apply"],
+        input="IMPORT\n",
     )
     keyring_after_apply = dict(fake_keyring._store)
     repeated = runner.invoke(
         app,
-        ["config", "import-legacy", "--apply", "--confirm", "IMPORT"],
+        ["config", "import-legacy", "--apply"],
+        input="IMPORT\n",
     )
 
     assert missing_confirmation.exit_code == 1
@@ -412,7 +520,8 @@ verify_ssl = true
     preview = runner.invoke(app, ["config", "import-legacy"])
     applied = runner.invoke(
         app,
-        ["config", "import-legacy", "--apply", "--confirm", "IMPORT"],
+        ["config", "import-legacy", "--apply"],
+        input="IMPORT\n",
     )
 
     assert preview.exit_code == 0, preview.output

@@ -131,7 +131,12 @@ Cleanup failure MUST NOT be hidden behind an unconditional success message.
 Credential removal first makes the binding unusable through a revisioned catalog
 transition, then attempts external deletion. Failure leaves cleanup-required
 state. Account soft removal disables all new provider work before cleaning role
-bindings and retains enough tombstone state for bounded repair.
+bindings and retains enough tombstone state for bounded repair. Once an
+authoritative activation, detachment, tombstone, repair-resume, or
+repair-rollback transaction commits, any keyring or follow-up SQLite
+finalization failure returns a typed committed result with conservative
+cleanup/reconciliation state; it never reports the mutation as uncommitted or
+encourages automatic replay.
 
 A caller cannot remove the last required credential while simultaneously
 claiming that an enabled account remains provider-ready; the service either

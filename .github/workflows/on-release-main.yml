@@ -11,45 +11,78 @@ jobs:
   set-version:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Export tag
         id: vars
         run: echo tag=${GITHUB_REF#refs/*/} >> $GITHUB_OUTPUT
         if: ${{ github.event_name == 'release' }}
 
-      - name: Update project version
-        run: |
-          sed -i "s/^version = \".*\"/version = \"$RELEASE_VERSION\"/" pyproject.toml
+      - name: Synchronize release version metadata
+        run: python3 dev/set_release_version.py "$RELEASE_VERSION"
         env:
           RELEASE_VERSION: ${{ steps.vars.outputs.tag }}
-        if: ${{ github.event_name == 'release' }}
 
-      - name: Upload updated pyproject.toml
+      - name: Upload synchronized release metadata
         uses: actions/upload-artifact@v4
         with:
-          name: pyproject-toml
-          path: pyproject.toml
+          name: release-metadata
+          include-hidden-files: true
+          path: |
+            pyproject.toml
+            .claude-plugin/marketplace.json
+            plugins/mcp-email-server/.codex-plugin/plugin.json
+            plugins/mcp-email-server/.claude-plugin/plugin.json
+            plugins/mcp-email-server/skills/safe-email-operations/references/installation.md
 
   publish:
     runs-on: ubuntu-latest
     needs: [set-version]
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
 
-      - name: Download updated pyproject.toml
+      - name: Download synchronized release metadata
         uses: actions/download-artifact@v4
         with:
-          name: pyproject-toml
+          name: release-metadata
 
-      - name: Build package
-        run: uv build
+      - name: Refresh release lock metadata
+        run: uv lock
 
-      - name: Publish package
+      - name: Build and verify the frontend
+        run: |
+          make frontend
+          git diff --exit-code -- frontend/embedded-assets.json mcp_email_server/web_ui/static
+
+      - name: Install the locked Chromium runtime
+        run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: Run release checks
+        run: |
+          make check
+          make test
+          make docs-test
+          make test-e2e
+          make test-browser
+
+      - name: Build release artifacts
+        run: make build
+
+      - name: Verify the exact release artifacts
+        run: make verify-dist
+
+      - name: Publish verified artifacts
         run: uv publish
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}

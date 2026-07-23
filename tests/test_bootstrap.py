@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
 from mcp_email_server.bootstrap import (
     BOOTSTRAP_VERSION,
     BootstrapError,
+    BootstrapRevisionError,
     ManagedModeWriteError,
     assert_legacy_writable,
     read_bootstrap,
@@ -93,6 +96,52 @@ def test_write_bootstrap_preserves_legacy_rows_and_is_private(tmp_path):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def test_bootstrap_write_uses_revisioned_compare_and_swap(tmp_path: Path) -> None:
+    parent = _private_directory(tmp_path / "private")
+    path = parent / "config.toml"
+
+    first = write_bootstrap(mode="legacy", path=path, expected_revision=0)
+    second = write_bootstrap(
+        mode="legacy",
+        db_path=parent / "catalog.sqlite3",
+        path=path,
+        expected_revision=first.revision,
+    )
+
+    assert first.revision == 1
+    assert second.revision == 2
+    before_conflict = path.read_bytes()
+    with pytest.raises(BootstrapError, match="changed"):
+        write_bootstrap(mode="managed", path=path, expected_revision=first.revision)
+    assert path.read_bytes() == before_conflict
+    assert read_bootstrap(path).revision == second.revision
+
+
+def test_concurrent_bootstrap_selectors_have_one_compare_and_swap_winner(tmp_path: Path) -> None:
+    parent = _private_directory(tmp_path / "private")
+    path = parent / "config.toml"
+    barrier = Barrier(2)
+
+    def select(database_name: str):
+        barrier.wait(timeout=5)
+        try:
+            return write_bootstrap(
+                mode="legacy",
+                db_path=parent / database_name,
+                path=path,
+                expected_revision=0,
+            )
+        except BootstrapRevisionError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(select, ("first.sqlite3", "second.sqlite3")))
+
+    assert sum(not isinstance(outcome, Exception) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, BootstrapRevisionError) for outcome in outcomes) == 1
+    assert read_bootstrap(path).revision == 1
+
+
 def test_managed_bootstrap_requires_private_file(tmp_path):
     parent = _private_directory(tmp_path / "private")
     path = parent / "config.toml"
@@ -115,6 +164,32 @@ def test_managed_bootstrap_requires_private_parent(tmp_path):
     if os.name == "posix":
         with pytest.raises(BootstrapError, match=r"parent.*group or other"):
             read_bootstrap(path)
+
+
+def test_bootstrap_write_rejects_unsafe_ancestor_before_file_creation(tmp_path: Path) -> None:
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o777)
+    unsafe.chmod(0o777)
+    private = unsafe / "private"
+    private.mkdir(mode=0o700)
+    path = private / "config.toml"
+
+    with pytest.raises(BootstrapError, match="ancestor permissions"):
+        write_bootstrap(mode="legacy", path=path)
+
+    assert not path.exists()
+
+
+def test_bootstrap_management_fails_closed_without_secure_filesystem_primitives(monkeypatch, tmp_path):
+    parent = tmp_path / "private"
+    path = parent / "config.toml"
+    monkeypatch.setattr("mcp_email_server.bootstrap._SECURE_BOOTSTRAP_FILES_SUPPORTED", False)
+
+    with pytest.raises(BootstrapError, match="platform cannot enforce"):
+        write_bootstrap(mode="legacy", path=path)
+
+    assert not path.exists()
+    assert not parent.exists()
 
 
 def test_legacy_writer_fence_rejects_managed_before_effect(tmp_path):

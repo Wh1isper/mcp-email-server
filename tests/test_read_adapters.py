@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+import mcp_email_server.adapters.reads as reads_adapter
 from mcp_email_server.adapters.reads import ClassicReadProvider, LocalArtifactWriter
 from mcp_email_server.application.reads import (
     AttachmentPayload,
@@ -60,6 +62,51 @@ async def test_content_adapter_forwards_snapshot_sender_policy_and_collapses_per
     assert first.kwargs["allowed_senders"] == ["allowed@example.test"]
     assert first.kwargs["body_offset"] == 10
     assert first.kwargs["max_body_length"] == 20
+
+
+@pytest.mark.asyncio
+async def test_content_adapter_stops_at_provider_time_aggregate_body_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reads_adapter,
+        "APPLICATION_LIMITS",
+        replace(reads_adapter.APPLICATION_LIMITS, body_bytes=10, aggregate_body_bytes=4),
+    )
+    handler = Mock()
+    handler.incoming_client.get_email_body_by_id = AsyncMock(
+        side_effect=[
+            {
+                "email_id": "1",
+                "message_id": None,
+                "subject": "One",
+                "from": "allowed@example.test",
+                "to": ["work@example.test"],
+                "date": datetime.now(UTC),
+                "body": "é",
+                "attachments": [],
+            },
+            {
+                "email_id": "2",
+                "message_id": None,
+                "subject": "Two",
+                "from": "allowed@example.test",
+                "to": ["work@example.test"],
+                "date": datetime.now(UTC),
+                "body": "éa",
+                "attachments": [],
+            },
+            RuntimeError("must not be fetched"),
+        ]
+    )
+
+    with pytest.raises(ReadProviderError, match="4 bytes in total"):
+        await ClassicReadProvider(handler).get_content(
+            GetEmailContentQuery("work", ("1", "2", "3")),
+            _account(),
+        )
+
+    assert handler.incoming_client.get_email_body_by_id.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -131,6 +178,20 @@ async def test_artifact_writer_writes_only_explicit_regular_file(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_artifact_writer_fails_closed_without_pinned_traversal(monkeypatch, tmp_path: Path) -> None:
+    destination = tmp_path / "download.txt"
+    monkeypatch.setattr("mcp_email_server.adapters.reads._SECURE_ATTACHMENT_WRITES_SUPPORTED", False)
+
+    with pytest.raises(PermissionError, match="platform cannot enforce"):
+        await LocalArtifactWriter().write(
+            str(destination),
+            AttachmentPayload("1", "download.txt", "text/plain", b"content"),
+        )
+
+    assert not destination.exists()
+
+
+@pytest.mark.asyncio
 async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp_path: Path) -> None:
     target = tmp_path / "target.txt"
     target.write_text("preserve")
@@ -166,3 +227,85 @@ async def test_artifact_writer_rejects_symlink_parent(tmp_path: Path) -> None:
         )
 
     assert not (real_parent / "download.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor contract")
+async def test_artifact_writer_atomically_overwrites_private_regular_target(tmp_path: Path) -> None:
+    destination = tmp_path / "download.txt"
+    destination.write_bytes(b"old")
+    destination.chmod(0o600)
+    previous_inode = destination.stat().st_ino
+
+    await LocalArtifactWriter().write(
+        str(destination),
+        AttachmentPayload("1", "download.txt", "text/plain", b"replacement"),
+    )
+
+    assert destination.read_bytes() == b"replacement"
+    assert destination.stat().st_ino != previous_inode
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".mcp-email-attachment-*.tmp"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor contract")
+async def test_artifact_writer_failed_atomic_replace_preserves_original(monkeypatch, tmp_path: Path) -> None:
+    destination = tmp_path / "download.txt"
+    destination.write_bytes(b"original")
+    destination.chmod(0o600)
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(PermissionError, match="could not be written"):
+        await LocalArtifactWriter().write(
+            str(destination),
+            AttachmentPayload("1", "download.txt", "text/plain", b"replacement"),
+        )
+
+    assert destination.read_bytes() == b"original"
+    assert not list(tmp_path.glob(".mcp-email-attachment-*.tmp"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor contract")
+async def test_artifact_writer_rejects_insecure_existing_target_and_hardlink(tmp_path: Path) -> None:
+    destination = tmp_path / "download.txt"
+    destination.write_bytes(b"preserve")
+    destination.chmod(0o644)
+
+    with pytest.raises(PermissionError, match="permissions are unsafe"):
+        await LocalArtifactWriter().write(
+            str(destination),
+            AttachmentPayload("1", "download.txt", "text/plain", b"replacement"),
+        )
+    assert destination.read_bytes() == b"preserve"
+
+    destination.chmod(0o600)
+    hardlink = tmp_path / "hardlink.txt"
+    os.link(destination, hardlink)
+    with pytest.raises(PermissionError, match="identity is unsafe"):
+        await LocalArtifactWriter().write(
+            str(destination),
+            AttachmentPayload("1", "download.txt", "text/plain", b"replacement"),
+        )
+    assert hardlink.read_bytes() == b"preserve"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor contract")
+async def test_artifact_writer_rejects_non_sticky_world_writable_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "unsafe"
+    parent.mkdir(mode=0o777)
+    parent.chmod(0o777)
+
+    with pytest.raises(PermissionError, match="permissions are unsafe"):
+        await LocalArtifactWriter().write(
+            str(parent / "download.txt"),
+            AttachmentPayload("1", "download.txt", "text/plain", b"content"),
+        )
+
+    assert not (parent / "download.txt").exists()

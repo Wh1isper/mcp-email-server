@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
 
+from pydantic import TypeAdapter
+
+from mcp_email_server.application.limits import (
+    APPLICATION_LIMITS,
+    validate_controlled_string,
+    validate_serialized_result,
+)
 from mcp_email_server.application.metadata import RuntimeMode
 from mcp_email_server.application.mutations import (
-    APPLICATION_LIMITS,
     BatchMutationOutcome,
     MarkReadCommand,
 )
@@ -16,11 +24,29 @@ from mcp_email_server.emails.models import (
 )
 from mcp_email_server.log import logger
 
-MAX_CONTENT_EMAIL_IDS = 500
+MAX_CONTENT_EMAIL_IDS = APPLICATION_LIMITS.content_email_ids
+ProviderResultT = TypeVar("ProviderResultT")
+
+
+async def _bounded_provider_call(operation: Awaitable[ProviderResultT]) -> ProviderResultT:
+    try:
+        async with asyncio.timeout(APPLICATION_LIMITS.provider_timeout_seconds):
+            return await operation
+    except TimeoutError:
+        raise ReadProviderError("provider request timed out") from None
 
 
 class ReadProviderError(RuntimeError):
     """A read provider failed without exposing transport-controlled detail."""
+
+
+@dataclass(frozen=True)
+class LargeResultReference:
+    output_file_path: str
+    output_bytes: int
+    output_sha256: str
+    output_media_type: str = "application/json"
+    output_lifetime: str = "until this server process exits"
 
 
 @dataclass(frozen=True)
@@ -47,10 +73,17 @@ class ListMailboxesQuery:
 
     def validate(self) -> None:
         _validate_account_name(self.account_name)
-        if not self.pattern or len(self.pattern.encode()) > APPLICATION_LIMITS.mailbox_bytes:
-            raise ValueError("mailbox pattern must be non-empty and within the size limit")
-        if len(self.reference.encode()) > APPLICATION_LIMITS.mailbox_bytes:
-            raise ValueError("mailbox reference exceeds the size limit")
+        validate_controlled_string(
+            self.pattern,
+            field_name="mailbox pattern",
+            maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
+        )
+        validate_controlled_string(
+            self.reference,
+            field_name="mailbox reference",
+            maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
+            allow_empty=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -84,10 +117,16 @@ class DownloadAttachmentCommand:
         _validate_account_name(self.account_name)
         _validate_email_ids((self.email_id,))
         _validate_mailbox(self.mailbox)
-        if not self.attachment_name or len(self.attachment_name.encode()) > APPLICATION_LIMITS.attachment_path_bytes:
-            raise ValueError("attachment_name must be non-empty and within the size limit")
-        if not self.save_path or len(self.save_path.encode()) > APPLICATION_LIMITS.attachment_path_bytes:
-            raise ValueError("save_path must be non-empty and within the size limit")
+        validate_controlled_string(
+            self.attachment_name,
+            field_name="attachment_name",
+            maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
+        )
+        validate_controlled_string(
+            self.save_path,
+            field_name="save_path",
+            maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
+        )
 
 
 class ReadAccountAuthority(Protocol):
@@ -129,18 +168,30 @@ class ArtifactWriter(Protocol):
     async def write(self, save_path: str, payload: AttachmentPayload) -> str: ...
 
 
+class LargeResultWriter(Protocol):
+    async def write(self, *, prefix: str, content: bytes) -> LargeResultReference: ...
+
+    async def aclose(self) -> None: ...
+
+
 class MarkReadExecutor(Protocol):
     async def execute(self, command: MarkReadCommand) -> BatchMutationOutcome: ...
 
 
 def _validate_account_name(value: str) -> None:
-    if not value or len(value.encode()) > APPLICATION_LIMITS.account_name_bytes:
-        raise ValueError("account_name must be non-empty and within the size limit")
+    validate_controlled_string(
+        value,
+        field_name="account_name",
+        maximum_bytes=APPLICATION_LIMITS.account_name_bytes,
+    )
 
 
 def _validate_mailbox(value: str) -> None:
-    if not value or len(value.encode()) > APPLICATION_LIMITS.mailbox_bytes:
-        raise ValueError("mailbox must be non-empty and within the size limit")
+    validate_controlled_string(
+        value,
+        field_name="mailbox",
+        maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
+    )
 
 
 def _validate_email_ids(values: tuple[str, ...]) -> None:
@@ -149,6 +200,59 @@ def _validate_email_ids(values: tuple[str, ...]) -> None:
     for value in values:
         if not value.isdigit() or value.startswith("0") or int(value) > APPLICATION_LIMITS.maximum_imap_uid:
             raise ValueError("email_ids must contain canonical positive decimal IMAP UIDs")
+
+
+_MAILBOX_LIST_ADAPTER = TypeAdapter(list[MailboxInfo])
+
+
+def _validate_mailbox_result(mailboxes: list[MailboxInfo]) -> None:
+    if len(mailboxes) > APPLICATION_LIMITS.mailboxes:
+        raise ReadProviderError(f"limit_exceeded: mailbox count exceeds {APPLICATION_LIMITS.mailboxes}")
+    total_bytes = sum(
+        len(mailbox.name.encode("utf-8"))
+        + len(mailbox.delimiter.encode("utf-8"))
+        + sum(len(flag.encode("utf-8")) for flag in mailbox.flags)
+        for mailbox in mailboxes
+    )
+    if total_bytes > APPLICATION_LIMITS.mailbox_result_bytes:
+        raise ReadProviderError(
+            f"limit_exceeded: mailbox result exceeds {APPLICATION_LIMITS.mailbox_result_bytes} bytes"
+        )
+    try:
+        validate_serialized_result(_MAILBOX_LIST_ADAPTER.dump_json(mailboxes))
+    except ValueError:
+        raise ReadProviderError("limit_exceeded: serialized mailbox result is too large") from None
+
+
+def _validate_content_result(response: EmailContentBatchResponse) -> bytes:
+    if len(response.failed_ids) > APPLICATION_LIMITS.warning_items:
+        raise ReadProviderError(f"limit_exceeded: failed ID count exceeds {APPLICATION_LIMITS.warning_items}")
+    body_sizes = [len(email.body.encode("utf-8")) for email in response.emails]
+    if any(size > APPLICATION_LIMITS.body_bytes for size in body_sizes):
+        raise ReadProviderError(f"limit_exceeded: an email body exceeds {APPLICATION_LIMITS.body_bytes} bytes")
+    if sum(body_sizes) > APPLICATION_LIMITS.aggregate_body_bytes:
+        raise ReadProviderError(
+            f"limit_exceeded: email bodies exceed {APPLICATION_LIMITS.aggregate_body_bytes} bytes in total"
+        )
+    header_bytes = sum(
+        len(email.email_id.encode("utf-8"))
+        + len((email.message_id or "").encode("utf-8"))
+        + len(email.subject.encode("utf-8"))
+        + len(email.sender.encode("utf-8"))
+        + sum(len(value.encode("utf-8")) for value in email.recipients)
+        + sum(len(value.encode("utf-8")) for value in email.attachments)
+        for email in response.emails
+    )
+    if header_bytes > APPLICATION_LIMITS.aggregate_header_bytes:
+        raise ReadProviderError(
+            f"limit_exceeded: email headers exceed {APPLICATION_LIMITS.aggregate_header_bytes} bytes in total"
+        )
+    serialized = response.model_dump_json().encode("utf-8")
+    if len(serialized) > APPLICATION_LIMITS.spill_file_bytes:
+        raise ReadProviderError(
+            f"limit_exceeded: content result exceeds {APPLICATION_LIMITS.spill_file_bytes} spill bytes"
+        )
+    return serialized
 
 
 class MailboxDiscoveryService:
@@ -160,7 +264,9 @@ class MailboxDiscoveryService:
         query.validate()
         account = self._accounts.resolve(query.account_name)
         access = self._providers.open(account.account_name, expected_mode=account.mode)
-        return await access.provider.list_mailboxes(query)
+        mailboxes = await _bounded_provider_call(access.provider.list_mailboxes(query))
+        _validate_mailbox_result(mailboxes)
+        return mailboxes
 
 
 class EmailContentService:
@@ -169,18 +275,54 @@ class EmailContentService:
         accounts: ReadAccountAuthority,
         providers: ReadProviderFactory,
         mark_read: MarkReadExecutor,
+        large_results: LargeResultWriter | None = None,
     ) -> None:
         self._accounts = accounts
         self._providers = providers
         self._mark_read = mark_read
+        self._large_results = large_results
+
+    async def _prepare_result(
+        self,
+        response: EmailContentBatchResponse,
+        serialized: bytes,
+    ) -> EmailContentBatchResponse:
+        try:
+            validate_serialized_result(serialized)
+        except ValueError:
+            pass
+        else:
+            return response
+        if self._large_results is None:
+            raise ReadProviderError("limit_exceeded: serialized content result is too large")
+        reference = await self._large_results.write(prefix="email-content", content=serialized)
+        preview = EmailContentBatchResponse(
+            emails=[],
+            requested_count=response.requested_count,
+            retrieved_count=response.retrieved_count,
+            failed_ids=response.failed_ids,
+            content_omitted=True,
+            output_file_path=reference.output_file_path,
+            output_media_type=reference.output_media_type,
+            output_bytes=reference.output_bytes,
+            output_sha256=reference.output_sha256,
+            output_lifetime=reference.output_lifetime,
+        )
+        try:
+            validate_serialized_result(preview.model_dump_json(exclude_none=True).encode())
+        except ValueError:
+            raise ReadProviderError("limit_exceeded: spill reference is too large") from None
+        return preview
 
     async def execute(self, query: GetEmailContentQuery) -> EmailContentBatchResponse:
         query.validate()
         account = self._accounts.resolve(query.account_name)
         access = self._providers.open(account.account_name, expected_mode=account.mode)
-        response = await access.provider.get_content(query, access.account)
+        response = await _bounded_provider_call(access.provider.get_content(query, access.account))
+        serialized = _validate_content_result(response)
+        prepared = await self._prepare_result(response, serialized)
         if not query.mark_as_read or not response.emails:
-            return response
+            return prepared
         mark_ids = tuple(dict.fromkeys(item.email_id for item in response.emails))
         try:
             for offset in range(0, len(mark_ids), APPLICATION_LIMITS.mutation_uids):
@@ -201,7 +343,7 @@ class EmailContentService:
                     break
         except Exception as exc:
             logger.warning(f"Content retrieval mark-as-read failed: {type(exc).__name__}")
-        return response
+        return prepared
 
 
 class AttachmentDownloadService:
@@ -227,7 +369,7 @@ class AttachmentDownloadService:
             raise PermissionError(
                 "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
             )
-        payload = await access.provider.fetch_attachment(command, access.account)
+        payload = await _bounded_provider_call(access.provider.fetch_attachment(command, access.account))
         if len(payload.content) > APPLICATION_LIMITS.attachment_bytes:
             raise ValueError(f"attachment exceeds {APPLICATION_LIMITS.attachment_bytes} bytes")
         current = self._accounts.resolve(command.account_name, expected_mode=access.account.mode)
@@ -236,13 +378,18 @@ class AttachmentDownloadService:
                 "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
             )
         saved_path = await self._artifacts.write(command.save_path, payload)
-        return AttachmentDownloadResponse(
+        response = AttachmentDownloadResponse(
             email_id=payload.email_id,
             attachment_name=payload.attachment_name,
             mime_type=payload.mime_type,
             size=len(payload.content),
             saved_path=saved_path,
         )
+        try:
+            validate_serialized_result(response.model_dump_json().encode("utf-8"))
+        except ValueError:
+            raise ReadProviderError("limit_exceeded: serialized attachment result is too large") from None
+        return response
 
 
 @dataclass(frozen=True)
@@ -258,9 +405,10 @@ class ReadServices:
         providers: ReadProviderFactory,
         mark_read: MarkReadExecutor,
         artifacts: ArtifactWriter,
+        large_results: LargeResultWriter | None = None,
     ) -> ReadServices:
         return cls(
             mailboxes=MailboxDiscoveryService(accounts, providers),
-            content=EmailContentService(accounts, providers, mark_read),
+            content=EmailContentService(accounts, providers, mark_read, large_results),
             attachments=AttachmentDownloadService(accounts, providers, artifacts),
         )

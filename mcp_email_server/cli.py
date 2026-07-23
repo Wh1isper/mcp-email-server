@@ -1,9 +1,10 @@
 import asyncio
 import enum
+import importlib.metadata
 import os
 import sys
 from pathlib import Path
-from typing import Never
+from typing import Annotated, Never
 
 import typer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -14,6 +15,9 @@ from mcp_email_server.app import mcp
 from mcp_email_server.application.management import (
     CreateAccountCommand,
     EndpointPatch,
+    EndpointSummary,
+    LegacyImportPlan,
+    ManagedPolicy,
     ManagementError,
     UpdateAccountCommand,
 )
@@ -23,7 +27,7 @@ from mcp_email_server.bootstrap import (
     assert_legacy_writable,
     freeze_process_bootstrap,
 )
-from mcp_email_server.config import EmailServer, Settings, delete_settings, get_settings
+from mcp_email_server.config import Settings, delete_settings, get_settings
 from mcp_email_server.runtime import get_application_runtime
 
 app = typer.Typer()
@@ -43,6 +47,11 @@ class ConfigMode(enum.StrEnum):
     managed = "managed"
 
 
+class CredentialRepairAction(enum.StrEnum):
+    resume = "resume"
+    rollback = "rollback"
+
+
 class ConnectionRole(enum.StrEnum):
     incoming = "incoming"
     outgoing = "outgoing"
@@ -53,6 +62,25 @@ LOOPBACK_ALLOWED_ORIGINS = ["http://127.0.0.1:*", "http://localhost:*", "http://
 WILDCARD_IPV4_BIND_HOST = "0.0.0.0"  # noqa: S104
 WILDCARD_BIND_HOSTS = {WILDCARD_IPV4_BIND_HOST, "::", ""}
 FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(importlib.metadata.version("mcp-email-server"))
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the installed application version and exit.",
+    ),
+) -> None:
+    """Run the email MCP server or its local management commands."""
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -208,6 +236,12 @@ def config_status() -> None:
     try:
         status = get_application_runtime().management.lifecycle.status()
         typer.echo(f"mode={status.mode}")
+        typer.echo(f"bootstrap_revision={status.bootstrap_revision}")
+        if status.catalog_problem is not None:
+            typer.echo("catalog_status=unavailable")
+            typer.echo(f"catalog_problem={status.catalog_problem}")
+        elif status.selected_catalog is not None:
+            typer.echo("catalog_status=available")
         if status.report is not None:
             typer.echo(f"lifecycle={status.report.lifecycle}")
             typer.echo(f"accounts={status.report.account_count}")
@@ -229,7 +263,85 @@ def config_doctor() -> None:
     typer.echo(f"enabled_accounts={report.enabled_account_count}")
     typer.echo(f"pending_bindings={report.pending_bindings}")
     typer.echo(f"cleanup_required_bindings={report.cleanup_required_bindings}")
+    typer.echo(f"repair_required_bindings={report.repair_required_bindings}")
     typer.echo("problems=" + (",".join(report.problems) if report.problems else "none"))
+
+
+@config_app.command("index-health")
+def config_index_health() -> None:
+    """Show bounded rebuildable metadata projection health."""
+    try:
+        health = get_application_runtime().management.index_health.get()
+    except ManagementError as exc:
+        _fail_cli(exc)
+    typer.echo(f"status={health.status}")
+    typer.echo(f"indexed_accounts={health.indexed_accounts}")
+    typer.echo(f"pending_operations={health.pending_operations}")
+    typer.echo("problems=" + (",".join(health.problems) if health.problems else "none"))
+
+
+@config_app.command("policy")
+def config_policy() -> None:
+    """Show the canonical managed catalog policy and revision."""
+    try:
+        policy = get_application_runtime().management.policy.get()
+    except ManagementError as exc:
+        _fail_cli(exc)
+    typer.echo(f"revision={policy.revision}")
+    typer.echo(f"enable_attachment_download={str(policy.enable_attachment_download).lower()}")
+    typer.echo("allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
+    typer.echo("allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
+    typer.echo(f"report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")
+
+
+@config_app.command("update-policy")
+def config_update_policy(
+    expected_revision: int = typer.Option(..., "--expected-revision", min=1),
+    enable_attachment_download: bool | None = typer.Option(
+        None,
+        "--enable-attachment-download/--disable-attachment-download",
+    ),
+    allowed_recipients: str | None = typer.Option(
+        None,
+        "--allowed-recipients",
+        help="Comma-separated addresses; pass an empty value to clear.",
+    ),
+    allowed_senders: str | None = typer.Option(
+        None,
+        "--allowed-senders",
+        help="Comma-separated patterns; pass an empty value to clear.",
+    ),
+    report_blocked_mutations: bool | None = typer.Option(
+        None,
+        "--report-blocked-mutations/--no-report-blocked-mutations",
+    ),
+) -> None:
+    """Revision-update managed policy, preserving options that are omitted."""
+    try:
+        service = get_application_runtime().management.policy
+        current = service.get()
+        policy = service.update(
+            ManagedPolicy(
+                revision=expected_revision,
+                enable_attachment_download=(
+                    current.enable_attachment_download
+                    if enable_attachment_download is None
+                    else enable_attachment_download
+                ),
+                allowed_recipients=(
+                    current.allowed_recipients if allowed_recipients is None else tuple(_split_csv(allowed_recipients))
+                ),
+                allowed_senders=(
+                    current.allowed_senders if allowed_senders is None else tuple(_split_csv(allowed_senders))
+                ),
+                report_blocked_mutations=(
+                    current.report_blocked_mutations if report_blocked_mutations is None else report_blocked_mutations
+                ),
+            )
+        )
+    except (ManagementError, ValueError) as exc:
+        _fail_cli(exc)
+    typer.echo(f"Updated managed policy at revision {policy.revision}.")
 
 
 @config_app.command("cleanup-credentials")
@@ -238,7 +350,12 @@ def config_cleanup_credentials(
 ) -> None:
     """Best-effort cleanup of bounded stale candidate locators."""
     try:
-        report = get_application_runtime().management.credentials.cleanup(limit=limit)
+        management = get_application_runtime().management
+        expected_revision = management.lifecycle.doctor().catalog_revision
+        report = management.credentials.cleanup(
+            limit=limit,
+            expected_revision=expected_revision,
+        )
     except ManagementError as exc:
         _fail_cli(exc)
     typer.echo(f"examined={report.examined}")
@@ -246,39 +363,78 @@ def config_cleanup_credentials(
     typer.echo(f"remaining={report.remaining}")
 
 
-@config_app.command("import-legacy")
-def config_import_legacy(
-    apply: bool = typer.Option(False, "--apply", help="Apply the previewed import to STAGING."),
-    confirm: str | None = typer.Option(None, "--confirm", help="Required value: IMPORT"),
-) -> None:
-    """Preview or explicitly apply stored TOML accounts without environment overlays."""
-    try:
-        service = get_application_runtime().management.legacy_import
-        if apply:
-            report = service.apply(confirmation=confirm or "")
-            plan = report.plan
+def _echo_legacy_import_plan(plan: LegacyImportPlan) -> None:
+    typer.echo(f"source_fingerprint={plan.source_fingerprint}")
+    typer.echo(f"target_revision={plan.target_revision}")
+    for item in plan.accounts:
+        credential_work = ",".join(item.missing_credentials) if item.missing_credentials else "none"
+        target_revision = item.expected_target_revision if item.expected_target_revision is not None else "absent"
+        typer.echo(
+            f"account={item.name} action={item.action} credentials={credential_work} target_revision={target_revision}"
+        )
+        source = item.source
+        typer.echo(
+            f"  identity={source.email_address} full_name={source.full_name!r} "
+            f"save_to_sent={str(source.save_to_sent).lower()} sent_folder={source.sent_folder_name or 'default'}"
+        )
+        incoming = source.incoming
+        typer.echo(
+            f"  incoming={incoming.host}:{incoming.port} user={incoming.user_name} "
+            f"ssl={str(incoming.use_ssl).lower()} starttls={str(incoming.start_ssl).lower()} "
+            f"verify_ssl={str(incoming.verify_ssl).lower()} secret_source={source.incoming_secret_source}"
+        )
+        if source.outgoing is not None:
+            outgoing = source.outgoing
+            typer.echo(
+                f"  outgoing={outgoing.host}:{outgoing.port} user={outgoing.user_name} "
+                f"ssl={str(outgoing.use_ssl).lower()} starttls={str(outgoing.start_ssl).lower()} "
+                f"verify_ssl={str(outgoing.verify_ssl).lower()} secret_source={source.outgoing_secret_source}"
+            )
         else:
-            report = None
-            plan = service.preview()
-    except ManagementError as exc:
-        _fail_cli(exc)
-    typer.echo("mode=" + ("apply" if apply else "preview"))
-    for account in plan.accounts:
-        suffix = f" credentials={','.join(account.missing_credentials)}" if account.missing_credentials else ""
-        typer.echo(f"account={account.name} action={account.action}{suffix}")
-    typer.echo(f"policy={plan.policy_action}")
+            typer.echo("  outgoing=none")
+    policy = plan.source_policy
+    typer.echo(f"policy={plan.policy_action} target_revision={plan.target_policy_revision}")
+    typer.echo(f"  attachment_download={str(policy.enable_attachment_download).lower()}")
+    typer.echo("  allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
+    typer.echo("  allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
+    typer.echo(f"  report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")
     for provider_name in plan.unsupported_provider_names:
         typer.echo(f"provider={provider_name} action=unsupported")
-    if report is not None:
-        typer.echo("created=" + (",".join(report.created) if report.created else "none"))
-        typer.echo("resumed=" + (",".join(report.resumed) if report.resumed else "none"))
+
+
+@config_app.command("import-legacy")
+def config_import_legacy(
+    apply: bool = typer.Option(False, "--apply", help="Review, confirm, and apply the import to STAGING."),
+) -> None:
+    """Preview or interactively apply stored TOML accounts without environment overlays."""
+    try:
+        service = get_application_runtime().management.legacy_import
+        plan = service.preview()
+    except ManagementError as exc:
+        _fail_cli(exc)
+    typer.echo("mode=" + ("apply-preview" if apply else "preview"))
+    _echo_legacy_import_plan(plan)
+    if not apply:
+        return
+    confirmation = typer.prompt("Type IMPORT to apply this exact preview")
+    try:
+        report = service.apply(
+            preview_token=plan.preview_token,
+            expected_revision=plan.target_revision,
+            confirmation=confirmation,
+        )
+    except ManagementError as exc:
+        _fail_cli(exc)
+    typer.echo("created=" + (",".join(report.created) if report.created else "none"))
+    typer.echo("resumed=" + (",".join(report.resumed) if report.resumed else "none"))
 
 
 @config_app.command("activate")
 def config_activate() -> None:
     """Validate the complete STAGING snapshot and mark it ACTIVE."""
     try:
-        get_application_runtime().management.lifecycle.activate()
+        lifecycle = get_application_runtime().management.lifecycle
+        lifecycle.activate(expected_revision=lifecycle.doctor().catalog_revision)
     except ManagementError as exc:
         _fail_cli(exc)
     typer.echo("Managed catalog is ACTIVE. Select managed mode separately when ready.")
@@ -288,7 +444,14 @@ def config_activate() -> None:
 def config_select(mode: ConfigMode) -> None:
     """Atomically select legacy or an already ACTIVE managed catalog."""
     try:
-        get_application_runtime().management.lifecycle.select(mode.value)
+        lifecycle = get_application_runtime().management.lifecycle
+        status = lifecycle.status()
+        expected_catalog_revision = status.report.catalog_revision if status.report is not None else None
+        lifecycle.select(
+            mode.value,
+            expected_bootstrap_revision=status.bootstrap_revision,
+            expected_catalog_revision=expected_catalog_revision,
+        )
     except ManagementError as exc:
         _fail_cli(exc)
     typer.echo(f"Selected {mode.value} mode. Restart all MCP server processes for the change to take effect.")
@@ -321,9 +484,8 @@ def account_add(
         outgoing_password = (
             _read_secret("Outgoing password", from_stdin=password_stdin) if smtp_host is not None else None
         )
-        incoming = EmailServer(
+        incoming = EndpointSummary(
             user_name=imap_user or email_address,
-            password=SecretStr(incoming_password),
             host=imap_host,
             port=imap_port,
             use_ssl=imap_ssl,
@@ -331,9 +493,8 @@ def account_add(
             verify_ssl=imap_verify_ssl,
         )
         outgoing = (
-            EmailServer(
+            EndpointSummary(
                 user_name=smtp_user or email_address,
-                password=SecretStr(outgoing_password),
                 host=smtp_host,
                 port=smtp_port,
                 use_ssl=smtp_ssl,
@@ -343,22 +504,27 @@ def account_add(
             if smtp_host is not None and outgoing_password is not None
             else None
         )
-        get_application_runtime().management.accounts.create(
+        management = get_application_runtime().management
+        result = management.accounts.create(
             CreateAccountCommand(
+                expected_catalog_revision=management.lifecycle.doctor().catalog_revision,
                 name=name,
                 full_name=full_name,
                 email_address=email_address,
                 incoming=incoming,
-                incoming_secret=incoming_password,
+                incoming_secret=SecretStr(incoming_password),
                 outgoing=outgoing,
-                outgoing_secret=outgoing_password,
+                outgoing_secret=SecretStr(outgoing_password) if outgoing_password is not None else None,
                 save_to_sent=save_to_sent,
                 sent_folder_name=sent_folder,
             )
         )
     except (ManagementError, ValueError) as exc:
         _fail_cli(exc)
-    typer.echo(f"Added managed account '{name}'.")
+    states = [f"incoming={result.incoming.status}"]
+    if result.outgoing is not None:
+        states.append(f"outgoing={result.outgoing.status}")
+    typer.echo(f"Added managed account '{name}' ({', '.join(states)}).")
 
 
 @account_app.command("set-secret")
@@ -370,10 +536,20 @@ def account_set_secret(
     """Install or rotate one managed credential through an immutable candidate."""
     try:
         secret = _read_secret(f"{role.value.title()} password", from_stdin=password_stdin)
-        get_application_runtime().management.credentials.set(name, role.value, secret)
+        management = get_application_runtime().management
+        expected_revision = management.accounts.show(name).revision
+        result = management.credentials.set(
+            name,
+            role.value,
+            secret,
+            expected_revision=expected_revision,
+        )
     except ManagementError as exc:
         _fail_cli(exc)
-    typer.echo(f"Updated {role.value} credential for '{name}'.")
+    typer.echo(
+        f"Credential result for '{name}' role={role.value}: {result.status}"
+        + (f" cleanup_required={result.cleanup_required}" if result.cleanup_required else "")
+    )
 
 
 @account_app.command("list")
@@ -513,14 +689,39 @@ def account_remove(
 ) -> None:
     """Soft-remove an account while retaining identity and cleanup state."""
     try:
-        revision = get_application_runtime().management.accounts.soft_remove(
+        result = get_application_runtime().management.accounts.soft_remove(
             name,
             expected_revision=expected_revision,
             confirmation=confirm,
         )
     except ManagementError as exc:
         _fail_cli(exc)
-    typer.echo(f"Soft-removed managed account '{name}' at revision {revision}.")
+    typer.echo(
+        f"Soft-removed managed account '{name}' at revision {result.revision}; "
+        f"credentials cleaned={result.credentials_cleaned}, cleanup_required={result.cleanup_required}."
+    )
+
+
+@account_app.command("repair-secret")
+def account_repair_secret(
+    name: str,
+    role: ConnectionRole,
+    action: CredentialRepairAction,
+    expected_revision: int = typer.Option(..., "--expected-revision", min=1),
+) -> None:
+    """Explicitly resume or roll back one ambiguous credential candidate."""
+    try:
+        result = get_application_runtime().management.credentials.repair(
+            name,
+            role.value,
+            action=action.value,
+            expected_revision=expected_revision,
+        )
+    except ManagementError as exc:
+        _fail_cli(exc)
+    typer.echo(f"state={result.status}")
+    typer.echo(f"revision={result.revision}")
+    typer.echo(f"cleanup_required={result.cleanup_required}")
 
 
 @account_app.command("remove-secret")
@@ -531,24 +732,30 @@ def account_remove_secret(
 ) -> None:
     """Detach and remove one credential from a disabled account."""
     try:
-        cleaned = get_application_runtime().management.credentials.remove(
+        result = get_application_runtime().management.credentials.remove(
             name,
             role.value,
             expected_revision=expected_revision,
         )
     except ManagementError as exc:
         _fail_cli(exc)
-    status = "removed" if cleaned else "detached; cleanup required"
-    typer.echo(f"{role.value.title()} credential for '{name}' was {status}.")
+    typer.echo(f"state={result.status}")
+    typer.echo(f"revision={result.revision}")
+    typer.echo(f"cleanup_required={result.cleanup_required}")
 
 
 @account_app.command("test")
-def account_test(name: str, role: ConnectionRole = ConnectionRole.incoming) -> None:
+def account_test(
+    name: str,
+    role: Annotated[ConnectionRole, typer.Argument()] = ConnectionRole.incoming,
+) -> None:
     """Test managed IMAP or SMTP connectivity outside SQLite transactions."""
     try:
-        asyncio.run(get_application_runtime().management.connectivity.execute(name, role.value))
-    except ManagementError as exc:
+        result = asyncio.run(get_application_runtime().management.connectivity.execute(name, role.value))
+    except (ManagementError, ValueError) as exc:
         _fail_cli(exc)
+    if result.status != "ok":
+        _fail_cli(ManagementError(result.message))
     typer.echo(f"{role.value.title()} connectivity test passed for '{name}'.")
 
 
@@ -588,14 +795,17 @@ def streamable_http(
 
 
 @app.command()
-def ui():
-    try:
-        assert_legacy_writable("open the legacy configuration UI")
-    except ManagedModeWriteError as exc:
-        _fail_cli(exc)
-    from mcp_email_server.ui import main as ui_main
+def ui(
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open the bootstrap URL in a browser."),
+    port: int = typer.Option(0, "--port", min=0, max=65535, help="Loopback port; 0 selects an ephemeral port."),
+) -> None:
+    """Run the foreground loopback-only management UI."""
+    from mcp_email_server.web_ui import run_local_ui
 
-    ui_main()
+    try:
+        run_local_ui(no_open=no_open, port=port)
+    except (OSError, RuntimeError, ValueError) as exc:
+        _fail_cli(exc)
 
 
 @app.command()

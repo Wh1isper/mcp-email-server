@@ -14,8 +14,9 @@ surface.
 
 The UI MUST provide the managed management plane:
 
-- inspect current mode, selected catalog, restart requirement, and bounded
-  catalog status;
+- inspect current mode, bootstrap revision, selected catalog, restart
+  requirement, and bounded catalog status, including an unavailable-catalog
+  recovery state that can select legacy without opening that catalog;
 - initialize a staging catalog, validate/activate it, and explicitly select it;
 - list/show/create/edit managed accounts;
 - disable, re-enable, and soft-remove accounts with confirmation;
@@ -44,8 +45,15 @@ mcp-email-server ui [--no-open] [--port PORT]
   option exists.
 - Default port is `0` (OS-assigned ephemeral). A fixed valid port may be chosen
   explicitly.
+- The process freezes bootstrap mode and selected catalog before constructing UI
+  state or binding its listener. Freezing does not open the catalog, so a missing
+  or corrupt selected catalog remains recoverable through explicit legacy
+  selection; the resulting durable change reports that restart is required.
 - The process runs in the foreground and prints a bounded local launch message.
 - Unless `--no-open` is set, it opens one bootstrap URL in the default browser.
+- With `--no-open`, or if browser launch reports failure, the one-time URL is
+  written only to an attached stdout/stderr TTY. If neither stream is a TTY, the
+  process fails before serving rather than leaking the token to a pipe or log.
 - SIGINT/SIGTERM, startup failure, or normal exit closes the server, invalidates
   all sessions/tokens, and releases packaged-resource contexts.
 - No environment variable or framework default may enable external binding,
@@ -130,8 +138,10 @@ Requests and responses have bounded typed schemas. Secret values appear only in
 a protected mutation request body, are passed once to the application service,
 and are never echoed.
 
-Every mutable request includes the expected aggregate revision. A stale revision
-returns HTTP conflict with a bounded, non-secret current summary. The frontend
+Every mutable request includes the expected aggregate revision. Catalog
+selection carries the bootstrap revision separately from the optional target
+catalog revision. A stale revision returns HTTP conflict with a bounded,
+non-secret current summary. The frontend
 shows the conflict and requires review; it does not automatically replay the
 mutation. Destructive or externally meaningful actions show precise
 confirmation and the account/catalog affected.
@@ -170,7 +180,8 @@ MCP-App, or unintended source-map files enter artifacts.
 ## Acceptance Criteria
 
 1. CLI tests prove only `--no-open` and `--port` are exposed, bind is exact
-   `127.0.0.1`, default port is ephemeral, and no share/debug/daemon path exists.
+   `127.0.0.1`, default port is ephemeral, no share/debug/daemon path exists,
+   and manual token handoff requires an attached TTY.
 2. Backend security tests cover bootstrap success, replay, expiry, concurrency,
    rate limiting, timing-safe comparison, process-unique routes/cookies,
    logout/restart, exact Host/Origin, CSRF, Fetch Metadata, JSON-only mutations,
@@ -188,5 +199,5 @@ MCP-App, or unintended source-map files enter artifacts.
 7. Frontend lint/typecheck/unit/build pass from the lockfile and generated assets
    are reproducible/stale-free.
 8. Wheel, sdist, wheel rebuilt from sdist without Node, isolated install, and
-   local `uvx --no-open --port 0` all serve a functioning authenticated UI with
-   identical required asset hashes.
+   local `uvx --no-open --port 0` under a PTY all serve a functioning
+   authenticated UI with identical required asset hashes.

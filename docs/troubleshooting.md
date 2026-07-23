@@ -82,10 +82,13 @@ Managed startup requires all of the following:
 - readable active credentials in the same operating-system keyring session.
 
 The server deliberately does not fall back to TOML accounts when any of these
-checks fails. Correct the reported category, or deliberately run
-`mcp-email-server config select legacy` and restart. If the bootstrap itself is
-unparseable, repair or restore it manually; `reset` cannot safely infer its mode
-and therefore does not unlink it.
+checks fails. `config status` still returns bounded bootstrap state and
+`catalog_status=unavailable` when the selected database is missing, corrupt,
+incompatible, or insecure. In that state, deliberately run `mcp-email-server
+config select legacy` and restart; this recovery transition uses a revisioned
+bootstrap compare-and-swap and does not open the failed catalog. If the bootstrap
+itself is unparseable, repair or restore it manually; `reset` cannot safely infer
+its mode and therefore does not unlink it.
 
 A `PENDING` binding usually means a prior keyring write failed. Restore keyring
 access and retry with:
@@ -106,6 +109,21 @@ Cleanup claims only stale pending or cleanup-required rows and never removes an
 active credential. The account remains usable after a rotation cleanup failure;
 a credential detachment instead leaves the disabled account incomplete until a
 new secret is installed.
+
+`PENDING_REPAIR_REQUIRED` means the keyring write may have completed but could
+not be confirmed. Inspect the account revision, then explicitly choose one path:
+
+```bash
+mcp-email-server account repair-secret ACCOUNT incoming resume --expected-revision REV
+mcp-email-server account repair-secret ACCOUNT incoming rollback --expected-revision REV
+```
+
+Resume first verifies the staged value exists; rollback claims it for bounded
+cleanup. Neither command accepts a replacement secret or guesses which outcome
+occurred. Once either repair transaction commits, a later keyring or SQLite
+finalization failure returns `active_cleanup_required` or
+`rolled_back_cleanup_required` with the new revision instead of reporting an
+uncommitted error. Reconcile the cleanup state; do not replay the old revision.
 
 ## A managed write reports a revision conflict
 
@@ -152,30 +170,40 @@ every requested UID. The request is rejected rather than expanding a UID range
 or returning an incorrect page; retry after the mailbox is stable or report the
 provider issue.
 
-## The UI cannot load accounts
+## The UI cannot load or authenticate
 
-The browser UI is a legacy configuration surface. While managed mode is
-selected, it exits with guidance to use the managed `config` and `account` CLI
-commands instead.
+Run `mcp-email-server ui` in a visible terminal and keep that foreground process
+running. Open only the fresh browser link launched by that process. If browser
+launch fails, the command prints the one-time URL to that attached terminal. To
+suppress browser launch deliberately, use `--no-open` in a real TTY; redirected
+or noninteractive stdout/stderr is rejected and never receives the token. A bootstrap
+link is single-use and expires after five minutes; replay, a stale tab after
+restart, `localhost` substitution, a foreign Origin, or a copied URL whose
+fragment was stripped produces the same bounded recovery message. Close the tab
+and launch the command again rather than editing the process route or cookie.
 
-If the legacy UI displays a keyring error, the TOML file probably contains
-`__KEYRING__` markers whose secrets cannot currently be read. Unlock or restore
-the operating system keyring, approve any pending Keychain prompt, or migrate
-the credentials to plaintext after keyring access is restored:
+The server accepts only exact `127.0.0.1:<actual-port>` requests. A proxy,
+browser extension, security product, or custom hosts rewrite that changes Host,
+Origin, Fetch Metadata, JSON content type, cookie, or CSRF headers is rejected.
+There is no supported remote, wildcard, CORS, or shared-link mode. Managed
+catalog/bootstrap operations, attachment writes, and oversized spill require
+the documented POSIX filesystem primitives. An unsupported-platform error is a
+fail-closed boundary, not a permissions setting that can be bypassed.
+
+If status loads but managed operations fail, run the equivalent bounded CLI
+checks in the same operating-system login session:
 
 ```bash
-mcp-email-server migrate-credentials --to plaintext
+mcp-email-server config status
+mcp-email-server config doctor
 ```
 
-If the stored configuration is no longer recoverable, reset it and re-add the
-accounts:
-
-```bash
-mcp-email-server reset
-```
-
-`reset` removes all persistently configured accounts and performs best-effort
-keyring cleanup.
+A locked or unavailable keyring prevents credential installation and may leave
+`PENDING_REPAIR_REQUIRED`. Restore keyring access, refresh the account, then use
+the UI's explicit Resume or Roll back action. `CLEANUP_REQUIRED` instead means
+the active result is known but an old candidate remains; run bounded cleanup.
+Revision conflicts are not retried automatically: inspect the displayed current
+summary before resubmitting.
 
 ## Keychain repeatedly asks for permission
 
@@ -357,10 +385,14 @@ resolving secrets or writing, and it will not overwrite the destination. Use a
 fresh staging database or reconcile the destination manually.
 
 Preview intentionally ignores environment-only accounts and never accesses the
-keyring. Apply reads required stored credentials. If apply reports a missing
-credential, unlock or repair the legacy keyring entry and repeat the confirmed
-apply. Matching account rows are reused and only missing bindings are resumed;
-the stored TOML and legacy keyring entries are never deleted.
+keyring. Run `config import-legacy --apply`, review the full non-secret plan, and
+type `IMPORT` only when prompted. Apply reads required stored credentials. If it
+reports a missing credential, unlock or repair the legacy keyring entry and
+repeat the reviewed apply. A stale-preview error means the source or an exact
+catalog, policy, or account target revision changed; create and review a new
+preview rather than retrying an old confirmation. Matching account rows are
+reused and only missing bindings are resumed; the stored TOML and legacy keyring
+entries are never deleted.
 
 ## Duplicate account name
 

@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_email_server.adapters.mutations import ClassicMutationProvider
+from mcp_email_server.application import mutations as mutations_module
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     ArchiveCommand,
@@ -19,9 +21,11 @@ from mcp_email_server.application.mutations import (
     MutationAccountSnapshot,
     MutationProjectionError,
     MutationProviderAccess,
+    MutationProviderError,
     MutationServices,
     SaveToMailboxCommand,
     SendCommand,
+    SendMutationOutcome,
     SentCopyMutationOutcome,
     TargetMutationOutcome,
 )
@@ -68,6 +72,24 @@ def _services(
     )
 
 
+def test_unknown_outcome_models_always_require_reconciliation() -> None:
+    batch = BatchMutationOutcome((TargetMutationOutcome("1", "unknown"),))
+    append = AppendMutationOutcome("unknown", "", mailbox="Drafts")
+    delivery = SendMutationOutcome(
+        (TargetMutationOutcome("alice@example.test", "unknown"),),
+        SentCopyMutationOutcome("skipped"),
+    )
+    sent_copy = SendMutationOutcome(
+        (TargetMutationOutcome("alice@example.test", "succeeded"),),
+        SentCopyMutationOutcome("unknown", "Sent"),
+    )
+
+    assert batch.reconciliation_needed is True
+    assert append.reconciliation_needed is True
+    assert delivery.reconciliation_needed is True
+    assert sent_copy.reconciliation_needed is True
+
+
 @pytest.mark.asyncio
 async def test_mark_read_unknown_is_not_replayed_and_invalidates_projection() -> None:
     provider = MagicMock()
@@ -83,8 +105,9 @@ async def test_mark_read_unknown_is_not_replayed_and_invalidates_projection() ->
 
     assert result.targets("succeeded") == ["9"]
     assert result.targets("unknown") == ["10"]
+    assert result.reconciliation_needed is True
     provider.mark_read.assert_awaited_once()
-    factory.open.assert_called_once_with("primary", expected_mode="managed")
+    factory.open.assert_called_once_with("primary", expected_mode="managed", purpose="incoming")
     projection.invalidate.assert_awaited_once_with(("INBOX",))
 
 
@@ -146,6 +169,7 @@ async def test_save_unknown_is_returned_once_and_marks_mailbox_stale() -> None:
     )
 
     assert result.status == "unknown"
+    assert result.reconciliation_needed is True
     provider.save_to_mailbox.assert_awaited_once()
     factory.open.assert_called_once()
     projection.invalidate.assert_awaited_once_with(("Drafts",))
@@ -194,6 +218,7 @@ async def test_send_preserves_partial_delivery_and_separate_sent_copy() -> None:
     assert result.recipients("succeeded") == ["accepted@example.test"]
     assert result.recipients("failed") == ["rejected@example.test"]
     assert result.sent_copy.status == "unknown"
+    assert result.reconciliation_needed is True
     assert factory.open.call_count == 2
     provider.save_sent_copy.assert_awaited_once_with(sent_message, ())
     projection.invalidate.assert_awaited_once_with(("Sent",))
@@ -242,7 +267,7 @@ async def test_production_send_path_hides_bcc_from_smtp_and_adds_it_only_to_fres
     imap.select.return_value = ("OK", [])
     imap.append.return_value = ("OK", [])
     imap.protocol = SimpleNamespace(capabilities=("IMAP4rev1",), capability=AsyncMock())
-    sent_handler.outgoing_client._connect_imap_server = AsyncMock(return_value=imap)
+    sent_handler.incoming_client._connect_imap_server = AsyncMock(return_value=imap)
 
     with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
         result = await services.send.execute(
@@ -417,3 +442,192 @@ async def test_recipient_control_characters_fail_before_provider_access() -> Non
         )
 
     factory.open.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        MarkReadCommand("primary\x7f", ("1",)),
+        SendCommand("primary", ("to@example.test",), "subject\x00", "body"),
+        SendCommand(
+            "primary",
+            ("to@example.test",),
+            "subject",
+            "body",
+            in_reply_to="message\x1f",
+        ),
+        SaveToMailboxCommand(
+            "primary",
+            ("to@example.test",),
+            "subject",
+            "body",
+            attachments=("attachment\x7f.txt",),
+        ),
+        SaveToMailboxCommand(
+            "primary",
+            ("to@example.test",),
+            "subject",
+            "body",
+            flags=("flag\x00",),
+        ),
+    ],
+)
+def test_mutation_controlled_fields_reject_c0_and_del(
+    command: MarkReadCommand | SendCommand | SaveToMailboxCommand,
+) -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        command.validate()
+
+
+def test_mutation_subject_uses_utf8_byte_limit() -> None:
+    SendCommand(
+        "primary",
+        ("to@example.test",),
+        "é" * (APPLICATION_LIMITS.subject_bytes // 2),
+        "body",
+    ).validate()
+
+    with pytest.raises(ValueError, match="exceeds"):
+        SendCommand(
+            "primary",
+            ("to@example.test",),
+            "é" * (APPLICATION_LIMITS.subject_bytes // 2) + "a",
+            "body",
+        ).validate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detail", "valid"),
+    [("aaa", True), ("éé", True), ("ééa", False)],
+)
+async def test_mutation_error_detail_limit_uses_utf8_bytes_at_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    detail: str,
+    valid: bool,
+) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, error_detail_bytes=4),
+    )
+    provider = MagicMock()
+    provider.delete = AsyncMock(return_value=_batch(TargetMutationOutcome("1", "failed", detail)))
+    services, _, _, _ = _services(provider=provider)
+
+    if valid:
+        assert (await services.delete.execute(DeleteCommand("primary", ("1",)))).outcomes[0].detail == detail
+    else:
+        with pytest.raises(MutationProviderError, match="limit_exceeded"):
+            await services.delete.execute(DeleteCommand("primary", ("1",)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("outcome_count", "valid"), [(1, True), (2, True), (3, False)])
+async def test_mutation_warning_item_limit_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome_count: int,
+    valid: bool,
+) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, warning_items=2),
+    )
+    provider = MagicMock()
+    provider.delete = AsyncMock(
+        return_value=_batch(*(TargetMutationOutcome(str(uid), "failed") for uid in range(1, outcome_count + 1)))
+    )
+    services, _, _, _ = _services(provider=provider)
+
+    if valid:
+        assert len((await services.delete.execute(DeleteCommand("primary", ("1",)))).outcomes) == outcome_count
+    else:
+        with pytest.raises(MutationProviderError, match="limit_exceeded"):
+            await services.delete.execute(DeleteCommand("primary", ("1",)))
+
+
+async def _hang_provider(*_args, **_kwargs):
+    await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow", ["mark_read", "save", "send"])
+async def test_mutation_timeout_is_unknown_and_never_replayed(monkeypatch, workflow: str) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    provider = MagicMock()
+    services, _, _, projection = _services(provider=provider)
+
+    if workflow == "mark_read":
+        provider.mark_read = AsyncMock(side_effect=_hang_provider)
+        result = await services.mark_read.execute(MarkReadCommand("primary", ("7", "8")))
+        assert result.targets("unknown") == ["7", "8"]
+        assert result.reconciliation_needed is True
+        provider.mark_read.assert_awaited_once()
+        projection.invalidate.assert_awaited_once_with(("INBOX",))
+    elif workflow == "save":
+        provider.save_to_mailbox = AsyncMock(side_effect=_hang_provider)
+        result = await services.save_to_mailbox.execute(
+            SaveToMailboxCommand(
+                account_name="primary",
+                recipients=("recipient@example.test",),
+                subject="Draft",
+                body="body",
+            )
+        )
+        assert result.status == "unknown"
+        assert result.detail == "provider-timeout"
+        assert result.reconciliation_needed is True
+        provider.save_to_mailbox.assert_awaited_once()
+    else:
+        provider.send = AsyncMock(side_effect=_hang_provider)
+        result = await services.send.execute(
+            SendCommand(
+                account_name="primary",
+                recipients=("recipient@example.test",),
+                subject="Message",
+                body="body",
+            )
+        )
+        assert result.recipients("unknown") == ["recipient@example.test"]
+        assert result.sent_copy.status == "skipped"
+        assert result.reconciliation_needed is True
+        provider.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sent_copy_timeout_preserves_delivery_and_is_unknown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    provider = MagicMock()
+    provider.send = AsyncMock(
+        return_value=DeliveryMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            sent_message=object(),
+        )
+    )
+    provider.save_sent_copy = AsyncMock(side_effect=_hang_provider)
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.send.execute(
+        SendCommand(
+            account_name="primary",
+            recipients=("recipient@example.test",),
+            subject="Message",
+            body="body",
+        )
+    )
+
+    assert result.recipients("succeeded") == ["recipient@example.test"]
+    assert result.sent_copy.status == "unknown"
+    assert result.sent_copy.detail == "provider-timeout"
+    assert result.reconciliation_needed is True
+    provider.send.assert_awaited_once()
+    provider.save_sent_copy.assert_awaited_once()

@@ -62,6 +62,15 @@ Concurrent initialization and activation use an application lock with bounded
 wait. SQLite busy timeout is finite and maps to a typed busy error. Locks are not
 held while contacting providers or `SecretStore`.
 
+This is a local single-user boundary. The implementation defends against stale
+entries, unsafe permissions, links, and untrusted lower-privilege filesystem
+content, but it does not claim containment from a malicious process already
+running as the same OS user. Such a process can replace user-owned paths and can
+usually inspect the user's process and keyring state. Same-UID hostile path
+replacement is therefore outside the supported threat model; multi-user or
+hostile-same-UID operation requires a separately designed privileged broker or
+sandbox rather than stronger wording around path preflight.
+
 ## Mandatory Pre-open Sequence
 
 Existing sidecars must be validated before SQLite can touch them:
@@ -84,10 +93,12 @@ identity replacement. It MUST happen before connect and before enabling WAL.
 Post-create validation closes the race for newly created sidecars. Failure closes
 the connection and fails closed.
 
-Files are owner-only (`0600` or stricter equivalent); private parent directories
-are owner-only (`0700` or stricter equivalent). Creation uses restrictive umask
-and no-follow/exclusive primitives where available. Unsupported guarantees are
-reported, not silently weakened.
+Files are owner-only (`0600`); private parent directories are owner-only
+(`0700`). Creation uses restrictive mode, no-follow/exclusive primitives, and
+POSIX advisory locking. Platforms without the required POSIX ownership,
+no-follow, directory-descriptor, and locking guarantees reject managed catalog
+and bootstrap effects before creating their target or parent; no weaker fallback
+is used.
 
 ## Connection and Transaction Rules
 
@@ -145,8 +156,8 @@ remain separate operator procedures outside this delivery.
 2. Soft-removed account names remain unique, and logical mailbox rows have no
    unsupported business revision contract.
 3. Pre-existing DB/WAL/SHM/lock symlinks, non-regular files, wrong ownership,
-   unsafe modes, insecure parents, and replacement races fail before unsafe
-   SQLite access.
+   unsafe modes, insecure parents, and detected identity replacement fail
+   closed within the stated local single-user trust boundary.
 4. Newly created WAL/SHM files are post-validated and owner-only.
 5. Concurrent initialize/activate and busy timeout behavior is deterministic and
    bounded.
@@ -156,5 +167,6 @@ remain separate operator procedures outside this delivery.
 8. UIDVALIDITY invalidation and incomplete coverage are transactionally safe.
 9. Retention and rebuild alter projection only and preserve every authoritative
    catalog and binding row.
-10. Corrupt, incompatible, busy, and insecure states produce bounded typed errors
-    with no automatic legacy fallback or destructive repair.
+10. Corrupt, incompatible, busy, insecure, and unsupported-platform states
+    produce bounded typed errors with no automatic legacy fallback, partial
+    parent creation, or destructive repair.

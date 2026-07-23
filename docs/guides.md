@@ -243,7 +243,8 @@ apply only after reviewing every action:
 mcp-email-server config init \
   --database ~/.config/mcp-email-server/catalog.sqlite3
 mcp-email-server config import-legacy
-mcp-email-server config import-legacy --apply --confirm IMPORT
+mcp-email-server config import-legacy --apply
+# Review the displayed plan, then type IMPORT at the prompt.
 mcp-email-server account list
 mcp-email-server account test work incoming
 mcp-email-server config activate
@@ -252,9 +253,11 @@ mcp-email-server config select managed
 
 The source is the TOML file selected by `MCP_EMAIL_SERVER_CONFIG_PATH`, not the
 environment-composited runtime view. Environment-only accounts and overrides are
-ignored. Preview does not access the keyring, so it can still show actions while
-the legacy keyring is locked; apply then fails safely if a required stored
-credential cannot be read.
+ignored. Preview displays endpoint, TLS, user, save-to-sent, policy, credential
+source class, and exact target revision details without accessing the keyring, so
+it can still show actions while the legacy keyring is locked. `--apply` prints
+that complete plan before accepting the interactive `IMPORT` confirmation; apply
+then fails safely if a required stored credential cannot be read.
 
 A `conflict` means the destination already has a different account with that
 name or retains a soft-removal tombstone. Import never overwrites that row.
@@ -262,6 +265,31 @@ Resolve it deliberately by choosing a fresh staging catalog or reconciling the
 account manually. An exact repeat is `unchanged`; an interrupted matching import
 can report `resume_credentials` and install only missing bindings. The source is
 left untouched in every case.
+
+## Optional Codex and Claude Code guidance plugin
+
+The repository publishes one optional `safe-email-operations` guidance plugin
+through the Codex and Claude Code marketplace manifests. The plugin does not
+install or run the Python application, expose a management API, or receive
+credentials. It permits only bounded version/status/doctor checks and hands all
+account creation or credential entry back to the user-operated terminal or
+local browser. It must never launch the UI, copy its bootstrap URL, edit the
+catalog directly, or accept a secret in chat.
+
+Before installation, pin and inspect the official repository release, both
+marketplace manifests, the plugin manifest, and the canonical skill. Plugin
+version `0.0.1` is matched to application version `0.0.1`; stop using
+release-specific commands if they differ. Installation, update, and removal are
+explicit user actions. The complete pinned commands and source-verification
+checklist live in the plugin's `references/installation.md`; never curl and
+execute an installer or put repository credentials in a marketplace URL.
+
+If a user asks an agent to add an account or rotate a password, the safe handoff
+is: run `mcp-email-server ui` locally and complete secret entry in the browser,
+or use the documented masked interactive CLI in the user's terminal. Do not
+paste credentials or the one-time UI URL into chat. If no user-controlled
+terminal or browser is available, setup cannot be completed safely through the
+plugin.
 
 ## Containers and CI
 

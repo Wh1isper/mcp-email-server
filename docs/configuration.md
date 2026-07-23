@@ -9,7 +9,9 @@ mcp-email-server supports two explicitly selectable configuration modes:
 
 A missing configuration file or a pre-managed TOML file without `mode` remains
 `legacy` for backward compatibility. Every new bootstrap write records
-`bootstrap_version = 1` and an explicit mode.
+`bootstrap_version = 1`, a monotonic `bootstrap_revision`, and an explicit mode.
+Selection uses that revision as a compare-and-swap token under a bounded private
+lock; it is separate from the managed catalog revision.
 
 ## Configuration file
 
@@ -26,6 +28,31 @@ On first use, if the current file does not exist and a legacy file exists at
 `~/.config/zerolib/mcp_email_server/config.toml`, the legacy file is copied to
 the current location automatically. An explicitly managed file at the old path
 is not copied as an import-time side effect.
+
+## Local management UI
+
+`mcp-email-server ui [--no-open] [--port PORT]` provides the complete managed
+management plane through an embedded React application. It always binds to
+`127.0.0.1`; the default port `0` asks the operating system for an ephemeral
+port. There is no host, share, debug, reload, daemon, or remote-UI option. The
+default opens the one-time URL directly in the browser; `--no-open` requires an
+attached terminal and prints the URL only there. A noninteractive invocation
+fails before serving rather than exposing its bootstrap token in logs.
+
+The UI can initialize, inspect, activate, and select a managed catalog; manage
+accounts, credentials, connectivity, and policy; preview/apply legacy import;
+and run doctor, cleanup, repair, and index-health workflows. Mutable operations
+use optimistic catalog or account revisions. A conflict displays a current
+bounded non-secret summary and requires explicit review rather than automatic
+replay. Legacy mode remains inspectable and importable, but the UI is not a
+legacy TOML editor.
+
+The browser process is only an adapter over the same application services as
+the CLI. It has no mail, generic RPC, filesystem browser, OpenAPI, or MCP App
+surface. Managed catalog and attachment effects, plus oversized-result spill,
+require the documented POSIX filesystem primitives and fail closed when those
+primitives are unavailable. See [Security](security.md#local-management-ui-security)
+for its one-time bootstrap, platform, and session boundaries.
 
 ## Managed CLI setup
 
@@ -52,9 +79,13 @@ provide one line for IMAP, followed by one SMTP line when SMTP is configured.
 Passwords are never accepted as ordinary command-line values.
 
 `config init` creates a `STAGING` SQLite catalog and records its path while
-leaving legacy mode selected. It is rejected while managed mode is selected so
-it cannot replace the active authority with a staging database. Account creation
-is likewise limited to `STAGING`; use `account set-secret` for credential
+leaving legacy mode selected. Retrying the same path safely adopts an existing
+owner-only, valid `STAGING` catalog without resetting its data or revisions; an
+active, corrupt, foreign, or insecure target is rejected. This makes a retry
+possible if catalog creation committed but the bootstrap compare-and-swap did
+not. Initialization is rejected while managed mode is selected so it cannot
+replace the active authority with a staging database. Account creation is
+likewise limited to `STAGING`; use `account set-secret` for credential
 rotation after activation. `config activate` requires at least one
 enabled account with an active IMAP credential and a complete optional SMTP
 pair. `config select managed` accepts only an `ACTIVE` catalog. Restart every
@@ -65,9 +96,15 @@ Useful inspection and management commands are:
 ```bash
 mcp-email-server config status
 mcp-email-server config doctor
+mcp-email-server config index-health
+mcp-email-server config policy
+mcp-email-server config update-policy --expected-revision 1 \
+  --allowed-recipients 'alice@example.test,bob@example.test'
 mcp-email-server account list
 mcp-email-server account show work
 mcp-email-server account set-secret work incoming
+mcp-email-server account repair-secret work incoming resume --expected-revision 5
+mcp-email-server account test work incoming
 mcp-email-server account disable work --expected-revision 3
 mcp-email-server account enable work --expected-revision 4
 mcp-email-server config cleanup-credentials
@@ -75,11 +112,26 @@ mcp-email-server config select legacy
 ```
 
 Managed account and binding summaries never print secret locators or values.
-`config doctor` also verifies active secret availability without printing the
-secret or locator. Disabled accounts are revalidated and excluded before every
-provider access, including calls in an already-running stdio session. Selecting
-managed mode never deletes preserved legacy TOML rows, and selecting legacy mode
-never deletes the managed catalog.
+Account-create commands carry non-secret endpoint summaries separately from
+`SecretStr` credential fields; command representation and equality exclude those
+fields. `config doctor` also verifies active secret availability without printing
+the secret or locator. Disabled accounts are revalidated and excluded before
+every provider access, including calls in an already-running stdio session.
+Selecting managed mode never deletes preserved legacy TOML rows, and selecting
+legacy mode never deletes the managed catalog.
+
+Managed policy updates use the same canonicalization as legacy configuration:
+recipient addresses are extracted and lowercased, sender glob patterns are
+trimmed and lowercased, and empty or duplicate entries are removed while
+preserving first occurrence order. `config update-policy` preserves omitted
+fields; pass an empty value to `--allowed-recipients` or `--allowed-senders` to
+clear that list. Every update requires the revision shown by `config policy`.
+
+`account repair-secret` never accepts a secret. It explicitly resumes or rolls
+back the single already-staged ambiguous candidate at the supplied account
+revision. `config index-health` prints bounded rebuildable-projection status and
+problems. `account test ACCOUNT [incoming|outgoing]` exits nonzero for a typed
+connection failure and never prints a success sentence in that case.
 
 ### Managed account lifecycle
 
@@ -101,14 +153,25 @@ the external deletion cannot be confirmed, `config doctor` reports
 `CLEANUP_REQUIRED`; run the bounded `config cleanup-credentials --limit 100`
 command after keyring access is restored. Re-enabling validates all required
 active credentials outside a SQLite transaction and rejects concurrent revision
-changes.
+changes. If a candidate write outcome is ambiguous, doctor and the UI report
+`PENDING_REPAIR_REQUIRED`. The UI offers explicit resume or rollback against the
+current account revision; cleanup never guesses which candidate should become
+active.
 
 `account remove NAME --expected-revision REV --confirm NAME` is an intentional
 soft removal. The exact name confirmation is required. The row no longer appears
-as an available account, but its stable operational identity, endpoints,
-bindings, and referenced keyring candidates remain; hard purge is not part of
-this release. To destroy credentials now, disable the account and remove each
-secret before soft removal.
+as an available account, while its stable operational identity, endpoints, and
+binding metadata remain for bounded repair; hard purge is not part of this
+release. Before committing the tombstone, the service marks every referenced
+credential candidate `CLEANUP_REQUIRED`, then attempts bounded keyring deletion.
+Successfully deleted values are finalized as superseded; failures remain visible
+to `config doctor` and `config cleanup-credentials`.
+
+Legacy and managed authority each allow at most 1,000 configured live accounts,
+1,000 recipient allowlist entries, and 1,000 sender allowlist entries. Managed
+writes reject larger snapshots before commit. Discovery also applies the shared
+8 MiB canonical serialized-result ceiling and fails with `limit_exceeded` rather
+than truncating authority data.
 
 ### Import stored legacy configuration
 
@@ -116,7 +179,8 @@ Import is explicit and preview-first. Initialize a staging catalog, then run:
 
 ```bash
 mcp-email-server config import-legacy
-mcp-email-server config import-legacy --apply --confirm IMPORT
+mcp-email-server config import-legacy --apply
+# Review the displayed plan, then type IMPORT at the prompt.
 ```
 
 The preview reads only stored TOML accounts and policy. It ignores environment
@@ -126,6 +190,17 @@ only for a `STAGING` catalog. It resolves the required stored plaintext or
 keyring credentials through the normal managed candidate workflow, leaves the
 source TOML and legacy keyring entries unchanged, and never activates or selects
 the destination automatically.
+
+Each preview has a random one-time token, a SHA-256 fingerprint of the bounded
+non-secret source snapshot, creation time, a ten-minute lifetime, and exact
+catalog, policy, and per-account target revisions. Account rows show their full
+non-secret endpoint/TLS/user/save-to-sent settings and whether each credential
+comes from plaintext TOML or the legacy keyring; no secret value or reusable
+locator is shown. CLI `--apply` prints this plan before it prompts for the exact
+word `IMPORT`, so confirmation cannot be supplied before review. Apply consumes
+the token and rejects expiry or source/target drift before the next credential
+resolution or write; it advances only revisions caused by its own completed
+steps.
 
 A repeated import is deterministic: exact matching accounts and policy are
 reported unchanged, missing candidate bindings can be resumed, and a changed,
@@ -151,9 +226,9 @@ configuration tables. The projection may contain mailbox names and message
 headers needed by the public metadata result. Removing the operational database
 only discards rebuildable observations; it does not remove accounts or mail.
 
-Managed storage uses one exact schema version 1 baseline containing both account
-authority and operational projection tables. Coincidental version markers or
-partially compatible schemas are never claimed. Unsupported, corrupt, or insecure
+Managed storage uses exact schema version 2 for account authority and the
+operational projection. A verified version 1 catalog is migrated transactionally;
+coincidental version markers or partially compatible schemas are never claimed. Unsupported, corrupt, or insecure
 managed storage fails closed. In legacy mode, an unavailable or unsafe operational
 database produces a bounded warning and the metadata query uses its bounded IMAP
 fallback instead.
@@ -179,11 +254,10 @@ variables are provided.
 `migrate-credentials` is intentionally different: it migrates only the stored
 TOML configuration and ignores environment-provided accounts and overrides.
 
-Saving from the UI or `add_email_account` serializes the current runtime
-settings. If that process also contains an environment-provided account or
-global overrides, those effective values can be persisted to TOML or the
-keyring. Avoid mixing mutable UI/tool configuration with secret-bearing
-environment overrides unless that persistence is intended.
+MCP and the local UI never persist an environment-composited legacy runtime
+view. Legacy TOML/environment/keyring behavior remains a compatibility input and
+an explicit import source; account management is available only through the
+managed CLI and authenticated local UI.
 
 `credential_storage` controls only how persistent settings are written. It does
 not protect passwords stored in an MCP client configuration, process

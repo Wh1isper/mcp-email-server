@@ -1,0 +1,16 @@
+{
+    "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+    "name": "mcp-email-server",
+    "displayName": "Safe Email Operations",
+    "version": "0.0.1",
+    "description": "Safe, non-secret setup and diagnostic guidance for mcp-email-server.",
+    "author": {
+        "name": "wh1isper",
+        "url": "https://github.com/Wh1isper"
+    },
+    "homepage": "https://mcp-email-server.wh1isper.top/",
+    "repository": "https://github.com/Wh1isper/mcp-email-server",
+    "license": "MIT",
+    "keywords": ["email", "mcp", "security"],
+    "skills": "./skills/"
+}

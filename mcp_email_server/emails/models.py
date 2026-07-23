@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EmailMetadata(BaseModel):
@@ -38,6 +38,10 @@ class EmailMetadataPageResponse(BaseModel):
     subject: str | None
     emails: list[EmailMetadata]
     total: int
+    warnings: list[Literal["projection_write_failed"]] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+    )
 
 
 class EmailBodyResponse(EmailMetadata):
@@ -47,12 +51,18 @@ class EmailBodyResponse(EmailMetadata):
 
 
 class EmailContentBatchResponse(BaseModel):
-    """Batch email content response for multiple emails"""
+    """Batch content, optionally handed off as a private local JSON artifact."""
 
     emails: list[EmailBodyResponse]
     requested_count: int
     retrieved_count: int
     failed_ids: list[str]
+    content_omitted: bool = False
+    output_file_path: str | None = None
+    output_media_type: str | None = None
+    output_bytes: int | None = None
+    output_sha256: str | None = None
+    output_lifetime: str | None = None
 
 
 class MailboxInfo(BaseModel):

@@ -244,15 +244,14 @@ async def test_local_backend_revalidates_mode_and_binds_projection_to_concrete_a
 
     with (
         patch(
-            "mcp_email_server.adapters.metadata.process_bootstrap",
-            return_value=SimpleNamespace(mode="managed"),
-        ),
-        patch("mcp_email_server.adapters.metadata.get_settings", return_value=settings) as get_settings,
+            "mcp_email_server.adapters.metadata.resolve_local_account",
+            return_value=SimpleNamespace(mode="managed", settings=settings, account=account),
+        ) as resolve_account,
         patch("mcp_email_server.adapters.metadata.MetadataIndex", return_value=index) as index_factory,
     ):
         projection = await LocalMetadataProjectionFactory(backend).open(account_snapshot)
 
     assert isinstance(projection, SQLiteMetadataProjection)
-    get_settings.assert_called_once_with(reload=True)
+    resolve_account.assert_called_once_with("work", expected_mode="managed")
     index_factory.assert_called_once_with(Path(settings.db_location), "managed")
     index.resolve_operational_account.assert_called_once_with(account)

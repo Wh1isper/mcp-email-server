@@ -1,0 +1,25 @@
+{
+    "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+    "name": "mcp-email-server",
+    "version": "0.0.1",
+    "description": "Safe, non-secret setup guidance for mcp-email-server.",
+    "owner": {
+        "name": "wh1isper"
+    },
+    "plugins": [
+        {
+            "name": "mcp-email-server",
+            "source": "./plugins/mcp-email-server",
+            "description": "Diagnose mcp-email-server and hand secret entry to its user-operated CLI or local UI.",
+            "version": "0.0.1",
+            "author": {
+                "name": "wh1isper"
+            },
+            "homepage": "https://mcp-email-server.wh1isper.top/",
+            "repository": "https://github.com/Wh1isper/mcp-email-server",
+            "license": "MIT",
+            "keywords": ["email", "mcp", "security"],
+            "category": "Productivity"
+        }
+    ]
+}

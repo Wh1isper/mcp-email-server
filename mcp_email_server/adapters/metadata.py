@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import TypeVar
 
 from mcp_email_server import config as config_module
+from mcp_email_server.adapters.authority import resolve_local_account
 from mcp_email_server.application.accounts import EffectiveConfiguration
+from mcp_email_server.application.management import BindingRole
 from mcp_email_server.application.metadata import (
     ListEmailMetadataQuery,
     MailboxMetadataSnapshot,
@@ -22,7 +24,7 @@ from mcp_email_server.application.metadata import (
     RuntimeMode,
 )
 from mcp_email_server.bootstrap import process_bootstrap
-from mcp_email_server.config import AccountAttributes, EmailSettings, ProviderSettings, Settings, get_settings
+from mcp_email_server.config import AccountAttributes, EmailSettings, Settings, get_settings
 from mcp_email_server.emails.classic import (
     MAX_INDEXED_UID_WINDOW,
     ClassicEmailHandler,
@@ -158,28 +160,21 @@ class LocalMetadataBackend:
     def _resolve(
         account_name: str,
         *,
+        roles: tuple[BindingRole, ...] = (),
         expected_mode: RuntimeMode | None = None,
     ) -> _ResolvedAccount:
-        bootstrap = process_bootstrap(config_module.CONFIG_PATH)
-        mode = bootstrap.mode
-        if expected_mode is not None and mode != expected_mode:
-            raise RuntimeError("Configuration mode changed; restart required")
-        settings = get_settings(reload=mode == "managed")
-        account = settings.get_account(account_name)
-        if isinstance(account, ProviderSettings):
-            raise NotImplementedError
-        if not isinstance(account, EmailSettings):
-            account_names = [item.account_name for item in settings.get_accounts()]
-            raise ValueError(  # noqa: TRY004 - preserve the public unknown-account category
-                f"Account {account_name} not found, available accounts: {account_names}"
-            )
+        resolved = (
+            resolve_local_account(account_name, roles=roles, expected_mode=expected_mode)
+            if roles
+            else resolve_local_account(account_name, expected_mode=expected_mode)
+        )
         return _ResolvedAccount(
-            account=account,
-            settings=settings,
+            account=resolved.account,
+            settings=resolved.settings,
             snapshot=MetadataAccountSnapshot(
-                account_name=account.account_name,
-                mode=mode,
-                allowed_senders=tuple(settings.allowed_senders),
+                account_name=resolved.account.account_name,
+                mode=resolved.mode,
+                allowed_senders=tuple(resolved.settings.allowed_senders),
             ),
         )
 
@@ -192,7 +187,11 @@ class LocalMetadataBackend:
         return self._resolve(account_name, expected_mode=expected_mode).snapshot
 
     def open(self, account_name: str, *, expected_mode: RuntimeMode) -> MetadataProviderAccess:
-        resolved = self._resolve(account_name, expected_mode=expected_mode)
+        resolved = self._resolve(
+            account_name,
+            roles=("incoming",),
+            expected_mode=expected_mode,
+        )
         return MetadataProviderAccess(
             account=resolved.snapshot,
             provider=ClassicMetadataProvider(ClassicEmailHandler(resolved.account)),

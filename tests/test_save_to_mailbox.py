@@ -482,7 +482,6 @@ async def test_save_to_mailbox_tool_success(monkeypatch):
         return_value=AppendMutationOutcome("succeeded", "<msg-id@example.com>", uid="42", mailbox="Drafts")
     )
     monkeypatch.setattr("mcp_email_server.app.save_to_mailbox_command", command_handler)
-    monkeypatch.setattr("mcp_email_server.app.get_settings", lambda: MagicMock(allowed_recipients=[]))
 
     from mcp_email_server.app import save_to_mailbox
 
@@ -499,7 +498,6 @@ async def test_save_to_mailbox_tool_imap_only_account(monkeypatch):
         return_value=AppendMutationOutcome("succeeded", "<msg-id@example.com>", uid="7", mailbox="Drafts")
     )
     monkeypatch.setattr("mcp_email_server.app.save_to_mailbox_command", command_handler)
-    monkeypatch.setattr("mcp_email_server.app.get_settings", lambda: MagicMock(allowed_recipients=[]))
 
     from mcp_email_server.app import save_to_mailbox
 
@@ -514,7 +512,6 @@ async def test_save_to_mailbox_tool_custom_folder(monkeypatch):
         return_value=AppendMutationOutcome("succeeded", "<msg-id@example.com>", uid="99", mailbox="INBOX.Drafts")
     )
     monkeypatch.setattr("mcp_email_server.app.save_to_mailbox_command", command_handler)
-    monkeypatch.setattr("mcp_email_server.app.get_settings", lambda: MagicMock(allowed_recipients=[]))
 
     from mcp_email_server.app import save_to_mailbox
 

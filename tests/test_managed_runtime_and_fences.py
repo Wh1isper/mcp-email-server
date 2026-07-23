@@ -12,12 +12,10 @@ from mcp_email_server import bootstrap as bootstrap_module
 from mcp_email_server import config as config_module
 from mcp_email_server import keyring_store
 from mcp_email_server.adapters.reads import LocalReadBackend
-from mcp_email_server.app import add_email_account
 from mcp_email_server.bootstrap import BOOTSTRAP_VERSION, ManagedModeWriteError, freeze_process_bootstrap
 from mcp_email_server.cli import app
 from mcp_email_server.config import (
     EmailServer,
-    EmailSettings,
     Settings,
     clear_settings_cache,
     delete_settings,
@@ -85,8 +83,8 @@ def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, activate: bool
     return config_path, catalog
 
 
-def test_managed_get_settings_uses_catalog_not_legacy_or_environment(monkeypatch, tmp_path, fake_keyring):
-    _select_managed(monkeypatch, tmp_path, fake_keyring)
+def test_managed_get_settings_uses_non_secret_catalog_not_legacy_or_environment(monkeypatch, tmp_path, fake_keyring):
+    _config_path, catalog = _select_managed(monkeypatch, tmp_path, fake_keyring)
     monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "env@example.test")
     monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "environment-secret")
     monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "env-imap.example.test")
@@ -94,7 +92,11 @@ def test_managed_get_settings_uses_catalog_not_legacy_or_environment(monkeypatch
     settings = get_settings(reload=True)
 
     assert [account.account_name for account in settings.emails] == ["managed-alice"]
-    assert settings.emails[0].incoming.password.get_secret_value() == "runtime-secret"
+    assert settings.emails[0].incoming.password.get_secret_value() == ""
+    assert (
+        catalog.load_account("managed-alice", roles=("incoming",)).incoming.password.get_secret_value()
+        == "runtime-secret"
+    )
     assert all(account.account_name not in {"legacy-tripwire", "default"} for account in settings.emails)
 
 
@@ -114,11 +116,15 @@ def test_unavailable_managed_keyring_never_falls_back_to_plaintext(tmp_path, bro
         outgoing=None,
     )
 
-    with pytest.raises(Exception, match="backend rejected"):
-        catalog.set_secret("alice", "incoming", "must-not-persist")
+    result = catalog.set_secret("alice", "incoming", "must-not-persist")
 
+    assert result.status == "pending_repair_required"
+    assert result.cleanup_required == 1
     assert b"must-not-persist" not in catalog.path.read_bytes()
-    assert catalog.doctor().pending_bindings == 1
+    report = catalog.doctor()
+    assert report.pending_bindings == 0
+    assert report.cleanup_required_bindings == 0
+    assert report.repair_required_bindings == 1
 
 
 def test_running_managed_process_keeps_writer_fence_after_external_legacy_selection(
@@ -230,28 +236,6 @@ def test_legacy_keyring_operations_are_fenced_in_managed_mode(monkeypatch, tmp_p
         operation()
 
     assert fake_keyring.calls == []
-
-
-@pytest.mark.asyncio
-async def test_mcp_legacy_account_add_is_fenced_in_managed_mode(monkeypatch, tmp_path, fake_keyring):
-    config_path, _catalog = _select_managed(monkeypatch, tmp_path, fake_keyring)
-    before = config_path.read_bytes()
-    candidate = EmailSettings(
-        account_name="legacy-add",
-        full_name="Legacy Add",
-        email_address="legacy@example.test",
-        incoming=EmailServer(
-            user_name="legacy@example.test",
-            password=SecretStr("must-not-write"),
-            host="imap.example.test",
-            port=993,
-        ),
-    )
-
-    with pytest.raises(ManagedModeWriteError, match=r"account.*CLI"):
-        await add_email_account(candidate)
-
-    assert config_path.read_bytes() == before
 
 
 def test_cli_reset_and_migrate_are_fenced_with_guidance(monkeypatch, tmp_path, fake_keyring):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +8,14 @@ import pytest
 from pydantic import SecretStr
 
 from mcp_email_server.adapters.metadata import LocalMetadataBackend
-from mcp_email_server.application.accounts import EffectiveAccountQueryService
+from mcp_email_server.application import accounts as accounts_module
+from mcp_email_server.application import limits as limits_module
+from mcp_email_server.application.accounts import (
+    EffectiveAccountQueryService,
+    EffectiveConfiguration,
+    EffectiveConfigurationLimitError,
+    EffectiveConfigurationQueryService,
+)
 from mcp_email_server.config import EmailServer, EmailSettings
 
 
@@ -33,6 +41,49 @@ def test_effective_account_query_service_uses_injected_source() -> None:
 
     assert accounts[0].account_name == "work"
     source.list_effective_accounts.assert_called_once_with()
+
+
+def test_effective_account_query_rejects_count_above_shared_limit(monkeypatch) -> None:
+    source = MagicMock()
+    source.list_effective_accounts.return_value = [_account().masked(), _account().masked()]
+    monkeypatch.setattr(
+        accounts_module,
+        "APPLICATION_LIMITS",
+        replace(accounts_module.APPLICATION_LIMITS, configured_accounts=1),
+    )
+
+    with pytest.raises(EffectiveConfigurationLimitError, match="limit_exceeded"):
+        EffectiveAccountQueryService(source).execute()
+
+
+def test_effective_account_query_rejects_oversized_canonical_result(monkeypatch) -> None:
+    source = MagicMock()
+    source.list_effective_accounts.return_value = [_account().masked()]
+    monkeypatch.setattr(
+        limits_module,
+        "APPLICATION_LIMITS",
+        replace(limits_module.APPLICATION_LIMITS, serialized_response_bytes=1),
+    )
+
+    with pytest.raises(EffectiveConfigurationLimitError, match="limit_exceeded"):
+        EffectiveAccountQueryService(source).execute()
+
+
+def test_effective_configuration_rejects_policy_count_above_shared_limit(monkeypatch) -> None:
+    source = MagicMock()
+    source.effective_configuration.return_value = EffectiveConfiguration(
+        accounts=(),
+        allowed_recipients=("first@example.test", "second@example.test"),
+        allowed_senders=(),
+    )
+    monkeypatch.setattr(
+        accounts_module,
+        "APPLICATION_LIMITS",
+        replace(accounts_module.APPLICATION_LIMITS, policy_entries=1),
+    )
+
+    with pytest.raises(EffectiveConfigurationLimitError, match="limit_exceeded"):
+        EffectiveConfigurationQueryService(source).execute()
 
 
 @pytest.mark.parametrize("mode, reload", [("legacy", False), ("managed", True)])

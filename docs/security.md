@@ -4,6 +4,53 @@ An email MCP server can read private messages, modify mailboxes, send messages,
 and access local files. Review the controls on this page before exposing it to
 an MCP client or network.
 
+## Local management UI security
+
+`mcp-email-server ui` is a foreground, single-user local adapter. It binds
+exactly to IPv4 `127.0.0.1`; port `0` is the default and selects an ephemeral
+port. The command exposes no host, wildcard, share, daemon, debug, reload, CORS,
+or remote mode. Its process-unique route serves only packaged same-origin React
+assets and explicit management use cases. There is no mail, arbitrary file,
+generic RPC, OpenAPI, metrics, or unauthenticated health route. Before binding,
+the process freezes its bootstrap mode and selected catalog. It does not open
+the catalog during that freeze, so an unavailable selected catalog can still be
+recovered by selecting legacy; status continues comparing against the frozen
+startup authority and requires a restart after the change.
+
+At startup, a high-entropy bootstrap value is placed only in a URL fragment.
+The default command hands that URL directly to the browser. With `--no-open`, or
+when browser launch reports failure, it prints the URL only to an attached
+stdout/stderr TTY; without a TTY it fails before serving, so the value is not
+written to a pipe or noninteractive log. Fragments are not sent with HTTP
+requests. The frontend removes it immediately
+with `history.replaceState`, sends it once in an `Authorization` header, and
+keeps the returned CSRF value only in memory. The server compares a fixed-size
+hash in constant time and atomically consumes the bootstrap. It expires after
+five minutes, is attempt-rate-limited, and cannot be replayed.
+
+A successful exchange creates a random process-local session and a
+process-unique `HttpOnly`, `SameSite=Strict` cookie scoped to the process route.
+Every mutation requires the exact `127.0.0.1:<port>` Host, exact startup Origin,
+accepted same-origin Fetch Metadata when present, JSON content type, session
+cookie, and separate CSRF header. Request and response bodies are bounded.
+Logout, normal shutdown, startup failure, SIGINT/SIGTERM, or process restart
+invalidates all tokens and sessions. Authentication failures do not redirect.
+
+Every response uses `Cache-Control: no-store`, a same-origin CSP with framing,
+objects, forms, base changes, workers, and remote runtime assets disabled,
+`nosniff`, `no-referrer`, frame denial, and a restrictive permissions policy.
+The application ships no CDN code, remote font, analytics, telemetry, service
+worker, or runtime asset download. Secret values occur only in protected
+credential mutation bodies, are cleared by the frontend after every outcome,
+and never enter URLs, browser storage, responses, logs, or conflict summaries.
+
+The route and cookie names are random defense in depth, not substitutes for the
+session checks. This is explicitly a local single-user trust boundary. A
+malicious process running as the same operating-system user can generally inspect
+or replace user-owned state; same-UID hostile path replacement is not claimed to
+be contained. Do not treat loopback, owner-only modes, or path preflight as a
+multi-user or hostile-same-UID sandbox.
+
 ## Managed credential storage
 
 Managed mode requires an operating-system keyring backend and never falls back
@@ -33,34 +80,68 @@ MCP results do not expose secret values or candidate locators. A missing or
 unreadable active secret fails closed rather than selecting a legacy account or
 plaintext fallback.
 
-On POSIX systems, managed bootstrap files, their immediate parent directory,
-the SQLite database, and SQLite sidecars must be owned by the current user and
-must not grant group or world access. Symlinked or non-regular bootstrap and
-database paths are rejected. New directories and files are created with `0700`
-and `0600` permissions respectively. Correct permissions before retrying; do
-not bypass these checks by moving secrets into the catalog.
+Managed bootstrap/catalog support requires POSIX ownership, no-follow,
+directory-descriptor, and advisory-lock primitives. Bootstrap files, their
+immediate parent directory, the SQLite database, sidecars, and lock must be
+owned by the current user and must not grant group or world access. Symlinked,
+hard-linked where forbidden, or non-regular paths are rejected. New directories
+and files are created with `0700` and `0600` permissions respectively. Selection
+changes compare the expected monotonic bootstrap revision while holding the
+private sibling lock, preventing concurrent last-writer-wins authority changes.
+A platform without these guarantees fails before creating managed targets rather
+than using a weaker fallback. Correct permissions before retrying; do not bypass
+these checks by moving secrets into the catalog.
 
 The managed secret service is separate from legacy account-name-based entries.
 Its internal candidate names are intentionally not a diagnostic or user-facing
 contract.
 
-Soft account removal is a tombstone operation, not credential destruction. It
-retains endpoint rows, binding rows, and referenced keyring candidates so stable
-operational identity and future hard-purge recovery remain possible. If a
-credential must be deleted now, disable the account and run `account
-remove-secret` for each role before `account remove`; a tombstoned account has no
-public credential-removal command in this release.
+Soft account removal is a tombstone plus bounded credential-cleanup operation.
+It retains stable operational identity, endpoint rows, and binding metadata, but
+claims every referenced candidate as `CLEANUP_REQUIRED` before committing the
+tombstone and then attempts to delete up to 100 referenced keyring values.
+Successful deletions are finalized as superseded; unavailable keyring or
+post-commit bookkeeping leaves conservative cleanup state for `config doctor`
+and `config cleanup-credentials`. A tombstoned account has no provider authority
+or public per-role credential-removal command.
 
 ### Legacy import security
 
 `config import-legacy` previews stored TOML only. Preview ignores environment
 overlays, does not resolve plaintext or keyring credentials, and performs no
-managed write. Confirmed apply is limited to `STAGING`, checks all destination
-conflicts before resolving any secret, and installs credentials through the same
-immutable candidate protocol as manual setup. It never deletes or rewrites the
-legacy source or its keyring entries, and does not activate or select managed
-mode. Provider-style legacy accounts are reported unsupported rather than
-partially imported.
+managed write. The plan exposes only non-secret endpoint/policy settings,
+credential source classes, and exact target revisions. CLI apply displays that
+plan before reading its interactive confirmation; UI confirmation is bound to a
+one-time preview token. Confirmed apply is limited to `STAGING`, checks all
+destination conflicts before resolving any secret, revalidates reviewed source
+identity and target revisions before each credential resolution/write, and
+installs credentials through the same immutable candidate protocol as manual
+setup. It never deletes or rewrites the legacy source or its keyring entries, and
+does not activate or select managed mode. Provider-style legacy accounts are
+reported unsupported rather than partially imported.
+
+## Temporary oversized results
+
+A large but otherwise valid `get_emails_content` result may exceed the inline
+MCP serialization ceiling. The private spill directory is allocated lazily only
+when that result variant is needed, so management commands and bounded inline
+reads neither create nor depend on temporary spill storage. The local server
+stores the canonical JSON in a randomly named process-private temporary
+directory and returns its
+exact local path, byte count, SHA-256 digest, media type, and lifetime notice.
+The directory and files are owner-only; creation is exclusive and no-follow,
+and file type, identity, link count, mode, size, and digest inputs are checked
+around the write. This spill variant is available only when the required POSIX
+primitives exist. Otherwise bounded inline results still work, while a result
+that would require spill fails with a bounded error.
+
+These artifacts contain private message content. They are not credentials, are
+never placed in SQLite or configuration, and are removed on graceful server
+shutdown. A crash can leave an OS temporary artifact, so normal host temporary
+storage protections and cleanup still apply. No HTTP route, generic MCP file
+reader, directory listing, remote URL, or arbitrary path lookup is exposed by
+this feature. Only connect a local MCP client whose own filesystem tools may
+legitimately inspect paths returned by the server.
 
 ## Indexed metadata privacy
 
@@ -151,9 +232,9 @@ container platform. If a literal secret must be stored in a client
 configuration, restrict that file to the account running the client and keep it
 out of version control and diagnostic output.
 
-Do not use the UI or call `add_email_account` in a process with secret-bearing
-environment overrides unless persisting the effective runtime settings is
-intended. A normal settings save serializes that runtime view.
+Neither MCP nor the local management UI accepts legacy environment secrets for
+account-management writes. Treat environment-composited accounts as runtime
+compatibility inputs and migrate them through an explicit preview/apply flow.
 
 ## Credential migration
 
@@ -317,11 +398,17 @@ against the server process's working directory. The application fetches at most
 a 50 MiB raw message, accepts at most 25 MiB of decoded attachment bytes, and
 passes bytes rather than a path to the artifact writer. The writer operates only
 on the exact requested target. On POSIX it creates and traverses parent
-components through pinned no-follow directory descriptors, opens the final name
-relative to that descriptor with no-follow/nonblocking flags, verifies the opened
-descriptor is a regular file, and applies owner-only `0600` mode. Other platforms
-preflight the parent and final path using their available filesystem controls. An
-existing regular file at the exact requested path can be replaced.
+components through pinned no-follow directory descriptors, rejects unsafe
+ownership or writable non-sticky parents, and validates an existing target as a
+single-link, owner-only regular file. It writes a random exclusive sibling with
+`0600` mode, fsyncs and verifies identity/type/owner/link-count/mode/size, then
+atomically replaces the exact destination through the pinned parent descriptor
+and verifies the final identity again. A failed pre-replace write preserves an
+existing file and removes only a temporary name whose identity is proven. A
+platform without the required POSIX no-follow and directory-descriptor primitives
+rejects attachment materialization before creating a parent or file; no weaker
+path-based fallback is used. An existing private regular file at the exact
+requested path can be replaced.
 
 The POSIX descriptor traversal prevents provider-controlled filenames and common
 symlink/FIFO/device races from redirecting the write; these checks are not a

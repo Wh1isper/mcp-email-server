@@ -18,8 +18,10 @@ Run the configuration UI with [`uv`](https://docs.astral.sh/uv/):
 uvx mcp-email-server@latest ui
 ```
 
-Add your IMAP account in the browser window. SMTP is optional if the account
-does not need to send email.
+Keep the foreground command running. In the loopback browser session, initialize
+a staging catalog, add your IMAP account and credential, test it, then activate
+and explicitly select managed mode. SMTP is optional if the account does not
+need to send email. Restart the MCP client after selecting managed mode.
 
 ### 2. Configure the MCP client
 

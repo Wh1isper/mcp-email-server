@@ -1,7 +1,7 @@
 # MCP Tools
 
-mcp-email-server exposes account, message, mailbox, and composition operations as
-MCP tools. Tool schemas are generated from the running server, so the MCP client
+mcp-email-server exposes bounded account discovery, message, mailbox, and
+composition operations as MCP tools. Tool schemas are generated from the running server, so the MCP client
 can inspect each parameter and response type directly.
 
 ## Typical workflow
@@ -16,6 +16,13 @@ Most message workflows follow this sequence:
 This separates lightweight metadata searches from potentially large body
 retrievals.
 
+MCP input schemas advertise the enforceable string and collection envelopes from
+the centralized application limits, including `maxLength`, `minItems`, and
+`maxItems` for account/mailbox names, UID collections, recipients, attachments,
+and flags. JSON Schema counts characters while the application limits UTF-8
+bytes, so every application service independently revalidates direct and MCP
+callers; aggregate recipient and payload limits also remain application-owned.
+
 ## Account resource
 
 The resource URI `email://{account_name}` returns the selected account's
@@ -28,20 +35,16 @@ configuration with credentials masked.
 Lists all enabled accounts from the selected configuration mode with masked
 credentials. In managed mode, disabled accounts are omitted before any
 credential lookup or provider access. Use the returned `account_name` in other
-tools.
+tools. The output schema and application boundary allow at most 1,000 accounts;
+the canonical JSON must also fit the shared 8 MiB response ceiling. Oversized
+authority data is rejected with `limit_exceeded` rather than truncated.
 
-### `add_email_account`
-
-Adds and persists an email account. The input follows the nested account schema
-documented in [Configuration](configuration.md#toml-example).
-
-Account names must be unique. In legacy mode this tool changes persistent TOML
-configuration and may also move the supplied credentials into the operating
-system keyring, depending on `credential_storage`.
-
-In managed mode this legacy writer is rejected before any TOML or keyring
-mutation. Use `mcp-email-server account add` so secrets enter through a masked
-prompt or explicit stdin and managed candidate bindings remain recoverable.
+MCP exposes no account, endpoint, policy, catalog, or credential mutation tool in
+either mode. Use `mcp-email-server ui` or the user-operated `config` and
+`account` CLI commands. This prevents an agent or chat transcript from becoming
+a credential handoff surface. The complete tool names, descriptions, input and
+output schemas, annotations, resource template, and visibility are static and
+covered by an exact catalog contract test.
 
 ## Reading and searching
 
@@ -84,8 +87,10 @@ pages. It uses that projection only after a small IMAP `STATUS` probe confirms
 the same UIDVALIDITY, UIDNEXT, and message count and the projection covers the
 whole mailbox. Text, date, address, flag, body, and attachment filters remain on
 the bounded IMAP path so provider-specific search semantics and mutable flags
-stay authoritative. This choice does not change the response schema or expose
-whether a particular call used SQLite.
+stay authoritative. A response normally omits `warnings`; if a validated IMAP
+result was returned but its rebuildable projection could not be persisted, the
+response includes `warnings: ["projection_write_failed"]`. It never includes the
+local exception detail.
 
 A refresh stores at most the 1,000 most recent UIDs and claims complete coverage
 only when the whole mailbox fits that window and provider state is unchanged
@@ -123,7 +128,22 @@ The batch response reports requested and retrieved counts and includes
 `failed_ids` for messages that could not be fetched. A request accepts 1 to 500
 canonical positive decimal IMAP UIDs; zero, signs, ranges, sets, and values above
 the IMAP UID limit are rejected before provider access. Raw messages above 50
-MiB are rejected before MIME parsing.
+MiB are rejected before MIME parsing. The production provider also counts each
+returned body's UTF-8 bytes before retaining it and stops immediately if the
+batch would exceed the 50 MiB aggregate body budget; the application validates
+the aggregate again at its provider boundary.
+
+When the complete valid batch exceeds the inline MCP response ceiling, the
+server writes the canonical JSON response to a randomly named owner-only file in
+a process-private temporary directory. The bounded response then has
+`content_omitted=true`, an empty `emails` preview, and
+`output_file_path`, `output_media_type`, `output_bytes`, `output_sha256`, and
+`output_lifetime` fields. A local MCP host can inspect that exact path with its
+own filesystem tool. The file is available only until the email-server process
+exits; copy needed content before restarting. The server does not add a generic
+file-download tool or remote URL. Spill requires owner/no-follow POSIX
+primitives; without them bounded inline results remain available, while a batch
+that requires spill returns a bounded error.
 
 Body retrieval always uses IMAP PEEK. When requested, successfully retrieved IDs
 are deduplicated and marked through the same application mutation workflow as
@@ -216,9 +236,10 @@ ambiguous results use tagged `succeeded`, `failed`, and `unknown` sections in
 input order. Unknown targets can include a fixed substep tag such as `store`,
 `copy`, or `expunge-after-copy`. `unknown` means the provider effect may have
 started but its final result was lost; the server does not replay it
-automatically. A
-`reconciliation needed` warning means the provider outcome is authoritative but
-the rebuildable local metadata projection could not be invalidated.
+automatically, and every result containing `unknown` includes a `reconciliation
+needed` warning. The same warning also appears when a known provider effect may
+be authoritative but the rebuildable local metadata projection could not be
+invalidated.
 
 Mutation requests accept 1 to 100 unique canonical positive decimal IMAP UIDs.
 Mailbox names are limited to 1,024 UTF-8 bytes. Compose requests allow at most
@@ -256,10 +277,12 @@ after fetch immediately before the filesystem write. Revocation during a slow
 fetch therefore discards the payload without creating a file. It rejects raw
 messages above 50 MiB and decoded attachment content above 25 MiB. The mail adapter
 returns bytes only; it cannot choose or write a filesystem path. The local
-artifact adapter writes only the exact requested destination, creates files with
-owner-only mode on POSIX, and rejects symlinked/non-directory parents plus
-symlinked or non-regular final targets. Existing regular files at the exact path
-may be replaced.
+artifact adapter writes only the exact requested destination through pinned
+POSIX directory descriptors, creates files with owner-only mode, and rejects
+symlinked/non-directory parents plus symlinked, linked, permissive, or
+non-regular final targets. Existing private regular files at the exact path may
+be replaced. Platforms without the required POSIX no-follow/directory-descriptor
+primitives reject the write; there is no weaker fallback.
 
 Review [Attachment access](security.md#attachment-access) before enabling this
 operation.
@@ -270,7 +293,10 @@ The tool list is static for the lifetime of a server process. `send_email`,
 `list_allowed_recipients`, `list_allowed_senders`, and `download_attachment` are
 always advertised. Account existence, enabled state, SMTP capability, and
 current policies are enforced when each tool is called. The two allowlist tools
-return an empty list when their corresponding policy is unrestricted.
+return an empty list when their corresponding policy is unrestricted. Each list
+is limited to 1,000 entries, and the complete effective-configuration snapshot
+is canonically serialized against the shared 8 MiB ceiling before either policy
+result is returned; oversized authority data fails with `limit_exceeded`.
 
 Account lifecycle changes therefore do not require a tools-list notification.
 A bootstrap mode selection still requires a server restart because it changes

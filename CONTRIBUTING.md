@@ -95,7 +95,25 @@ make check
 ```bash
 make test
 make docs-test
+make test-browser
 ```
+
+Frontend changes require Node 22.12 or later. Rebuild and stage the locked React
+assets before the Python checks:
+
+```bash
+make frontend
+```
+
+`make frontend` runs `npm ci`, lint, type checking, unit tests, and the Vite
+production build, then replaces the embedded assets after checking for missing,
+stale, remote, source-map, service-worker, and MCP-App files. It also refreshes
+`frontend/embedded-assets.json`, which binds the maintainer source tree and build
+script to exact staged asset hashes. Normal PEP 517 wheel/sdist builds run only
+`make frontend-check`; rebuilding a wheel from the sdist and UI startup never
+invoke Node or access npm. Commit frontend source, `package-lock.json`, the asset
+manifest, third-party notices, and the corresponding staged
+`mcp_email_server/web_ui/static` files together.
 
 Changes to IMAP, SMTP, MCP stdio, configuration loading, attachment handling, or
 mailbox mutations should also run the Docker-backed black-box baseline:
@@ -109,10 +127,11 @@ to loopback, and removes it after the test. See the
 [validation guide](https://mcp-email-server.wh1isper.top/validation/) for the
 covered flows and limitations.
 
-The CI pipeline runs the unit test suite against every supported Python version
-and runs the GreenMail baseline once on Python 3.13 for pull requests and pushes
-to `main`. Relevant changes should still run `make test-e2e` locally before they
-are pushed so failures can be diagnosed without waiting for CI.
+The CI pipeline runs the unit test suite against every supported Python version,
+runs the locked real-browser management E2E, and runs the GreenMail baseline
+once for pull requests and pushes to `main`. Relevant changes should still run
+`make test-browser` and `make test-e2e` locally before they are pushed so
+failures can be diagnosed without waiting for CI.
 
 9. Commit your changes and push your branch to GitHub:
 
@@ -140,6 +159,12 @@ This section is for project maintainers.
 1. Create an API token on [PyPI](https://pypi.org/).
 2. Add it to the repository's GitHub Actions secrets as `PYPI_TOKEN`.
 3. Create a [GitHub release](https://github.com/wh1isper/mcp-email-server/releases/new).
-4. Create a version tag in the form `X.Y.Z` as part of the release.
+4. Create a version tag in the form `vX.Y.Z` as part of the release.
 
-The release workflow publishes the package associated with the tagged release.
+The release workflow validates the tag and uses `dev/set_release_version.py` to
+synchronize the Python package, marketplace manifests, plugin manifests, and
+pinned installation guidance before refreshing the lockfile. It then rebuilds
+the locked frontend, rejects staged-asset drift, runs the Python, documentation,
+browser, packaging, and GreenMail gates, builds the final wheel and sdist once,
+reruns artifact verification against that exact `dist/` directory, and publishes
+those unchanged verified artifacts.

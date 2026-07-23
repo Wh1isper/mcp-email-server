@@ -1,6 +1,7 @@
 import os
 import stat
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,23 @@ from mcp_email_server.config import (
     sender_allowed,
     store_settings,
 )
+
+
+def test_settings_rejects_policy_cardinality_above_application_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "APPLICATION_LIMITS",
+        replace(config_module.APPLICATION_LIMITS, policy_entries=1),
+    )
+
+    settings = Settings.model_construct(
+        emails=[],
+        providers=[],
+        allowed_recipients=["first@example.test", "second@example.test"],
+        allowed_senders=[],
+    )
+    with pytest.raises(ValueError, match="Allowed recipients exceed"):
+        settings.check_unique_account_names()
 
 
 @pytest.mark.parametrize(
