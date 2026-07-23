@@ -1,5 +1,9 @@
 # Guides
 
+> **Version scope:** Managed-mode workflows in this page are Local Email App V2
+> behavior. See [Version availability](getting-started.md#version-availability)
+> before using them with a PyPI installation.
+
 These examples cover common configurations that need more control than the
 basic UI provides.
 

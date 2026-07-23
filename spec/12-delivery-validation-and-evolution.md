@@ -41,14 +41,14 @@ is updated only after the independent review has examined the complete diff.
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
 | 01.1-01.5      | `mcp_email_server/bootstrap.py`, `runtime.py`, `cli.py`, `web_ui/server.py`                                                   | `tests/test_bootstrap.py`, `test_runtime_lifecycle.py`, `test_managed_runtime_and_fences.py`, `test_web_ui_server.py`                                       | `docs/getting-started.md`, `security.md`, `transports.md`                                                            | Independent review: no unresolved material findings |
 | 02.1-02.6      | `mcp_email_server/emails/models.py`, `application/limits.py`, `application/{reads,metadata,mutations}.py`                     | `tests/test_models.py`, `test_application_limits.py`, `test_application_{management,reads}.py`, `test_mutation_application.py`                              | `docs/configuration.md`, `security.md`, `tools.md`                                                                   | Independent review: no unresolved material findings |
-| 03.1-03.9      | `mcp_email_server/application/`, `adapters/authority.py`, `runtime.py`, `large_results.py`                                    | `tests/test_application_*.py`, `test_*_adapters.py`, `test_large_results.py`, `test_runtime_lifecycle.py`                                                   | `docs/configuration.md`, `security.md`, `validation.md`                                                              | Independent review: no unresolved material findings |
+| 03.1-03.9      | `mcp_email_server/application/`, `adapters/{authority,management}.py`, `runtime.py`, `large_results.py`                       | `tests/test_application_*.py`, `test_*_adapters.py`, `test_large_results.py`, `test_runtime_lifecycle.py`                                                   | `docs/configuration.md`, `security.md`, `validation.md`                                                              | Independent review: no unresolved material findings |
 | 04.1-04.8      | `mcp_email_server/managed.py`, `application/management.py`, `adapters/management.py`, `cli.py`, `web_ui/app.py`               | `tests/test_managed_catalog.py`, `test_managed_cli.py`, `test_application_management.py`, `test_web_ui_management.py`                                       | `docs/getting-started.md`, `configuration.md`, `troubleshooting.md`                                                  | Independent review: no unresolved material findings |
 | 05.1-05.8      | `mcp_email_server/keyring_store.py`, `managed.py`, `application/management.py`, `adapters/authority.py`                       | `tests/test_keyring_store.py`, `test_application_management.py`, `test_managed_catalog.py`, `test_managed_runtime_and_fences.py`, `test_web_ui_security.py` | `docs/configuration.md`, `security.md`, `troubleshooting.md`                                                         | Independent review: no unresolved material findings |
 | 06.1-06.7      | `mcp_email_server/metadata_index.py`, `application/{metadata,reads}.py`, `adapters/{metadata,reads}.py`, `emails/classic.py`  | `tests/test_metadata_*.py`, `test_read_*.py`, `test_email_attachments.py`, `e2e/test_stdio_greenmail.py`                                                    | `docs/tools.md`, `guides.md`, `security.md`, `validation.md`                                                         | Independent review: no unresolved material findings |
 | 07.1-07.9      | `mcp_email_server/application/mutations.py`, `adapters/mutations.py`, `emails/classic.py`                                     | `tests/test_mutation_*.py`, `test_scoped_expunge_regression.py`, `test_save_to_{mailbox,sent}.py`, `e2e/test_stdio_greenmail.py`                            | `docs/tools.md`, `guides.md`, `security.md`, `troubleshooting.md`                                                    | Independent review: no unresolved material findings |
 | 08.1-08.10     | `mcp_email_server/managed.py`, `metadata_index.py`, `large_results.py`, `adapters/reads.py`                                   | `tests/test_managed_catalog.py`, `test_metadata_index.py`, `test_large_results.py`, `test_read_adapters.py`                                                 | `docs/configuration.md`, `security.md`, `troubleshooting.md`                                                         | Independent review: no unresolved material findings |
 | 09.1-09.8      | `mcp_email_server/web_ui/`, `frontend/`, `dev/build_frontend.py`, `Makefile`                                                  | `tests/test_web_ui_*.py`, `test_packaging.py`, `frontend/src/*.test.tsx`, `frontend/src/api.test.ts`, `frontend/e2e/local-management.spec.ts`               | `docs/getting-started.md`, `configuration.md`, `security.md`, `transports.md`, `troubleshooting.md`, `validation.md` | Independent review: no unresolved material findings |
-| 10.1-10.8      | `mcp_email_server/app.py`, `application/limits.py`, `large_results.py`                                                        | `tests/fixtures/mcp_catalog.json`, `tests/test_mcp_tools.py`, `test_large_results.py`, `e2e/test_stdio_greenmail.py`                                        | `docs/tools.md`, `transports.md`, `validation.md`                                                                    | Independent review: no unresolved material findings |
+| 10.1-10.8      | `mcp_email_server/app.py`, `stdio.py`, `application/limits.py`, `large_results.py`                                            | `tests/fixtures/mcp_catalog.json`, `tests/test_mcp_tools.py`, `test_stdio_protocol.py`, `test_large_results.py`, `e2e/test_stdio_greenmail.py`              | `docs/tools.md`, `transports.md`, `validation.md`                                                                    | Independent review: no unresolved material findings |
 | 11.1-11.8      | `plugins/mcp-email-server/`, `.agents/plugins/marketplace.json`, `.claude-plugin/marketplace.json`, `mcp_email_server/cli.py` | `tests/test_agent_integrations.py`, `test_cli.py`, `test_web_ui_server.py`                                                                                  | `docs/guides.md`, `getting-started.md`, `security.md`                                                                | Independent review: no unresolved material findings |
 
 For each normative acceptance item, the implementation review records:
@@ -110,7 +110,10 @@ bounded cleanup and never print sentinel secrets.
 
 Before delivery, all of the following pass from a clean checkout:
 
-1. supported Python matrix (3.11 through 3.14 unless project support changes);
+1. supported Python matrix (3.11 through 3.14 unless project support changes),
+   rerun against the exact peeled release-tag commit, whose `vX.Y.Z` tag matches
+   committed package metadata, before publish without rewriting version metadata
+   or the lockfile;
 2. formatting, lint, type checking, lock consistency, and full Python tests with
    configured coverage threshold;
 3. documentation strict build and link/cross-reference validation;
@@ -134,10 +137,12 @@ Before delivery, all of the following pass from a clean checkout:
 14. clean git tree after generated-asset drift and all checks.
 
 CI and release publishing invoke the same authoritative artifact build/verify
-workflow. Release cannot publish an artifact that skipped frontend build,
-notices, from-sdist reconstruction, authenticated installed/`uvx` UI smoke, or
-asset verification. The release job builds `dist/` once, points artifact tests
-at that exact directory, and publishes it unchanged.
+workflow. Release cannot publish an artifact that skipped the supported Python
+matrix, frontend build, notices, from-sdist reconstruction, authenticated
+installed/`uvx` UI smoke, or asset verification. The release workflow pins and
+verifies the peeled tag commit without mutating its metadata or lockfile, builds
+`dist/` once in an unprivileged validation job, records checksums, and gives the
+credential-bearing publish job only those unchanged verified bytes.
 
 ## Artifact Contract
 

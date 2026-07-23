@@ -27,6 +27,7 @@ CredentialRepairStatus = Literal[
 ]
 Lifecycle = Literal["STAGING", "ACTIVE"]
 ManagementMode = Literal["legacy", "managed"]
+LegacyCredentialStorage = Literal["keyring", "plaintext"]
 
 
 class ManagementError(RuntimeError):
@@ -172,6 +173,14 @@ class ManagementStatus:
     restart_required: bool
     report: DoctorReport | None
     catalog_problem: str | None = None
+
+
+@dataclass(frozen=True)
+class LegacyCredentialMigrationResult:
+    account_count: int
+    remaining_entries: tuple[str, ...]
+    unverifiable_entries: tuple[str, ...]
+    keyring_service: str
 
 
 @dataclass(frozen=True)
@@ -457,6 +466,14 @@ class ManagementBackend(Protocol):
     async def test_connection(self, catalog: ManagedCatalogPort, name: str, role: BindingRole) -> None: ...
 
     def index_health(self, catalog: ManagedCatalogPort) -> IndexHealth: ...
+
+    def freeze_runtime_authority(self) -> ManagementMode: ...
+
+    def validate_managed_runtime(self) -> None: ...
+
+    def reset_legacy_settings(self) -> None: ...
+
+    def migrate_legacy_credentials(self, target: LegacyCredentialStorage) -> LegacyCredentialMigrationResult: ...
 
 
 class _ConfiguredCatalogService:
@@ -1059,6 +1076,34 @@ class IndexHealthService(_ConfiguredCatalogService):
         return self._backend.index_health(self._catalog())
 
 
+class LegacyCompatibilityService:
+    """Own the explicit compatibility boundary for legacy runtime and writes."""
+
+    def __init__(self, backend: ManagementBackend) -> None:
+        self._backend = backend
+
+    def _require_legacy_runtime(self, operation: str) -> None:
+        bootstrap = self._backend.read_bootstrap()
+        running_mode = bootstrap.running_mode if bootstrap.running_mode is not None else bootstrap.mode
+        if running_mode == "managed":
+            raise ManagementError(
+                f"Cannot {operation} while managed mode is selected. Use the managed `config` and "
+                "`account` CLI commands, or run `mcp-email-server config select legacy` and restart."
+            )
+
+    def validate_runtime(self) -> None:
+        if self._backend.freeze_runtime_authority() == "managed":
+            self._backend.validate_managed_runtime()
+
+    def reset(self) -> None:
+        self._require_legacy_runtime("reset legacy settings")
+        self._backend.reset_legacy_settings()
+
+    def migrate_credentials(self, target: LegacyCredentialStorage) -> LegacyCredentialMigrationResult:
+        self._require_legacy_runtime("migrate legacy credentials")
+        return self._backend.migrate_legacy_credentials(target)
+
+
 @dataclass(frozen=True)
 class ManagementServices:
     lifecycle: CatalogLifecycleService
@@ -1068,6 +1113,7 @@ class ManagementServices:
     connectivity: ConnectivityValidationService
     legacy_import: LegacyImportService
     index_health: IndexHealthService
+    legacy_compatibility: LegacyCompatibilityService
 
     @classmethod
     def compose(cls, backend: ManagementBackend) -> ManagementServices:
@@ -1079,4 +1125,5 @@ class ManagementServices:
             connectivity=ConnectivityValidationService(backend),
             legacy_import=LegacyImportService(backend),
             index_health=IndexHealthService(backend),
+            legacy_compatibility=LegacyCompatibilityService(backend),
         )

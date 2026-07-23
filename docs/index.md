@@ -1,5 +1,10 @@
 # mcp-email-server
 
+> The managed React UI and mail-only MCP contract documented here are Local
+> Email App V2 behavior. Check
+> [Version availability](getting-started.md#version-availability) before using
+> this documentation with a published package.
+
 mcp-email-server connects MCP clients to email accounts through IMAP and SMTP.
 It provides tools for reading, searching, organizing, composing, and sending
 email without tying the client to a specific email provider.

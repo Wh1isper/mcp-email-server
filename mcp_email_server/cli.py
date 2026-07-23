@@ -10,7 +10,6 @@ import typer
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import SecretStr
 
-from mcp_email_server import keyring_store
 from mcp_email_server.app import mcp
 from mcp_email_server.application.management import (
     CreateAccountCommand,
@@ -21,14 +20,8 @@ from mcp_email_server.application.management import (
     ManagementError,
     UpdateAccountCommand,
 )
-from mcp_email_server.bootstrap import (
-    BootstrapError,
-    ManagedModeWriteError,
-    assert_legacy_writable,
-    freeze_process_bootstrap,
-)
-from mcp_email_server.config import Settings, delete_settings, get_settings
 from mcp_email_server.runtime import get_application_runtime
+from mcp_email_server.stdio import run_bounded_stdio
 
 app = typer.Typer()
 config_app = typer.Typer(help="Manage bootstrap mode and the managed catalog.")
@@ -762,16 +755,15 @@ def account_test(
 def _validate_managed_runtime() -> None:
     """Fail before opening a transport when selected managed authority is unusable."""
     try:
-        if freeze_process_bootstrap().mode == "managed":
-            get_settings(reload=True)
-    except (BootstrapError, ManagementError, ValueError) as exc:
+        get_application_runtime().management.legacy_compatibility.validate_runtime()
+    except ManagementError as exc:
         _fail_cli(exc)
 
 
 @app.command()
 def stdio():
     _validate_managed_runtime()
-    mcp.run(transport="stdio")
+    run_bounded_stdio(mcp)
 
 
 @app.command()
@@ -811,30 +803,10 @@ def ui(
 @app.command()
 def reset():
     try:
-        assert_legacy_writable("reset legacy settings")
-        delete_settings()
-    except ManagedModeWriteError as exc:
+        get_application_runtime().management.legacy_compatibility.reset()
+    except ManagementError as exc:
         _fail_cli(exc)
     typer.echo("Config reset")
-
-
-def _purge_keyring_after_plaintext_migration(settings: Settings) -> tuple[list[str], list[str]]:
-    """Delete and verify keyring entries referenced by the pre-migration file.
-
-    Restricting cleanup to loaded sentinels keeps migration of an already-plaintext
-    file an idempotent no-op. Every referenced entry is classified as confirmed
-    deleted, confirmed present, or unverifiable after the deletion attempt.
-    """
-    remaining: list[str] = []
-    unverifiable: list[str] = []
-    for account_name, role in sorted(settings.loaded_keyring_references):
-        entry = f"{account_name}:{role}"
-        status = keyring_store.delete_secret_checked(account_name, role)
-        if status == "present":
-            remaining.append(entry)
-        elif status == "unverifiable":
-            unverifiable.append(entry)
-    return remaining, unverifiable
 
 
 @app.command(name="migrate-credentials")
@@ -850,11 +822,6 @@ def migrate_credentials(
     """
     target = to.value
 
-    try:
-        assert_legacy_writable("migrate legacy credentials")
-    except ManagedModeWriteError as exc:
-        _fail_cli(exc)
-
     env_override = os.environ.get("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE")
     if env_override is not None and env_override != target:
         typer.echo(
@@ -865,39 +832,23 @@ def migrate_credentials(
         )
 
     try:
-        settings = Settings.load_for_migration()
-    except Exception as e:
-        typer.echo(f"Error: could not load the current configuration: {e}", err=True)
-        raise typer.Exit(code=1) from e
+        result = get_application_runtime().management.legacy_compatibility.migrate_credentials(target)
+    except ManagementError as exc:
+        _fail_cli(exc)
 
-    settings.credential_storage = target
-    settings._credential_storage_override = target
-
-    try:
-        settings.store()
-    except Exception as e:
-        typer.echo(f"Error: migration to '{target}' failed: {e}", err=True)
-        raise typer.Exit(code=1) from e
-
-    if target == "plaintext":
-        remaining, unverifiable = _purge_keyring_after_plaintext_migration(settings)
-    else:
-        remaining, unverifiable = [], []
-
-    total = len(settings.emails) + len(settings.providers)
-    typer.echo(f"Migrated {total} account(s) to '{target}' storage")
-    if remaining:
+    typer.echo(f"Migrated {result.account_count} account(s) to '{target}' storage")
+    if result.remaining_entries:
         typer.echo(
             "Warning: the plaintext copy was written, but these keyring entries are still present "
-            f"and may hold live secrets: {', '.join(remaining)}. Remove them manually — on macOS: "
-            f"`security delete-generic-password -s {keyring_store.SERVICE}`.",
+            f"and may hold live secrets: {', '.join(result.remaining_entries)}. Remove them manually — on macOS: "
+            f"`security delete-generic-password -s {result.keyring_service}`.",
             err=True,
         )
-    if unverifiable:
+    if result.unverifiable_entries:
         typer.echo(
             "Warning: the plaintext copy was written, but removal of these keyring entries could "
-            f"not be verified: {', '.join(unverifiable)}. Check the active keyring manually — on "
-            f"macOS: `security delete-generic-password -s {keyring_store.SERVICE}`.",
+            f"not be verified: {', '.join(result.unverifiable_entries)}. Check the active keyring manually — on "
+            f"macOS: `security delete-generic-password -s {result.keyring_service}`.",
             err=True,
         )
 

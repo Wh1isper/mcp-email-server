@@ -164,10 +164,13 @@ This section is for project maintainers.
 3. Create a [GitHub release](https://github.com/wh1isper/mcp-email-server/releases/new).
 4. Create a version tag in the form `vX.Y.Z` as part of the release.
 
-The release workflow validates the tag and uses `dev/set_release_version.py` to
-synchronize the Python package, marketplace manifests, plugin manifests, and
-pinned installation guidance before refreshing the lockfile. It then rebuilds
-the locked frontend, rejects staged-asset drift, runs the Python, documentation,
-browser, packaging, and GreenMail gates, builds the final wheel and sdist once,
-reruns artifact verification against that exact `dist/` directory, and publishes
-those unchanged verified artifacts.
+Commit the intended package, plugin, marketplace, installation-guide, and lock
+versions before creating the tag; `vX.Y.Z` must match the committed Python
+package version. The release workflow does not rewrite version
+metadata or the lockfile: it pins and verifies the peeled tag commit, then reruns
+the complete Python 3.11-3.14 matrix against that exact tree. A separate
+unprivileged validation job rebuilds the locked frontend, rejects staged-asset
+drift, runs the default-Python, documentation, browser, packaging, and GreenMail
+gates, builds the final wheel and sdist once, and records their checksums. The
+credential-bearing publish job can only download, checksum, and publish those
+unchanged verified artifacts; it contains no build step.

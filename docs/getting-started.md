@@ -12,15 +12,59 @@ multiple accounts, and advanced email server settings.
 - An MCP-compatible client.
 
 [`uv`](https://docs.astral.sh/uv/) is recommended because `uvx` can run the
-latest package without a permanent installation.
+newest published PyPI package without a permanent installation.
 
-## Configure an account with the UI
+## Version availability
 
-Run:
+This page documents the Local Email App V2 contract implemented by this source
+tree: the embedded React management UI, SQLite/keyring managed catalogs, the
+`config` and `account` CLI commands, and a mail-only MCP catalog.
+
+PyPI 0.16.0 and earlier do not contain that contract. Those releases use the
+legacy Gradio/TOML editor and MCP still exposes `add_email_account`. For a newer
+release, verify that its release notes include “Local Email App V2” before using
+the V2 instructions below. The `@latest` selector chooses the newest published
+package; it does not select this source branch.
+
+To run V2 from this checkout:
+
+```bash
+uv sync
+uv run mcp-email-server ui
+```
+
+For a published release whose notes include Local Email App V2:
 
 ```bash
 uvx mcp-email-server@latest ui
 ```
+
+Use the same source checkout or published release for both `ui` and `stdio`. Do
+not pair a V2 managed catalog with a pre-V2 MCP process.
+
+## Upgrading to Local Email App V2
+
+PyPI 0.16.0 and earlier expose the historical `add_email_account` MCP tool,
+which accepts account credentials and writes legacy TOML configuration. Local
+Email App V2 intentionally removes that tool; it is not renamed or replaced by
+another MCP management tool. Account and credential changes must be completed
+by the user through the authenticated loopback UI or interactive CLI.
+
+Before upgrading, remove prompts, automation, and client allowlist entries that
+invoke `add_email_account`. After upgrading, restart each MCP client so it
+refreshes `tools/list`; a stale caller will no longer find that tool.
+
+Existing TOML accounts remain available in `legacy` mode. To adopt managed mode,
+initialize a staging catalog, preview and explicitly apply `config
+import-legacy`, test the accounts, activate the catalog, select managed mode,
+and restart the MCP client. Import does not select managed mode or modify the
+source TOML and its legacy keyring entries. Environment-composited accounts and
+overrides are not imported; recreate them through the user-operated CLI or UI
+without passing credentials through MCP or chat.
+
+## Configure an account with the UI
+
+Run one of the V2 commands in [Version availability](#version-availability).
 
 The foreground command binds exactly to `127.0.0.1` on an ephemeral port and
 opens one process-specific browser link. The link contains a one-time token in
@@ -106,9 +150,10 @@ If the account is listed but a mail operation fails, check the IMAP or SMTP
 host, port, TLS mode, username, and password. See
 [Troubleshooting](troubleshooting.md) for common failures.
 
-## Install the package permanently
+## Install a published V2 release permanently
 
-Instead of `uvx`, install the package into a managed environment:
+Use this path only for a release whose notes state that it includes Local Email
+App V2. Instead of `uvx`, install that package into a managed environment:
 
 ```bash
 pip install mcp-email-server

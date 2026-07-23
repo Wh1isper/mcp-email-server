@@ -13,6 +13,8 @@ from mcp_email_server.application.management import (
     EndpointSummary,
     IndexHealth,
     LegacyAccountSnapshot,
+    LegacyCredentialMigrationResult,
+    LegacyCredentialStorage,
     LegacySourceSnapshot,
     ManagedCatalogPort,
     ManagementError,
@@ -23,12 +25,23 @@ from mcp_email_server.application.management import (
 from mcp_email_server.bootstrap import (
     BootstrapError,
     BootstrapRevisionError,
+    ManagedModeWriteError,
+    assert_legacy_writable,
     configured_path,
+    freeze_process_bootstrap,
     process_bootstrap,
     read_bootstrap,
     write_bootstrap,
 )
-from mcp_email_server.config import EmailSettings, ProviderSettings, normalize_address_list, normalize_pattern_list
+from mcp_email_server.config import (
+    EmailSettings,
+    ProviderSettings,
+    Settings,
+    delete_settings,
+    get_settings,
+    normalize_address_list,
+    normalize_pattern_list,
+)
 from mcp_email_server.emails.classic import ClassicEmailHandler
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
 
@@ -205,6 +218,60 @@ class LocalManagementBackend:
                 pending_operations=0,
                 problems=("index_unavailable",),
             )
+
+    def freeze_runtime_authority(self) -> ManagementMode:
+        try:
+            return freeze_process_bootstrap().mode
+        except BootstrapError as exc:
+            raise ManagementError(str(exc)) from exc
+
+    def validate_managed_runtime(self) -> None:
+        try:
+            get_settings(reload=True)
+        except (BootstrapError, ManagementError, ValueError) as exc:
+            raise ManagementError(str(exc)) from exc
+
+    def reset_legacy_settings(self) -> None:
+        try:
+            delete_settings()
+        except (BootstrapError, ManagedModeWriteError, OSError) as exc:
+            raise ManagementError(str(exc)) from exc
+
+    @staticmethod
+    def _purge_migrated_keyring_entries(settings: Settings) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        remaining: list[str] = []
+        unverifiable: list[str] = []
+        for account_name, role in sorted(settings.loaded_keyring_references):
+            entry = f"{account_name}:{role}"
+            status = keyring_store.delete_secret_checked(account_name, role)
+            if status == "present":
+                remaining.append(entry)
+            elif status == "unverifiable":
+                unverifiable.append(entry)
+        return tuple(remaining), tuple(unverifiable)
+
+    def migrate_legacy_credentials(self, target: LegacyCredentialStorage) -> LegacyCredentialMigrationResult:
+        try:
+            assert_legacy_writable("migrate legacy credentials")
+        except ManagedModeWriteError as exc:
+            raise ManagementError(str(exc)) from exc
+        try:
+            settings = Settings.load_for_migration()
+        except Exception as exc:
+            raise ManagementError("could not load the current configuration") from exc
+
+        try:
+            settings.store_for_credential_migration(target)
+        except Exception as exc:
+            raise ManagementError(f"migration to '{target}' failed") from exc
+
+        remaining, unverifiable = self._purge_migrated_keyring_entries(settings) if target == "plaintext" else ((), ())
+        return LegacyCredentialMigrationResult(
+            account_count=len(settings.emails) + len(settings.providers),
+            remaining_entries=remaining,
+            unverifiable_entries=unverifiable,
+            keyring_service=keyring_store.SERVICE,
+        )
 
     async def test_connection(self, catalog: ManagedCatalogPort, name: str, role: BindingRole) -> None:
         try:

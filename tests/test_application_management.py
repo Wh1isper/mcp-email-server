@@ -18,6 +18,7 @@ from mcp_email_server.application.management import (
     EndpointSummary,
     IndexHealth,
     LegacyAccountSnapshot,
+    LegacyCredentialMigrationResult,
     LegacyImportService,
     LegacySourceSnapshot,
     ManagedAccountService,
@@ -628,3 +629,52 @@ def test_index_health_service_delegates_bounded_adapter_result() -> None:
 
     assert result == expected
     backend.index_health.assert_called_once_with(catalog)
+
+
+def test_legacy_compatibility_freezes_and_preflights_only_managed_running_authority() -> None:
+    backend = Mock()
+    service = ManagementServices.compose(backend).legacy_compatibility
+    backend.freeze_runtime_authority.return_value = "legacy"
+
+    service.validate_runtime()
+
+    backend.freeze_runtime_authority.assert_called_once_with()
+    backend.validate_managed_runtime.assert_not_called()
+
+    backend.freeze_runtime_authority.return_value = "managed"
+    service.validate_runtime()
+
+    assert backend.freeze_runtime_authority.call_count == 2
+    backend.validate_managed_runtime.assert_called_once_with()
+
+
+@pytest.mark.parametrize("operation", ["reset", "migrate"])
+def test_legacy_compatibility_rejects_writes_in_managed_runtime(operation: str) -> None:
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(
+        mode="legacy",
+        db_path=Path("catalog.sqlite3"),
+        running_mode="managed",
+    )
+    service = ManagementServices.compose(backend).legacy_compatibility
+
+    with pytest.raises(ManagementError, match="config select legacy"):
+        if operation == "reset":
+            service.reset()
+        else:
+            service.migrate_credentials("plaintext")
+
+    backend.reset_legacy_settings.assert_not_called()
+    backend.migrate_legacy_credentials.assert_not_called()
+
+
+def test_legacy_compatibility_delegates_migration_and_returns_bounded_report() -> None:
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=None)
+    expected = LegacyCredentialMigrationResult(2, ("alice:incoming",), (), "mcp-email-server")
+    backend.migrate_legacy_credentials.return_value = expected
+
+    result = ManagementServices.compose(backend).legacy_compatibility.migrate_credentials("plaintext")
+
+    assert result == expected
+    backend.migrate_legacy_credentials.assert_called_once_with("plaintext")

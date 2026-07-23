@@ -1,5 +1,9 @@
 # Transports
 
+> **Version scope:** Managed startup and the embedded React UI on this page are
+> Local Email App V2 behavior. See [Version availability](getting-started.md#version-availability)
+> before using these commands with a PyPI installation.
+
 mcp-email-server supports stdio, SSE, and Streamable HTTP transports. Use stdio
 for a local MCP client unless a network transport is specifically required.
 
@@ -40,7 +44,10 @@ and output.
 ```
 
 Do not write unrelated output to stdout when wrapping a stdio server process,
-because stdout carries the MCP protocol.
+because stdout carries newline-delimited UTF-8 MCP JSON-RPC frames. Local Email
+App V2 rejects malformed UTF-8/JSON and frames larger than 2 MiB with bounded,
+redacted diagnostics, remains usable after a rejected frame, propagates MCP
+cancellation, and cancels in-flight work before cleanup on EOF.
 
 The process resolves the bootstrap mode at startup. An explicitly selected
 managed mode loads only an `ACTIVE` managed catalog and its keyring bindings. A

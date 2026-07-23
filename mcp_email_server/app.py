@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Literal
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
@@ -146,7 +147,8 @@ async def _application_lifespan(_server: FastMCP) -> AsyncIterator[dict[str, obj
     try:
         yield {}
     finally:
-        await close_application_runtime()
+        with anyio.CancelScope(shield=True):
+            await close_application_runtime()
 
 
 mcp = FastMCP("email", lifespan=_application_lifespan)

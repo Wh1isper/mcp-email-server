@@ -1,5 +1,9 @@
 # Troubleshooting
 
+> **Version scope:** Managed mode and the embedded React UI on this page are
+> Local Email App V2 behavior. See [Version availability](getting-started.md#version-availability)
+> before using these commands with a PyPI installation.
+
 Start by running the relevant command with a visible terminal so server logs and
 keyring prompts are not hidden by the MCP client.
 

@@ -653,6 +653,22 @@ def test_migrate_credentials_load_failure_exits_cleanly(tmp_path, monkeypatch, b
     assert not isinstance(result.exception, ValueError)  # typer.Exit, not a raw traceback
 
 
+def test_migrate_credentials_load_failure_redacts_invalid_secret_value(tmp_path, monkeypatch, fake_keyring):
+    sentinel = "MIGRATION_VALIDATION_SECRET_SENTINEL"
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
+    raw = _raw_email_toml("acct1", "cleartext")
+    raw["emails"][0]["incoming"]["password"] = [sentinel]
+    cfg.write_text(tomli_w.dumps(raw))
+
+    result = CliRunner().invoke(cli_app, ["migrate-credentials", "--to", "plaintext"])
+
+    assert result.exit_code == 1
+    assert "could not load" in result.output
+    assert sentinel not in result.output
+    assert len(result.output.encode("utf-8")) < 4_096
+
+
 def test_migrate_credentials_store_failure_exits_cleanly(tmp_path, monkeypatch, broken_keyring):
     cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
     monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)

@@ -151,17 +151,27 @@ def _static_digest(files: dict[str, bytes]) -> str:
     return digest.hexdigest()
 
 
-def _workflow_job_runs(path: Path, job_name: str) -> list[str]:
+def _workflow_job(path: Path, job_name: str) -> dict[str, object]:
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(workflow, dict)
     jobs = workflow.get("jobs")
     assert isinstance(jobs, dict)
     job = jobs.get(job_name)
     assert isinstance(job, dict)
+    return job
+
+
+def _workflow_steps(path: Path, job_name: str) -> list[dict[str, object]]:
+    job = _workflow_job(path, job_name)
     steps = job.get("steps")
     assert isinstance(steps, list)
+    assert all(isinstance(step, dict) for step in steps)
+    return steps
+
+
+def _workflow_job_runs(path: Path, job_name: str) -> list[str]:
     runs: list[str] = []
-    for step in steps:
+    for step in _workflow_steps(path, job_name):
         assert isinstance(step, dict)
         command = step.get("run")
         if command is not None:
@@ -299,13 +309,38 @@ def test_isolated_wheel_and_local_uvx_serve_authenticated_ui(tmp_path: Path) -> 
     if distributions is None:
         distributions = tmp_path / "distributions"
         subprocess.run(  # noqa: S603 - controlled test command
-            [uv, "build", "--wheel", "--out-dir", str(distributions)],
+            [uv, "build", "--out-dir", str(distributions)],
             cwd=REPOSITORY,
             check=True,
             capture_output=True,
             text=True,
         )
-    wheel = next(distributions.glob("*.whl"))
+    release_wheel = next(distributions.glob("*.whl"))
+    sdist = next(distributions.glob("*.tar.gz"))
+
+    extracted = tmp_path / "rebuilt-source"
+    with tarfile.open(sdist) as archive:
+        archive.extractall(extracted, filter="data")
+    source = next(extracted.iterdir())
+    blockers = tmp_path / "rebuilt-blockers"
+    blockers.mkdir()
+    for blocked_name in ("node", "npm", "npx"):
+        blocker = blockers / blocked_name
+        blocker.write_text(f"#!/bin/sh\necho '{blocked_name} must not run' >&2\nexit 97\n")
+        blocker.chmod(0o755)
+    rebuild_environment = os.environ.copy()
+    rebuild_environment["PATH"] = f"{blockers}{os.pathsep}{rebuild_environment['PATH']}"
+    rebuilt = tmp_path / "rebuilt-distribution"
+    subprocess.run(  # noqa: S603 - controlled test command
+        [uv, "build", "--wheel", "--out-dir", str(rebuilt)],
+        cwd=source,
+        env=rebuild_environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheel = next(rebuilt.glob("*.whl"))
+
     environment = tmp_path / "environment"
     subprocess.run(  # noqa: S603 - controlled test command
         [uv, "venv", "--python", sys.executable, str(environment)],
@@ -337,14 +372,27 @@ def test_isolated_wheel_and_local_uvx_serve_authenticated_ui(tmp_path: Path) -> 
     finally:
         _stop_ui(process, terminal)
 
-    uvx_process, uvx_terminal, uvx_launch_url = _start_ui_in_terminal(
-        [uv, "tool", "run", "--from", str(wheel), "mcp-email-server", "ui", "--no-open", "--port", "0"],
-        environment=runtime_environment,
+    release_uvx_environment = runtime_environment.copy()
+    release_uvx_environment["UV_TOOL_DIR"] = str(tmp_path / "release-uv-tools")
+    release_process, release_terminal, release_launch_url = _start_ui_in_terminal(
+        [
+            uv,
+            "tool",
+            "run",
+            "--from",
+            str(release_wheel),
+            "mcp-email-server",
+            "ui",
+            "--no-open",
+            "--port",
+            "0",
+        ],
+        environment=release_uvx_environment,
     )
     try:
-        _assert_authenticated_ui(uvx_launch_url)
+        _assert_authenticated_ui(release_launch_url)
     finally:
-        _stop_ui(uvx_process, uvx_terminal)
+        _stop_ui(release_process, release_terminal)
 
 
 def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
@@ -354,8 +402,55 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
     assert _workflow_job_runs(main, "documentation") == ["make docs-test"]
     assert _workflow_job_runs(main, "artifacts") == ["make build", "make verify-dist"]
 
-    release_runs = _workflow_job_runs(release, "publish")
-    build_index = release_runs.index("make build")
-    verify_index = release_runs.index("make verify-dist")
-    publish_index = release_runs.index("uv publish")
-    assert build_index < verify_index < publish_index
+    supported = ["3.11", "3.12", "3.13", "3.14"]
+    main_matrix = _workflow_job(main, "tests-and-type-check")
+    release_matrix = _workflow_job(release, "release-python-matrix")
+    assert main_matrix["strategy"]["matrix"]["python-version"] == supported  # type: ignore[index]
+    assert release_matrix["strategy"]["matrix"]["python-version"] == supported  # type: ignore[index]
+    assert (
+        _workflow_job_runs(main, "tests-and-type-check")[0] == _workflow_job_runs(release, "release-python-matrix")[0]
+    )
+
+    validation_runs = _workflow_job_runs(release, "release-validation-and-build")
+    assert validation_runs.index("make build") < validation_runs.index("make verify-dist")
+    publish_runs = _workflow_job_runs(release, "publish")
+    assert publish_runs == ["sha256sum --check dist.sha256", "uv publish dist/*"]
+    publish = _workflow_job(release, "publish")
+    assert set(publish["needs"]) == {  # type: ignore[arg-type]
+        "verify-release-source",
+        "release-python-matrix",
+        "release-validation-and-build",
+    }
+    workflow = yaml.safe_load(release.read_text(encoding="utf-8"))
+    assert workflow["permissions"] == {"contents": "read"}
+    assert publish["permissions"] == {"contents": "write"}
+    for job_name in ("verify-release-source", "release-python-matrix", "release-validation-and-build"):
+        assert _workflow_job(release, job_name).get("permissions", {"contents": "read"}) != {"contents": "write"}
+
+    source_steps = _workflow_steps(release, "verify-release-source")
+    source_checkout = next(step for step in source_steps if step.get("uses") == "actions/checkout@v6")
+    checkout_options = source_checkout["with"]
+    assert isinstance(checkout_options, dict)
+    assert checkout_options == {"ref": "${{ github.sha }}", "fetch-depth": 0}
+    source_check = next(step for step in source_steps if step.get("name") == "Verify exact release tag commit")
+    source_command = source_check["run"]
+    assert isinstance(source_command, str)
+    assert "refs/tags/${RELEASE_TAG}^{commit}" in source_command
+    assert 'test "$tag_sha" = "$EVENT_SHA"' in source_command
+    assert 'test "$RELEASE_TAG" = "v${package_version}"' in source_command
+
+    expected_ref = "${{ needs.verify-release-source.outputs.release_sha }}"
+    for job_name in ("release-python-matrix", "release-validation-and-build"):
+        steps = _workflow_steps(release, job_name)
+        checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v6")
+        options = checkout["with"]
+        assert isinstance(options, dict)
+        assert options["ref"] == expected_ref
+
+    release_commands = [
+        command
+        for job_name in ("verify-release-source", "release-python-matrix", "release-validation-and-build", "publish")
+        for command in _workflow_job_runs(release, job_name)
+    ]
+    assert not any("set_release_version" in command for command in release_commands)
+    assert "uv lock" not in release_commands

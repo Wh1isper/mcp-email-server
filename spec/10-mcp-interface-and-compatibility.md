@@ -112,15 +112,17 @@ In stdio mode:
 - stdout contains MCP protocol frames only;
 - logs and diagnostics use stderr and obey redaction;
 - startup freezes and preflights authority before protocol serving;
-- malformed/oversized frames fail in a bounded way;
+- malformed UTF-8/JSON and frames above the production-owned 2 MiB stdio
+  ceiling produce bounded, redacted handling without echoing input;
 - request cancellation is propagated to application checkpoints;
 - EOF, cancellation, initialization failure, and normal shutdown close all
   constructed resources;
 - no browser UI, bootstrap token, HTTP route, or management server starts.
 
-A generic MCP client or raw JSON-RPC harness validates initialization, catalog,
-invocation, serialization, cancellation, and shutdown in addition to direct
-Python tests.
+A generic MCP client or raw JSON-RPC harness validates initialization, exact
+catalog serialization, malformed and oversized recovery, invocation,
+cancellation, idle and in-flight EOF, runtime cleanup, and stdout purity in
+addition to direct Python tests.
 
 ## Compatibility and Evolution
 

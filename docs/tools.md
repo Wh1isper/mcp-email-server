@@ -1,5 +1,9 @@
 # MCP Tools
 
+> **Version scope:** The mail-only catalog on this page is Local Email App V2
+> behavior. See [Version availability](getting-started.md#version-availability)
+> before using this contract with a PyPI installation.
+
 mcp-email-server exposes bounded account discovery, message, mailbox, and
 composition operations as MCP tools. Tool schemas are generated from the running server, so the MCP client
 can inspect each parameter and response type directly.
@@ -45,6 +49,11 @@ either mode. Use `mcp-email-server ui` or the user-operated `config` and
 a credential handoff surface. The complete tool names, descriptions, input and
 output schemas, annotations, resource template, and visibility are static and
 covered by an exact catalog contract test.
+
+`add_email_account`, which exists in PyPI 0.16.0 and earlier, is intentionally
+absent from Local Email App V2 rather than renamed. See
+[Upgrading to Local Email App V2](getting-started.md#upgrading-to-local-email-app-v2)
+for client discovery and configuration migration steps.
 
 ## Reading and searching
 

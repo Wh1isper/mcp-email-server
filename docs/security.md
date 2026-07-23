@@ -1,5 +1,10 @@
 # Security
 
+> **Version scope:** The managed catalog and React UI security model on this
+> page is Local Email App V2 behavior. See
+> [Version availability](getting-started.md#version-availability) before using
+> this guidance with a PyPI installation.
+
 An email MCP server can read private messages, modify mailboxes, send messages,
 and access local files. Review the controls on this page before exposing it to
 an MCP client or network.

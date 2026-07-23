@@ -1,46 +1,73 @@
 name: release-main
 
 permissions:
-  contents: write
+  contents: read
 
 on:
   release:
     types: [published]
 
 jobs:
-  set-version:
+  verify-release-source:
     runs-on: ubuntu-24.04
+    outputs:
+      release_sha: ${{ steps.source.outputs.release_sha }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Export tag
-        id: vars
-        run: echo tag=${GITHUB_REF#refs/*/} >> $GITHUB_OUTPUT
-        if: ${{ github.event_name == 'release' }}
-
-      - name: Synchronize release version metadata
-        run: python3 dev/set_release_version.py "$RELEASE_VERSION"
-        env:
-          RELEASE_VERSION: ${{ steps.vars.outputs.tag }}
-
-      - name: Upload synchronized release metadata
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-metadata
-          include-hidden-files: true
-          path: |
-            pyproject.toml
-            .claude-plugin/marketplace.json
-            plugins/mcp-email-server/.codex-plugin/plugin.json
-            plugins/mcp-email-server/.claude-plugin/plugin.json
-            plugins/mcp-email-server/skills/safe-email-operations/references/installation.md
-
-  publish:
-    runs-on: ubuntu-latest
-    needs: [set-version]
-    steps:
-      - name: Check out
+      - name: Check out exact release source
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact release tag commit
+        id: source
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          package_version="$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          test "$head_sha" = "$EVENT_SHA"
+          test "$tag_sha" = "$EVENT_SHA"
+          test "$RELEASE_TAG" = "v${package_version}"
+          echo "release_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+  release-python-matrix:
+    needs: [verify-release-source]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-release-source.outputs.release_sha }}
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run tests
+        run: uv run --python ${{ matrix.python-version }} python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+
+      - name: Check typing
+        if: ${{ matrix.python-version == '3.13' }}
+        run: uv run --python ${{ matrix.python-version }} python -m pyright
+
+  release-validation-and-build:
+    needs: [verify-release-source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-release-source.outputs.release_sha }}
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -51,14 +78,6 @@ jobs:
 
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
-
-      - name: Download synchronized release metadata
-        uses: actions/download-artifact@v4
-        with:
-          name: release-metadata
-
-      - name: Refresh release lock metadata
-        run: uv lock
 
       - name: Build and verify the frontend
         run: |
@@ -76,14 +95,49 @@ jobs:
           make test-e2e
           make test-browser
 
-      - name: Build release artifacts
+      - name: Build release artifacts once
         run: make build
 
       - name: Verify the exact release artifacts
         run: make verify-dist
 
+      - name: Record verified artifact checksums
+        run: sha256sum dist/* > dist.sha256
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-distributions
+          path: |
+            dist/*
+            dist.sha256
+
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      [
+        verify-release-source,
+        release-python-matrix,
+        release-validation-and-build,
+      ]
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-release-distributions
+
+      - name: Verify downloaded artifact checksums
+        run: sha256sum --check dist.sha256
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          prune-cache: true
+
       - name: Publish verified artifacts
-        run: uv publish
+        run: uv publish dist/*
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 

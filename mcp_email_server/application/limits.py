@@ -36,6 +36,7 @@ class ApplicationLimits:
     warning_items: int = 100
     error_detail_bytes: int = 4_096
     serialized_response_bytes: int = 8 * 1_024 * 1_024
+    mcp_stdio_frame_bytes: int = 2 * 1_024 * 1_024
     spill_file_bytes: int = 64 * 1_024 * 1_024
     ui_json_body_bytes: int = 1 * 1_024 * 1_024
     provider_timeout_seconds: float = 60.0

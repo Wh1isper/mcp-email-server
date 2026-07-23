@@ -1,5 +1,9 @@
 # Configuration
 
+> **Version scope:** Managed mode and the embedded React UI on this page are
+> Local Email App V2 behavior. See [Version availability](getting-started.md#version-availability)
+> before using these commands with a PyPI installation.
+
 mcp-email-server supports two explicitly selectable configuration modes:
 
 - `legacy` keeps account configuration in TOML and composes documented

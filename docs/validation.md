@@ -1,5 +1,9 @@
 # Validation
 
+> This page validates the current source checkout. Published packages may lag
+> development-branch behavior; see
+> [Version availability](getting-started.md#version-availability).
+
 The repository includes a Docker-backed black-box baseline for the current
 application. It verifies that the installed MCP stdio server can communicate
 with real SMTP and IMAP sockets before architecture changes are accepted.
@@ -77,11 +81,22 @@ the release workflow, so CI validates one exact wheel/sdist pair rather than
 independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
-repeated for every interpreter version. The release workflow repeats the
-frontend, static, Python, docs, browser, package, and GreenMail gates. It then
-builds `dist/`, runs `make verify-dist` against those exact wheel/sdist bytes
-(including authenticated isolated-install and local-wheel `uvx` UI smokes), and
-publishes only that unchanged directory.
+repeated for every interpreter version. The release workflow verifies the
+peeled tag commit, requires `vX.Y.Z` to match the committed Python package
+version, and reruns Python 3.11-3.14 against that exact tree; it does not rewrite
+version metadata or the lockfile. A separate validation job
+repeats the frontend, static, default-Python, docs, browser, package, and
+GreenMail gates, builds `dist/` once, and runs `make verify-dist` against those
+exact wheel/sdist bytes. Verification includes authenticated UI smoke from both
+the wheel rebuilt from the sdist without Node and the original release wheel.
+The credential-bearing publish job receives only the checksum-verified artifacts
+and cannot rebuild them.
+
+The normal test suite also launches a raw newline-delimited JSON-RPC harness
+without the MCP client SDK. It checks initialization and exact catalog
+serialization, stdout purity, malformed UTF-8/JSON and oversized-frame recovery,
+cancellation propagation, idle and in-flight EOF, and process-owned artifact
+cleanup.
 
 Run the baseline locally before pushing relevant mail or stdio changes; the
 shared CI check is not a replacement for local diagnosis.

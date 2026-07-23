@@ -13,7 +13,7 @@ from mcp_email_server import config as config_module
 from mcp_email_server import keyring_store
 from mcp_email_server.adapters.reads import LocalReadBackend
 from mcp_email_server.bootstrap import BOOTSTRAP_VERSION, ManagedModeWriteError, freeze_process_bootstrap
-from mcp_email_server.cli import app
+from mcp_email_server.cli import _validate_managed_runtime, app
 from mcp_email_server.config import (
     EmailServer,
     Settings,
@@ -32,13 +32,24 @@ def test_transport_adapters_do_not_import_legacy_provider_or_catalog_bypasses() 
         ("mcp_email_server.emails.dispatcher", "dispatch_handler"),
     }
     discovered: set[tuple[str, str]] = set()
+    cli_modules: set[str] = set()
     for relative_path in ("mcp_email_server/app.py", "mcp_email_server/cli.py"):
         tree = ast.parse((project_root / relative_path).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and isinstance(node.module, str):
                 discovered.update((node.module, alias.name) for alias in node.names)
+                if relative_path.endswith("cli.py"):
+                    cli_modules.add(node.module)
+            elif isinstance(node, ast.Import) and relative_path.endswith("cli.py"):
+                cli_modules.update(alias.name for alias in node.names)
 
     assert discovered.isdisjoint(forbidden)
+    assert cli_modules.isdisjoint({
+        "mcp_email_server.bootstrap",
+        "mcp_email_server.config",
+        "mcp_email_server.keyring_store",
+    })
+    assert ("mcp_email_server", "keyring_store") not in discovered
     assert not (project_root / "mcp_email_server/emails/dispatcher.py").exists()
 
 
@@ -125,6 +136,19 @@ def test_unavailable_managed_keyring_never_falls_back_to_plaintext(tmp_path, bro
     assert report.pending_bindings == 0
     assert report.cleanup_required_bindings == 0
     assert report.repair_required_bindings == 1
+
+
+def test_transport_preflight_freezes_managed_authority_until_restart(monkeypatch, tmp_path, fake_keyring) -> None:
+    config_path, _catalog = _select_managed(monkeypatch, tmp_path, fake_keyring)
+    monkeypatch.setattr(bootstrap_module, "_PROCESS_BOOTSTRAP", None)
+
+    _validate_managed_runtime()
+    content = config_path.read_text().replace('mode = "managed"', 'mode = "legacy"')
+    config_path.write_text(content)
+    config_path.chmod(0o600)
+
+    assert freeze_process_bootstrap(config_path).mode == "managed"
+    assert get_settings(reload=True).emails[0].account_name == "managed-alice"
 
 
 def test_running_managed_process_keeps_writer_fence_after_external_legacy_selection(

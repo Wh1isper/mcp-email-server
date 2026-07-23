@@ -8,15 +8,26 @@
 An MCP server for reading, searching, organizing, and sending email through
 IMAP and SMTP.
 
+> [!IMPORTANT]
+> This branch documents the Local Email App V2 contract. PyPI 0.16.0 and earlier
+> use the legacy Gradio/TOML UI and still expose `add_email_account`. Review
+> [version availability and upgrade guidance](docs/getting-started.md#version-availability)
+> before using an `@latest` command.
+
 ## Quick start
 
 ### 1. Configure an email account
 
-Run the configuration UI with [`uv`](https://docs.astral.sh/uv/):
+From this source checkout, run the configuration UI with
+[`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-uvx mcp-email-server@latest ui
+uv sync
+uv run mcp-email-server ui
 ```
+
+For a published release whose notes state that it includes Local Email App V2,
+`uvx mcp-email-server@latest ui` is the equivalent temporary invocation.
 
 Keep the foreground command running. In the loopback browser session, initialize
 a staging catalog, add your IMAP account and credential, test it, then activate
@@ -25,7 +36,8 @@ need to send email. Restart the MCP client after selecting managed mode.
 
 ### 2. Configure the MCP client
 
-Add the following server definition to the MCP client:
+Use the same V2-capable distribution for stdio as for the UI. For a published
+V2 release, add the following server definition to the MCP client:
 
 ```json
 {
@@ -38,7 +50,10 @@ Add the following server definition to the MCP client:
 }
 ```
 
-Restart the MCP client after updating its configuration.
+Restart the MCP client after updating its configuration. When testing this
+source checkout before publication, invoke `uv run --directory
+/absolute/path/to/mcp-email-server mcp-email-server stdio` instead of pairing a
+managed catalog with PyPI `@latest`.
 
 ### 3. Verify the connection
 

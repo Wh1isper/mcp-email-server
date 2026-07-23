@@ -708,6 +708,12 @@ class Settings(BaseSettings):
                 os.unlink(tmp_name)
             raise
 
+    def store_for_credential_migration(self, target: Literal["keyring", "plaintext"]) -> None:
+        """Persist a migration target without applying environment composition."""
+        self.credential_storage = target
+        self._credential_storage_override = target
+        self.store()
+
     def store(self) -> None:
         # Sink-level fence: reject before mkdir, keyring probe, or serialization.
         assert_legacy_writable("write legacy settings", CONFIG_PATH)
