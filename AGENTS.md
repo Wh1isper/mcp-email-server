@@ -10,10 +10,12 @@ Primary repository areas:
 - `mcp_email_server/config.py` — TOML settings, environment composition, account models, and persistence.
 - `mcp_email_server/keyring_store.py` — operating system keyring integration.
 - `mcp_email_server/emails/` — IMAP and SMTP behavior and response models.
-- `mcp_email_server/ui.py` — Gradio account configuration UI.
-- `tests/` — unit and integration-style tests with mocked mail services.
+- `mcp_email_server/ui.py` / the replacement Web UI package — the local loopback management adapter and packaged static assets.
+- `frontend/` — React/TypeScript management UI source and locked maintainer build.
+- `integrations/` — optional Codex/Claude Code skill/plugin packaging for safe non-secret setup guidance.
+- `tests/` — unit, contract, integration, security, and browser-facing tests.
 - `docs/` — user documentation published with MkDocs.
-- `spec/` — unpublished architecture and product design proposals kept as flat numbered documents.
+- `spec/` — unpublished normative architecture and product contracts kept as flat numbered documents.
 
 ## Project Conventions
 
@@ -29,14 +31,20 @@ Primary repository areas:
 
 ## Current Architecture Direction
 
-The Local Email App architecture under `spec/` is implemented: MCP uses stdio,
-CLI is the management plane, SQLite stores managed non-secret configuration and
-reusable mail metadata/index state, and a `SecretStore` owns credentials. MCP and
-CLI enter workflow-specific application services composed in
-`mcp_email_server/runtime.py`; concrete mail, SQLite, keyring, legacy config, and
-filesystem behavior stays in adapters. TOML, environment, and legacy keyring
-behavior remains a compatibility mode and explicit import source. HTTP, daemon,
-multi-user, hard purge, and cloud-service design remain out of scope.
+The revised Local Email App architecture under `spec/` is the normative target
+currently being implemented. MCP stdio provides bounded mail workflows; CLI and
+the embedded loopback-only React UI provide the managed management plane.
+SQLite owns managed non-secret configuration and a rebuildable metadata
+projection, while `SecretStore` alone owns managed secret values. Application
+services resolve only the selected account/role secret immediately before
+provider construction. Legacy TOML/environment/keyring behavior remains an
+explicit compatibility mode and import source, but MCP exposes no account or
+credential management in either mode. Historical `add_email_account` is removed;
+optional agent skills hand users to interactive CLI/UI without receiving secrets.
+Attachment compatibility preserves the caller's exact destination behind
+explicit policy and filesystem defenses.
+Centralized limits apply to application and serialized results. MCP Apps, remote
+UI, daemon, multi-user, hard purge, and cloud-service design remain out of scope.
 
 ## Development Workflow
 
@@ -76,6 +84,7 @@ Code and documentation must remain aligned.
 - User-visible behavior changes must always update the appropriate page under `docs/`; internal changes must still keep docstrings and developer guidance accurate.
 - Configuration fields or environment variables require updates to `docs/configuration.md` and, when security-sensitive, `docs/security.md`.
 - CLI commands, arguments, transport defaults, or HTTP security behavior require updates to `docs/transports.md`.
+- Local management UI behavior also requires review of `docs/getting-started.md`, `docs/configuration.md`, `docs/security.md`, and `docs/troubleshooting.md`; route/session/header changes always update `docs/security.md`.
 - MCP tool names, parameters, responses, visibility, or workflows require updates to `docs/tools.md`.
 - New special cases and operational caveats belong in `docs/guides.md` or `docs/troubleshooting.md`.
 - Keep `README.md` limited to the quickest supported configuration path and links to the full documentation.
@@ -91,14 +100,17 @@ those decisions become stable implementation or published user behavior.
 - Maintain `spec/README.md` as the global spec map and keep the current proposal's numbered documents directly under `spec/`.
 - Name detailed documents `NN-topic.md` and order them from system context and boundaries toward workflows, data design, and interfaces.
 - Write specs in English Markdown and use Mermaid for architecture, sequence, state, flow, and ER diagrams.
-- Cross-reference owning specs instead of duplicating contracts across files.
-- Declare each spec `Proposed`, `Accepted`, `Implemented`, or `Superseded`; proposed text must not imply that code already exists.
-- Update the owning spec before or with architecture, workflow, persistence, or security-boundary changes.
-- When a design ships, update its status, implementation/test evidence, and the corresponding user documentation under `docs/`.
+- `spec/README.md` is the sole navigation map; detailed specs do not contain `Previous`/`Next` navigation or per-document status metadata.
+- Give every normative contract one owning domain spec and cross-reference that owner instead of duplicating the contract.
+- End every detailed domain spec with explicit acceptance criteria.
+- Centralize implementation/test/docs traceability and delivery gates in `spec/12-delivery-validation-and-evolution.md`; do not place implementation-status claims or evidence diaries in each domain spec.
+- Update the owning spec before or with architecture, workflow, persistence, interface, or security-boundary changes.
 - Keep unresolved product decisions explicit in the owning spec rather than hiding them in implementation plans.
+- Do not describe an accepted target as shipped behavior. Treat the complete proposal as delivered only when all domain acceptance criteria and the centralized delivery matrix are complete and published docs match.
 
-The current Local Email App proposal starts at `spec/README.md`. Continue design
-discussions by updating those numbered documents and their cross-references.
+The current Local Email App specification starts at `spec/README.md`. Continue
+design discussions by updating the owning numbered document and its centralized
+map/verification references.
 
 ## AnyCap
 
@@ -125,7 +137,10 @@ anycap feedback --type feature -m "describe the use case"
 - Run `make test-e2e` for changes to IMAP, SMTP, MCP stdio, configuration loading, attachment handling, or mailbox mutations. This uses synthetic accounts on a loopback-only GreenMail container, and CI runs it once on the default Python version.
 - Cover both successful operations and security or failure boundaries.
 - When changing configuration, test TOML loading, supported environment overrides, persistence, and migration behavior as applicable.
-- When changing MCP tools, test schemas, responses, conditional visibility, and account-specific error paths.
+- When changing MCP tools, test the complete catalog snapshot (names, descriptions, input/output schemas, annotations, resources, and visibility), responses, limits, and account-specific error paths.
+- Web UI changes require frontend lint/typecheck/unit coverage, backend route/auth/Host/Origin/CSRF/bootstrap-replay security tests, real-browser E2E for critical flows, and shutdown checks.
+- Frontend/package changes require sdist/wheel inventory checks, a wheel rebuilt from the sdist without Node, isolated-install UI smoke, and packaged-asset drift checks.
+- Agent integration changes require Codex/Claude Code installation fixtures, canonical-content drift tests, version-mismatch handling, and scenarios proving credentials are handed to user-operated CLI/UI rather than chat or MCP.
 
 ## Repository Change Checklist
 
@@ -136,5 +151,9 @@ Keep related files synchronized:
 - Credential or access-control changes: implementation, tests, `docs/security.md`, and troubleshooting guidance.
 - MCP surface changes: `mcp_email_server/app.py`, tests, and `docs/tools.md`.
 - CLI or transport changes: `mcp_email_server/cli.py`, tests, and `docs/transports.md`.
-- Architecture, workflow, persistence, or security-boundary changes: owning files under `spec/`, tests, and relevant published docs when implemented.
+- Agent integration changes: canonical `SKILL.md`, minimal vendor manifests/staged copies, install/update/remove fixtures, security scenarios, and integration documentation.
+- Frontend dependency changes: `frontend/package.json`, its lockfile, notices, source/build checks, and staged packaged assets.
+- Web UI route/session/security changes: backend tests, browser tests, and `docs/security.md` plus affected setup/troubleshooting docs.
+- Packaged asset changes: explicit sdist/wheel content assertions and Node-free from-sdist verification.
+- Architecture, workflow, persistence, interface, or security-boundary changes: the single owning file under `spec/`, centralized delivery traceability, tests, and relevant published docs when implemented.
 - Quick-start changes: `README.md`, `docs/getting-started.md`, and `mkdocs.yml` when navigation changes.
