@@ -19,10 +19,11 @@ runs:
         python-version: ${{ inputs.python-version }}
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v6
+      uses: astral-sh/setup-uv@v9
       with:
         version: ${{ inputs.uv-version }}
         enable-cache: "true"
+        prune-cache: "true"
         cache-suffix: ${{ inputs.python-version }}
 
     - name: Install Python dependencies

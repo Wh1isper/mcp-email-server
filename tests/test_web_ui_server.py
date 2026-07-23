@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 from unittest.mock import MagicMock
 
+import click
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from mcp_email_server import bootstrap as bootstrap_module
@@ -26,14 +28,19 @@ def test_ui_cli_exposes_only_no_open_and_port(monkeypatch) -> None:
     runner = CliRunner()
 
     result = runner.invoke(app, ["ui", "--no-open", "--port", "0"])
-    help_result = runner.invoke(app, ["ui", "--help"])
+    command = get_command(app)
+    assert isinstance(command, click.Group)
+    ui_command = command.commands["ui"]
+    options = {
+        option
+        for parameter in ui_command.params
+        if isinstance(parameter, click.Option)
+        for option in (*parameter.opts, *parameter.secondary_opts)
+    }
 
     assert result.exit_code == 0
     run.assert_called_once_with(no_open=True, port=0)
-    assert "--no-open" in help_result.stdout
-    assert "--port" in help_result.stdout
-    for forbidden in ("--host", "--share", "--debug", "--reload", "--daemon"):
-        assert forbidden not in help_result.stdout
+    assert options == {"--no-open", "--port"}
 
 
 def test_server_prebinds_exact_ipv4_loopback_opens_fragment_and_hides_token(monkeypatch, capsys) -> None:
