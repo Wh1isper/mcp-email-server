@@ -28,7 +28,7 @@ flowchart TB
     end
     subgraph Infrastructure
       SQLITE[SQLite adapters]
-      KEYRING[Keyring adapter]
+      SECRETBACKEND[SQLite or keyring secret adapter]
       IMAPSMTP[IMAP and SMTP adapters]
       LEGACY[Legacy config adapter]
     end
@@ -52,7 +52,7 @@ flowchart TB
     CATALOG --> SQLITE
     CATALOG --> LEGACY
     INDEX --> SQLITE
-    SECRETS --> KEYRING
+    SECRETS --> SECRETBACKEND
     MAIL --> IMAPSMTP
 ```
 
@@ -99,7 +99,8 @@ Required abstract capabilities include:
 - bootstrap and selected-authority inspection;
 - managed catalog queries and compare-and-swap mutations;
 - legacy effective configuration and legacy-only writer;
-- `SecretStore` candidate create/read/delete;
+- `SecretStore` immutable store/read/delete, including transactional insertion
+  for the Linux managed SQLite implementation;
 - IMAP mailbox, metadata, body, attachment, append, move, and flag operations;
 - SMTP delivery;
 - metadata projection queries and writes;
@@ -162,20 +163,27 @@ reverse order.
 
 ## Transactions and External Effects
 
-SQLite transactions contain only bounded local database work. Network,
-`SecretStore`, browser opening, and potentially large filesystem effects happen
-outside them. Workflows spanning boundaries use explicit phases and typed
-reconciliation states rather than claiming atomicity.
+SQLite transactions contain only bounded local database work. Network, system
+keyring, browser opening, and potentially large filesystem effects happen outside
+them. The Linux managed `SecretStore` is the deliberate exception: inserting a
+row into the same database's dedicated `managed_secret` table and activating its
+binding/revision are one bounded SQLite transaction. Workflows spanning an
+external keyring boundary use explicit phases and typed cleanup states rather
+than claiming cross-store atomicity.
 
-A management mutation follows:
+A credential mutation follows:
 
 1. validate and canonicalize outside a write transaction;
 2. read current revision and plan bounded work;
-3. perform any candidate external preparation outside the transaction;
-4. compare-and-swap a minimal durable transition;
-5. perform external cleanup or verification outside the transaction;
-6. persist bounded final status with a second compare-and-swap if required;
-7. return success, conflict, cleanup-required, or repair-required explicitly.
+3. for a keyring-backed store, write the immutable new value outside SQLite;
+4. compare-and-swap activation and mark any superseded active value
+   cleanup-required; on Linux, insert the secret in this same transaction;
+5. on any pre-activation failure, return an error with binding authority
+   unchanged and retain no provisional binding;
+6. delete the superseded value outside the activation transaction and clear its
+   cleanup state after success;
+7. return active, cleanup-required, conflict, or failed unchanged-authority
+   explicitly.
 
 ## Shared Limits
 
@@ -235,8 +243,9 @@ protocol evidence and reports unknown when cancellation prevents certainty.
    secret.
 5. Direct application calls and all three adapters enforce the same limits and
    validation semantics.
-6. Network, `SecretStore`, and attachment writes do not execute inside SQLite
-   transactions.
+6. Network, system-keyring, and attachment writes do not execute inside SQLite
+   transactions; the Linux `managed_secret` insert is atomic with binding
+   activation and revision.
 7. Lazy composition, startup unwind, operation scopes, and repeated shutdown are
    covered without claiming nonexistent long-lived ownership.
 8. Architecture and catalog tests prove no MCP adapter or service registration

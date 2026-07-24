@@ -5,7 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Annotated, Never
+from typing import Annotated, Any, Never
 
 import click
 import typer
@@ -46,11 +46,6 @@ class ConfigMode(enum.StrEnum):
     managed = "managed"
 
 
-class CredentialRepairAction(enum.StrEnum):
-    resume = "resume"
-    rollback = "rollback"
-
-
 class ConnectionRole(enum.StrEnum):
     incoming = "incoming"
     outgoing = "outgoing"
@@ -63,7 +58,10 @@ WILDCARD_BIND_HOSTS = {WILDCARD_IPV4_BIND_HOST, "::", ""}
 FALSE_VALUES = {"0", "false", "no", "off"}
 JsonOutput = Annotated[
     bool,
-    typer.Option("--json", help="Emit one stable JSON result document for automation."),
+    typer.Option(
+        "--json",
+        help="Emit one stable JSON result document. JSON output does not grant command authority.",
+    ),
 ]
 
 
@@ -231,6 +229,32 @@ def _bounded_error_message(exc: Exception) -> str:
     return encoded[: limit - len(suffix)].decode("utf-8", errors="ignore") + suffix
 
 
+_JSON_ERROR_MESSAGES: dict[str, str] = {
+    "account_limit_reached": "The managed account limit was reached.",
+    "account_name_exists": "The managed account name is already reserved.",
+    "authentication_or_provider_rejected": "The provider rejected the authentication or connection policy.",
+    "bootstrap_unavailable": "The bootstrap configuration is unavailable or busy.",
+    "catalog_not_configured": "No managed catalog is configured.",
+    "catalog_unavailable": "The selected managed catalog is unavailable.",
+    "credential_store_unavailable": "The managed credential store is unavailable.",
+    "credential_unavailable": "The managed credential is unavailable.",
+    "endpoint_unavailable": "The requested endpoint is unavailable.",
+    "import_preview_stale": "The import preview is stale or expired.",
+    "import_target_changed": "The import target changed after preview.",
+    "invalid_input": "The command input is invalid.",
+    "management_error": "The management operation failed.",
+    "revision_conflict": "The managed state changed; inspect current revisions before retrying.",
+    "runtime_error": "The command could not be completed.",
+    "storage_unavailable": "The required management storage is unavailable.",
+    "timeout": "The provider operation timed out.",
+    "tls_or_connection_failed": "The TLS or network connection failed.",
+}
+
+
+def _json_error_message(code: str) -> str:
+    return _JSON_ERROR_MESSAGES.get(code, "The command could not be completed.")
+
+
 def _fail_cli(exc: Exception, *, error_code: str | None = None) -> Never:
     if _json_requested():
         details: dict[str, object] = {}
@@ -244,7 +268,7 @@ def _fail_cli(exc: Exception, *, error_code: str | None = None) -> Never:
         elif isinstance(exc, ValueError):
             code = "invalid_input"
         elif isinstance(exc, ManagementError):
-            code = "management_error"
+            code = exc.reason
         else:
             code = "runtime_error"
         typer.echo(
@@ -253,7 +277,7 @@ def _fail_cli(exc: Exception, *, error_code: str | None = None) -> Never:
                     "schema_version": 1,
                     "ok": False,
                     "command": _command_id(),
-                    "error": {"code": code, "message": _bounded_error_message(exc), "details": details},
+                    "error": {"code": code, "message": _json_error_message(code), "details": details},
                     "warnings": [],
                 },
                 ensure_ascii=False,
@@ -275,11 +299,30 @@ def _doctor_data(report: object) -> dict[str, object]:
         "catalog_revision": report.catalog_revision,
         "accounts": report.account_count,
         "enabled_accounts": report.enabled_account_count,
-        "pending_bindings": report.pending_bindings,
         "cleanup_required_bindings": report.cleanup_required_bindings,
-        "repair_required_bindings": report.repair_required_bindings,
         "problems": list(report.problems),
     }
+
+
+def _bind_catalog_service(management: Any, service: Any) -> tuple[Any, Any]:
+    status = management.lifecycle.status()
+    if status.selected_catalog is None:
+        raise ManagementError(
+            "No managed database is configured. Run `mcp-email-server config init --database PATH`.",
+            reason="catalog_not_configured",
+        )
+    if status.report is None:
+        raise ManagementError(
+            "The selected managed catalog is unavailable; inspect config status and retry",
+            reason="catalog_unavailable",
+        )
+    return (
+        service.bind(
+            expected_bootstrap_revision=status.bootstrap_revision,
+            expected_catalog=status.selected_catalog,
+        ),
+        status,
+    )
 
 
 def _endpoint_data(endpoint: EndpointSummary) -> dict[str, object]:
@@ -387,18 +430,23 @@ def config_init(
 ) -> None:
     """Create a STAGING managed catalog without selecting managed mode."""
     try:
-        get_application_runtime().management.lifecycle.initialize(database)
+        lifecycle = get_application_runtime().management.lifecycle
+        result = lifecycle.initialize(database)
+        if json_output:
+            _echo_json(
+                "config.init",
+                {
+                    "mode": result.mode,
+                    "bootstrap_revision": result.bootstrap_revision,
+                    "restart_required": result.restart_required,
+                    "catalog_revision": result.catalog_revision,
+                    "lifecycle": result.lifecycle,
+                    "next_steps": ["account.add", "account.test", "config.activate", "config.select"],
+                },
+            )
+            return
     except ManagementError as exc:
         _fail_cli(exc)
-    if json_output:
-        _echo_json(
-            "config.init",
-            {
-                "lifecycle": "STAGING",
-                "next_steps": ["account.add", "account.test", "config.activate", "config.select"],
-            },
-        )
-        return
     typer.echo(
         "Created STAGING managed catalog. Next: add an account, test it, run `config activate`, "
         "then `config select managed` and restart MCP clients."
@@ -473,9 +521,7 @@ def config_doctor(json_output: JsonOutput = False) -> None:
     typer.echo(f"catalog_revision={report.catalog_revision}")
     typer.echo(f"accounts={report.account_count}")
     typer.echo(f"enabled_accounts={report.enabled_account_count}")
-    typer.echo(f"pending_bindings={report.pending_bindings}")
     typer.echo(f"cleanup_required_bindings={report.cleanup_required_bindings}")
-    typer.echo(f"repair_required_bindings={report.repair_required_bindings}")
     typer.echo("problems=" + (",".join(report.problems) if report.problems else "none"))
 
 
@@ -545,7 +591,8 @@ def config_update_policy(
 ) -> None:
     """Revision-update managed policy, preserving options that are omitted."""
     try:
-        service = get_application_runtime().management.policy
+        management = get_application_runtime().management
+        service, _status = _bind_catalog_service(management, management.policy)
         current = service.get()
         policy = service.update(
             ManagedPolicy(
@@ -582,8 +629,9 @@ def config_cleanup_credentials(
     """Best-effort cleanup of bounded stale candidate locators."""
     try:
         management = get_application_runtime().management
-        expected_revision = management.lifecycle.doctor().catalog_revision
-        report = management.credentials.cleanup(
+        credentials, status = _bind_catalog_service(management, management.credentials)
+        expected_revision = status.report.catalog_revision
+        report = credentials.cleanup(
             limit=limit,
             expected_revision=expected_revision,
         )
@@ -644,7 +692,7 @@ def config_import_legacy(
     apply: bool = typer.Option(False, "--apply", help="Review, confirm, and apply the import to STAGING."),
     json_output: JsonOutput = False,
 ) -> None:
-    """Preview or interactively apply stored TOML accounts without environment overlays."""
+    """Preview or apply the effective legacy TOML and environment configuration."""
     if apply and json_output:
         _fail_cli(ManagementError("--json cannot be combined with interactive --apply; review and apply in text mode"))
     try:
@@ -659,6 +707,15 @@ def config_import_legacy(
     _echo_legacy_import_plan(plan)
     if not apply:
         return
+    if plan.has_conflicts:
+        conflicts = ", ".join(item.name for item in plan.accounts if item.action == "conflict")
+        _fail_cli(ManagementError(f"Legacy import has destination conflicts: {conflicts}"))
+    has_changes = plan.policy_action == "update" or any(item.action != "unchanged" for item in plan.accounts)
+    if not has_changes:
+        typer.echo("created=none")
+        typer.echo("resumed=none")
+        typer.echo("attention_required=none")
+        return
     confirmation = typer.prompt("Type IMPORT to apply this exact preview")
     try:
         report = service.apply(
@@ -670,22 +727,28 @@ def config_import_legacy(
         _fail_cli(exc)
     typer.echo("created=" + (",".join(report.created) if report.created else "none"))
     typer.echo("resumed=" + (",".join(report.resumed) if report.resumed else "none"))
+    typer.echo("attention_required=" + (",".join(report.attention_required) if report.attention_required else "none"))
 
 
 @config_app.command("activate")
 def config_activate(json_output: JsonOutput = False) -> None:
     """Validate the complete STAGING snapshot and mark it ACTIVE."""
     try:
-        lifecycle = get_application_runtime().management.lifecycle
-        lifecycle.activate(expected_revision=lifecycle.doctor().catalog_revision)
+        management = get_application_runtime().management
+        lifecycle, status = _bind_catalog_service(management, management.lifecycle)
+        result = lifecycle.activate(expected_revision=status.report.catalog_revision)
+        if json_output:
+            _echo_json(
+                "config.activate",
+                {
+                    "lifecycle": result.lifecycle,
+                    "catalog_revision": result.catalog_revision,
+                    "next_steps": ["config.select", "restart_mcp_clients"],
+                },
+            )
+            return
     except ManagementError as exc:
         _fail_cli(exc)
-    if json_output:
-        _echo_json(
-            "config.activate",
-            {"lifecycle": "ACTIVE", "next_steps": ["config.select", "restart_mcp_clients"]},
-        )
-        return
     typer.echo("Managed catalog is ACTIVE. Select managed mode separately when ready.")
 
 
@@ -696,16 +759,23 @@ def config_select(mode: ConfigMode, json_output: JsonOutput = False) -> None:
         lifecycle = get_application_runtime().management.lifecycle
         status = lifecycle.status()
         expected_catalog_revision = status.report.catalog_revision if status.report is not None else None
-        lifecycle.select(
+        result = lifecycle.select(
             mode.value,
             expected_bootstrap_revision=status.bootstrap_revision,
             expected_catalog_revision=expected_catalog_revision,
         )
+        if json_output:
+            _echo_json(
+                "config.select",
+                {
+                    "mode": result.mode,
+                    "bootstrap_revision": result.bootstrap_revision,
+                    "restart_required": result.restart_required,
+                },
+            )
+            return
     except ManagementError as exc:
         _fail_cli(exc)
-    if json_output:
-        _echo_json("config.select", {"mode": mode.value, "restart_required": True})
-        return
     typer.echo(f"Selected {mode.value} mode. Restart all MCP server processes for the change to take effect.")
 
 
@@ -726,7 +796,11 @@ def account_add(
     smtp_ssl: bool = typer.Option(True, "--smtp-ssl/--no-smtp-ssl"),
     smtp_starttls: bool = typer.Option(False, "--smtp-starttls/--no-smtp-starttls"),
     smtp_verify_ssl: bool = typer.Option(True, "--smtp-verify-ssl/--no-smtp-verify-ssl"),
-    password_stdin: bool = typer.Option(False, "--password-stdin", help="Read secrets as lines from stdin."),
+    password_stdin: bool = typer.Option(
+        False,
+        "--password-stdin",
+        help="Read secret lines from user-controlled stdin; never place credentials in argv.",
+    ),
     save_to_sent: bool = typer.Option(True, "--save-to-sent/--no-save-to-sent"),
     sent_folder: str | None = typer.Option(None, "--sent-folder"),
     json_output: JsonOutput = False,
@@ -756,7 +830,8 @@ def account_add(
             else None
         )
         management = get_application_runtime().management
-        expected_catalog_revision = management.lifecycle.doctor().catalog_revision
+        accounts, status = _bind_catalog_service(management, management.accounts)
+        expected_catalog_revision = status.report.catalog_revision
         validate_controlled_string(
             name,
             field_name="account name",
@@ -785,7 +860,7 @@ def account_add(
         outgoing_password = (
             _read_secret("Outgoing password", from_stdin=password_stdin) if outgoing is not None else None
         )
-        result = management.accounts.create(
+        result = accounts.create(
             CreateAccountCommand(
                 expected_catalog_revision=expected_catalog_revision,
                 name=name,
@@ -818,41 +893,45 @@ def account_add(
                 else None
             ),
         }
-        _echo_json("account.add", {"name": name, "bindings": bindings})
+        account_revision = result.outgoing.revision if result.outgoing is not None else result.incoming.revision
+        _echo_json(
+            "account.add",
+            {"name": name, "account_revision": account_revision, "bindings": bindings},
+        )
         return
     states = [f"incoming={result.incoming.status}"]
     if result.outgoing is not None:
         states.append(f"outgoing={result.outgoing.status}")
     typer.echo(f"Added managed account '{name}' ({', '.join(states)}).")
-    repairs = [
-        role
-        for role, binding in (("incoming", result.incoming), ("outgoing", result.outgoing))
-        if binding is not None and binding.status == "pending_repair_required"
-    ]
-    for role in repairs:
-        typer.echo(
-            f"Next: inspect `account show {name}` and run `account repair-secret {name} {role} resume --expected-revision REVISION`."
-        )
 
 
 @account_app.command("set-secret")
 def account_set_secret(
     name: str,
     role: ConnectionRole,
-    password_stdin: bool = typer.Option(False, "--password-stdin", help="Read the secret from stdin."),
+    password_stdin: bool = typer.Option(
+        False,
+        "--password-stdin",
+        help="Read the secret from user-controlled stdin; never place credentials in argv.",
+    ),
     json_output: JsonOutput = False,
 ) -> None:
-    """Install or rotate one managed credential through an immutable candidate."""
+    """Install or rotate one managed credential without exposing it in argv."""
     if json_output and not password_stdin:
         _fail_cli(ManagementError("--json requires --password-stdin so prompts cannot corrupt JSON output"))
     try:
         management = get_application_runtime().management
-        account = management.accounts.show(name)
+        accounts, status = _bind_catalog_service(management, management.accounts)
+        credentials = management.credentials.bind(
+            expected_bootstrap_revision=status.bootstrap_revision,
+            expected_catalog=status.selected_catalog,
+        )
+        account = accounts.show(name)
         if role is ConnectionRole.outgoing and account.outgoing is None:
             _fail_cli(ManagementError("Outgoing endpoint is unavailable; configure SMTP before setting its credential"))
         expected_revision = account.revision
         secret = _read_secret(f"{role.value.title()} password", from_stdin=password_stdin)
-        result = management.credentials.set(
+        result = credentials.set(
             name,
             role.value,
             secret,
@@ -992,7 +1071,9 @@ def account_update(
     if sent_folder is not None and clear_sent_folder:
         _fail_cli(ManagementError("--sent-folder and --clear-sent-folder are mutually exclusive"))
     try:
-        revision = get_application_runtime().management.accounts.update(
+        management = get_application_runtime().management
+        accounts, _status = _bind_catalog_service(management, management.accounts)
+        revision = accounts.update(
             UpdateAccountCommand(
                 name=name,
                 expected_revision=expected_revision,
@@ -1037,7 +1118,9 @@ def account_disable(
 ) -> None:
     """Disable an account using its last observed revision."""
     try:
-        revision = get_application_runtime().management.accounts.disable(
+        management = get_application_runtime().management
+        accounts, _status = _bind_catalog_service(management, management.accounts)
+        revision = accounts.disable(
             name,
             expected_revision=expected_revision,
         )
@@ -1057,7 +1140,9 @@ def account_enable(
 ) -> None:
     """Re-enable a complete account after validating its active secrets."""
     try:
-        revision = get_application_runtime().management.accounts.enable(
+        management = get_application_runtime().management
+        accounts, _status = _bind_catalog_service(management, management.accounts)
+        revision = accounts.enable(
             name,
             expected_revision=expected_revision,
         )
@@ -1078,7 +1163,9 @@ def account_remove(
 ) -> None:
     """Soft-remove an account while retaining identity and cleanup state."""
     try:
-        result = get_application_runtime().management.accounts.soft_remove(
+        management = get_application_runtime().management
+        accounts, _status = _bind_catalog_service(management, management.accounts)
+        result = accounts.soft_remove(
             name,
             expected_revision=expected_revision,
             confirmation=confirm,
@@ -1103,41 +1190,6 @@ def account_remove(
     )
 
 
-@account_app.command("repair-secret")
-def account_repair_secret(
-    name: str,
-    role: ConnectionRole,
-    action: CredentialRepairAction,
-    expected_revision: int = typer.Option(..., "--expected-revision", min=1),
-    json_output: JsonOutput = False,
-) -> None:
-    """Explicitly resume or roll back one ambiguous credential candidate."""
-    try:
-        result = get_application_runtime().management.credentials.repair(
-            name,
-            role.value,
-            action=action.value,
-            expected_revision=expected_revision,
-        )
-    except ManagementError as exc:
-        _fail_cli(exc)
-    if json_output:
-        _echo_json(
-            "account.repair-secret",
-            {
-                "name": name,
-                "role": role.value,
-                "state": result.status,
-                "revision": result.revision,
-                "cleanup_required": result.cleanup_required,
-            },
-        )
-        return
-    typer.echo(f"state={result.status}")
-    typer.echo(f"revision={result.revision}")
-    typer.echo(f"cleanup_required={result.cleanup_required}")
-
-
 @account_app.command("remove-secret")
 def account_remove_secret(
     name: str,
@@ -1147,7 +1199,9 @@ def account_remove_secret(
 ) -> None:
     """Detach and remove one credential from a disabled account."""
     try:
-        result = get_application_runtime().management.credentials.remove(
+        management = get_application_runtime().management
+        credentials, _status = _bind_catalog_service(management, management.credentials)
+        result = credentials.remove(
             name,
             role.value,
             expected_revision=expected_revision,
@@ -1179,7 +1233,9 @@ def account_test(
 ) -> None:
     """Test managed IMAP or SMTP connectivity outside SQLite transactions."""
     try:
-        result = asyncio.run(get_application_runtime().management.connectivity.execute(name, role.value))
+        management = get_application_runtime().management
+        connectivity, _status = _bind_catalog_service(management, management.connectivity)
+        result = asyncio.run(connectivity.execute(name, role.value))
     except (ManagementError, ValueError) as exc:
         _fail_cli(exc)
     if result.status != "ok":

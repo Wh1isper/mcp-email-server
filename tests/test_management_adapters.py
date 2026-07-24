@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import traceback
+from collections.abc import Iterator, MutableMapping
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
@@ -19,7 +20,8 @@ from mcp_email_server.application.management import (
     LegacyAccountSnapshot,
     ManagementError,
 )
-from mcp_email_server.config import EmailSettings
+from mcp_email_server.bootstrap import BootstrapError
+from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ImapAuthenticationError
 from mcp_email_server.managed import ManagedCatalog
 
@@ -43,11 +45,29 @@ def _legacy_raw() -> dict[str, object]:
     }
 
 
+def test_bootstrap_running_snapshot_failure_maps_to_bounded_management_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap = MagicMock()
+    bootstrap.path = Path("/private/bootstrap.toml")
+    monkeypatch.setattr(management_module, "read_bootstrap", lambda: bootstrap)
+
+    def fail_running_snapshot(_path: Path) -> None:
+        raise BootstrapError("private bootstrap path")
+
+    monkeypatch.setattr(management_module, "process_bootstrap", fail_running_snapshot)
+
+    with pytest.raises(ManagementError) as caught:
+        LocalManagementBackend().read_bootstrap()
+
+    assert caught.value.reason == "bootstrap_unavailable"
+    assert str(caught.value) == "Bootstrap configuration could not be read"
+
+
 def test_legacy_secret_resolution_rejects_changed_source_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = LocalManagementBackend()
     original = _legacy_raw()
-    account = backend._parse_legacy_accounts(original)[0]
-    expected = backend._legacy_account_snapshot(account)
+    expected = backend._effective_legacy_accounts(original)[0]
     changed = deepcopy(original)
     changed_accounts = changed["emails"]
     assert isinstance(changed_accounts, list)
@@ -63,14 +83,13 @@ def test_legacy_secret_resolution_rejects_changed_source_snapshot(monkeypatch: p
 
 
 def _legacy_expected(backend: LocalManagementBackend, raw: dict[str, object]) -> LegacyAccountSnapshot:
-    return backend._legacy_account_snapshot(backend._parse_legacy_accounts(raw)[0])
+    return backend._effective_legacy_accounts(raw)[0]
 
 
 def test_legacy_snapshot_exposes_only_credential_source_class() -> None:
     backend = LocalManagementBackend()
     raw = _legacy_raw()
-    account = backend._parse_legacy_accounts(raw)[0]
-    plaintext = backend._legacy_account_snapshot(account)
+    plaintext = backend._effective_legacy_accounts(raw)[0]
     incoming = raw["emails"]
     assert isinstance(incoming, list)
     account_raw = incoming[0]
@@ -78,8 +97,7 @@ def test_legacy_snapshot_exposes_only_credential_source_class() -> None:
     endpoint = account_raw["incoming"]
     assert isinstance(endpoint, dict)
     endpoint["password"] = keyring_store.SENTINEL
-    keyring_account = backend._parse_legacy_accounts(raw)[0]
-    keyring = backend._legacy_account_snapshot(keyring_account)
+    keyring = backend._effective_legacy_accounts(raw)[0]
 
     assert plaintext.incoming_secret_source == "plaintext"  # noqa: S105 - source class
     assert keyring.incoming_secret_source == "keyring"  # noqa: S105 - source class
@@ -281,3 +299,169 @@ async def test_connection_preserves_missing_outgoing_capability(
     with pytest.raises(ConnectivityCheckError, match=r"^Outgoing endpoint is unavailable") as caught:
         await LocalManagementBackend().test_connection(catalog, "test_account", "outgoing")
     assert caught.value.category == "endpoint_unavailable"
+
+
+def _set_environment_account(monkeypatch: pytest.MonkeyPatch, *, name: str = "environment") -> None:
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ACCOUNT_NAME", name)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", f"{name}@example.test")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "environment-secret")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.environment.example.test")
+
+
+def test_effective_legacy_source_supports_environment_only_without_a_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = LocalManagementBackend()
+    _set_environment_account(monkeypatch)
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: {})
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD", "true")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", " BOB@EXAMPLE.TEST, bob@example.test ")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", " *@Example.Test ")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS", "true")
+
+    source = backend.load_legacy_source()
+
+    assert [account.name for account in source.accounts] == ["environment"]
+    assert source.accounts[0].incoming_secret_source == "environment"  # noqa: S105 - source class
+    assert "environment-secret" not in repr(source)
+    assert source.enable_attachment_download is True
+    assert source.allowed_recipients == ("bob@example.test",)
+    assert source.allowed_senders == ("*@example.test",)
+    assert source.report_blocked_mutations is True
+    assert backend.resolve_legacy_secret("environment", "incoming", source.accounts[0]) == "environment-secret"
+
+
+def test_environment_empty_role_passwords_fall_back_to_base_like_legacy_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = LocalManagementBackend()
+    _set_environment_account(monkeypatch)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_PASSWORD", "")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_HOST", "smtp.environment.example.test")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_PASSWORD", "")
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: {})
+
+    account = backend.load_legacy_source().accounts[0]
+
+    assert backend.resolve_legacy_secret("environment", "incoming", account) == "environment-secret"
+    assert backend.resolve_legacy_secret("environment", "outgoing", account) == "environment-secret"
+
+
+def test_environment_preview_does_not_read_password_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = LocalManagementBackend()
+    _set_environment_account(monkeypatch)
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: {})
+    original = os.environ
+
+    class GuardedEnvironment(MutableMapping[str, str]):
+        def __getitem__(self, name: str) -> str:
+            if "PASSWORD" in name:
+                raise AssertionError("preview read an environment password value")
+            return original[name]
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(original)
+
+        def __len__(self) -> int:
+            return len(original)
+
+        def __setitem__(self, name: str, value: str) -> None:
+            original[name] = value
+
+        def __delitem__(self, name: str) -> None:
+            del original[name]
+
+    monkeypatch.setattr(management_module.os, "environ", GuardedEnvironment())
+
+    source = backend.load_legacy_source()
+
+    assert source.accounts[0].incoming_secret_source == "environment"  # noqa: S105 - source class
+
+
+def test_legacy_preview_rejects_raw_policy_cardinality_before_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = LocalManagementBackend()
+    raw = _legacy_raw()
+    raw["allowed_recipients"] = ["duplicate@example.test"] * 1001
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: raw)
+
+    with pytest.raises(ManagementError, match="Stored legacy policy is invalid"):
+        backend.load_legacy_source()
+
+
+def test_legacy_preview_rejects_oversized_non_secret_fields() -> None:
+    backend = LocalManagementBackend()
+    raw = _legacy_raw()
+    accounts = raw["emails"]
+    assert isinstance(accounts, list)
+    account = accounts[0]
+    assert isinstance(account, dict)
+    incoming = account["incoming"]
+    assert isinstance(incoming, dict)
+    incoming["host"] = "x" * 100_000
+
+    with pytest.raises(ManagementError, match="legacy email accounts are invalid"):
+        backend._effective_legacy_accounts(raw)
+
+
+def test_effective_legacy_environment_account_replaces_exact_name_and_preserves_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = LocalManagementBackend()
+    raw = _legacy_raw()
+    _set_environment_account(monkeypatch, name="alice")
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: raw)
+
+    replaced = backend.load_legacy_source()
+
+    assert [account.name for account in replaced.accounts] == ["alice"]
+    assert replaced.accounts[0].incoming.host == "imap.environment.example.test"
+    assert replaced.accounts[0].incoming_secret_source == "environment"  # noqa: S105 - source class
+
+    _set_environment_account(monkeypatch, name="environment")
+    added = backend.load_legacy_source()
+    assert [account.name for account in added.accounts] == ["environment", "alice"]
+    assert added.accounts[0].incoming_secret_source == "environment"  # noqa: S105 - source class
+    assert added.accounts[1].incoming_secret_source == "plaintext"  # noqa: S105 - source class
+
+
+def test_environment_credential_resolution_rejects_changed_effective_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = LocalManagementBackend()
+    _set_environment_account(monkeypatch)
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: {})
+    expected = backend.load_legacy_source().accounts[0]
+    monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.changed.example.test")
+
+    with pytest.raises(ManagementError, match=r"source changed.*preview and retry"):
+        backend.resolve_legacy_secret("environment", "incoming", expected)
+
+
+def test_legacy_migration_maps_bootstrap_lock_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = BootstrapError("private path detail")
+    monkeypatch.setattr(Settings, "migrate_credentials", Mock(side_effect=failure))
+
+    with pytest.raises(ManagementError, match="bootstrap authority is invalid or busy") as caught:
+        LocalManagementBackend().migrate_legacy_credentials("plaintext")
+
+    assert "private path detail" not in str(caught.value)
+    assert caught.value.__cause__ is failure
+
+
+def test_legacy_migration_maps_filesystem_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = OSError("private path detail")
+    monkeypatch.setattr(Settings, "migrate_credentials", Mock(side_effect=failure))
+
+    with pytest.raises(ManagementError, match="migration storage is unavailable") as caught:
+        LocalManagementBackend().migrate_legacy_credentials("plaintext")
+
+    assert "private path detail" not in str(caught.value)
+    assert caught.value.__cause__ is failure
+
+
+def test_absent_legacy_file_is_an_empty_import_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(management_module, "configured_path", lambda: tmp_path / "missing.toml")
+
+    assert LocalManagementBackend()._read_legacy_raw() == {}

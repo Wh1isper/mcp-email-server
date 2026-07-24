@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from loguru import logger as loguru_logger
+from starlette.routing import Route
+from starlette.types import Scope
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS
-from mcp_email_server.web_ui.app import LocalUiState, create_local_ui_app
+from mcp_email_server.application.management import CredentialMutationResult
+from mcp_email_server.web_ui.app import LocalUiState, _matched_management_operation, create_local_ui_app
 
 
 class Clock:
@@ -257,9 +262,65 @@ async def test_logout_and_state_close_invalidate_sessions() -> None:
     assert after_close.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_management_access_log_uses_fixed_operations_without_sensitive_request_data() -> None:
+    token = "bootstrap-log-sentinel"  # noqa: S105 - synthetic one-time test value
+    secret = "credential-log-sentinel"  # noqa: S105 - synthetic test value
+    account_name = "private-account-name"
+    management = MagicMock()
+    management.credentials.bind.return_value = management.credentials
+    management.credentials.set.return_value = CredentialMutationResult(status="active", revision=2)
+    state = LocalUiState(port=8772, management=management, bootstrap_token=token)
+    messages: list[str] = []
+    sink_id = loguru_logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
+    try:
+        async with await _client(state) as client:
+            csrf, _exchange_response = await _exchange(client, state, token)
+            response = await client.post(
+                f"{state.route_prefix}/api/accounts/{account_name}/credentials/incoming/set",
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": state.origin,
+                    "Sec-Fetch-Site": "same-origin",
+                    "X-CSRF-Token": csrf,
+                },
+                json={
+                    "expected_bootstrap_revision": 1,
+                    "expected_catalog": "/private/catalog.sqlite3",
+                    "expected_revision": 1,
+                    "secret": secret,
+                },
+            )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert response.status_code == 200
+    output = "\n".join(messages)
+    assert "operation=management.bootstrap.exchange method=POST status=200 duration_ms=" in output
+    assert "operation=management.credentials.set method=POST status=200 duration_ms=" in output
+    for sensitive in (token, secret, account_name, csrf, state.route_segment, state.cookie_name):
+        assert sensitive not in output
+
+
+def test_management_log_matching_prefers_full_dynamic_route_over_partial_static_route() -> None:
+    state = LocalUiState(port=8773, management=MagicMock())
+    app = create_local_ui_app(state)
+    routes = [route for route in app.routes if isinstance(route, Route)]
+    scope = cast(
+        Scope,
+        {
+            "type": "http",
+            "path": f"{state.route_prefix}/api/accounts/create",
+            "method": "GET",
+        },
+    )
+
+    assert _matched_management_operation(scope, routes) == "management.accounts.show"
+
+
 def test_process_route_cookie_and_bootstrap_are_unique() -> None:
-    first = LocalUiState(port=8772, management=MagicMock())
-    second = LocalUiState(port=8772, management=MagicMock())
+    first = LocalUiState(port=8774, management=MagicMock())
+    second = LocalUiState(port=8774, management=MagicMock())
 
     assert first.route_prefix != second.route_prefix
     assert first.cookie_name != second.cookie_name
@@ -267,11 +328,13 @@ def test_process_route_cookie_and_bootstrap_are_unique() -> None:
 
 
 def test_route_inventory_has_no_mail_rpc_debug_openapi_or_filesystem_surface() -> None:
-    state = LocalUiState(port=8773, management=MagicMock())
+    state = LocalUiState(port=8775, management=MagicMock())
     app = create_local_ui_app(state)
     paths = {getattr(route, "path", "") for route in app.routes}
 
-    assert len(paths) == 27
+    assert len(paths) == 25
+    assert f"{state.route_prefix}/api/catalog/initialize-default" in paths
+    assert not any(path.endswith("/repair") for path in paths)
     assert not any(
         forbidden in path
         for path in paths

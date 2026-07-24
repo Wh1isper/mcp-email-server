@@ -22,12 +22,18 @@ class EmptyRequest(RequestModel):
     pass
 
 
-class ExpectedRevisionRequest(RequestModel):
+class CatalogTargetRequest(RequestModel):
+    expected_bootstrap_revision: int = Field(ge=0)
+    expected_catalog: str = Field(min_length=1, max_length=4096)
+
+
+class ExpectedRevisionRequest(CatalogTargetRequest):
     expected_revision: int = Field(ge=1)
 
 
-class InitializeCatalogRequest(RequestModel):
-    database: str = Field(min_length=1, max_length=4096)
+class InitializeDefaultCatalogRequest(RequestModel):
+    expected_bootstrap_revision: int = Field(ge=0)
+    require_empty_install: bool
 
 
 class SelectCatalogRequest(RequestModel):
@@ -62,7 +68,7 @@ class CredentialInput(RequestModel):
     outgoing: SecretStr | None
 
 
-class CreateAccountRequest(RequestModel):
+class CreateAccountRequest(CatalogTargetRequest):
     expected_catalog_revision: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=65535)
     full_name: str = Field(min_length=1, max_length=65535)
@@ -84,7 +90,7 @@ class CreateAccountRequest(RequestModel):
         return self
 
 
-class UpdateAccountRequest(RequestModel):
+class UpdateAccountRequest(CatalogTargetRequest):
     expected_revision: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=65535)
     full_name: str = Field(min_length=1, max_length=65535)
@@ -128,15 +134,11 @@ class SetCredentialRequest(ExpectedRevisionRequest):
         return self
 
 
-class RepairCredentialRequest(ExpectedRevisionRequest):
-    action: Literal["resume", "rollback"]
-
-
 class CleanupCredentialsRequest(ExpectedRevisionRequest):
     limit: int = Field(ge=1, le=100)
 
 
-class UpdatePolicyRequest(RequestModel):
+class UpdatePolicyRequest(CatalogTargetRequest):
     expected_revision: int = Field(ge=1)
     enable_attachment_download: bool
     allowed_recipients: tuple[str, ...]
@@ -153,10 +155,7 @@ class UpdatePolicyRequest(RequestModel):
         )
 
 
-class ConnectivityRequest(RequestModel):
-    role: Literal["incoming", "outgoing"]
-
-
-class ApplyImportRequest(ExpectedRevisionRequest):
+class ApplyImportRequest(RequestModel):
+    expected_revision: int = Field(ge=1)
     preview_token: str = Field(min_length=1, max_length=4096)
     confirmation: str = Field(min_length=1, max_length=64)

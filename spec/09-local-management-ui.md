@@ -7,23 +7,26 @@ legacy Gradio implementation behind the existing command with an embedded React
 application and a small loopback ASGI adapter.
 
 The UI is not a mail client, remote administration service, generic RPC API,
-MCP App, or daemon. The CLI remains a complete headless equivalent and recovery
-surface.
+MCP App, or daemon. The CLI remains the complete headless management superset
+and recovery surface, including provider-connectivity diagnostics intentionally
+omitted from the Web UI.
 
 ## Functional Scope
 
 The UI MUST provide the managed management plane:
 
-- inspect current mode, bootstrap revision, selected catalog, restart
-  requirement, and bounded catalog status, including an unavailable-catalog
-  recovery state that can select legacy without opening that catalog;
-- initialize a staging catalog, validate/activate it, and explicitly select it;
+- distinguish durable selected mode/catalog from frozen running mode/catalog,
+  show bootstrap revision, restart requirement, effective legacy-source summary,
+  and bounded catalog status, including an unavailable-catalog recovery state
+  that can select legacy without opening that catalog;
+- prepare a staging catalog at a backend-selected private default,
+  validate/activate it, and explicitly select it;
 - list/show/create/edit managed accounts;
 - disable, re-enable, and soft-remove accounts with confirmation;
-- set/rotate/remove credentials and perform explicit cleanup/repair;
+- set/rotate/remove credentials and perform explicit bounded cleanup;
 - view/edit catalog and account policy;
-- test IMAP and SMTP connectivity separately;
-- preview and explicitly apply legacy import;
+- automatically preview effective TOML/environment legacy import on entry and
+  explicitly apply only a changed, conflict-free plan;
 - run bounded doctor and index-health checks;
 - display revision conflicts and current non-secret summaries for user review.
 
@@ -91,7 +94,15 @@ Successful exchange creates:
 Every state-changing request requires the session cookie, exact CSRF header,
 JSON content type, accepted Fetch Metadata where available, exact Host, and
 allowed Origin. Missing/`null`/foreign Origin is rejected for mutation routes.
-GET routes have no mutation side effects. Logout destroys the session. Restart
+GET routes have no mutation side effects; import preview capability creation is
+also a CSRF-protected POST. After authentication and a status read, the frontend
+may issue one initialization POST only when the backend proves a truly empty
+installation: no bootstrap file/selection, no effective legacy
+account/provider/policy content, and the initial bootstrap revision. The POST
+rechecks the effective source, then binds the zero revision and absent-file proof
+under the shared supported-POSIX bootstrap/legacy writer lock. Legacy content instead requires the user to choose **Import existing settings**
+and review the preview. Neither path imports, activates, selects managed mode,
+contacts a provider, or restarts the process. Logout destroys the session. Restart
 destroys all sessions and makes stale tabs unauthorized.
 
 CORS is disabled: no permissive `Access-Control-Allow-Origin`, credentials, or
@@ -110,9 +121,12 @@ The backend exposes only:
   endpoints required by the UI;
 - a bounded authenticated health/status endpoint if needed by lifecycle tests.
 
-There is no OpenAPI, Swagger, framework debug route, generic method-dispatch/RPC,
-filesystem route, mail route, metrics endpoint, or unauthenticated operational
-health endpoint.
+Provider connectivity is deliberately absent from the Web UI: there is no
+connectivity-test route or control. The shared connectivity service and
+`mcp-email-server account test` remain available as low-level CLI diagnostics.
+There is also no OpenAPI, Swagger, framework debug route, generic
+method-dispatch/RPC, filesystem route, mail route, metrics endpoint, or
+unauthenticated operational health endpoint.
 
 ## Response Security Policy
 
@@ -138,25 +152,104 @@ Requests and responses have bounded typed schemas. Secret values appear only in
 a protected mutation request body, are passed once to the application service,
 and are never echoed.
 
-Every mutable request includes the expected aggregate revision. Catalog
-selection carries the bootstrap revision separately from the optional target
-catalog revision. A stale revision returns HTTP conflict with a bounded,
+Every mutable request includes the expected aggregate revision. A request that
+mutates or contacts a selected catalog also carries the exact reviewed catalog
+identity and bootstrap revision bound to the frontend workspace snapshot that
+produced the displayed data; a later status response MUST NOT retarget an existing
+snapshot. A changed catalog identity remounts and reloads catalog-dependent
+workspace state. The application binds and rechecks that target for the full use
+case. Catalog selection carries the bootstrap revision
+separately from the optional target catalog revision. A stale revision or changed
+selection returns HTTP conflict with a bounded,
 non-secret current summary. The frontend
 shows the conflict and requires review; it does not automatically replay the
 mutation. Destructive or externally meaningful actions show precise
 confirmation and the account/catalog affected.
 
-Application errors map to stable categories and safe remediation. JSON contains
-no traceback, SQL, secret, locator, raw provider response, message content, or
-unintended path. Request bodies are never logged.
+Web and application failures map only to a bounded set of stable error
+categories and fixed safe messages. JSON contains no traceback, SQL, secret,
+locator, raw provider response, exception text, message content, or unintended
+path.
+
+Management access logging is a safe metadata contract, not general HTTP request
+logging. Each completed request records only a fixed operation identifier, a
+bounded allowlisted method, status, and duration. Route resolution prefers an
+exact path-and-method match over an earlier path-only method mismatch. It never records route or path
+parameters, a route template, raw path, URL or query, request/response body,
+account/email/filesystem value, session/CSRF/bootstrap token, secret, or exception
+text.
 
 ## Frontend Design and Accessibility
 
-The frontend is React + TypeScript built with Vite. It presents management by
-domain: setup/status, accounts, credentials/connectivity, policy, migration, and
-health. It clears sensitive component state after submission and does not place
-secrets in application stores, URL state, persisted browser storage, clipboard,
-or dev-oriented logging.
+The frontend is React + TypeScript built with Vite. Its default information
+architecture is account-first and has exactly two primary destinations:
+
+- **Email accounts** lists accounts and owns create/edit, pause/enable, soft
+  removal, and each account's **Password** workflow;
+- **Settings & help** presents importing earlier settings, sending/attachment
+  safety, account checks, and email-search troubleshooting as progressively
+  disclosed optional sections without exposing implementation vocabulary.
+
+Setup/status remains persistent context rather than a peer destination. It uses
+task language for **Finish setup**, **Use these accounts**, and restart while
+mapping modes, lifecycle, revisions, binding states, problem codes, and conflict
+summaries to user outcomes. Empty-workspace and settled-ready banners with no
+next action are hidden rather than occupying permanent attention; actionable
+setup, conflict, or restart states
+remain visible. Paths and support versions remain under **Setup details**. Raw
+terms such as `legacy`, `managed`, `catalog`, `bootstrap`, `lifecycle`,
+`revision`, `binding`, and `metadata index` MUST NOT appear in the ordinary
+rendered workflow unless they are part of user-owned data or a file path.
+Activation and selection remain separate explicit mutations and MUST NOT be
+merged, auto-replayed, or hidden behind one action. Activation checks structural
+completeness only and neither contacts nor implies connectivity to a provider.
+Catalog-dependent content remains unmounted until the selected catalog is usable.
+Opening one optional settings disclosure mounts only that section, so closed
+sections neither fetch nor mutate state.
+
+The add-account form is email/password-first. It derives an editable sender name
+and account nickname, uses a finite local preset table for common email domains,
+and otherwise suggests `imap.<domain>` and `smtp.<domain>`. There is no network
+discovery and no redundant read-only connection preview. A suggestion continues
+changing only while its field remains untouched; editing existing account
+identity MUST NOT silently rename its nickname or sender name. Advanced account
+settings (server, login, port, TLS/STARTTLS/plain selection, certificate
+verification, and Sent-folder behavior) are folded behind progressive
+disclosure, as is optional outgoing mail. Changing an untouched transport
+default updates its standard port, but never overwrites a manually chosen port.
+After creation, credential rotation and removal stay in that account's
+**Password** context rather than a separate global credential workspace. Because
+bounded cleanup is catalog-wide and cleanup rows can outlive a removed account,
+**Email accounts** shows its cleanup action only when the doctor summary reports
+inactive password data; the action remains reachable when no active account
+remains and never relies on the selected account's projected binding state.
+Account creation displays typed credential outcomes and directs cleanup instead
+of showing ordinary success when superseded data remains. A failed save displays
+an error, preserves the prior password authority, and offers only a fresh save
+after the reported problem is corrected. No-op import plans require no confirmation. Changed plans use compact account
+cards with technical source and
+version details folded; the user checks an explicit review box before the adapter
+submits the fixed `IMPORT` confirmation value.
+
+Visual styling uses a native UI sans-serif stack, compact but readable type
+scale, at least 44-pixel primary form controls, neutral black/white/gray hierarchy,
+restrained semantic attention colors from a pinned maintained color-token library,
+and locally packaged text-accompanied icons from a pinned maintained icon library.
+Desktop and mobile layouts preserve clear label/input rhythm, visible focus,
+and touch-sized actions. Critical
+actions MUST NOT rely on icon-only or color-only meaning. No runtime CDN or
+remote asset is permitted.
+
+Allowed-recipient and allowed-sender policy values are presented as individual
+items with add, edit, and remove actions. The empty states are explicit and must
+not be conflated: no allowed recipients disables sending, while no allowed
+senders means reading is unrestricted by sender.
+
+Secret input state exists only in the active account editor or selected account
+**Password** component. It is cleared after every success, failure, or conflict;
+when optional SMTP is disabled; when account or credential role changes; and on
+component unmount. It does not enter application-wide stores, URL state,
+persisted browser storage, clipboard, or dev-oriented logging.
 
 Forms have associated labels, keyboard operation, visible focus, semantic status
 and error regions, non-color-only state, and usable responsive layouts. Async
@@ -189,11 +282,18 @@ MCP-App, or unintended source-map files enter artifacts.
 3. Sentinel secrets are absent from URLs after exchange, history, HTML, JSON
    responses, logs, browser storage, screenshots/traces, exceptions, and assets.
 4. CLI and UI exercise the same management services for lifecycle, account,
-   credential, policy, connectivity, import, doctor, health, and revision
-   conflict flows.
-5. Browser E2E covers first launch, reload with session, stale/replayed bootstrap,
-   account CRUD/lifecycle, credential rotation outcome, import preview/apply,
-   conflict review, logout, keyboard/accessibility smoke, and process shutdown.
+   credential, cleanup, policy, import, doctor, health, and revision conflict
+   flows;
+   route inventory proves provider connectivity is not exposed by the Web UI.
+5. Browser E2E covers empty-install automatic staging preparation, explicit
+   earlier-settings import preparation, two-destination keyboard navigation,
+   reload with session, stale/replayed bootstrap, email-and-password-first account
+   create with editable suggestions and no connection preview, folded advanced
+   and optional outgoing settings, edit/lifecycle and soft removal, per-account
+   **Password** rotation and failed-save unchanged-authority behavior,
+   individual policy-item editing with both empty
+   semantics, hidden settled-ready status, checkbox-confirmed import
+   preview/apply, conflict review, secret clearing, logout, and process shutdown.
 6. Route inventory proves no mail workflow, generic RPC, debug/OpenAPI, remote
    binding, MCP App, or filesystem-browser surface.
 7. Frontend lint/typecheck/unit/build pass from the lockfile and generated assets

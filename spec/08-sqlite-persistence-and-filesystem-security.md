@@ -2,10 +2,12 @@
 
 ## Scope and Ownership
 
-Managed mode uses one SQLite file for two ownership classes:
+Managed mode uses one owner-only SQLite file for up to three ownership classes:
 
 - authoritative non-secret catalog state: catalog lifecycle, accounts,
   endpoints, policy, revisions, secret-binding lifecycle, and import state;
+- on Linux, authoritative managed secret values in the dedicated
+  `managed_secret` table owned by the `SecretStore` adapter;
 - rebuildable metadata projection: logical mailboxes, placement metadata,
   coverage, freshness, stale markers, and bounded maintenance state.
 
@@ -14,7 +16,7 @@ or retention of projection data cannot alter catalog authority.
 
 ## Logical Schema
 
-The exact physical schema is versioned and verified by migration tests. The
+The exact physical schema is versioned and verified by exact-schema and unsupported-version tests. The
 logical model includes:
 
 - catalog metadata: stable ID, lifecycle, revision, schema version, timestamps;
@@ -22,9 +24,11 @@ logical model includes:
   revision, timestamps;
 - IMAP/SMTP endpoint configuration without credentials;
 - catalog defaults and account policy overrides;
-- role binding state: revision, opaque internal handles, pending/superseded and
-  cleanup/repair status;
-- import plan/application state needed for safe bounded resume;
+- role binding state: revision, opaque internal handles, active/superseded and
+  cleanup status;
+- on Linux, `managed_secret` rows keyed by opaque handle, with the secret value
+  isolated from all catalog and projection queries;
+- import plan/application state needed for safe bounded continuation;
 - logical mailbox projection keyed by account and canonical mailbox;
 - observed placement rows keyed by account, mailbox, UIDVALIDITY, and UID;
 - coverage/freshness/staleness metadata and bounded maintenance cursors.
@@ -33,8 +37,13 @@ The account normalized-name uniqueness constraint covers all rows, including
 soft-removed tombstones. Logical mailboxes do not have a fictional business
 revision; their provider epoch and coverage fields qualify observations.
 
-Raw credentials, bodies, raw MIME, attachment bytes, UI bootstrap/session/CSRF
-state, browser view state, and provider access tokens MUST NOT be stored.
+Raw credentials and provider access tokens MUST NOT be stored outside the Linux
+`managed_secret` table or the selected non-Linux system keyring. Linux catalog
+copies, snapshots, and backups therefore contain plaintext secret values and
+MUST retain owner-only protection equivalent to the original; they are never
+classified as non-secret databases. Bodies, raw MIME,
+attachment bytes, UI bootstrap/session/CSRF state, and browser view state MUST
+NOT be stored in managed SQLite.
 
 ## Schema Version and Migration
 
@@ -43,13 +52,16 @@ A new catalog is created at the current exact schema version. Opening:
 - rejects a newer/unknown version;
 - rejects missing required objects, unexpected incompatible shape, or invalid
   invariants;
-- runs only explicit ordered migrations from supported older versions;
+- runs only explicit ordered migrations if an older version is explicitly declared supported;
 - performs migrations under bounded exclusive coordination;
 - records the new version only after all migration work succeeds;
 - leaves no partially advertised version on rollback or crash.
 
 No startup path silently drops/recreates authoritative tables. Projection-only
-rebuild is explicit and isolated.
+rebuild is explicit and isolated. There are no released managed-catalog users,
+so this delivery makes no compatibility or automatic-migration commitment for
+pre-release managed schema files. Legacy TOML, environment, and keyring import
+remains supported through the explicit spec 04 workflow.
 
 ## Filesystem Layout and Locking
 
@@ -60,7 +72,9 @@ the required ownership/no-follow semantics fail with remediation.
 
 Concurrent initialization and activation use an application lock with bounded
 wait. SQLite busy timeout is finite and maps to a typed busy error. Locks are not
-held while contacting providers or `SecretStore`.
+held while contacting providers or the system keyring. A Linux
+`managed_secret` insert is local database work and occurs under the same bounded
+transaction as binding activation.
 
 This is a local single-user boundary. The implementation defends against stale
 entries, unsafe permissions, links, and untrusted lower-privilege filesystem
@@ -109,8 +123,12 @@ is used.
 - Read/write transactions are short and bounded by row counts.
 - Compare-and-swap updates include expected revision in the write predicate and
   return conflict when zero rows match.
-- Network, `SecretStore`, browser launch, and attachment I/O never run inside a
+- Network, system-keyring, browser-launch, and attachment I/O never run inside a
   transaction.
+- On Linux, insertion into `managed_secret`, activation of its binding, the
+  binding/account revision update, and transition of the superseded value to
+  cleanup-required are one transaction; rollback leaves binding authority and
+  secret rows unchanged.
 - Repository methods return domain/application values and typed errors, not raw
   rows or SQL messages.
 
@@ -151,8 +169,9 @@ remain separate operator procedures outside this delivery.
 
 ## Acceptance Criteria
 
-1. Schema tests assert exact version, required constraints, foreign keys, and
-   absence of secret/body/UI-session columns.
+1. Schema tests assert exact version, required constraints, foreign keys, the
+   Linux-only dedicated `managed_secret` boundary, and absence of secret values
+   from catalog/projection/body/UI-session columns.
 2. Soft-removed account names remain unique, and logical mailbox rows have no
    unsupported business revision contract.
 3. Pre-existing DB/WAL/SHM/lock symlinks, non-regular files, wrong ownership,
@@ -161,9 +180,10 @@ remain separate operator procedures outside this delivery.
 4. Newly created WAL/SHM files are post-validated and owner-only.
 5. Concurrent initialize/activate and busy timeout behavior is deterministic and
    bounded.
-6. Crash and migration tests never advertise a partially migrated schema.
-7. External network, secret, and large filesystem work is absent from SQLite
-   transaction scopes.
+6. Unsupported pre-release schema versions are rejected without mutation; future crash and migration tests never advertise a partially migrated schema.
+7. External network, system-keyring, and large filesystem work is absent from
+   SQLite transaction scopes; Linux secret insertion and binding activation are
+   atomic in one bounded transaction.
 8. UIDVALIDITY invalidation and incomplete coverage are transactionally safe.
 9. Retention and rebuild alter projection only and preserve every authoritative
    catalog and binding row.

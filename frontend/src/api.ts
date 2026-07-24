@@ -1,14 +1,14 @@
 import type {
+  AccountCreationResult,
   AccountDetails,
   AccountInput,
   AccountRemovalResult,
   AccountSummary,
   AccountUpdate,
   BindingRole,
+  CatalogTarget,
   CleanupReport,
-  ConnectivityResult,
   CredentialRemovalResult,
-  CredentialRepairResult,
   CredentialResult,
   CurrentConflict,
   DoctorReport,
@@ -53,8 +53,8 @@ export interface ManagementApi {
   session(): Promise<void>
   logout(): Promise<void>
   status(): Promise<ManagementStatus>
-  initializeCatalog(database: string): Promise<void>
-  activateCatalog(expectedRevision: number): Promise<void>
+  initializeDefaultCatalog(expectedBootstrapRevision: number, requireEmptyInstall: boolean): Promise<{ database: string }>
+  activateCatalog(expectedRevision: number, target: CatalogTarget): Promise<void>
   selectMode(
     mode: ManagementMode,
     expectedBootstrapRevision: number,
@@ -62,17 +62,15 @@ export interface ManagementApi {
   ): Promise<void>
   accounts(): Promise<AccountSummary[]>
   account(name: string): Promise<AccountDetails>
-  createAccount(input: AccountInput, secrets: { incoming: string; outgoing: string | null }, expectedCatalogRevision: number): Promise<void>
-  updateAccount(name: string, input: AccountUpdate): Promise<AccountDetails>
-  setAccountEnabled(name: string, enabled: boolean, expectedRevision: number): Promise<AccountDetails>
-  removeAccount(name: string, expectedRevision: number, confirmation: string): Promise<AccountRemovalResult>
-  setCredential(name: string, role: BindingRole, secret: string, expectedRevision: number): Promise<CredentialResult>
-  removeCredential(name: string, role: BindingRole, expectedRevision: number): Promise<CredentialRemovalResult>
-  repairCredential(name: string, role: BindingRole, action: 'resume' | 'rollback', expectedRevision: number): Promise<CredentialRepairResult>
-  cleanupCredentials(limit: number, expectedCatalogRevision: number): Promise<CleanupReport>
+  createAccount(input: AccountInput, secrets: { incoming: string; outgoing: string | null }, expectedCatalogRevision: number, target: CatalogTarget): Promise<AccountCreationResult>
+  updateAccount(name: string, input: AccountUpdate, target: CatalogTarget): Promise<AccountDetails>
+  setAccountEnabled(name: string, enabled: boolean, expectedRevision: number, target: CatalogTarget): Promise<AccountDetails>
+  removeAccount(name: string, expectedRevision: number, confirmation: string, target: CatalogTarget): Promise<AccountRemovalResult>
+  setCredential(name: string, role: BindingRole, secret: string, expectedRevision: number, target: CatalogTarget): Promise<CredentialResult>
+  removeCredential(name: string, role: BindingRole, expectedRevision: number, target: CatalogTarget): Promise<CredentialRemovalResult>
+  cleanupCredentials(limit: number, expectedCatalogRevision: number, target: CatalogTarget): Promise<CleanupReport>
   policy(): Promise<ManagedPolicy>
-  updatePolicy(policy: ManagedPolicy): Promise<ManagedPolicy>
-  testConnectivity(name: string, role: BindingRole): Promise<ConnectivityResult>
+  updatePolicy(policy: ManagedPolicy, target: CatalogTarget): Promise<ManagedPolicy>
   previewImport(): Promise<LegacyImportPlan>
   applyImport(plan: LegacyImportPlan, confirmation: string): Promise<LegacyImportReport>
   doctor(): Promise<DoctorReport>
@@ -141,6 +139,9 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
   const mutate = async <T>(path: string, body: object): Promise<T> =>
     request<T>(path, { method: 'POST', body: JSON.stringify(body) }, true)
 
+  const catalogMutate = async <T>(path: string, body: object, target: CatalogTarget): Promise<T> =>
+    mutate<T>(path, { ...body, ...target })
+
   return {
     async exchangeBootstrap(token) {
       const result = await request<{ csrf: string }>('bootstrap', {
@@ -161,10 +162,14 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
         csrf = null
       }
     },
-    status: () => request('status'),
-    initializeCatalog: (database) => mutate('catalog/initialize', { database }),
-    activateCatalog: (expectedRevision) =>
-      mutate('catalog/activate', { expected_revision: expectedRevision }),
+    status: () => request<ManagementStatus>('status'),
+    initializeDefaultCatalog: (expectedBootstrapRevision, requireEmptyInstall) =>
+      mutate('catalog/initialize-default', {
+        expected_bootstrap_revision: expectedBootstrapRevision,
+        require_empty_install: requireEmptyInstall,
+      }),
+    activateCatalog: (expectedRevision, target) =>
+      catalogMutate('catalog/activate', { expected_revision: expectedRevision }, target),
     selectMode: (mode, expectedBootstrapRevision, expectedCatalogRevision) =>
       mutate('catalog/select', {
         mode,
@@ -173,37 +178,36 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
       }),
     accounts: () => request('accounts'),
     account: (name) => request(`accounts/${encodeURIComponent(name)}`),
-    createAccount: (input, secrets, expectedCatalogRevision) => mutate('accounts/create', { ...input, credentials: secrets, expected_catalog_revision: expectedCatalogRevision }),
-    updateAccount: (name, input) => mutate(`accounts/${encodeURIComponent(name)}/update`, input),
-    setAccountEnabled: (name, enabled, expectedRevision) =>
-      mutate(`accounts/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
+    createAccount: (input, secrets, expectedCatalogRevision, target) => catalogMutate('accounts/create', { ...input, credentials: secrets, expected_catalog_revision: expectedCatalogRevision }, target),
+    updateAccount: (name, input, target) => catalogMutate(`accounts/${encodeURIComponent(name)}/update`, input, target),
+    setAccountEnabled: (name, enabled, expectedRevision, target) =>
+      catalogMutate(`accounts/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {
         expected_revision: expectedRevision,
-      }),
-    removeAccount: (name, expectedRevision, confirmation) =>
-      mutate(`accounts/${encodeURIComponent(name)}/remove`, {
+      }, target),
+    removeAccount: (name, expectedRevision, confirmation, target) =>
+      catalogMutate(`accounts/${encodeURIComponent(name)}/remove`, {
         expected_revision: expectedRevision,
         confirmation,
-      }),
-    setCredential: (name, role, secret, expectedRevision) =>
-      mutate(`accounts/${encodeURIComponent(name)}/credentials/${role}/set`, {
+      }, target),
+    setCredential: (name, role, secret, expectedRevision, target) =>
+      catalogMutate(`accounts/${encodeURIComponent(name)}/credentials/${role}/set`, {
         secret,
         expected_revision: expectedRevision,
-      }),
-    removeCredential: (name, role, expectedRevision) =>
-      mutate(`accounts/${encodeURIComponent(name)}/credentials/${role}/remove`, {
+      }, target),
+    removeCredential: (name, role, expectedRevision, target) =>
+      catalogMutate(`accounts/${encodeURIComponent(name)}/credentials/${role}/remove`, {
         expected_revision: expectedRevision,
-      }),
-    repairCredential: (name, role, action, expectedRevision) =>
-      mutate(`accounts/${encodeURIComponent(name)}/credentials/${role}/repair`, {
-        action,
-        expected_revision: expectedRevision,
-      }),
-    cleanupCredentials: (limit, expectedCatalogRevision) => mutate('credentials/cleanup', { limit, expected_revision: expectedCatalogRevision }),
+      }, target),
+    cleanupCredentials: (limit, expectedCatalogRevision, target) => catalogMutate('credentials/cleanup', { limit, expected_revision: expectedCatalogRevision }, target),
     policy: () => request('policy'),
-    updatePolicy: (policy) => mutate('policy/update', { ...policy, expected_revision: policy.revision }),
-    testConnectivity: (name, role) =>
-      mutate(`accounts/${encodeURIComponent(name)}/connectivity`, { role }),
-    previewImport: () => request('import/preview'),
+    updatePolicy: (policy, target) => catalogMutate('policy/update', {
+      expected_revision: policy.revision,
+      enable_attachment_download: policy.enable_attachment_download,
+      allowed_recipients: policy.allowed_recipients,
+      allowed_senders: policy.allowed_senders,
+      report_blocked_mutations: policy.report_blocked_mutations,
+    }, target),
+    previewImport: () => mutate('import/preview', {}),
     applyImport: (plan, confirmation) =>
       mutate('import/apply', {
         preview_token: plan.preview_token,

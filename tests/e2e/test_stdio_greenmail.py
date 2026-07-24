@@ -502,7 +502,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
 
 @pytest.mark.asyncio
 async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_greenmail(tmp_path: Path) -> None:
-    """Prove stored-only preview, confirmed import, connectivity, activation, and stdio."""
+    """Prove effective legacy preview, confirmed import, activation, and stdio."""
     _wait_until_ready()
     app_dir = tmp_path / "managed-import"
     app_dir.mkdir(mode=0o700)
@@ -520,11 +520,13 @@ async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_gr
         "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
         "PYTHON_KEYRING_BACKEND": "dev.greenmail.file_keyring.FileKeyring",
         "PYTHONPATH": str(Path.cwd()),
-        # A complete environment account is a tripwire: import must ignore it.
+        # A complete environment account proves effective legacy composition.
         "MCP_EMAIL_SERVER_ACCOUNT_NAME": "environment-only",
-        "MCP_EMAIL_SERVER_EMAIL_ADDRESS": "environment@example.test",
-        "MCP_EMAIL_SERVER_PASSWORD": "environment-secret",
+        "MCP_EMAIL_SERVER_EMAIL_ADDRESS": ALICE[0],
+        "MCP_EMAIL_SERVER_PASSWORD": ALICE[1],
         "MCP_EMAIL_SERVER_IMAP_HOST": IMAP_HOST,
+        "MCP_EMAIL_SERVER_IMAP_PORT": str(IMAP_PORT),
+        "MCP_EMAIL_SERVER_IMAP_SSL": "false",
     })
 
     _run_cli(console_script, server_env, ["config", "init", "--database", str(database)])
@@ -532,8 +534,9 @@ async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_gr
     preview = _run_cli(console_script, server_env, ["config", "import-legacy"])
     assert "account=alice action=create" in preview
     assert "account=bob action=create" in preview
-    assert "environment-only" not in preview
-    assert "alice-password" not in preview
+    assert "account=environment-only action=create" in preview
+    assert "secret_source=environment" in preview
+    assert ALICE[1] not in preview
     with contextlib.closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM managed_account").fetchone()[0] == 0
 
@@ -543,10 +546,12 @@ async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_gr
         ["config", "import-legacy", "--apply"],
         stdin="IMPORT\n",
     )
-    assert "created=alice,bob" in applied
+    assert "created=environment-only,alice,bob" in applied
     assert config_path.read_bytes() == stored_source
     test_output = _run_cli(console_script, server_env, ["account", "test", "alice"])
     assert "connectivity test passed" in test_output
+    environment_test = _run_cli(console_script, server_env, ["account", "test", "environment-only"])
+    assert "connectivity test passed" in environment_test
     _run_cli(console_script, server_env, ["config", "activate"])
     _run_cli(console_script, server_env, ["config", "select", "managed"])
 
@@ -564,7 +569,11 @@ async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_gr
         ) as session:
             await session.initialize()
             accounts = await _call_tool(session, "list_available_accounts", {})
-            assert [account["account_name"] for account in accounts["result"]] == ["alice", "bob"]
+            assert {account["account_name"] for account in accounts["result"]} == {
+                "alice",
+                "bob",
+                "environment-only",
+            }
             mailboxes = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
             assert "INBOX" in {mailbox["name"] for mailbox in mailboxes["result"]}
 

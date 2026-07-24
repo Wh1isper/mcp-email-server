@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from importlib.resources import files
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, TypeVar
 
 from pydantic import ValidationError
@@ -20,7 +20,8 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import Match, Route
+from starlette.types import Scope
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.management import (
@@ -31,18 +32,17 @@ from mcp_email_server.application.management import (
     ManagementServices,
     RevisionConflictError,
 )
+from mcp_email_server.log import logger
 from mcp_email_server.runtime import close_application_runtime, get_application_runtime
 from mcp_email_server.web_ui.models import (
     AccountLifecycleRequest,
     ApplyImportRequest,
     CleanupCredentialsRequest,
-    ConnectivityRequest,
     CreateAccountRequest,
     EmptyRequest,
     ExpectedRevisionRequest,
-    InitializeCatalogRequest,
+    InitializeDefaultCatalogRequest,
     RemoveAccountRequest,
-    RepairCredentialRequest,
     RequestModel,
     SelectCatalogRequest,
     SetCredentialRequest,
@@ -346,15 +346,31 @@ async def _status(request: Request) -> Response:
     return _json(_asdict(await run_in_threadpool(state.management.lifecycle.status)))
 
 
-@_mutation(InitializeCatalogRequest)
-async def _initialize(_request: Request, state: LocalUiState, payload: InitializeCatalogRequest) -> object:
-    await run_in_threadpool(state.management.lifecycle.initialize, Path(payload.database))
-    return {"status": "initialized"}
+@_mutation(InitializeDefaultCatalogRequest)
+async def _initialize_default(
+    _request: Request,
+    state: LocalUiState,
+    payload: InitializeDefaultCatalogRequest,
+) -> object:
+    path = await run_in_threadpool(
+        state.management.lifecycle.initialize_default,
+        expected_bootstrap_revision=payload.expected_bootstrap_revision,
+        require_empty_install=payload.require_empty_install,
+    )
+    return {"status": "initialized", "database": path.as_posix()}
+
+
+def _bound_service(service: Any, payload: Any) -> Any:
+    return service.bind(
+        expected_bootstrap_revision=payload.expected_bootstrap_revision,
+        expected_catalog=payload.expected_catalog,
+    )
 
 
 @_mutation(ExpectedRevisionRequest)
 async def _activate(_request: Request, state: LocalUiState, payload: ExpectedRevisionRequest) -> object:
-    await run_in_threadpool(state.management.lifecycle.activate, expected_revision=payload.expected_revision)
+    lifecycle = _bound_service(state.management.lifecycle, payload)
+    await run_in_threadpool(lifecycle.activate, expected_revision=payload.expected_revision)
     return {"status": "active"}
 
 
@@ -385,8 +401,9 @@ async def _account(request: Request) -> Response:
 
 @_mutation(CreateAccountRequest)
 async def _create_account(_request: Request, state: LocalUiState, payload: CreateAccountRequest) -> object:
+    accounts = _bound_service(state.management.accounts, payload)
     result = await run_in_threadpool(
-        state.management.accounts.create,
+        accounts.create,
         CreateAccountCommand(
             expected_catalog_revision=payload.expected_catalog_revision,
             name=payload.name,
@@ -403,8 +420,16 @@ async def _create_account(_request: Request, state: LocalUiState, payload: Creat
         ),
     )
     return {
-        "incoming": {"state": result.incoming.status, "revision": result.incoming.revision},
-        "outgoing": {"state": result.outgoing.status, "revision": result.outgoing.revision}
+        "incoming": {
+            "state": result.incoming.status,
+            "revision": result.incoming.revision,
+            "cleanup_required": result.incoming.cleanup_required,
+        },
+        "outgoing": {
+            "state": result.outgoing.status,
+            "revision": result.outgoing.revision,
+            "cleanup_required": result.outgoing.cleanup_required,
+        }
         if result.outgoing is not None
         else None,
     }
@@ -413,32 +438,36 @@ async def _create_account(_request: Request, state: LocalUiState, payload: Creat
 @_mutation(UpdateAccountRequest)
 async def _update_account(request: Request, state: LocalUiState, payload: UpdateAccountRequest) -> object:
     current_name = _account_name(request)
-    current = await run_in_threadpool(state.management.accounts.show, current_name)
+    accounts = _bound_service(state.management.accounts, payload)
+    current = await run_in_threadpool(accounts.show, current_name)
     await run_in_threadpool(
-        state.management.accounts.update,
+        accounts.update,
         payload.command(current_name, had_outgoing=current.outgoing is not None),
     )
-    return _account_details(await run_in_threadpool(state.management.accounts.show, payload.name))
+    return _account_details(await run_in_threadpool(accounts.show, payload.name))
 
 
 @_mutation(AccountLifecycleRequest)
 async def _enable_account(request: Request, state: LocalUiState, payload: AccountLifecycleRequest) -> object:
     name = _account_name(request)
-    await run_in_threadpool(state.management.accounts.enable, name, expected_revision=payload.expected_revision)
-    return _account_details(await run_in_threadpool(state.management.accounts.show, name))
+    accounts = _bound_service(state.management.accounts, payload)
+    await run_in_threadpool(accounts.enable, name, expected_revision=payload.expected_revision)
+    return _account_details(await run_in_threadpool(accounts.show, name))
 
 
 @_mutation(AccountLifecycleRequest)
 async def _disable_account(request: Request, state: LocalUiState, payload: AccountLifecycleRequest) -> object:
     name = _account_name(request)
-    await run_in_threadpool(state.management.accounts.disable, name, expected_revision=payload.expected_revision)
-    return _account_details(await run_in_threadpool(state.management.accounts.show, name))
+    accounts = _bound_service(state.management.accounts, payload)
+    await run_in_threadpool(accounts.disable, name, expected_revision=payload.expected_revision)
+    return _account_details(await run_in_threadpool(accounts.show, name))
 
 
 @_mutation(RemoveAccountRequest)
 async def _remove_account(request: Request, state: LocalUiState, payload: RemoveAccountRequest) -> object:
+    accounts = _bound_service(state.management.accounts, payload)
     result = await run_in_threadpool(
-        state.management.accounts.soft_remove,
+        accounts.soft_remove,
         _account_name(request),
         expected_revision=payload.expected_revision,
         confirmation=payload.confirmation,
@@ -448,8 +477,9 @@ async def _remove_account(request: Request, state: LocalUiState, payload: Remove
 
 @_mutation(SetCredentialRequest)
 async def _set_credential(request: Request, state: LocalUiState, payload: SetCredentialRequest) -> object:
+    credentials = _bound_service(state.management.credentials, payload)
     result = await run_in_threadpool(
-        state.management.credentials.set,
+        credentials.set,
         _account_name(request),
         _role(request),
         payload.secret.get_secret_value(),
@@ -460,8 +490,9 @@ async def _set_credential(request: Request, state: LocalUiState, payload: SetCre
 
 @_mutation(ExpectedRevisionRequest)
 async def _remove_credential(request: Request, state: LocalUiState, payload: ExpectedRevisionRequest) -> object:
+    credentials = _bound_service(state.management.credentials, payload)
     result = await run_in_threadpool(
-        state.management.credentials.remove,
+        credentials.remove,
         _account_name(request),
         _role(request),
         expected_revision=payload.expected_revision,
@@ -473,22 +504,11 @@ async def _remove_credential(request: Request, state: LocalUiState, payload: Exp
     }
 
 
-@_mutation(RepairCredentialRequest)
-async def _repair_credential(request: Request, state: LocalUiState, payload: RepairCredentialRequest) -> object:
-    result = await run_in_threadpool(
-        state.management.credentials.repair,
-        _account_name(request),
-        _role(request),
-        action=payload.action,
-        expected_revision=payload.expected_revision,
-    )
-    return {"state": result.status, "revision": result.revision, "cleanup_required": result.cleanup_required}
-
-
 @_mutation(CleanupCredentialsRequest)
 async def _cleanup(_request: Request, state: LocalUiState, payload: CleanupCredentialsRequest) -> object:
+    credentials = _bound_service(state.management.credentials, payload)
     result = await run_in_threadpool(
-        state.management.credentials.cleanup,
+        credentials.cleanup,
         limit=payload.limit,
         expected_revision=payload.expected_revision,
     )
@@ -503,18 +523,13 @@ async def _policy(request: Request) -> Response:
 
 @_mutation(UpdatePolicyRequest)
 async def _update_policy(_request: Request, state: LocalUiState, payload: UpdatePolicyRequest) -> object:
-    return _asdict(await run_in_threadpool(state.management.policy.update, payload.policy()))
+    policy = _bound_service(state.management.policy, payload)
+    return _asdict(await run_in_threadpool(policy.update, payload.policy()))
 
 
-@_mutation(ConnectivityRequest)
-async def _connectivity(request: Request, state: LocalUiState, payload: ConnectivityRequest) -> object:
-    return _asdict(await state.management.connectivity.execute(_account_name(request), payload.role))
-
-
-async def _preview_import(request: Request) -> Response:
-    state: LocalUiState = request.app.state.local_ui
-    await _require_session(request, state)
-    return _json(_asdict(await run_in_threadpool(state.management.legacy_import.preview)))
+@_mutation(EmptyRequest)
+async def _preview_import(_request: Request, state: LocalUiState, _payload: EmptyRequest) -> object:
+    return _asdict(await run_in_threadpool(state.management.legacy_import.preview))
 
 
 @_mutation(ApplyImportRequest)
@@ -525,7 +540,11 @@ async def _apply_import(_request: Request, state: LocalUiState, payload: ApplyIm
         expected_revision=payload.expected_revision,
         confirmation=payload.confirmation,
     )
-    return {"created": list(result.created), "resumed": list(result.resumed)}
+    return {
+        "created": list(result.created),
+        "resumed": list(result.resumed),
+        "attention_required": list(result.attention_required),
+    }
 
 
 async def _doctor(request: Request) -> Response:
@@ -559,6 +578,44 @@ def _load_static_assets() -> dict[str, tuple[bytes, str]]:
     return assets
 
 
+def _matched_management_operation(scope: Scope, routes: list[Route]) -> str | None:
+    partial_operation: str | None = None
+    for route in routes:
+        match, _child_scope = route.matches(scope)
+        operation = route.name if isinstance(route.name, str) and route.name.startswith("management.") else None
+        if match is Match.FULL:
+            return operation
+        if match is Match.PARTIAL and partial_operation is None:
+            partial_operation = operation
+    return partial_operation
+
+
+def _finalize_management_response(
+    response: Response,
+    *,
+    operation: str | None,
+    method: str,
+    started_at: float,
+) -> Response:
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers[name] = value
+    if "access-control-allow-origin" in response.headers:
+        del response.headers["access-control-allow-origin"]
+    if "access-control-allow-credentials" in response.headers:
+        del response.headers["access-control-allow-credentials"]
+    if operation is not None:
+        safe_method = method if method in {"GET", "POST"} else "OTHER"
+        duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        logger.info(
+            "Local management request operation={} method={} status={} duration_ms={}",
+            operation,
+            safe_method,
+            response.status_code,
+            duration_ms,
+        )
+    return response
+
+
 def create_local_ui_app(state: LocalUiState) -> Starlette:  # noqa: C901 - explicit closed route inventory
     """Create the explicit loopback-only management ASGI application."""
 
@@ -575,45 +632,116 @@ def create_local_ui_app(state: LocalUiState) -> Starlette:  # noqa: C901 - expli
         return Response(content, media_type=content_type)
 
     routes = [
-        Route(f"{prefix}/api/bootstrap", _bootstrap, methods=["POST"]),
-        Route(f"{prefix}/api/session", _session_status, methods=["GET"]),
-        Route(f"{prefix}/api/session/logout", _logout, methods=["POST"]),
-        Route(f"{prefix}/api/status", _status, methods=["GET"]),
-        Route(f"{prefix}/api/catalog/initialize", _initialize, methods=["POST"]),
-        Route(f"{prefix}/api/catalog/activate", _activate, methods=["POST"]),
-        Route(f"{prefix}/api/catalog/select", _select, methods=["POST"]),
-        Route(f"{prefix}/api/accounts", _accounts, methods=["GET"]),
-        Route(f"{prefix}/api/accounts/create", _create_account, methods=["POST"]),
-        Route(f"{prefix}/api/accounts/{{name}}", _account, methods=["GET"]),
-        Route(f"{prefix}/api/accounts/{{name}}/update", _update_account, methods=["POST"]),
-        Route(f"{prefix}/api/accounts/{{name}}/enable", _enable_account, methods=["POST"]),
-        Route(f"{prefix}/api/accounts/{{name}}/disable", _disable_account, methods=["POST"]),
-        Route(f"{prefix}/api/accounts/{{name}}/remove", _remove_account, methods=["POST"]),
+        Route(f"{prefix}/api/bootstrap", _bootstrap, methods=["POST"], name="management.bootstrap.exchange"),
+        Route(f"{prefix}/api/session", _session_status, methods=["GET"], name="management.session.status"),
+        Route(
+            f"{prefix}/api/session/logout",
+            _logout,
+            methods=["POST"],
+            name="management.session.logout",
+        ),
+        Route(f"{prefix}/api/status", _status, methods=["GET"], name="management.status.get"),
+        Route(
+            f"{prefix}/api/catalog/initialize-default",
+            _initialize_default,
+            methods=["POST"],
+            name="management.catalog.initialize_default",
+        ),
+        Route(
+            f"{prefix}/api/catalog/activate",
+            _activate,
+            methods=["POST"],
+            name="management.catalog.activate",
+        ),
+        Route(
+            f"{prefix}/api/catalog/select",
+            _select,
+            methods=["POST"],
+            name="management.catalog.select",
+        ),
+        Route(f"{prefix}/api/accounts", _accounts, methods=["GET"], name="management.accounts.list"),
+        Route(
+            f"{prefix}/api/accounts/create",
+            _create_account,
+            methods=["POST"],
+            name="management.accounts.create",
+        ),
+        Route(
+            f"{prefix}/api/accounts/{{name}}",
+            _account,
+            methods=["GET"],
+            name="management.accounts.show",
+        ),
+        Route(
+            f"{prefix}/api/accounts/{{name}}/update",
+            _update_account,
+            methods=["POST"],
+            name="management.accounts.update",
+        ),
+        Route(
+            f"{prefix}/api/accounts/{{name}}/enable",
+            _enable_account,
+            methods=["POST"],
+            name="management.accounts.enable",
+        ),
+        Route(
+            f"{prefix}/api/accounts/{{name}}/disable",
+            _disable_account,
+            methods=["POST"],
+            name="management.accounts.disable",
+        ),
+        Route(
+            f"{prefix}/api/accounts/{{name}}/remove",
+            _remove_account,
+            methods=["POST"],
+            name="management.accounts.remove",
+        ),
         Route(
             f"{prefix}/api/accounts/{{name}}/credentials/{{role}}/set",
             _set_credential,
             methods=["POST"],
+            name="management.credentials.set",
         ),
         Route(
             f"{prefix}/api/accounts/{{name}}/credentials/{{role}}/remove",
             _remove_credential,
             methods=["POST"],
+            name="management.credentials.remove",
         ),
         Route(
-            f"{prefix}/api/accounts/{{name}}/credentials/{{role}}/repair",
-            _repair_credential,
+            f"{prefix}/api/credentials/cleanup",
+            _cleanup,
             methods=["POST"],
+            name="management.credentials.cleanup",
         ),
-        Route(f"{prefix}/api/credentials/cleanup", _cleanup, methods=["POST"]),
-        Route(f"{prefix}/api/policy", _policy, methods=["GET"]),
-        Route(f"{prefix}/api/policy/update", _update_policy, methods=["POST"]),
-        Route(f"{prefix}/api/accounts/{{name}}/connectivity", _connectivity, methods=["POST"]),
-        Route(f"{prefix}/api/import/preview", _preview_import, methods=["GET"]),
-        Route(f"{prefix}/api/import/apply", _apply_import, methods=["POST"]),
-        Route(f"{prefix}/api/doctor", _doctor, methods=["GET"]),
-        Route(f"{prefix}/api/index-health", _index_health, methods=["GET"]),
-        Route(f"{prefix}/", static, methods=["GET"]),
-        Route(f"{prefix}/{{asset:path}}", static, methods=["GET"]),
+        Route(f"{prefix}/api/policy", _policy, methods=["GET"], name="management.policy.get"),
+        Route(
+            f"{prefix}/api/policy/update",
+            _update_policy,
+            methods=["POST"],
+            name="management.policy.update",
+        ),
+        Route(
+            f"{prefix}/api/import/preview",
+            _preview_import,
+            methods=["POST"],
+            name="management.import.preview",
+        ),
+        Route(
+            f"{prefix}/api/import/apply",
+            _apply_import,
+            methods=["POST"],
+            name="management.import.apply",
+        ),
+        Route(f"{prefix}/api/doctor", _doctor, methods=["GET"], name="management.doctor"),
+        Route(
+            f"{prefix}/api/index-health",
+            _index_health,
+            methods=["GET"],
+            name="management.index_health",
+        ),
+        Route(f"{prefix}/", static, methods=["GET"], name="static.index"),
+        Route(f"{prefix}/{{asset:path}}", static, methods=["GET"], name="static.asset"),
     ]
 
     @asynccontextmanager
@@ -628,7 +756,10 @@ def create_local_ui_app(state: LocalUiState) -> Starlette:  # noqa: C901 - expli
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        if request.headers.get("host") != f"127.0.0.1:{state.port}":
+        started_at = time.monotonic()
+        operation = _matched_management_operation(request.scope, routes)
+        host_rejected = request.headers.get("host") != f"127.0.0.1:{state.port}"
+        if host_rejected:
             response = _error(400, "host_rejected", "The request host is not allowed.")
         else:
             try:
@@ -644,16 +775,23 @@ def create_local_ui_app(state: LocalUiState) -> Starlette:  # noqa: C901 - expli
                         current=await _current_summary(request, state),
                     )
                 else:
-                    response = _error(400, "management_error", str(exc) or "The management operation failed.")
+                    response = _error(
+                        400,
+                        exc.reason,
+                        "The management operation could not be completed.",
+                    )
+            except ValueError:
+                response = _error(422, "invalid_request", "The request values are invalid.")
             except Exception:
                 response = _error(500, "internal_error", "The management operation could not be completed.")
-        for name, value in _SECURITY_HEADERS.items():
-            response.headers[name] = value
-        if "access-control-allow-origin" in response.headers:
-            del response.headers["access-control-allow-origin"]
-        if "access-control-allow-credentials" in response.headers:
-            del response.headers["access-control-allow-credentials"]
-        return response
+        if host_rejected:
+            operation = "management.security.host_rejected"
+        return _finalize_management_response(
+            response,
+            operation=operation,
+            method=request.method,
+            started_at=started_at,
+        )
 
     app = Starlette(
         debug=False,

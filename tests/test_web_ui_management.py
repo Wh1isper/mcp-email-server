@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
@@ -10,6 +11,7 @@ from mcp_email_server.application.management import (
     AccountDetails,
     CredentialMutationResult,
     EndpointSummary,
+    ManagementError,
     RevisionConflictError,
 )
 from mcp_email_server.web_ui.app import LocalUiState, create_local_ui_app
@@ -47,6 +49,9 @@ async def _authenticated(
     *,
     port: int,
 ) -> tuple[LocalUiState, httpx.AsyncClient, str]:
+    for service_name in ("lifecycle", "accounts", "credentials", "policy", "connectivity"):
+        service = getattr(management, service_name)
+        service.bind.return_value = service
     state = LocalUiState(
         port=port,
         management=management,
@@ -67,6 +72,14 @@ async def _authenticated(
     )
     assert response.status_code == 200
     return state, client, response.json()["csrf"]
+
+
+def _target_payload(**values: object) -> dict[str, object]:
+    return {
+        "expected_bootstrap_revision": 2,
+        "expected_catalog": "/private/catalog.sqlite3",
+        **values,
+    }
 
 
 def _mutation_headers(state: LocalUiState, csrf: str) -> dict[str, str]:
@@ -129,14 +142,14 @@ async def test_create_account_passes_secret_once_and_never_echoes_it() -> None:
         response = await client.post(
             f"{state.route_prefix}/api/accounts/create",
             headers=_mutation_headers(state, csrf),
-            json={
-                "expected_catalog_revision": 1,
-                "name": "alice",
-                "full_name": "Alice",
-                "email_address": "alice@example.test",
-                "save_to_sent": True,
-                "sent_folder_name": None,
-                "incoming": {
+            json=_target_payload(
+                expected_catalog_revision=1,
+                name="alice",
+                full_name="Alice",
+                email_address="alice@example.test",
+                save_to_sent=True,
+                sent_folder_name=None,
+                incoming={
                     "host": "imap.example.test",
                     "port": 993,
                     "use_ssl": True,
@@ -144,9 +157,9 @@ async def test_create_account_passes_secret_once_and_never_echoes_it() -> None:
                     "verify_ssl": True,
                     "user_name": "alice@example.test",
                 },
-                "outgoing": None,
-                "credentials": {"incoming": sentinel, "outgoing": None},
-            },
+                outgoing=None,
+                credentials={"incoming": sentinel, "outgoing": None},
+            ),
         )
     finally:
         await client.aclose()
@@ -154,7 +167,7 @@ async def test_create_account_passes_secret_once_and_never_echoes_it() -> None:
     assert response.status_code == 200
     assert sentinel not in response.text
     assert response.json() == {
-        "incoming": {"state": "active", "revision": 2},
+        "incoming": {"state": "active", "revision": 2, "cleanup_required": 0},
         "outgoing": None,
     }
     command = management.accounts.create.call_args.args[0]
@@ -173,7 +186,7 @@ async def test_typed_revision_conflict_returns_bounded_non_secret_current_summar
         response = await client.post(
             f"{state.route_prefix}/api/accounts/alice/disable",
             headers=_mutation_headers(state, csrf),
-            json={"expected_revision": 4},
+            json=_target_payload(expected_revision=4),
         )
     finally:
         await client.aclose()
@@ -189,47 +202,34 @@ async def test_typed_revision_conflict_returns_bounded_non_secret_current_summar
 
 
 @pytest.mark.asyncio
-async def test_credential_wire_mapping_and_repair_are_explicit() -> None:
+async def test_credential_wire_mapping_is_explicit() -> None:
     management = MagicMock()
     management.credentials.set.return_value = CredentialMutationResult(
         status="active_cleanup_required",
         revision=5,
         cleanup_required=1,
     )
-    management.credentials.repair.return_value.status = "rolled_back"
-    management.credentials.repair.return_value.revision = 6
-    management.credentials.repair.return_value.cleanup_required = 0
     state, client, csrf = await _authenticated(management, port=8782)
     try:
-        set_response = await client.post(
+        response = await client.post(
             f"{state.route_prefix}/api/accounts/alice/credentials/incoming/set",
             headers=_mutation_headers(state, csrf),
-            json={"secret": "new-secret", "expected_revision": 4},
-        )
-        repair_response = await client.post(
-            f"{state.route_prefix}/api/accounts/alice/credentials/incoming/repair",
-            headers=_mutation_headers(state, csrf),
-            json={"action": "rollback", "expected_revision": 5},
+            json=_target_payload(secret="new-secret", expected_revision=4),
         )
     finally:
         await client.aclose()
 
-    assert set_response.json() == {
+    assert response.json() == {
         "state": "active_cleanup_required",
         "revision": 5,
         "cleanup_required": 1,
     }
-    assert "new-secret" not in set_response.text
-    assert repair_response.json() == {
-        "state": "rolled_back",
-        "revision": 6,
-        "cleanup_required": 0,
-    }
-    management.credentials.repair.assert_called_once_with(
+    assert "new-secret" not in response.text
+    management.credentials.set.assert_called_once_with(
         "alice",
         "incoming",
-        action="rollback",
-        expected_revision=5,
+        "new-secret",
+        expected_revision=4,
     )
 
 
@@ -242,7 +242,7 @@ async def test_invalid_secret_request_uses_fixed_error_without_input_echo() -> N
         response = await client.post(
             f"{state.route_prefix}/api/accounts/alice/credentials/incoming/set",
             headers=_mutation_headers(state, csrf),
-            json={"secret": sentinel, "expected_revision": "not-an-integer"},
+            json=_target_payload(secret=sentinel, expected_revision="not-an-integer"),
         )
     finally:
         await client.aclose()
@@ -251,3 +251,68 @@ async def test_invalid_secret_request_uses_fixed_error_without_input_echo() -> N
     assert response.json()["message"] == "The request body is invalid."
     assert sentinel not in response.text
     management.credentials.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_typed_management_error_uses_safe_recoverable_category() -> None:
+    management = MagicMock()
+    management.lifecycle.status.side_effect = ManagementError(
+        "duplicate private-account-name at /private/catalog.sqlite3",
+        reason="account_name_exists",
+    )
+    state, client, _csrf = await _authenticated(management, port=8784)
+    try:
+        response = await client.get(f"{state.route_prefix}/api/status")
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "category": "account_name_exists",
+        "message": "The management operation could not be completed.",
+    }
+    assert "private-account-name" not in response.text
+    assert "catalog.sqlite3" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_application_value_error_is_a_safe_invalid_request() -> None:
+    management = MagicMock()
+    management.lifecycle.status.side_effect = ValueError("private invalid input")
+    state, client, _csrf = await _authenticated(management, port=8785)
+    try:
+        response = await client.get(f"{state.route_prefix}/api/status")
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "category": "invalid_request",
+        "message": "The request values are invalid.",
+    }
+    assert "private invalid input" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_default_initialization_uses_csrf_and_expected_bootstrap_revision() -> None:
+    management = MagicMock()
+    management.lifecycle.initialize_default.return_value = Path("/private/managed.sqlite3")
+    state, client, csrf = await _authenticated(management, port=8786)
+    try:
+        response = await client.post(
+            f"{state.route_prefix}/api/catalog/initialize-default",
+            headers=_mutation_headers(state, csrf),
+            json={"expected_bootstrap_revision": 7, "require_empty_install": False},
+        )
+    finally:
+        await client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "initialized",
+        "database": "/private/managed.sqlite3",
+    }
+    management.lifecycle.initialize_default.assert_called_once_with(
+        expected_bootstrap_revision=7,
+        require_empty_install=False,
+    )

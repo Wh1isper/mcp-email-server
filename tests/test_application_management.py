@@ -73,11 +73,18 @@ def test_lifecycle_initialization_preserves_mode_and_records_database() -> None:
     backend = Mock()
     backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=None)
     catalog = Mock(path=Path("/private/catalog.sqlite3"))
+    catalog.lifecycle.return_value = "STAGING"
+    catalog.catalog_revision.return_value = 1
     backend.initialize_catalog.return_value = catalog
     service = CatalogLifecycleService(backend)
 
-    service.initialize(Path("catalog.sqlite3"))
+    result = service.initialize(Path("catalog.sqlite3"))
 
+    assert result.mode == "legacy"
+    assert result.bootstrap_revision == 1
+    assert result.restart_required is True
+    assert result.catalog_revision == 1
+    assert result.lifecycle == "STAGING"
     backend.initialize_catalog.assert_called_once_with(Path("catalog.sqlite3"))
     backend.write_selection.assert_called_once_with("legacy", catalog.path, expected_revision=0)
 
@@ -114,15 +121,56 @@ def test_managed_selection_validates_active_effective_snapshot_before_write() ->
     catalog.lifecycle.return_value = "ACTIVE"
     backend.open_catalog.return_value = catalog
 
-    CatalogLifecycleService(backend).select(
+    result = CatalogLifecycleService(backend).select(
         "managed",
         expected_bootstrap_revision=0,
         expected_catalog_revision=7,
     )
 
+    assert result.mode == "managed"
+    assert result.bootstrap_revision == 1
+    assert result.restart_required is True
     catalog.validate_ready.assert_called_once_with(require_active=True)
     catalog.load_settings.assert_not_called()
     backend.write_selection.assert_called_once_with("managed", database, expected_revision=0)
+
+
+def test_activation_returns_the_committed_catalog_outcome_without_status_read() -> None:
+    backend = Mock()
+    database = Path("/private/catalog.sqlite3")
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=database, revision=2)
+    catalog = Mock()
+    catalog.activate.return_value = 8
+    backend.open_catalog.return_value = catalog
+
+    result = CatalogLifecycleService(backend).activate(expected_revision=7)
+
+    assert result.catalog_revision == 8
+    assert result.lifecycle == "ACTIVE"
+    catalog.activate.assert_called_once_with(expected_revision=7)
+    backend.read_bootstrap.assert_called_once_with()
+
+
+def test_bound_account_mutation_rejects_selection_drift_even_when_revisions_match() -> None:
+    backend = Mock()
+    catalog_a = Mock()
+    path_a = Path("/private/a.sqlite3")
+    path_b = Path("/private/b.sqlite3")
+    backend.read_bootstrap.side_effect = [
+        BootstrapSnapshot(mode="legacy", db_path=path_a, revision=2, exists=True),
+        BootstrapSnapshot(mode="legacy", db_path=path_b, revision=3, exists=True),
+    ]
+    backend.open_catalog.return_value = catalog_a
+
+    accounts = ManagedAccountService(backend).bind(
+        expected_bootstrap_revision=2,
+        expected_catalog=path_a.as_posix(),
+    )
+    with pytest.raises(RevisionConflictError, match="bootstrap"):
+        accounts.enable("alice", expected_revision=1)
+
+    backend.open_catalog.assert_called_once_with(path_a)
+    catalog_a.set_account_enabled.assert_not_called()
 
 
 def test_account_creation_uses_one_service_for_rows_and_both_candidates() -> None:
@@ -416,6 +464,95 @@ def test_legacy_apply_rejects_target_revision_drift_after_secret_resolution() ->
     catalog.set_secret.assert_not_called()
 
 
+def test_legacy_apply_rechecks_selected_path_after_secret_resolution() -> None:
+    backend = Mock()
+    selected = Path("/private/a.sqlite3")
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=selected, revision=2, exists=True)
+    backend.load_legacy_source.return_value = _legacy_source()
+    catalog = Mock()
+    catalog.catalog_revision.return_value = 5
+    catalog.lifecycle.return_value = "STAGING"
+    catalog.list_accounts.return_value = [
+        AccountSummary("alice", "alice@example.test", True, 4, False, "MISSING", None)
+    ]
+    catalog.show_account.return_value = replace(_details(), incoming_binding="MISSING")
+    catalog.policy.return_value = ManagedPolicy(5, False, (), (), False)
+    backend.open_catalog.return_value = catalog
+    service = LegacyImportService(backend)
+    preview = service.preview()
+
+    def switch_selection(*_args: object) -> str:
+        backend.read_bootstrap.return_value = BootstrapSnapshot(
+            mode="legacy",
+            db_path=Path("/private/b.sqlite3"),
+            revision=3,
+            exists=True,
+        )
+        return "legacy-secret"
+
+    backend.resolve_legacy_secret.side_effect = switch_selection
+    with pytest.raises(ManagementError, match="target changed"):
+        service.apply(
+            preview_token=preview.preview_token,
+            expected_revision=preview.target_revision,
+            confirmation="IMPORT",
+        )
+
+    catalog.set_secret.assert_not_called()
+
+
+def test_legacy_apply_rechecks_selected_path_immediately_before_policy_write() -> None:
+    selected = Path("/private/a.sqlite3")
+    source = LegacySourceSnapshot(
+        accounts=(),
+        unsupported_provider_names=(),
+        enable_attachment_download=True,
+        allowed_recipients=(),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(
+        mode="legacy",
+        db_path=selected,
+        revision=2,
+        exists=True,
+    )
+    source_reads = 0
+
+    def load_source_and_switch_selection() -> LegacySourceSnapshot:
+        nonlocal source_reads
+        source_reads += 1
+        if source_reads == 3:
+            backend.read_bootstrap.return_value = BootstrapSnapshot(
+                mode="legacy",
+                db_path=Path("/private/b.sqlite3"),
+                revision=3,
+                exists=True,
+            )
+        return source
+
+    backend.load_legacy_source.side_effect = load_source_and_switch_selection
+    catalog = Mock()
+    catalog.catalog_revision.return_value = 1
+    catalog.lifecycle.return_value = "STAGING"
+    catalog.list_accounts.return_value = []
+    catalog.policy.return_value = ManagedPolicy(1, False, (), (), False)
+    backend.open_catalog.return_value = catalog
+    service = LegacyImportService(backend)
+    preview = service.preview()
+
+    with pytest.raises(ManagementError, match="target changed"):
+        service.apply(
+            preview_token=preview.preview_token,
+            expected_revision=preview.target_revision,
+            confirmation="IMPORT",
+        )
+
+    assert source_reads == 3
+    catalog.update_policy.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_connectivity_service_delegates_to_provider_adapter() -> None:
     backend = Mock()
@@ -481,7 +618,7 @@ def test_status_reports_durable_selection_restart_drift() -> None:
         running_mode="legacy",
         running_db_path=database,
     )
-    report = DoctorReport("ACTIVE", 2, 7, 1, 1, 0, 0, 0, ())
+    report = DoctorReport("ACTIVE", 2, 7, 1, 1, 0, ())
     backend.open_catalog.return_value.doctor.return_value = report
 
     status = CatalogLifecycleService(backend).status()
@@ -707,3 +844,118 @@ def test_legacy_compatibility_delegates_migration_and_returns_bounded_report() -
 
     assert result == expected
     backend.migrate_legacy_credentials.assert_called_once_with("plaintext")
+
+
+def test_default_initialization_uses_backend_path_and_bootstrap_revision() -> None:
+    database = Path("/private/managed.sqlite3")
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=None, revision=4, exists=True)
+    backend.default_catalog_path.return_value = database
+    backend.initialize_catalog.return_value = Mock(path=database)
+
+    result = CatalogLifecycleService(backend).initialize_default(expected_bootstrap_revision=4)
+
+    assert result == database
+    backend.read_bootstrap.assert_called_once_with()
+    backend.initialize_catalog.assert_called_once_with(database)
+    backend.write_selection.assert_called_once_with("legacy", database, expected_revision=4, expected_exists=None)
+
+
+def test_automatic_default_initialization_binds_absent_bootstrap_proof() -> None:
+    database = Path("/private/managed.sqlite3")
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=None, revision=0, exists=False)
+    backend.default_catalog_path.return_value = database
+    backend.load_legacy_source.return_value = LegacySourceSnapshot((), (), False, (), (), False)
+    backend.initialize_catalog.return_value = Mock(path=database)
+
+    CatalogLifecycleService(backend).initialize_default(
+        expected_bootstrap_revision=0,
+        require_empty_install=True,
+    )
+
+    backend.write_selection.assert_called_once_with(
+        "legacy",
+        database,
+        expected_revision=0,
+        expected_exists=False,
+    )
+
+
+def test_automatic_default_initialization_rejects_new_effective_legacy_content() -> None:
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=None, revision=0, exists=False)
+    backend.load_legacy_source.return_value = _legacy_source()
+
+    with pytest.raises(RevisionConflictError, match="bootstrap"):
+        CatalogLifecycleService(backend).initialize_default(
+            expected_bootstrap_revision=0,
+            require_empty_install=True,
+        )
+
+    backend.default_catalog_path.assert_not_called()
+    backend.initialize_catalog.assert_not_called()
+    backend.write_selection.assert_not_called()
+
+
+def test_default_initialization_is_idempotent_only_for_the_selected_default() -> None:
+    database = Path("/private/managed.sqlite3")
+    backend = Mock()
+    backend.default_catalog_path.return_value = database
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=database, revision=2, exists=True)
+    backend.open_catalog.return_value.lifecycle.return_value = "STAGING"
+
+    assert CatalogLifecycleService(backend).initialize_default(expected_bootstrap_revision=2) == database
+    backend.open_catalog.return_value.doctor.assert_called_once_with()
+    backend.initialize_catalog.assert_not_called()
+    backend.write_selection.assert_not_called()
+
+    backend.read_bootstrap.return_value = BootstrapSnapshot(
+        mode="legacy", db_path=Path("/private/other.sqlite3"), revision=2, exists=True
+    )
+    with pytest.raises(ManagementError, match="different managed database"):
+        CatalogLifecycleService(backend).initialize_default(expected_bootstrap_revision=2)
+
+
+def test_legacy_preview_binds_apply_to_the_selected_catalog_path() -> None:
+    backend, catalog = _import_backend()
+    service = LegacyImportService(backend)
+    preview = service.preview()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=Path("other.sqlite3"), revision=0)
+
+    with pytest.raises(ManagementError, match="target changed"):
+        service.apply(
+            preview_token=preview.preview_token,
+            expected_revision=preview.target_revision,
+            confirmation="IMPORT",
+        )
+
+    backend.resolve_legacy_secret.assert_not_called()
+    catalog.add_account.assert_not_called()
+
+
+def test_legacy_preview_reports_normalized_name_collision_as_conflict() -> None:
+    backend, catalog = _import_backend()
+    source = _legacy_source()
+    backend.load_legacy_source.return_value = replace(
+        source,
+        accounts=(replace(source.accounts[0], name="ALICE"),),
+    )
+    catalog.list_accounts.return_value = [AccountSummary("alice", "alice@example.test", True, 2, False, "ACTIVE", None)]
+    catalog.show_account.return_value = _details()
+
+    preview = LegacyImportService(backend).preview()
+
+    assert preview.accounts[0].action == "conflict"
+    assert preview.accounts[0].expected_target_revision == 4
+    backend.resolve_legacy_secret.assert_not_called()
+
+
+def test_legacy_preview_cache_is_strictly_bounded() -> None:
+    backend, _catalog = _import_backend()
+    service = LegacyImportService(backend)
+
+    tokens = {service.preview().preview_token for _ in range(service._MAX_PREVIEWS + 5)}
+
+    assert len(tokens) == service._MAX_PREVIEWS + 5
+    assert len(service._previews) == service._MAX_PREVIEWS

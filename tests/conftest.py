@@ -33,6 +33,7 @@ from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
 def patch_env(monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory):
     delete_settings()
     yield
+    (_HERE / "config.toml.lock").unlink(missing_ok=True)
 
 
 @pytest.fixture

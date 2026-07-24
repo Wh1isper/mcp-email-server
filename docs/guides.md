@@ -240,8 +240,8 @@ Keep the mailbox argument consistent with the mailbox used to obtain the
 
 ## Import legacy accounts into a managed catalog
 
-Create the destination without selecting it, preview the stored source, and
-apply only after reviewing every action:
+Create the destination without selecting it, preview the effective legacy
+source, and apply only after reviewing every action:
 
 ```bash
 mcp-email-server config init \
@@ -255,16 +255,19 @@ mcp-email-server config activate
 mcp-email-server config select managed
 ```
 
-The source is the TOML file selected by `MCP_EMAIL_SERVER_CONFIG_PATH`, not the
-environment-composited runtime view. Environment-only accounts and overrides are
-ignored. Preview displays endpoint, TLS, user, save-to-sent, policy, credential
-source class, and exact target revision details without accessing the keyring, so
-it can still show actions while the legacy keyring is locked. `--apply` prints
-that complete plan before accepting the interactive `IMPORT` confirmation; apply
-then fails safely if a required stored credential cannot be read.
+The source uses the TOML file selected by `MCP_EMAIL_SERVER_CONFIG_PATH` plus
+the same complete environment-account replacement/addition and policy override
+precedence as legacy runtime. Preview displays endpoint, TLS, user,
+save-to-sent, policy, credential source class, and exact target revision details
+without accessing credential values or the keyring, so it can still show actions
+while the legacy keyring is locked. `--apply` prints that complete plan before
+accepting the interactive `IMPORT` confirmation; a no-op plan does not prompt.
+Apply then fails safely if a required current TOML, environment, or keyring
+credential cannot be read.
 
 A `conflict` means the destination already has a different account with that
-name or retains a soft-removal tombstone. Import never overwrites that row.
+normalized name or retains a soft-removal tombstone. Import never overwrites
+that row.
 Resolve it deliberately by choosing a fresh staging catalog or reconciling the
 account manually. An exact repeat is `unchanged`; an interrupted matching import
 can report `resume_credentials` and install only missing bindings. The source is

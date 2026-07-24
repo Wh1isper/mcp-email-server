@@ -39,8 +39,9 @@ MCP_EMAIL_SERVER_PASSWORD
 MCP_EMAIL_SERVER_IMAP_HOST
 ```
 
-The generic password remains required even when
-`MCP_EMAIL_SERVER_IMAP_PASSWORD` is set. Invalid integer ports or invalid
+The generic password must be non-empty and remains required even when
+`MCP_EMAIL_SERVER_IMAP_PASSWORD` is set. An absent or empty IMAP/SMTP-specific
+password falls back to the generic password. Invalid integer ports or invalid
 account fields cause the environment account to be skipped and an error to be
 logged.
 
@@ -79,15 +80,19 @@ mcp-email-server config status --json
 mcp-email-server config doctor --json
 ```
 
-JSON callers should branch on `schema_version`, `ok`, `command`, and stable data
-or error codes rather than matching message prose. Managed startup requires all of the following:
+The low-level agent management API uses `schema_version: 1`. JSON callers should
+branch on `schema_version`, `ok`, `command`, typed `error.code`, and stable data
+rather than matching fixed safe message prose. JSON output grants no authority to
+run another command. Managed startup requires all of the following:
 
 - a parseable owner-only bootstrap with `bootstrap_version = 1`,
-  `mode = "managed"`, and `db_location`;
+  `mode = "managed"`, and `managed_db_location`;
 - a present, regular, non-symlink SQLite file in an owner-only immediate parent;
 - a supported schema and an `ACTIVE` catalog;
 - complete endpoint/binding pairs for enabled accounts;
-- readable active credentials in the same operating-system keyring session.
+- readable active credentials in the owner-only managed SQLite secret store on
+  Linux, or in the same system-keyring session on a supported non-Linux
+  platform.
 
 The server deliberately does not fall back to TOML accounts when any of these
 checks fails. `config status` still returns bounded bootstrap state and
@@ -100,44 +105,44 @@ bootstrap compare-and-swap and does not open the failed catalog. If the bootstra
 itself is unparseable, repair or restore it manually; `reset` cannot safely infer
 its mode and therefore does not unlink it.
 
-A `PENDING` binding usually means a prior keyring write failed. Restore keyring
-access and retry with:
+There are no released managed-catalog users for this pre-release redesign, so
+older development catalog schemas are rejected rather than migrated. While
+legacy mode is selected, preserve the old file for rollback and initialize a
+fresh owner-only path with `mcp-email-server config init --database NEW_PATH`.
+Then re-enter accounts or use the reviewed legacy import flow before activation
+and selection. Remove the obsolete development catalog only after verifying the
+replacement; on Linux, treat every old catalog copy as secret-bearing.
+
+If a managed password save fails, correct the reported storage or revision
+problem and submit a new value with:
 
 ```bash
 mcp-email-server account set-secret ACCOUNT incoming
 ```
 
-Use `outgoing` for an SMTP credential. Connectivity checks report only bounded
+Use `outgoing` for an SMTP credential. A failed save leaves no intermediate
+binding and does not change the current binding authority. On Linux, secret
+insertion and active binding/revision commit in one managed SQLite transaction.
+On supported POSIX non-Linux platforms, restore system-keyring access before retrying.
+Provider connectivity is diagnosed with `mcp-email-server account test ACCOUNT
+incoming|outgoing [--json]`; this agent-facing low-level CLI diagnostic has no
+Web UI route or Test connection action. Connectivity checks report only bounded
 categories: `timeout`, `endpoint_unavailable`, `credential_unavailable`,
 `authentication_or_provider_rejected`, or `tls_or_connection_failed`. Follow the
-safe remediation message; raw provider exceptions are intentionally hidden. A
-successful retry retires stale pending candidates. `CLEANUP_REQUIRED` means a
-replacement or detachment committed but
-an old candidate could not be deleted. Restore keyring access and run:
+safe remediation message; raw provider exceptions are intentionally hidden.
+
+`CLEANUP_REQUIRED` means a replacement or detachment committed but an old value
+could not be deleted. Restore access to the selected managed secret store and
+run:
 
 ```bash
 mcp-email-server config cleanup-credentials --limit 100
 ```
 
-Cleanup claims only stale pending or cleanup-required rows and never removes an
-active credential. The account remains usable after a rotation cleanup failure;
-a credential detachment instead leaves the disabled account incomplete until a
-new secret is installed.
-
-`PENDING_REPAIR_REQUIRED` means the keyring write may have completed but could
-not be confirmed. Inspect the account revision, then explicitly choose one path:
-
-```bash
-mcp-email-server account repair-secret ACCOUNT incoming resume --expected-revision REV
-mcp-email-server account repair-secret ACCOUNT incoming rollback --expected-revision REV
-```
-
-Resume first verifies the staged value exists; rollback claims it for bounded
-cleanup. Neither command accepts a replacement secret or guesses which outcome
-occurred. Once either repair transaction commits, a later keyring or SQLite
-finalization failure returns `active_cleanup_required` or
-`rolled_back_cleanup_required` with the new revision instead of reporting an
-uncommitted error. Reconcile the cleanup state; do not replay the old revision.
+Cleanup handles only superseded cleanup-required rows and never removes an active
+credential. The account remains usable after a rotation cleanup failure; a
+credential detachment instead leaves the disabled account incomplete until a new
+secret is installed.
 
 ## A managed write reports a revision conflict
 
@@ -155,7 +160,8 @@ mcp-email-server account remove work \
   --confirm work
 ```
 
-The operation is a soft removal and does not make the name immediately reusable.
+The operation is a soft removal. Its normalized-name tombstone permanently
+reserves that name in this delivery; it cannot be reused.
 
 ## Metadata index warnings or `query_too_broad`
 
@@ -167,7 +173,10 @@ parent directory and database to owner-only access, or remove a disposable
 operational database while the server is stopped so it can be rebuilt.
 
 Managed mode is different because the selected database also owns account
-authority. An open, security, corruption, schema, or projection-write failure
+authority and, on Linux, contains plaintext managed values in `managed_secret`.
+A copied or backed-up Linux catalog must retain owner-only protection equivalent
+to the original and must not be shared as a non-secret diagnostic artifact. An
+open, security, corruption, schema, or projection-write failure
 therefore fails closed rather than returning a result or falling back to TOML.
 In legacy mode, a projection write failure after a validated bounded provider
 read may return that provider result with a warning; the next request refreshes
@@ -199,10 +208,35 @@ and launch the command again rather than editing the process route or cookie.
 The server accepts only exact `127.0.0.1:<actual-port>` requests. A proxy,
 browser extension, security product, or custom hosts rewrite that changes Host,
 Origin, Fetch Metadata, JSON content type, cookie, or CSRF headers is rejected.
+After authentication, ordinary account work is under **Email accounts**;
+importing earlier settings, sending/attachment safety, and troubleshooting are
+folded under **Settings & help**. Account creation starts with an email address
+and password. The suggested server settings remain editable under the account
+form's connection disclosures, together with login name, port, security,
+certificate, sending, and Sent-folder details. There is no redundant connection
+preview; advanced settings and optional outgoing mail stay folded until needed.
+Provider connectivity testing is CLI-only. Empty-workspace and settled-ready
+banners with no next action are hidden; actionable activation, selection,
+restart, or conflict states remain visible,
+and activation never implies provider connectivity.
 There is no supported remote, wildcard, CORS, or shared-link mode. Managed
 catalog/bootstrap operations, attachment writes, and oversized spill require
 the documented POSIX filesystem primitives. An unsupported-platform error is a
 fail-closed boundary, not a permissions setting that can be bypassed.
+
+If **Import existing settings** reports that the managed catalog parent must be
+owner-only, an existing legacy configuration directory grants group or world
+access. Stop every server process, verify that the directory is owned by the
+current user and is dedicated to this application, then restrict that directory
+before retrying. For the default location on POSIX systems:
+
+```bash
+chmod 700 ~/.config/mcp-email-server
+```
+
+Do not apply this command to a shared directory or change ownership/permissions
+without first inspecting the path. The application deliberately does not chmod
+an existing legacy directory on the user's behalf.
 
 If status loads but managed operations fail, run the equivalent bounded CLI
 checks in the same operating-system login session:
@@ -212,12 +246,19 @@ mcp-email-server config status
 mcp-email-server config doctor
 ```
 
-A locked or unavailable keyring prevents credential installation and may leave
-`PENDING_REPAIR_REQUIRED`. Restore keyring access, refresh the account, then use
-the UI's explicit Resume or Roll back action. `CLEANUP_REQUIRED` instead means
-the active result is known but an old candidate remains; run bounded cleanup.
-Revision conflicts are not retried automatically: inspect the displayed current
-summary before resubmitting.
+A storage failure prevents credential installation but leaves the current
+binding authority unchanged. On Linux, check managed database access; on a
+supported POSIX non-Linux platform, restore system-keyring access. Return to **Email
+accounts**, open **Password** for the affected account, and submit a new value.
+`CLEANUP_REQUIRED` means the active result is known but an old superseded value
+remains. **Email accounts** shows a bounded password-data cleanup action whenever
+doctor reports such leftovers, including after the last active account was
+removed; you can also use the CLI. Revision conflicts are not
+retried automatically: inspect
+the displayed current summary before resubmitting. If a write succeeds but the
+following account-list refresh fails, the UI hides the older account actions
+instead of reusing stale revisions. Choose **Refresh accounts** before making
+another change.
 
 ## Keychain repeatedly asks for permission
 
@@ -393,25 +434,32 @@ See [DNS rebinding protection](transports.md#dns-rebinding-protection).
 ## Legacy import reports a conflict or missing credential
 
 Run `mcp-email-server config import-legacy` without `--apply` to preview again.
-A conflict means the staging destination differs from the stored TOML account or
-retains that name from a soft removal. Import checks all such conflicts before
-resolving secrets or writing, and it will not overwrite the destination. Use a
-fresh staging database or reconcile the destination manually.
+A conflict means the staging destination differs from the effective legacy
+account, collides after managed name normalization, or retains that name from a
+soft removal. Planning also rejects normalized collisions within the source and
+account-limit overflow. Import checks all such conditions before resolving
+secrets or writing, and it will not overwrite the destination. Use a fresh
+staging database or reconcile the destination manually.
 
-Preview intentionally ignores environment-only accounts and never accesses the
-keyring. Run `config import-legacy --apply`, review the full non-secret plan, and
-type `IMPORT` only when prompted. Apply reads required stored credentials. If it
-reports a missing credential, unlock or repair the legacy keyring entry and
-repeat the reviewed apply. A stale-preview error means the source or an exact
-catalog, policy, or account target revision changed; create and review a new
-preview rather than retrying an old confirmation. Matching account rows are
-reused and only missing bindings are resumed; the stored TOML and legacy keyring
-entries are never deleted.
+Preview includes complete environment-only accounts and environment policy
+overrides with legacy runtime precedence, but never reads their secret values or
+the keyring. Run `config import-legacy --apply`, review the full non-secret plan,
+and type `IMPORT` only when a changed plan prompts. Apply reads required current
+TOML, environment, or keyring credentials. If it reports a missing credential,
+unlock or repair the legacy keyring entry or restore the environment value and
+repeat the reviewed apply. A stale-preview error means the effective source,
+selected catalog path/bootstrap revision, or an exact catalog, policy, or
+account target revision changed; create and review a new preview rather than
+retrying an old confirmation. Matching account rows are reused and only missing bindings are filled. A failed
+credential save leaves destination authority unchanged; cleanup-required results
+need the reported cleanup. TOML, environment, and legacy keyring entries are
+never deleted.
 
 ## Duplicate account name
 
 Account names must be unique across all stored account types. Choose a new
-`account_name`, or remove the existing account before adding its replacement.
+`account_name`. Soft removal does not release a name: its normalized tombstone
+remains reserved permanently in this delivery.
 
 An environment account with the same name as a TOML email account is the one
 exception: it intentionally replaces that account in the runtime view.

@@ -1,83 +1,106 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { Download, RefreshCw } from 'lucide-react'
 
 import type { ManagementApi } from '../api'
-import type { Endpoint, LegacyImportPlan } from '../types'
+import type { Endpoint, LegacyAccountSource, LegacyImportPlan } from '../types'
 import { ConflictNotice, errorMessage, StatusMessage } from './Feedback'
 
 function endpointSummary(endpoint: Endpoint): string {
   const transport = endpoint.use_ssl ? 'TLS' : endpoint.start_ssl ? 'STARTTLS' : 'plain'
-  return `${endpoint.host}:${endpoint.port}, ${endpoint.user_name}, ${transport}, verification ${endpoint.verify_ssl ? 'on' : 'off'}`
+  return `${endpoint.host}:${endpoint.port} · ${endpoint.user_name} · ${transport}`
 }
 
-export function ImportPanel({ api }: { api: ManagementApi }) {
+const passwordSourceLabel = (source: LegacyAccountSource['incoming_secret_source'] | null): string => {
+  if (source === 'keyring') return 'secure password storage'
+  if (source === 'environment') return 'the environment setup'
+  return 'the earlier settings file'
+}
+
+const actionLabel = (action: LegacyImportPlan['accounts'][number]['action']): string => {
+  if (action === 'create') return 'Add account'
+  if (action === 'resume_credentials') return 'Add missing password'
+  if (action === 'unchanged') return 'Already imported'
+  return 'Needs review'
+}
+
+export function ImportPanel({ api, onChanged }: { api: ManagementApi; onChanged?: () => void }) {
   const [plan, setPlan] = useState<LegacyImportPlan | null>(null)
-  const [confirmation, setConfirmation] = useState('')
+  const [confirmed, setConfirmed] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState<unknown>(null)
 
-  const preview = async () => {
-    setBusy(true); setNotice(''); setError(null); setConfirmation(''); setPlan(null)
+  const preview = useCallback(async () => {
+    setBusy(true); setNotice(''); setError(null); setConfirmed(false); setPlan(null)
     try { setPlan(await api.previewImport()) } catch (caught) { setError(caught) } finally { setBusy(false) }
-  }
+  }, [api])
+
+  useEffect(() => { void preview() }, [preview])
 
   const apply = async () => {
     if (!plan) return
     setBusy(true); setNotice(''); setError(null)
     try {
-      const report = await api.applyImport(plan, confirmation)
-      setNotice(`Import completed: ${report.created.length} created, ${report.resumed.length} resumed.`)
+      const report = await api.applyImport(plan, confirmed ? 'IMPORT' : '')
+      setNotice(report.attention_required.length
+        ? `Imported ${report.created.length} account(s); ${report.attention_required.length} password(s) still need attention.`
+        : `Import complete. ${report.created.length} account(s) added and ${report.resumed.length} password(s) restored.`)
       setPlan(null)
-      setConfirmation('')
+      setConfirmed(false)
+      onChanged?.()
     } catch (caught) {
       setError(caught)
       setPlan(null)
-      setConfirmation('')
+      setConfirmed(false)
     } finally { setBusy(false) }
   }
 
   const hasConflicts = plan?.accounts.some((item) => item.action === 'conflict') ?? false
+  const hasChanges = Boolean(plan && (
+    plan.policy_action === 'update'
+    || plan.accounts.some((item) => item.action === 'create' || item.action === 'resume_credentials')
+  ))
+  const changeCount = plan?.accounts.filter((item) => item.action === 'create' || item.action === 'resume_credentials').length ?? 0
 
   return (
     <section aria-labelledby="import-heading">
-      <div className="section-heading"><div><p className="eyebrow">Migration</p><h2 id="import-heading">Legacy import</h2></div><button type="button" disabled={busy} onClick={() => void preview()}>{plan ? 'Refresh preview' : 'Preview import'}</button></div>
-      <p className="lede">Preview reads a bounded, non-secret source snapshot. Applying never deletes or rewrites the legacy source and is available only for a staging catalog.</p>
+      <div className="section-heading"><div><p className="eyebrow">Existing configuration</p><h2 id="import-heading">Import email accounts</h2></div><button type="button" className="secondary with-icon" disabled={busy} onClick={() => void preview()}><RefreshCw size={16} aria-hidden="true" />Check again</button></div>
+      <p className="lede">Nothing is copied until you review and confirm. The original settings are left unchanged.</p>
       <StatusMessage message={notice} />
       {error && !(error instanceof Error && error.name === 'RevisionConflictError') ? <StatusMessage message={errorMessage(error)} error /> : null}
       <ConflictNotice error={error} onDismiss={() => setError(null)} />
-      {busy ? <p role="status">Checking legacy configuration…</p> : null}
+      {busy ? <p role="status">Checking existing settings…</p> : null}
       {plan ? (
-        <div className="panel">
-          <h3>Import preview</h3>
-          <p className="bounded-text">Created <time dateTime={plan.created_at}>{plan.created_at}</time>; source fingerprint <code>{plan.source_fingerprint}</code>.</p>
-          <table>
-            <caption>Planned account actions</caption>
-            <thead><tr><th scope="col">Account</th><th scope="col">Source configuration</th><th scope="col">Action</th><th scope="col">Credential work</th></tr></thead>
-            <tbody>{plan.accounts.map((item) => <tr key={item.name}>
-              <th scope="row">{item.name}<br /><small>{item.source.email_address}</small></th>
-              <td>
-                <div>{item.source.full_name}; sent copy {item.source.save_to_sent ? `on (${item.source.sent_folder_name ?? 'default folder'})` : 'off'}</div>
-                <div>Incoming: {endpointSummary(item.source.incoming)}; credential source {item.source.incoming_secret_source}</div>
-                <div>Outgoing: {item.source.outgoing ? `${endpointSummary(item.source.outgoing)}; credential source ${item.source.outgoing_secret_source}` : 'none'}</div>
-              </td>
-              <td>{item.action.replaceAll('_', ' ')}; target revision {item.expected_target_revision ?? 'absent'}</td>
-              <td>{item.missing_credentials.length ? item.missing_credentials.join(', ') : 'None'}</td>
-            </tr>)}</tbody>
-          </table>
-          <p>Policy: <strong>{plan.policy_action}</strong>; target revision {plan.target_policy_revision}</p>
-          <dl>
-            <dt>Attachment download</dt><dd>{plan.source_policy.enable_attachment_download ? 'enabled' : 'disabled'}</dd>
-            <dt>Allowed recipients</dt><dd>{plan.source_policy.allowed_recipients.join(', ') || 'None'}</dd>
-            <dt>Allowed senders</dt><dd>{plan.source_policy.allowed_senders.join(', ') || 'None'}</dd>
-            <dt>Blocked mutation reports</dt><dd>{plan.source_policy.report_blocked_mutations ? 'enabled' : 'disabled'}</dd>
-          </dl>
-          {plan.unsupported_provider_names.length ? <div className="warning" role="status"><strong>Unsupported providers will not be imported:</strong> {plan.unsupported_provider_names.join(', ')}</div> : null}
-          {hasConflicts ? <div className="message message-error" role="alert">Resolve destination conflicts, then create a fresh preview.</div> : (
-            <div className="confirmation">
-              <p>Applying may create accounts, copy available credentials through the secure backend, and update policy. Type <strong>IMPORT</strong> to confirm this exact preview.</p>
-              <label htmlFor="import-confirmation">Confirmation</label>
-              <input id="import-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" />
-              <button type="button" disabled={busy || confirmation !== 'IMPORT'} onClick={() => void apply()}>Apply import</button>
+        <div className="import-preview">
+          <div className="import-summary"><strong>{changeCount} account{changeCount === 1 ? '' : 's'} ready to import</strong><span>{plan.policy_action === 'update' ? 'Safety settings will also be copied.' : 'Safety settings are already up to date.'}</span></div>
+          {plan.unsupported_provider_names.length ? <div className="warning" role="status"><strong>These account types cannot be copied automatically:</strong> {plan.unsupported_provider_names.join(', ')}</div> : null}
+          <div className="import-account-list">
+            {plan.accounts.map((item) => (
+              <article className="import-account" key={item.name}>
+                <div><h3>{item.source.email_address}</h3><p>{item.source.full_name}</p></div>
+                <span className={`status-pill${item.action === 'conflict' ? ' status-pill-attention' : ''}`}>{actionLabel(item.action)}</span>
+                <details className="inline-details">
+                  <summary>Source details</summary>
+                  <div className="details-body">
+                    <p><strong>Incoming:</strong> {endpointSummary(item.source.incoming)} · password from {passwordSourceLabel(item.source.incoming_secret_source)}</p>
+                    <p><strong>Outgoing:</strong> {item.source.outgoing ? `${endpointSummary(item.source.outgoing)} · password from ${passwordSourceLabel(item.source.outgoing_secret_source)}` : 'Not configured'}</p>
+                    <p><strong>Sent copy:</strong> {item.source.save_to_sent ? item.source.sent_folder_name ?? 'Default Sent folder' : 'Off'}</p>
+                  </div>
+                </details>
+              </article>
+            ))}
+          </div>
+          <details className="technical-details">
+            <summary>Technical preview details</summary>
+            <div className="details-body"><p>Created <time dateTime={plan.created_at}>{plan.created_at}</time></p><p className="bounded-text">Source ID: <code>{plan.source_fingerprint}</code></p><p>Account settings version: {plan.target_revision}; safety settings version: {plan.target_policy_revision}</p></div>
+          </details>
+          {hasConflicts ? <div className="message message-error" role="alert">One or more accounts conflict with saved settings. Resolve them before importing.</div> : !hasChanges ? (
+            <div className="message" role="status"><strong>Already up to date.</strong> There is nothing to import.</div>
+          ) : (
+            <div className="confirmation action-stack">
+              <label className="confirmation-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed these accounts and want to copy them.</label>
+              <p className="hint">The earlier settings will stay unchanged.</p>
+              <button type="button" className="with-icon" disabled={busy || !confirmed} onClick={() => void apply()}><Download size={17} aria-hidden="true" />Import accounts</button>
             </div>
           )}
         </div>

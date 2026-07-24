@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -11,25 +12,45 @@ from click import Command, Group, Option
 from typer.main import get_command
 from typer.testing import CliRunner
 
+from mcp_email_server.adapters.management import LocalManagementBackend
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.management import (
     AccountCreationResult,
     AccountDetails,
     AccountRemovalResult,
+    CatalogActivationResult,
+    CatalogInitializationResult,
     ConnectivityResult,
     CredentialCleanupReport,
     CredentialMutationResult,
     CredentialRemovalResult,
-    CredentialRepairResult,
     DoctorReport,
     EndpointSummary,
     IndexHealth,
+    LegacyAccountSnapshot,
     LegacyCredentialMigrationResult,
+    LegacyImportAccountPlan,
+    LegacyImportPlan,
+    LegacyPolicySnapshot,
     ManagedPolicy,
+    ManagementServices,
+    ModeSelectionResult,
 )
-from mcp_email_server.bootstrap import read_bootstrap, write_bootstrap
+from mcp_email_server.bootstrap import BootstrapError, read_bootstrap, write_bootstrap
 from mcp_email_server.cli import app
+from mcp_email_server.config import Settings
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
+
+
+def _configure_bound_management(management: MagicMock, *, catalog_revision: int = 7) -> None:
+    management.lifecycle.status.return_value = SimpleNamespace(
+        selected_catalog="/private/catalog.sqlite3",
+        bootstrap_revision=2,
+        report=SimpleNamespace(catalog_revision=catalog_revision),
+    )
+    for service_name in ("lifecycle", "accounts", "credentials", "policy", "connectivity"):
+        service = getattr(management, service_name)
+        service.bind.return_value = service
 
 
 def _private_directory(path: Path) -> Path:
@@ -162,9 +183,9 @@ def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tm
     assert "pending_operations=" in health.output
 
 
-def test_cli_repair_and_failed_connectivity_have_typed_exit_semantics(monkeypatch) -> None:
+def test_cli_failed_connectivity_has_typed_exit_semantics(monkeypatch) -> None:
     management = MagicMock()
-    management.credentials.repair.return_value = CredentialRepairResult("active", 6, 0)
+    _configure_bound_management(management)
     management.connectivity.execute = AsyncMock(
         return_value=ConnectivityResult("incoming", "failed", "Connection test failed")
     )
@@ -172,28 +193,52 @@ def test_cli_repair_and_failed_connectivity_have_typed_exit_semantics(monkeypatc
         "mcp_email_server.cli.get_application_runtime",
         lambda: SimpleNamespace(management=management),
     )
-    runner = CliRunner()
 
-    repaired = runner.invoke(
-        app,
-        ["account", "repair-secret", "alice", "incoming", "resume", "--expected-revision", "5"],
-    )
-    failed = runner.invoke(app, ["account", "test", "alice", "incoming"])
+    failed = CliRunner().invoke(app, ["account", "test", "alice", "incoming"])
 
-    assert repaired.exit_code == 0, repaired.output
-    assert repaired.output == "state=active\nrevision=6\ncleanup_required=0\n"
-    management.credentials.repair.assert_called_once_with(
-        "alice",
-        "incoming",
-        action="resume",
-        expected_revision=5,
-    )
     assert failed.exit_code == 1
     assert "Error: Connection test failed" in failed.output
     assert "passed" not in failed.output
 
 
-def test_select_managed_validates_binding_metadata_without_resolving_secret(monkeypatch, tmp_path, fake_keyring):
+def test_cli_import_apply_exits_nonzero_for_conflict_only_plan(monkeypatch) -> None:
+    management = MagicMock()
+    _configure_bound_management(management)
+    source = LegacyAccountSnapshot(
+        name="alice",
+        full_name="Alice",
+        email_address="alice@example.test",
+        incoming=EndpointSummary("imap.example.test", 993, True, False, True, "alice@example.test"),
+        incoming_secret_source="plaintext",
+        outgoing=None,
+        outgoing_secret_source=None,
+        save_to_sent=True,
+        sent_folder_name=None,
+    )
+    management.legacy_import.preview.return_value = LegacyImportPlan(
+        preview_token="private-token",
+        source_fingerprint="fingerprint",
+        target_revision=5,
+        target_policy_revision=1,
+        created_at="2026-01-01T00:00:00Z",
+        accounts=(LegacyImportAccountPlan("alice", "conflict", source, 2),),
+        source_policy=LegacyPolicySnapshot(False, (), (), False),
+        policy_action="unchanged",
+        unsupported_provider_names=(),
+    )
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+
+    result = CliRunner().invoke(app, ["config", "import-legacy", "--apply"])
+
+    assert result.exit_code == 1
+    assert "destination conflicts: alice" in result.output
+    management.legacy_import.apply.assert_not_called()
+
+
+def test_select_managed_validates_binding_metadata_without_resolving_secret(monkeypatch, tmp_path):
     parent = _private_directory(tmp_path / "app")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -202,7 +247,9 @@ def test_select_managed_validates_binding_metadata_without_resolving_secret(monk
     assert runner.invoke(app, ["config", "init", "--database", str(database)]).exit_code == 0
     assert runner.invoke(app, _base_account_args(), input="incoming-secret\n").exit_code == 0
     assert runner.invoke(app, ["config", "activate"]).exit_code == 0
-    fake_keyring._store.clear()
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM managed_secret")
+        connection.commit()
 
     selected = runner.invoke(app, ["config", "select", "managed"])
 
@@ -219,23 +266,16 @@ def test_account_add_has_no_secret_argv_option() -> None:
     account = root.commands["account"]
     assert isinstance(account, Group)
     add = account.commands["add"]
-    repair = account.commands["repair-secret"]
     config = root.commands["config"]
     assert isinstance(add, Command)
-    assert isinstance(repair, Command)
+    assert "repair-secret" not in account.commands
     assert isinstance(config, Group)
     assert {"policy", "update-policy", "index-health"} <= set(config.commands)
     option_names = {option for parameter in add.params if isinstance(parameter, Option) for option in parameter.opts}
-    repair_options = {
-        option for parameter in repair.params if isinstance(parameter, Option) for option in parameter.opts
-    }
-
     rejected = CliRunner().invoke(app, [*_base_account_args()[:-1], "--password", "secret"])
 
     assert "--password-stdin" in option_names
     assert "--password" not in option_names
-    assert "--password" not in repair_options
-    assert "--password-stdin" not in repair_options
     assert rejected.exit_code != 0
     assert "No such option" in rejected.output
 
@@ -459,7 +499,8 @@ api_key = "provider-secret"
     assert "mode=preview" in preview.output
     assert "account=stored action=create" in preview.output
     assert "provider=unsupported-provider action=unsupported" in preview.output
-    assert "environment-only" not in preview.output
+    assert "account=environment-only action=create" in preview.output
+    assert "secret_source=environment" in preview.output
     assert "stored-secret" not in preview.output
     assert "provider-secret" not in preview.output
     assert "environment-secret" not in preview.output
@@ -482,7 +523,7 @@ api_key = "provider-secret"
     assert missing_confirmation.exit_code == 1
     assert "exactly IMPORT" in missing_confirmation.output
     assert applied.exit_code == 0, applied.output
-    assert "created=stored" in applied.output
+    assert "created=environment-only,stored" in applied.output
     assert repeated.exit_code == 0, repeated.output
     assert "account=stored action=unchanged" in repeated.output
     assert "created=none" in repeated.output
@@ -491,7 +532,12 @@ api_key = "provider-secret"
     catalog = ManagedCatalog(database)
     account = catalog.load_account("stored")
     assert account.incoming.password.get_secret_value() == "stored-secret"
-    assert [item.account_name for item in catalog.load_settings(require_active=False).emails] == ["stored"]
+    environment_account = catalog.load_account("environment-only")
+    assert environment_account.incoming.password.get_secret_value() == "environment-secret"
+    assert {item.account_name for item in catalog.load_settings(require_active=False).emails} == {
+        "stored",
+        "environment-only",
+    }
     policy = catalog.policy()
     assert policy.enable_attachment_download is True
     assert policy.allowed_recipients == ("bob@example.test",)
@@ -609,8 +655,8 @@ def test_cli_json_error_is_single_document_and_preflight_precedes_secret_read(mo
         "ok": False,
         "command": "account.add",
         "error": {
-            "code": "management_error",
-            "message": "No managed database is configured. Run `mcp-email-server config init --database PATH`.",
+            "code": "catalog_not_configured",
+            "message": "No managed catalog is configured.",
             "details": {},
         },
         "warnings": [],
@@ -630,13 +676,18 @@ def test_agent_readable_status_error_omits_bootstrap_path(monkeypatch, tmp_path:
 
     assert result.exit_code == 1
     document = _json_document(result)
-    assert document["error"]["message"] == "Bootstrap configuration could not be read"  # type: ignore[index]
+    assert document["error"] == {  # type: ignore[index]
+        "code": "bootstrap_unavailable",
+        "message": "The bootstrap configuration is unavailable or busy.",
+        "details": {},
+    }
     assert str(config_path) not in result.output
     assert "private-owner-name" not in result.output
 
 
 def test_json_mode_maps_account_validation_errors_to_single_documents(monkeypatch) -> None:
     management = MagicMock()
+    _configure_bound_management(management)
     management.accounts.show.return_value = SimpleNamespace(revision=7, outgoing=None)
     management.credentials.set.side_effect = ValueError("account name must not contain control characters")
     management.accounts.update.side_effect = ValueError("full name must not contain control characters")
@@ -669,9 +720,56 @@ def test_json_mode_maps_account_validation_errors_to_single_documents(monkeypatc
         ["account", "update", "alice", "--expected-revision", "7", "--full-name", "Alice", "--json"],
     )
     message = _json_document(bounded)["error"]["message"]  # type: ignore[index]
-    assert isinstance(message, str)
-    assert len(message.encode("utf-8")) <= APPLICATION_LIMITS.error_detail_bytes
-    assert message.endswith("...")
+    assert message == "The command input is invalid."
+
+
+def test_lifecycle_json_mutations_use_committed_results_without_post_write_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    management = MagicMock()
+    _configure_bound_management(management)
+    management.lifecycle.initialize.return_value = CatalogInitializationResult(
+        mode="legacy",
+        bootstrap_revision=3,
+        restart_required=True,
+        catalog_revision=1,
+        lifecycle="STAGING",
+    )
+    management.lifecycle.activate.return_value = CatalogActivationResult(catalog_revision=8, lifecycle="ACTIVE")
+    management.lifecycle.select.return_value = ModeSelectionResult(
+        mode="legacy",
+        bootstrap_revision=3,
+        restart_required=False,
+    )
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+    runner = CliRunner()
+
+    management.lifecycle.status.side_effect = AssertionError("init must not observe after commit")
+    initialized = runner.invoke(
+        app,
+        ["config", "init", "--database", str(tmp_path / "catalog.sqlite3"), "--json"],
+    )
+    assert initialized.exit_code == 0
+    management.lifecycle.status.assert_not_called()
+
+    management.lifecycle.status.reset_mock(side_effect=True)
+    management.lifecycle.status.return_value = SimpleNamespace(
+        selected_catalog="/private/catalog.sqlite3",
+        bootstrap_revision=2,
+        report=SimpleNamespace(catalog_revision=7),
+    )
+    activated = runner.invoke(app, ["config", "activate", "--json"])
+    assert activated.exit_code == 0
+    management.lifecycle.status.assert_called_once_with()
+
+    management.lifecycle.status.reset_mock()
+    selected = runner.invoke(app, ["config", "select", "legacy", "--json"])
+    assert selected.exit_code == 0
+    management.lifecycle.status.assert_called_once_with()
 
 
 def test_every_finite_management_command_emits_one_json_success_document(monkeypatch, tmp_path: Path) -> None:
@@ -689,9 +787,7 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
         catalog_revision=7,
         account_count=1,
         enabled_account_count=1,
-        pending_bindings=0,
         cleanup_required_bindings=0,
-        repair_required_bindings=0,
         problems=(),
     )
     policy = ManagedPolicy(
@@ -716,6 +812,7 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
     )
     credential = CredentialMutationResult(status="active", revision=8)
     management = MagicMock()
+    _configure_bound_management(management)
     management.lifecycle.status.return_value = SimpleNamespace(
         mode="legacy",
         selected_catalog="configured",
@@ -723,6 +820,19 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
         restart_required=False,
         report=doctor,
         catalog_problem=None,
+    )
+    management.lifecycle.initialize.return_value = CatalogInitializationResult(
+        mode="legacy",
+        bootstrap_revision=3,
+        restart_required=True,
+        catalog_revision=1,
+        lifecycle="STAGING",
+    )
+    management.lifecycle.activate.return_value = CatalogActivationResult(catalog_revision=8, lifecycle="ACTIVE")
+    management.lifecycle.select.return_value = ModeSelectionResult(
+        mode="legacy",
+        bootstrap_revision=3,
+        restart_required=False,
     )
     management.lifecycle.doctor.return_value = doctor
     management.index_health.get.return_value = IndexHealth("healthy", 1, 0, ())
@@ -747,7 +857,6 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
     management.accounts.enable.return_value = 9
     management.accounts.soft_remove.return_value = AccountRemovalResult(8, 1, 1, 0)
     management.credentials.set.return_value = credential
-    management.credentials.repair.return_value = CredentialRepairResult("active", 8)
     management.credentials.remove.return_value = CredentialRemovalResult("removed", 8)
     management.connectivity.execute = AsyncMock(
         return_value=ConnectivityResult("incoming", "ok", "Connection succeeded")
@@ -796,11 +905,6 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
             None,
         ),
         (
-            "account.repair-secret",
-            ["account", "repair-secret", "alice", "incoming", "resume", "--expected-revision", "7", "--json"],
-            None,
-        ),
-        (
             "account.remove-secret",
             ["account", "remove-secret", "alice", "incoming", "--expected-revision", "7", "--json"],
             None,
@@ -822,8 +926,57 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
         assert "incoming-secret" not in result.output
 
 
+def test_migrate_credentials_json_redacts_bootstrap_path(monkeypatch, tmp_path: Path) -> None:
+    sensitive_path = tmp_path / "private-config-name" / "config.toml"
+    failure = BootstrapError(f"Could not inspect bootstrap lock: {sensitive_path}")
+    monkeypatch.setattr(Settings, "migrate_credentials", MagicMock(side_effect=failure))
+    management = ManagementServices.compose(LocalManagementBackend())
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+
+    result = CliRunner().invoke(app, ["migrate-credentials", "--to", "plaintext", "--json"])
+
+    assert result.exit_code == 1
+    document = _json_document(result)
+    assert document["ok"] is False
+    assert sensitive_path.as_posix() not in result.output
+    assert "private-config-name" not in result.output
+    assert document["error"] == {
+        "code": "bootstrap_unavailable",
+        "message": "The bootstrap configuration is unavailable or busy.",
+        "details": {},
+    }
+
+
+def test_migrate_credentials_json_redacts_filesystem_failure(monkeypatch, tmp_path: Path) -> None:
+    sensitive_path = tmp_path / "private-config-name" / "config.toml"
+    failure = OSError(f"Could not create configuration parent: {sensitive_path}")
+    monkeypatch.setattr(Settings, "migrate_credentials", MagicMock(side_effect=failure))
+    management = ManagementServices.compose(LocalManagementBackend())
+    monkeypatch.setattr(
+        "mcp_email_server.cli.get_application_runtime",
+        lambda: SimpleNamespace(management=management),
+    )
+
+    result = CliRunner().invoke(app, ["migrate-credentials", "--to", "plaintext", "--json"])
+
+    assert result.exit_code == 1
+    document = _json_document(result)
+    assert document["ok"] is False
+    assert sensitive_path.as_posix() not in result.output
+    assert "private-config-name" not in result.output
+    assert document["error"] == {
+        "code": "storage_unavailable",
+        "message": "The required management storage is unavailable.",
+        "details": {},
+    }
+
+
 def test_migrate_credentials_json_reports_cleanup_without_secret_locators(monkeypatch) -> None:
     management = MagicMock()
+    _configure_bound_management(management)
     management.legacy_compatibility.migrate_credentials.return_value = LegacyCredentialMigrationResult(
         account_count=2,
         remaining_entries=("alice:incoming",),
@@ -881,7 +1034,6 @@ def test_all_finite_management_commands_advertise_json_mode() -> None:
             "disable",
             "enable",
             "remove",
-            "repair-secret",
             "remove-secret",
             "test",
         },
@@ -906,6 +1058,7 @@ def test_all_finite_management_commands_advertise_json_mode() -> None:
 
 def test_reset_requires_exact_confirmation_and_supports_json(monkeypatch) -> None:
     management = MagicMock()
+    _configure_bound_management(management)
     monkeypatch.setattr(
         "mcp_email_server.cli.get_application_runtime",
         lambda: SimpleNamespace(management=management),
@@ -941,5 +1094,9 @@ def test_account_add_validates_non_secret_endpoint_before_secret_read(monkeypatc
 
     assert result.exit_code == 1
     document = _json_document(result)
-    assert document["error"]["message"] == "Incoming implicit TLS and STARTTLS are mutually exclusive"  # type: ignore[index]
+    assert document["error"] == {  # type: ignore[index]
+        "code": "invalid_input",
+        "message": "The command input is invalid.",
+        "details": {},
+    }
     read_secret.assert_not_called()

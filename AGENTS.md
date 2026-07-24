@@ -34,8 +34,9 @@ Primary repository areas:
 The revised Local Email App architecture under `spec/` is the normative target
 currently being implemented. MCP stdio provides bounded mail workflows; CLI and
 the embedded loopback-only React UI provide the managed management plane.
-SQLite owns managed non-secret configuration and a rebuildable metadata
-projection, while `SecretStore` alone owns managed secret values. Application
+SQLite owns managed configuration and a rebuildable metadata projection. On
+Linux, its owner-only `managed_secret` table is the default `SecretStore`;
+other supported platforms use the operating-system keyring. Application
 services resolve only the selected account/role secret immediately before
 provider construction. Legacy TOML/environment/keyring behavior remains an
 explicit compatibility mode and import source, but MCP exposes no account or
@@ -155,5 +156,6 @@ Keep related files synchronized:
 - Frontend dependency changes: `frontend/package.json`, its lockfile, notices, source/build checks, and staged packaged assets.
 - Web UI route/session/security changes: backend tests, browser tests, and `docs/security.md` plus affected setup/troubleshooting docs.
 - Packaged asset changes: explicit sdist/wheel content assertions and Node-free from-sdist verification.
+- Frontend maintainers own generated-asset synchronization: keep temporary `frontend/dist/` ignored, but commit `mcp_email_server/web_ui/static/` and `frontend/embedded-assets.json` after `make frontend`; release builds must not be the first place these assets are generated.
 - Architecture, workflow, persistence, interface, or security-boundary changes: the single owning file under `spec/`, centralized delivery traceability, tests, and relevant published docs when implemented.
 - Quick-start changes: `README.md`, `docs/getting-started.md`, and `mkdocs.yml` when navigation changes.

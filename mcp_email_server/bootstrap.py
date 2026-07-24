@@ -5,6 +5,7 @@ import importlib.util
 import os
 import stat
 import tempfile
+import threading
 import time
 import tomllib
 from collections.abc import Iterator
@@ -25,6 +26,7 @@ _SECURE_BOOTSTRAP_FILES_SUPPORTED = (
     and hasattr(os, "getuid")
     and importlib.util.find_spec("fcntl") is not None
 )
+_LEGACY_BOOTSTRAP_PROCESS_LOCK = threading.Lock()
 
 
 class BootstrapError(ValueError):
@@ -130,29 +132,56 @@ def read_bootstrap(  # noqa: C901
         raise BootstrapError(f"Invalid bootstrap revision in {path}")
     revision = raw_revision
     db_path: Path | None = None
+    raw_managed_db_path = raw.get("managed_db_location")
+    raw_managed_selection = raw.get("managed_selection")
+    if raw_managed_selection is not None and not isinstance(raw_managed_selection, bool):
+        raise BootstrapError(f"Invalid managed_selection in {path}")
 
     if mode == "managed":
         if version != BOOTSTRAP_VERSION:
             raise BootstrapError(f"Unsupported managed bootstrap version in {path}: expected {BOOTSTRAP_VERSION}")
-        raw_db_path = raw.get("db_location")
+        if raw_managed_selection is False:
+            raise BootstrapError(f"Managed bootstrap requires a selected database: {path}")
+        # `db_location` is a compatibility fallback only for pre-release V2
+        # bootstrap files without the explicit current-format selection marker.
+        raw_db_path = (
+            raw_managed_db_path
+            if raw_managed_db_path is not None or raw_managed_selection is True
+            else raw.get("db_location")
+        )
         if not isinstance(raw_db_path, str) or not raw_db_path.strip():
-            raise BootstrapError(f"Managed bootstrap requires db_location: {path}")
+            raise BootstrapError(f"Managed bootstrap requires managed_db_location: {path}")
         candidate = Path(raw_db_path).expanduser()
         if not candidate.is_absolute():
             candidate = path.parent / candidate
         db_path = Path(os.path.abspath(candidate))
-        if require_secure_managed:
-            _assert_owner_only_directory(path.parent, label="Managed bootstrap parent")
-            _assert_owner_only_file(path, label="Managed bootstrap configuration")
     elif raw_version is not None and version != BOOTSTRAP_VERSION:
         raise BootstrapError(f"Unsupported bootstrap version in {path}: expected {BOOTSTRAP_VERSION}")
-    else:
+    elif raw_managed_selection is False:
+        if raw_managed_db_path is not None:
+            raise BootstrapError(f"Unselected bootstrap must not contain managed_db_location: {path}")
+    elif raw_managed_selection is True or raw_managed_db_path is not None:
+        if not isinstance(raw_managed_db_path, str) or not raw_managed_db_path.strip():
+            raise BootstrapError(f"Selected bootstrap requires managed_db_location: {path}")
+        candidate = Path(raw_managed_db_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = path.parent / candidate
+        db_path = Path(os.path.abspath(candidate))
+    elif version == BOOTSTRAP_VERSION and revision > 0:
+        # Compatibility with pre-release V2 files that overloaded the historical
+        # legacy metadata `db_location` after an explicit revisioned selection.
         raw_db_path = raw.get("db_location")
         if isinstance(raw_db_path, str) and raw_db_path.strip():
             candidate = Path(raw_db_path).expanduser()
             if not candidate.is_absolute():
                 candidate = path.parent / candidate
             db_path = Path(os.path.abspath(candidate))
+
+    # A selected managed catalog is management authority even while legacy mail
+    # runtime remains active. Validate its bootstrap source independently of mode.
+    if db_path is not None and require_secure_managed:
+        _assert_owner_only_directory(path.parent, label="Managed bootstrap parent")
+        _assert_owner_only_file(path, label="Managed bootstrap configuration")
 
     return Bootstrap(path=path, mode=mode, db_path=db_path, version=version, revision=revision, exists=True)
 
@@ -198,8 +227,22 @@ def _ensure_private_parent(path: Path) -> None:
 
 
 @contextlib.contextmanager
-def _bootstrap_lock(path: Path) -> Iterator[None]:
-    _ensure_private_parent(path)
+def bootstrap_file_lock(path: Path, *, require_secure_parent: bool = True) -> Iterator[None]:
+    if require_secure_parent:
+        # Managed authority writes always require owner-only no-follow files and
+        # a cross-process lock; _ensure_private_parent fails closed otherwise.
+        _ensure_private_parent(path)
+    elif not _SECURE_BOOTSTRAP_FILES_SUPPORTED:
+        # Legacy-only writes predate managed bootstrap requirements. Retain their
+        # platform behavior while serializing this process and without creating a
+        # misleading lock file.
+        with _LEGACY_BOOTSTRAP_PROCESS_LOCK:
+            yield
+        return
+    elif not path.parent.exists():
+        # Keep a newly required immediate parent suitable for later managed
+        # initialization; never change an existing legacy directory here.
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = Path(f"{path}.lock")
     if lock_path.exists() or lock_path.is_symlink():
         _assert_owner_only_file(lock_path, label="Bootstrap lock")
@@ -260,12 +303,15 @@ def write_bootstrap(
     db_path: Path | None = None,
     path: Path | None = None,
     expected_revision: int | None = None,
+    expected_exists: bool | None = None,
 ) -> Bootstrap:
     path = configured_path() if path is None else Path(os.path.abspath(path.expanduser()))
-    with _bootstrap_lock(path):
+    with bootstrap_file_lock(path):
         current = read_bootstrap(path)
         if expected_revision is not None and current.revision != expected_revision:
             raise BootstrapRevisionError("Bootstrap selection changed; reload and retry")
+        if expected_exists is not None and current.exists is not expected_exists:
+            raise BootstrapRevisionError("Bootstrap existence changed; reload and retry")
         raw: dict[str, Any] = {}
         if path.exists():
             try:
@@ -276,19 +322,17 @@ def write_bootstrap(
                 raise BootstrapError(f"Bootstrap configuration must contain a TOML table: {path}")
             raw = parsed
 
-        selected_db = db_path
-        if selected_db is None:
-            existing = raw.get("db_location")
-            if isinstance(existing, str) and existing.strip():
-                candidate = Path(existing).expanduser()
-                selected_db = candidate if candidate.is_absolute() else path.parent / candidate
+        selected_db = db_path if db_path is not None else current.db_path
         if mode == "managed" and selected_db is None:
             raise BootstrapError("Selecting managed mode requires a database path")
 
         raw["bootstrap_version"] = BOOTSTRAP_VERSION
         raw["bootstrap_revision"] = current.revision + 1
         raw["mode"] = mode
+        raw["managed_selection"] = selected_db is not None
         if selected_db is not None:
-            raw["db_location"] = Path(os.path.abspath(selected_db.expanduser())).as_posix()
+            raw["managed_db_location"] = Path(os.path.abspath(selected_db.expanduser())).as_posix()
+        else:
+            raw.pop("managed_db_location", None)
         _atomic_write(path, tomli_w.dumps(raw))
         return read_bootstrap(path)

@@ -3,7 +3,14 @@
 ## Authority Selection
 
 Bootstrap configuration contains the explicit mode, selected catalog path, and
-an independent monotonic bootstrap revision. It contains no managed account
+an independent monotonic bootstrap revision. The selected catalog uses
+`managed_db_location`; historical `db_location` remains the legacy operational
+metadata index and does not imply a managed selection. A selected managed catalog
+is management authority even while legacy mail mode remains active, so its
+bootstrap file and parent meet the strict security contract in either mode.
+Legacy store, reset, and credential migration preserve the revision and selected
+catalog under one transaction lock covering source load, keyring effects, TOML
+commit, and checked cleanup. The bootstrap contains no managed account
 configuration or secret. The process reads it once, validates it, and freezes
 the result. Management writes compare the expected bootstrap revision while
 holding a bounded owner-only no-follow sibling lock before atomic replacement;
@@ -28,7 +35,9 @@ secret-binding authority.
 ## Catalog Lifecycle
 
 A managed catalog has a stable identifier, schema version, lifecycle, and catalog
-revision. Its lifecycle is:
+revision. On Linux it also contains the owner-only `managed_secret` store; on
+macOS and other supported non-Linux platforms bindings resolve through the system
+keyring, as specified in spec 05. Its lifecycle is:
 
 ```text
 absent -> staging -> active
@@ -37,12 +46,15 @@ absent -> staging -> active
 - **initialize** creates a secure staging catalog idempotently or reports a typed
   conflict with an existing incompatible target. Idempotent adoption is limited
   to the exact requested path when it remains an owner-only, structurally valid
-  `STAGING` catalog; it preserves all staging data and revisions. A bootstrap
-  compare-and-swap or persistence failure after catalog commit leaves that
-  catalog available for an explicit retry rather than deleting it.
+  `STAGING` catalog; it preserves all staging data and revisions. The local UI
+  uses a backend-selected `managed.sqlite3` sibling of the active bootstrap file
+  and a bootstrap compare-and-swap rather than accepting a browser-chosen path.
+  A bootstrap persistence failure after catalog commit leaves that catalog
+  available for an explicit retry rather than deleting it.
 - **staging** permits management and import but cannot serve mail workflows.
-- **activate** validates schema, security, required configuration, and invariant
-  consistency before a revisioned transition to active.
+- **activate** validates schema, security, structural completeness, and invariant
+  consistency before a revisioned transition to active. It does not contact IMAP
+  or SMTP and does not certify provider connectivity.
 - **select managed** revalidates the exact active catalog revision, then
   compare-and-swaps bootstrap authority.
 - **select legacy** compare-and-swaps bootstrap authority without opening the
@@ -66,8 +78,12 @@ Managed account operations are available through the shared application service:
 - set, rotate, remove, and clean up credentials through spec 05;
 - test IMAP and SMTP connectivity with explicit role selection.
 
-Every mutation supplies the expected account or catalog revision. On mismatch,
-it returns a typed conflict containing only a bounded current non-secret summary
+Every selected-catalog mutation supplies the reviewed catalog identity and
+bootstrap revision in addition to the expected account or catalog revision. The
+service binds that exact catalog instance and rechecks selection before each
+catalog access, so another catalog with coincidentally equal numeric revisions
+cannot receive the write. On mismatch, it returns a typed conflict containing
+only a bounded current non-secret summary
 and requires the caller to review/retry. The UI MUST NOT auto-replay a stale
 mutation. Live legacy and managed authority is capped at 1,000 configured
 accounts; managed creation checks that aggregate inside the catalog transaction.
@@ -75,7 +91,8 @@ Recipient and sender policy collections are each capped at 1,000 entries.
 
 Soft removal preserves the stable identity, audit timestamps, binding cleanup
 state, and normalized-name tombstone. It disables provider work immediately.
-Hard purge and name reuse are deferred.
+Hard purge is deferred, and the normalized name remains reserved: a removed
+account name cannot be reused in this delivery.
 
 Connectivity tests use the same current authority, late secret resolution,
 provider TLS policy, limits, and redaction as mail workflows. They do not save a
@@ -88,15 +105,27 @@ provider authentication, timeout, and transport failures retain their category.
 Endpoint port range and mutually exclusive implicit-TLS/STARTTLS modes are
 validated before CLI secret collection and again at the application boundary.
 
-## Agent-readable CLI Results
+## Low-level Agent Management CLI
+
+The `config` and `account` command groups are the low-level agent management API.
+They intentionally retain exact operational vocabulary such as `STAGING`,
+`ACTIVE`, catalog, revision, and restart state rather than translating it into
+Web UI task language. Connectivity service access remains here through
+`account test`; it is a diagnostic and does not grant an agent permission to
+perform another management command.
 
 Every finite `config` and `account` command, plus legacy `reset` and credential
 migration, supports a leaf `--json` result mode. Success emits exactly one UTF-8
-JSON document with schema version, stable command identifier, explicit data, and
-an always-present warning array. Parsed application failures emit one document
-with a stable error code and bounded message while preserving the nonzero exit
-status. Framework usage errors that occur before command dispatch remain Click
-errors in this version.
+JSON document with `schema_version: 1`, `ok: true`, a stable command identifier,
+explicit data, and an always-present warning array. Parsed application failures
+emit one document with `schema_version: 1`, `ok: false`, the command identifier,
+a typed stable `error.code`, and that code's fixed safe message while preserving
+the nonzero exit status. Framework usage errors that occur before command
+dispatch remain Click errors in this version. Successful mutations report the
+relevant resulting account, binding, catalog, bootstrap-revision, or restart-state
+fields needed for the next low-level call. Lifecycle services return these
+committed outcomes directly; a CLI adapter MUST NOT perform a fallible second
+status read that can turn a committed mutation into an `ok: false` result.
 
 Presentation DTOs explicitly select safe fields; they never recursively expose
 application dataclasses, local configuration/database paths, preview tokens,
@@ -106,9 +135,11 @@ entry names; exact entries remain a human-facing text diagnostic. Bootstrap
 failures are mapped to bounded path-free remediation before entering
 agent-readable JSON. Interactive legacy import apply rejects JSON mode because its reviewed
 preview and same-process confirmation cannot be represented as one result
-document. Secret-writing commands require `--password-stdin` when JSON mode is
-selected so a prompt cannot corrupt stdout; this supports user-owned automation
-and does not authorize an agent to receive credentials.
+document. JSON is only a stable presentation envelope and never grants command
+authority. Secret-writing commands accept secrets only from user-controlled
+masked input or stdin and require `--password-stdin` in JSON mode so a prompt
+cannot corrupt stdout; this supports user-owned automation and does not authorize
+an agent to receive credentials.
 
 Default text output remains the human interface. Account list JSON includes an
 explicit empty array, account show includes all mutable non-secret fields, and
@@ -130,14 +161,25 @@ least:
 Policy updates are revisioned. Recipient addresses are extracted, trimmed,
 lowercased, empty-filtered, and stably deduplicated; sender glob patterns are
 trimmed, lowercased, empty-filtered, and stably deduplicated. Managed updates and
-legacy composition use the same canonicalizers. Permissive changes do not bypass
-capability or input validation. Restrictive changes take effect on the next
-independent effect because authority is revalidated at operation boundaries.
+legacy composition use the same canonicalizers. The UI presents each allowed
+recipient and sender as an individual add/edit/remove item rather than a
+comma-separated field. Empty collections have deliberately different semantics:
+empty allowed recipients disables sending, while empty allowed senders does not
+restrict reading. Permissive changes do not bypass capability or input
+validation. Restrictive changes take effect on the next independent effect
+because authority is revalidated at operation boundaries.
 
 ## Legacy Mode
 
 Legacy mode preserves established TOML and environment composition. New managed
-catalog semantics MUST NOT reinterpret legacy precedence.
+catalog semantics MUST NOT reinterpret legacy precedence. An absent or empty
+role-specific environment password falls back to the required non-empty shared
+password. Managed bootstrap authority remains unavailable without the required
+POSIX owner/no-follow/lock primitives, but legacy-only store, reset, and
+credential migration retain their historical platform writer under process-local
+serialization. A fresh reset has no filesystem effect; a newly created POSIX
+legacy configuration parent is `0700`, and an existing parent is not silently
+changed.
 
 MCP exposes no legacy or managed account writer. The historical
 `add_email_account` tool is removed because its credential-bearing arguments
@@ -158,35 +200,56 @@ Import is preview-first and never implicit.
 ### Preview
 
 Preview reads a bounded, frozen legacy source snapshot, canonicalizes accounts,
-and returns a deterministic non-secret plan:
+and returns a deterministic non-secret plan. It uses redacted models, detects
+environment password presence by enumerating variable names without retrieving
+values, does not read keyring entries, and applies count, file,
+and controlled-string limits before fingerprinting or caching:
 
 - source fingerprint and expiry/creation time;
 - planned creates, safe matches, conflicts, skips, and warnings;
 - endpoint and policy summaries without secret values or reusable locators;
-- each required credential role and its source class (`plaintext` or `keyring`),
-  without probing source availability;
+- each required credential role and its source class (`plaintext`, `keyring`, or
+  `environment`), without probing source availability;
 - target catalog identifier and exact expected catalog, policy, and account
   revisions.
 
-The fingerprint covers all source fields that affect apply, including effective
-endpoint configuration and secret source identity without revealing its value.
+The source is the effective legacy runtime view: stored TOML accounts and
+provider warnings, exact-name environment account replacement/addition, and
+boolean/allowlist environment precedence. This composition is shared with
+legacy runtime semantics. The fingerprint covers all non-secret source fields
+that affect apply, including effective endpoint configuration and secret source
+identity without revealing its value. The separate `migrate-credentials`
+compatibility command remains stored-TOML-only. Preview capability state has a
+ten-minute lifetime, is expired on access, and is capped at 32 entries per
+process.
 
 ### Apply
 
 Apply requires explicit confirmation plus the exact preview token/fingerprint and
-expected target revisions. CLI apply prints the complete non-secret plan before
+expected target revisions. A plan with no account, credential, or policy changes
+requires no confirmation. CLI apply prints the complete non-secret plan before
 reading confirmation in the same process; UI apply binds confirmation to its
-one-time preview token. Apply re-reads both source and target before each required
-credential resolution and destination write. It advances only revisions caused by
-its own successful steps; unrelated fresh reads never replace reviewed expected
-revisions. Any material drift returns `preview_stale` before the next secret or
-catalog write.
+one-time preview token. The private preview is also bound to the selected catalog
+path and bootstrap revision, so another staging catalog cannot consume it even
+when numeric catalog revisions coincide. Apply re-reads both source and target
+before each required credential resolution and rechecks selection immediately
+before every account, credential, and policy write. It advances only revisions
+caused by its own successful steps; unrelated fresh reads never
+replace reviewed expected revisions. Any material drift returns `preview_stale`
+before the next secret or catalog write.
 
-For each bounded item it uses the credential candidate protocol and minimal
-revisioned catalog transactions. A failure returns typed per-item outcomes and
-repair/cleanup state; it does not invent all-or-nothing atomicity across SQLite,
-legacy source, and `SecretStore`. Safe resume requires the same source snapshot
-and current durable import state. Import never deletes or rewrites legacy source.
+Before secret access, planning rejects source names that collide after managed
+NFKC/casefold normalization, marks normalized destination collisions as
+conflicts, and checks aggregate account capacity. For each bounded item apply
+uses the spec 05 save protocol and minimal revisioned catalog transactions. On
+Linux, secret insertion and active binding/revision commit together in managed
+SQLite; on a keyring-backed platform, failure before binding activation leaves
+binding authority unchanged and no provisional binding is persisted. A
+cleanup-required result is surfaced as explicit attention and is never reported
+as clean completion. Only a truly `MISSING` binding may be filled by import; a
+cleanup-required binding is a conflict until bounded cleanup completes. Safe
+continuation requires the same source snapshot and current durable import state.
+Import never deletes or rewrites legacy TOML, environment, or keyring sources.
 
 ## Writer Fences
 
@@ -197,9 +260,11 @@ application services, not only CLI/UI command checks.
 
 ## Management Status and Doctor
 
-Bounded status reports mode, bootstrap revision, selected-catalog presence,
-catalog lifecycle/schema/revision, account counts by lifecycle, incomplete
-credential states, and restart requirement. Agent-readable CLI output omits the
+Bounded status distinguishes durable selected mode/catalog from frozen running
+mode/catalog, reports bootstrap existence and revision, summarizes effective
+legacy source presence without resolving secrets, and includes catalog
+lifecycle/schema/revision, account counts, incomplete credential states, and
+restart requirement. Agent-readable CLI output omits the
 local catalog path; richer user-operated interfaces may show a safely displayable
 path. A missing, corrupt, incompatible, or insecure selected catalog produces a bounded unavailable
 category while preserving the bootstrap state needed to select legacy; status
@@ -227,9 +292,14 @@ SQL, raw provider responses, or reusable locators.
    failures expose only the approved stable categories and remediation.
 7. The MCP catalog contains no account writer in either mode; legacy setup is
    available only through securely interactive CLI/UI with migration guidance.
-8. Import preview is deterministic and secret-free; apply rejects source or
-   target drift before creating a mixed endpoint/credential result.
-9. Partial import and external cleanup failures return recoverable durable state
-   without claiming cross-store atomicity.
-10. CLI and UI expose equivalent managed capabilities and application semantics;
-    neither edits legacy TOML as its normal management model.
+8. Import preview is deterministic and secret-free across TOML, keyring
+   references, environment accounts, and environment policy precedence; apply is
+   target-bound and rejects source or target drift before creating a mixed
+   endpoint/credential result.
+9. Partial import and external cleanup failures return recoverable durable state;
+   failed credential saves preserve prior binding authority, and only Linux
+   managed-SQLite insertion claims atomicity with activation.
+10. CLI and UI share management application semantics, but adapter scope is
+    intentional: provider connectivity tests remain CLI diagnostics and have no
+    Web UI route or control; neither interface edits legacy TOML as its normal
+    management model.

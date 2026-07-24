@@ -7,6 +7,8 @@ ambient backend (see conftest.py's guardrail comment).
 
 from __future__ import annotations
 
+from threading import Event, Thread
+
 import pytest
 import tomli_w
 from keyring.backend import KeyringBackend
@@ -433,6 +435,129 @@ def test_mixed_sentinel_and_cleartext_accounts_load(tmp_path, monkeypatch, fake_
 # 6. Migration both directions [fake; env override unset]. Uses an account with
 # both incoming+outgoing plus a provider, so the --to plaintext cleanup loop
 # exercises both the outgoing-role branch and the provider branch.
+def test_store_and_reset_serialize_complete_keyring_and_toml_lifecycle(
+    tmp_path,
+    monkeypatch,
+    fake_keyring,
+):
+    import mcp_email_server.bootstrap as bootstrap_module
+
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.setattr(bootstrap_module, "_SECURE_BOOTSTRAP_FILES_SUPPORTED", False)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "keyring")
+    cfg.write_text(tomli_w.dumps(_raw_email_toml("acct1", "old-plaintext")))
+    settings = Settings.load_for_migration()
+    settings.emails[0].incoming.password = SecretStr("new-secret")
+    settings.credential_storage = "keyring"
+    settings._credential_storage_override = "keyring"
+
+    secret_written = Event()
+    release_store = Event()
+    reset_entered = Event()
+    errors: list[BaseException] = []
+    original_set = keyring_store.set_secret
+    original_cleanup = config_module._cleanup_keyring_entries_for_reset
+
+    def blocking_set(account_name: str, role: str, value: str) -> None:
+        original_set(account_name, role, value)
+        secret_written.set()
+        assert release_store.wait(2)
+
+    def observed_cleanup(raw: dict[str, object]) -> None:
+        reset_entered.set()
+        original_cleanup(raw)
+
+    def run(operation) -> None:
+        try:
+            operation()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    monkeypatch.setattr(keyring_store, "set_secret", blocking_set)
+    monkeypatch.setattr(config_module, "_cleanup_keyring_entries_for_reset", observed_cleanup)
+    store_thread = Thread(target=run, args=(settings.store,))
+    store_thread.start()
+    assert secret_written.wait(2)
+
+    reset_thread = Thread(target=run, args=(delete_settings,))
+    reset_thread.start()
+    assert not reset_entered.wait(0.1)
+
+    release_store.set()
+    store_thread.join(2)
+    reset_thread.join(2)
+
+    assert not store_thread.is_alive()
+    assert not reset_thread.is_alive()
+    assert errors == []
+    assert not cfg.exists()
+    assert (SERVICE, "acct1:incoming") not in fake_keyring._store
+    assert not cfg.with_suffix(".toml.lock").exists()
+
+
+def test_plaintext_migration_holds_lock_through_keyring_purge(
+    tmp_path,
+    monkeypatch,
+    fake_keyring,
+):
+    import mcp_email_server.bootstrap as bootstrap_module
+
+    cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
+    monkeypatch.setattr(bootstrap_module, "_SECURE_BOOTSTRAP_FILES_SUPPORTED", False)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", "keyring")
+    cfg.write_text(tomli_w.dumps(_raw_email_toml("acct1", "old-plaintext")))
+    initial = Settings.load_for_migration()
+    initial.store()
+    writer = Settings.load_for_migration()
+    writer.emails[0].incoming.password = SecretStr("new-secret")
+    writer.credential_storage = "keyring"
+    writer._credential_storage_override = "keyring"
+
+    purge_entered = Event()
+    release_purge = Event()
+    writer_entered = Event()
+    errors: list[BaseException] = []
+    original_delete = keyring_store.delete_secret_checked
+    original_store_secrets = Settings._store_secrets_to_keyring
+
+    def blocking_delete(account_name: str, role: str):
+        purge_entered.set()
+        assert release_purge.wait(2)
+        return original_delete(account_name, role)
+
+    def observed_store_secrets(settings: Settings):
+        writer_entered.set()
+        return original_store_secrets(settings)
+
+    def run(operation) -> None:
+        try:
+            operation()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    monkeypatch.setattr(keyring_store, "delete_secret_checked", blocking_delete)
+    monkeypatch.setattr(Settings, "_store_secrets_to_keyring", observed_store_secrets)
+    migration_thread = Thread(target=run, args=(lambda: Settings.migrate_credentials("plaintext"),))
+    migration_thread.start()
+    assert purge_entered.wait(2)
+
+    writer_thread = Thread(target=run, args=(writer.store,))
+    writer_thread.start()
+    assert not writer_entered.wait(0.1)
+
+    release_purge.set()
+    migration_thread.join(2)
+    writer_thread.join(2)
+
+    assert not migration_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert errors == []
+    assert SENTINEL in cfg.read_text()
+    assert fake_keyring._store[(SERVICE, "acct1:incoming")] == "new-secret"
+    assert Settings.load_for_migration().emails[0].incoming.password.get_secret_value() == "new-secret"
+    assert not cfg.with_suffix(".toml.lock").exists()
+
+
 def test_migration_round_trip_both_directions(tmp_path, monkeypatch, fake_keyring):
     cfg = _bind(tmp_path, monkeypatch, also_config_path=True)
 

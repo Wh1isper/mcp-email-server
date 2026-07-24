@@ -63,14 +63,23 @@ uv run pytest tests/test_stdio_protocol.py --cov --cov-fail-under=0
 
 Changes to the management UI run three layers in the regular suite:
 
-1. React lint, TypeScript checking, unit tests, and deterministic Vite staging
+1. React lint, TypeScript checking, unit tests (including email/password-first
+   account setup, progressive disclosure of advanced and optional outgoing mail,
+   absence of a redundant connection preview, domain-based editable connection
+   suggestions, synchronized untouched security ports, individual
+   recipient/sender item editing with distinct empty semantics, hidden no-action
+   empty/settled status, task-language conflict presentation, explicit checkbox-bound
+   import confirmation, password-state lifetime, and cleanup recovery after the
+   last active account is removed), and deterministic Vite staging
    through `make frontend`; the checked-in `frontend/embedded-assets.json` binds
    the frontend sources and staging script to exact packaged asset hashes so
    `make frontend-check` also works without Node or `frontend/dist`;
 2. backend route tests for one-time bootstrap, replay/expiry/concurrency/rate
    limiting, exact Host/Origin, CSRF, Fetch Metadata, JSON/body bounds, strict
-   headers, logout/shutdown, explicit management DTOs, revision summaries, and
-   absence of mail/generic routes;
+   headers, logout/shutdown, CSRF-protected default initialization with bootstrap
+   revision checks, explicit management DTOs, revision summaries, bounded error
+   categories with fixed safe messages, access-log field allowlisting, and
+   absence of provider-connectivity, mail, and generic routes;
 3. distribution tests that inventory wheel and sdist assets, rebuild a wheel
    from the sdist with failing `node`/`npm` shims, compare static hashes, install
    the wheel into an isolated environment, and serve the authenticated UI on an
@@ -78,9 +87,16 @@ Changes to the management UI run three layers in the regular suite:
 
 Critical browser flows are exercised with locked Playwright/Chromium against a
 real CLI process launched under a PTY: fragment removal and bootstrap exchange,
-cookie-session reload, stale-link replay, staging initialization, account
-creation/lifecycle, credential rotation and conflict review, import preview/apply,
-keyboard operation, secret-state clearing, logout, and process shutdown. Run:
+cookie-session reload, stale-link replay, empty-install automatic staging
+preparation, explicit earlier-settings import preparation, the two-destination
+account-first navigation, email-and-password-first account creation with editable
+server suggestions, folded advanced/outgoing settings without a connection
+preview, pause/enable/edit/removal, per-account **Password** rotation, individual
+policy-item editing and both empty states, policy revision propagation, explicit
+structural activation followed by separate selection and restart guidance,
+hidden no-action empty/settled status, task-language conflict review, progressively disclosed
+effective-source import preview and checkbox-confirmed apply, secret-state
+clearing, logout, and process shutdown. Run:
 
 ```bash
 cd frontend && npx playwright install chromium
@@ -117,13 +133,18 @@ and cannot rebuild them.
 
 The management CLI contract suite invokes every finite `config` and `account`
 command plus reset and credential migration in JSON mode. It parses the complete
-stdout as one document and checks schema version, command identity, success,
-explicit data/warnings, secret absence, and nonzero single-document validation
-failures. A migration cleanup regression verifies that JSON exposes counts and
-warning codes without keyring entry locators. Connectivity tests use a real
-managed catalog for the missing-SMTP
-preflight and typed provider failures for authentication, timeout, and transport
-categories.
+stdout as one document and checks `schema_version: 1`, command identity, success,
+post-operation revisions/restart state, explicit data/warnings, secret absence,
+typed error codes with fixed safe messages, and nonzero single-document
+validation failures. Lifecycle mutation tests prove committed result DTOs are
+used without a fallible post-write status read. It also proves JSON does not grant command authority and
+secret writes consume only user-controlled stdin. A migration cleanup regression verifies that JSON exposes counts and
+warning codes without keyring entry locators. Connectivity tests use a real managed catalog for the missing-SMTP preflight
+and typed provider failures for authentication, timeout, and transport categories.
+They cover the low-level `account test` CLI while the Web route inventory proves
+that provider connectivity is not exposed there. Web logging regressions assert
+that only fixed operation id, bounded method, status, and duration are emitted,
+with no route/path/URL/query/body/identity/token/secret/exception text.
 
 The normal test suite also launches a raw newline-delimited JSON-RPC harness
 without the MCP client SDK. It checks installed application-version identity,
@@ -164,19 +185,19 @@ seeder and observer, so the system is not solely verifying itself.
 
 ## GreenMail coverage
 
-| Area          | Assertions                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------ |
-| MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                         |
-| Configuration | legacy TOML plus managed CLI staging, activation, explicit selection, and process restart              |
-| Managed mode  | a keyring-bound managed account reaches live IMAP; a missing selected database fails without fallback  |
-| SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                      |
-| IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                         |
-| Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly |
-| Sent copy     | Alice receives the application-created copy in `Sent`                                                  |
-| Flags         | `mark_emails_as_read` produces `\\Seen`; saved drafts have `\\Draft` and `\\Seen`                      |
-| Mailboxes     | the observer provisions `Sent`, `Drafts`, and `Archive`; MCP discovers and uses them                   |
-| Index         | initial projection, qualified SQLite reuse, filter fallback, bounds, and restart reuse are verified    |
-| Mutations     | explicit move, automatic archive selection, draft save, and delete are observed in IMAP                |
+| Area          | Assertions                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------------- |
+| MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                              |
+| Configuration | legacy TOML plus managed CLI staging, activation, explicit selection, and process restart                   |
+| Managed mode  | a Linux SQLite-secret managed account reaches live IMAP; a missing selected database fails without fallback |
+| SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                           |
+| IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                              |
+| Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly      |
+| Sent copy     | Alice receives the application-created copy in `Sent`                                                       |
+| Flags         | `mark_emails_as_read` produces `\\Seen`; saved drafts have `\\Draft` and `\\Seen`                           |
+| Mailboxes     | the observer provisions `Sent`, `Drafts`, and `Archive`; MCP discovers and uses them                        |
+| Index         | initial projection, qualified SQLite reuse, filter fallback, bounds, and restart reuse are verified         |
+| Mutations     | explicit move, automatic archive selection, draft save, and delete are observed in IMAP                     |
 
 `list_emails_metadata` currently fetches headers only and therefore returns an
 empty attachment list. Attachment names are verified through
@@ -201,11 +222,12 @@ The Compose definition:
 - never forwards messages to external mail servers.
 
 The application configuration lives in a pytest-managed temporary directory
-and contains only the fixed synthetic credentials above. Managed subprocess
-coverage injects a test-only, process-persistent keyring backend whose file is
-also confined to that directory; production code has no plaintext managed
-fallback. Do not replace the synthetic accounts with real credentials or
-personal message data.
+and contains only the fixed synthetic credentials above. Managed Linux
+credentials remain in the temporary owner-only catalog SQLite database. The
+suite also injects a test-only, process-persistent keyring backend for legacy
+keyring and import scenarios; its file is confined to the same directory.
+Production managed mode has no TOML plaintext fallback. Do not replace the
+synthetic accounts with real credentials or personal message data.
 
 ## Why GreenMail
 

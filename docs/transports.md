@@ -18,7 +18,7 @@ mcp-email-server ui [--no-open] [--port PORT]
 mcp-email-server reset --confirm RESET [--json]
 mcp-email-server migrate-credentials [--to keyring|plaintext] [--json]
 mcp-email-server config {init|status|doctor|index-health|policy|update-policy|cleanup-credentials|import-legacy|activate|select}
-mcp-email-server account {add|set-secret|repair-secret|list|show|update|disable|enable|remove|remove-secret|test}
+mcp-email-server account {add|set-secret|list|show|update|disable|enable|remove|remove-secret|test}
 ```
 
 Run `mcp-email-server COMMAND --help` or
@@ -29,7 +29,14 @@ management command has a leaf `--json` option, for example
 `mcp-email-server config status --json`; see
 [Machine-readable CLI output](configuration.md#machine-readable-cli-output).
 `--help`, `--version`, transports, and the foreground UI remain text/protocol
-interfaces rather than CLI result documents.
+interfaces rather than CLI result documents. The managed CLI is the low-level
+agent management API and retains `STAGING`, `ACTIVE`, catalog, revision, and
+restart-state terms. Its JSON documents use `schema_version: 1`, typed error
+codes with fixed safe messages, and post-operation revision/restart data; JSON
+never grants authority to run a command, and secret-writing commands accept
+secrets only from user-controlled stdin. `account test` remains the agent-facing
+provider-connectivity diagnostic. The Web UI intentionally has no corresponding
+connectivity control or route.
 
 ## stdio
 
@@ -55,8 +62,11 @@ redacted diagnostics, remains usable after a rejected frame, propagates MCP
 cancellation, and cancels in-flight work before cleanup on EOF.
 
 The process resolves the bootstrap mode at startup. An explicitly selected
-managed mode loads only an `ACTIVE` managed catalog and its keyring bindings. A
-missing, staging, corrupt, incompatible, or insecure selected catalog fails
+managed mode loads only an `ACTIVE` managed catalog and its active secret
+bindings. Linux resolves those bindings from the owner-only managed SQLite
+secret store; non-Linux platforms that satisfy the managed catalog's required
+POSIX filesystem guarantees use the system keyring. A missing,
+staging, corrupt, incompatible, or insecure selected catalog fails
 closed and never falls back to preserved legacy TOML accounts. Restart stdio
 after every `config select` command.
 
@@ -192,7 +202,10 @@ and debug settings. `--no-open` suppresses browser launch and prints the
 one-time fragment URL only to an attached stdout/stderr TTY. The same TTY-only
 fallback is used when automatic browser launch reports failure. Without an
 attached TTY, startup fails before serving instead of sending the token through
-a pipe or log. Keep the process in the foreground and use SIGINT or SIGTERM for
+a pipe or log. After authentication, empty-install staging preparation is a
+CSRF-protected browser POST to a backend-selected local path, not a startup or
+GET side effect; detected legacy content requires an explicit preparation
+action. Keep the process in the foreground and use SIGINT or SIGTERM for
 graceful session invalidation and shutdown.
 
 Remove persistent legacy configuration with:

@@ -1,12 +1,13 @@
 export type ManagementMode = 'legacy' | 'managed'
 export type Lifecycle = 'STAGING' | 'ACTIVE'
+
+export interface CatalogTarget {
+  expected_bootstrap_revision: number
+  expected_catalog: string
+}
+
 export type BindingRole = 'incoming' | 'outgoing'
-export type BindingState =
-  | 'MISSING'
-  | 'PENDING'
-  | 'ACTIVE'
-  | 'ACTIVE_CLEANUP_REQUIRED'
-  | 'PENDING_REPAIR_REQUIRED'
+export type BindingState = 'MISSING' | 'ACTIVE' | 'SUPERSEDED' | 'CLEANUP_REQUIRED'
 
 export interface DoctorReport {
   lifecycle: Lifecycle
@@ -14,10 +15,14 @@ export interface DoctorReport {
   catalog_revision: number
   account_count: number
   enabled_account_count: number
-  pending_bindings: number
   cleanup_required_bindings: number
-  repair_required_bindings: number
   problems: string[]
+}
+
+export interface LegacySourceSummary {
+  account_count: number
+  unsupported_provider_count: number
+  policy_customized: boolean
 }
 
 export interface ManagementStatus {
@@ -27,6 +32,12 @@ export interface ManagementStatus {
   restart_required: boolean
   report: DoctorReport | null
   catalog_problem: string | null
+  bootstrap_exists: boolean
+  running_mode: ManagementMode
+  running_catalog: string | null
+  default_catalog: string | null
+  legacy_source: LegacySourceSummary | null
+  legacy_source_problem: string | null
 }
 
 export interface Endpoint {
@@ -83,9 +94,9 @@ export interface LegacyAccountSource {
   full_name: string
   email_address: string
   incoming: Endpoint
-  incoming_secret_source: 'plaintext' | 'keyring'
+  incoming_secret_source: 'plaintext' | 'keyring' | 'environment'
   outgoing: Endpoint | null
-  outgoing_secret_source: 'plaintext' | 'keyring' | null
+  outgoing_secret_source: 'plaintext' | 'keyring' | 'environment' | null
   save_to_sent: boolean
   sent_folder_name: string | null
 }
@@ -120,6 +131,7 @@ export interface LegacyImportPlan {
 export interface LegacyImportReport {
   created: string[]
   resumed: string[]
+  attention_required: string[]
 }
 
 export interface AccountRemovalResult {
@@ -131,9 +143,14 @@ export interface AccountRemovalResult {
 }
 
 export interface CredentialResult {
-  state: 'active' | 'active_cleanup_required' | 'pending_repair_required'
+  state: 'active' | 'active_cleanup_required'
   revision: number
   cleanup_required: number
+}
+
+export interface AccountCreationResult {
+  incoming: CredentialResult
+  outgoing: CredentialResult | null
 }
 
 export interface CredentialRemovalResult {
@@ -142,22 +159,10 @@ export interface CredentialRemovalResult {
   cleanup_required: number
 }
 
-export interface CredentialRepairResult {
-  state: 'active' | 'active_cleanup_required' | 'rolled_back' | 'rolled_back_cleanup_required'
-  revision: number
-  cleanup_required: number
-}
-
 export interface CleanupReport {
   examined: number
   cleaned: number
   remaining: number
-}
-
-export interface ConnectivityResult {
-  role: BindingRole
-  status: 'ok' | 'failed'
-  message: string
 }
 
 export interface IndexHealth {

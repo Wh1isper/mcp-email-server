@@ -46,8 +46,9 @@ The integration may help an agent:
 - explain provider-specific app-password prerequisites without requesting the
   value;
 - verify non-secret post-setup state after the user completes the handoff;
-- run bounded doctor/status commands in their leaf `--json` mode and branch on
-  stable fields/codes rather than parsing prose;
+- run bounded doctor/status and explicit `account test` connectivity diagnostics
+  in their leaf `--json` mode and branch on stable fields/codes rather than
+  parsing prose;
 - provide the correct MCP client configuration after setup without embedding
   credentials.
 
@@ -61,16 +62,25 @@ here and ask me to verify status.
 ```
 
 The exact command is version-aware and comes from checked project documentation,
-not an invented shell sequence. For the matching V2 release, bounded agent-run
-checks use `mcp-email-server config status --json` and `mcp-email-server config
-doctor --json`. The agent validates `schema_version`, `ok`, and `command`, treats
-unknown schemas/codes as unsupported, and summarizes only approved lifecycle,
-count, restart, binding-health, problem, and handoff fields. It never infers
-permission to run another command merely because that command also supports JSON.
+not an invented shell sequence. For the matching V2 release, the CLI is the
+low-level agent management API and deliberately retains `STAGING`, `ACTIVE`,
+revision, catalog, and restart-state vocabulary. Bounded agent-run checks use
+`mcp-email-server config status --json`, `mcp-email-server config doctor --json`,
+and, when the user asks for a specific post-setup provider diagnostic,
+`mcp-email-server account test ACCOUNT ROLE --json`. The connectivity service is
+not exposed by the Web UI.
 
-JSON mode is a presentation contract, not a broader authority grant. Account,
-policy, import, reset, migration, and credential commands remain user-operated;
-secret-writing JSON commands requiring stdin exist for user-owned automation and
+The agent requires the stable `schema_version: 1` envelope, validates `ok` and
+`command`, treats unknown schemas/codes as unsupported, and summarizes only
+approved lifecycle, count, post-operation revision/restart, binding-health,
+connectivity, problem, and handoff fields. Dispatched errors have a typed stable
+`error.code` and its fixed safe message. The agent never infers permission to run
+another command merely because that command also supports JSON.
+
+JSON mode is a presentation contract, not a broader authority grant. Account
+mutation, policy, import, reset, migration, and credential commands remain
+user-operated. Secret-writing commands may receive secrets only through
+user-controlled stdin; their JSON support exists for user-owned automation and
 MUST NOT be used to route secrets through an agent.
 
 ## Forbidden Agent Behavior
@@ -171,8 +181,9 @@ only non-secret lifecycle and connectivity categories.
 ## Relationship to Other Interfaces
 
 - MCP remains the bounded mail-workflow surface defined in spec 10.
-- CLI and local Web UI remain the complete management surfaces defined in specs
-  04, 05, and 09.
+- CLI is the complete low-level management and connectivity-diagnostic surface;
+  the local Web UI intentionally omits provider connectivity, as defined in
+  specs 04, 05, and 09.
 - The agent integration explains and invokes safe entry points but owns no
   business workflow or persistence.
 - The integration is optional. The application remains fully usable without a
@@ -187,9 +198,10 @@ only non-secret lifecycle and connectivity categories.
 3. Scenario tests for “add my account,” “rotate my password,” and “paste this app
    password” always hand off to user-operated CLI/UI and never request or retain
    the value in chat.
-4. The integration can perform only documented bounded non-secret status/version
-   checks without direct TOML, SQLite, keyring, or `SecretStore` access; status
-   and doctor use the tested JSON envelope and reject unknown schema versions.
+4. The integration can perform only documented bounded non-secret
+   status/version/connectivity diagnostics without direct TOML, SQLite, keyring,
+   or `SecretStore` access; status, doctor, and account test require the tested
+   schema-version-1 envelope and reject unknown schema versions or error codes.
 5. Static scans and behavioral tests find no credential placeholders, secret
    forwarding, bootstrap-token relay, opaque remote scripts, telemetry, or
    remote-management behavior.

@@ -17,8 +17,10 @@ newest published PyPI package without a permanent installation.
 ## Version availability
 
 This page documents the Local Email App V2 contract implemented by this source
-tree: the embedded React management UI, SQLite/keyring managed catalogs, the
-`config` and `account` CLI commands, and a mail-only MCP catalog.
+tree: the embedded React management UI, SQLite-backed managed catalogs, the
+`config` and `account` CLI commands, and a mail-only MCP catalog. Managed secrets
+use the same owner-only SQLite database by default on Linux and the system
+keyring by default on supported POSIX non-Linux platforms.
 
 PyPI 0.16.0 and earlier do not contain that contract. Those releases use the
 legacy Gradio/TOML editor and MCP still exposes `add_email_account`. For a newer
@@ -58,9 +60,11 @@ Existing TOML accounts remain available in `legacy` mode. To adopt managed mode,
 initialize a staging catalog, preview and explicitly apply `config
 import-legacy`, test the accounts, activate the catalog, select managed mode,
 and restart the MCP client. Import does not select managed mode or modify the
-source TOML and its legacy keyring entries. Environment-composited accounts and
-overrides are not imported; recreate them through the user-operated CLI or UI
-without passing credentials through MCP or chat.
+source TOML and its legacy keyring entries. The preview uses the effective
+legacy view, so a complete environment account and environment policy overrides
+are included with the same replacement/precedence rules used by legacy runtime.
+Credential values remain absent from preview and are read only during confirmed
+apply. Do not pass them through MCP or chat.
 
 ## Configure an account with the UI
 
@@ -74,18 +78,41 @@ suppress browser launch or `--port PORT` to request a fixed loopback port.
 
 On first use:
 
-1. initialize a staging catalog at a private local path such as
-   `~/.config/mcp-email-server/catalog.sqlite3`;
-2. add an account with its IMAP endpoint and optional SMTP endpoint;
-3. enter each credential in the password field;
-4. test connectivity, review policy and health, then validate and activate;
-5. explicitly select managed mode and restart every MCP client process.
+1. after the one-time browser authentication, let the UI prepare
+   `managed.sqlite3` beside the active configuration file; this authenticated
+   POST happens automatically only for a truly empty installation, while a
+   detected legacy source requires an explicit **Import existing settings**
+   preparation and review;
+2. stay in **Email accounts** and choose **Add your first account**. Enter the
+   email address and password. The UI derives a sender name and account nickname,
+   fills known Google, Microsoft, iCloud, Yahoo, Fastmail, and Zoho connection
+   settings, and otherwise suggests `imap.<email-domain>`. Review or override the
+   editable server, login, port, security, and certificate details when needed.
+   Outgoing mail and Sent-folder options remain optional;
+3. use **Password** on the saved account to rotate or remove that account's saved
+   password. A failed save leaves the current password authority unchanged.
+   Provider connectivity testing is intentionally not
+   available in the Web UI;
+4. under **Settings & help**, add each allowed recipient needed for sending and
+   each optional allowed-sender pattern as an individual item. No recipients
+   disables sending; no senders leaves reading unrestricted;
+5. use the contextual **Finish setup** action, then **Use these accounts**.
+   Finishing setup validates structural completeness; it does not contact or
+   certify IMAP/SMTP providers;
+6. restart every MCP client process after the UI reports that restart is
+   required.
 
-Managed credentials require a usable operating-system keyring and never fall
-back to plaintext. The UI also supports account lifecycle, credential rotation
-and repair, policy, legacy-import preview/apply, doctor, and index health. It is
-not a mail client and never exposes message content. The same recovery and
-headless operations remain available through the managed CLI below.
+The UI has only two primary destinations: **Email accounts** for ordinary setup
+and **Settings & help** for importing earlier settings, sending/attachment safety,
+and bounded troubleshooting checks. Ordinary labels and errors use task language;
+storage and concurrency terms are kept out of the primary workflow. Optional
+settings are loaded only when their disclosure
+is opened. On Linux, managed credentials default to the owner-only
+`managed_secret` table in the managed SQLite database. On macOS and other
+supported POSIX non-Linux platforms, they default to the operating-system keyring.
+Managed mode never falls back to TOML plaintext. The interface is not a mail
+client and never exposes message content. The same cleanup and headless
+operations remain available through the managed CLI below.
 
 ## Configure an account with the managed CLI
 
@@ -104,10 +131,14 @@ mcp-email-server config activate
 mcp-email-server config select managed
 ```
 
-The account command prompts for the password without placing it in argv.
-Managed mode requires a working operating-system keyring plus the POSIX
-owner/no-follow/locking primitives described in [Security](security.md), and does
-not fall back to plaintext or weaker filesystem checks. Restart the MCP client
+The account command reads the password through user-controlled terminal input
+without placing it in argv. `account test` is the retained low-level,
+agent-readable connectivity diagnostic; running it does not authorize any other
+management operation. Managed mode requires the POSIX owner/no-follow/locking primitives described in
+[Security](security.md). Linux uses the owner-only managed SQLite secret store by
+default; supported POSIX non-Linux platforms additionally require a working system
+keyring. Managed mode does not fall back to plaintext or weaker filesystem
+checks. Restart the MCP client
 after selection. See
 [Managed CLI setup](configuration.md#managed-cli-setup) for SMTP, stdin,
 diagnostics, disablement, and switching back to legacy mode.
@@ -145,8 +176,11 @@ After restarting the client:
    `list_emails_metadata`.
 3. If SMTP is configured through the managed workflow, make a non-destructive
    connectivity check with `mcp-email-server account test ACCOUNT outgoing`
-   before asking the client to send. `send_email` is always present in the
-   static MCP tool catalog.
+   before asking the client to send. This CLI diagnostic remains available even
+   though the Web UI has no Test connection action or route. Add the intended
+   address to the allowed-recipient policy first; an empty recipient collection
+   disables sending. `send_email` is always present in the static MCP tool
+   catalog.
 
 If the account is listed but a mail operation fails, check the IMAP or SMTP
 host, port, TLS mode, username, and password. See

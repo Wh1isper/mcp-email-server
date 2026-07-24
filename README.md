@@ -29,10 +29,15 @@ uv run mcp-email-server ui
 For a published release whose notes state that it includes Local Email App V2,
 `uvx mcp-email-server@latest ui` is the equivalent temporary invocation.
 
-Keep the foreground command running. In the loopback browser session, initialize
-a staging catalog, add your IMAP account and credential, test it, then activate
-and explicitly select managed mode. SMTP is optional if the account does not
-need to send email. Restart the MCP client after selecting managed mode.
+Keep the foreground command running. On a truly empty installation, the
+authenticated browser session prepares a private staging catalog at the safe
+local default; existing TOML or environment configuration instead offers an
+explicit import review. The account-first UI has only **Email accounts** and
+**Settings & help** as primary destinations. Start with the email address and
+password; the UI fills common connection settings from the email domain and
+keeps them editable, while outgoing mail remains optional. Use
+**Password & test** on the saved account, finish setup, explicitly choose the
+new accounts, and restart the MCP client.
 
 ### 2. Configure the MCP client
 

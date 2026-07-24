@@ -1,9 +1,11 @@
 import os
 import stat
 import sys
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -364,6 +366,101 @@ def test_store_rejects_invalid_toml_file_setting(monkeypatch):
         settings.store()
 
 
+def test_legacy_reset_preserves_recorded_managed_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    config_path = parent / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    config_path.write_text(
+        'bootstrap_version = 1\nbootstrap_revision = 3\nmode = "legacy"\n'
+        'managed_db_location = "/private/managed.sqlite3"\n'
+        'credential_storage = "plaintext"\n'
+        '[[emails]]\naccount_name = "alice"\nfull_name = "Alice"\n'
+        'email_address = "alice@example.test"\n'
+        '[emails.incoming]\nuser_name = "alice@example.test"\npassword = "secret"\n'
+        'host = "imap.example.test"\nport = 993\nuse_ssl = true\n'
+    )
+    config_path.chmod(0o600)
+
+    config_module.delete_settings()
+
+    assert tomllib.loads(config_path.read_text()) == {
+        "bootstrap_version": 1,
+        "bootstrap_revision": 3,
+        "mode": "legacy",
+        "managed_selection": True,
+        "managed_db_location": "/private/managed.sqlite3",
+    }
+
+
+def test_revisioned_bootstrap_fields_round_trip_through_legacy_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    config_path = parent / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    config_path.write_text(
+        'bootstrap_version = 1\nbootstrap_revision = 3\nmode = "legacy"\n'
+        'managed_db_location = "/private/managed.sqlite3"\n'
+        'db_location = "/private/legacy-index.sqlite3"\n'
+        'credential_storage = "plaintext"\n'
+    )
+    config_path.chmod(0o600)
+    config_module._settings = None
+
+    settings = config_module.get_settings(reload=True)
+    assert settings.bootstrap_revision == 3
+    assert settings.managed_selection is None
+    assert settings.managed_db_location == "/private/managed.sqlite3"
+    assert settings.db_location == "/private/legacy-index.sqlite3"
+
+    store_settings(settings)
+    reloaded = config_module.get_settings(reload=True)
+    assert reloaded.bootstrap_revision == 3
+    assert reloaded.managed_selection is True
+    assert reloaded.managed_db_location == "/private/managed.sqlite3"
+    assert reloaded.db_location == "/private/legacy-index.sqlite3"
+
+
+def test_settings_store_preserves_explicit_revisioned_no_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_email_server.bootstrap import read_bootstrap
+
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    config_path = parent / "config.toml"
+    legacy_index = parent / "legacy-index.sqlite3"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    config_path.write_text(
+        f'bootstrap_version = 1\nbootstrap_revision = 3\nmode = "legacy"\n'
+        f'managed_selection = false\ndb_location = "{legacy_index.as_posix()}"\n'
+        'credential_storage = "plaintext"\n'
+    )
+    config_path.chmod(0o600)
+    config_module._settings = None
+
+    settings = config_module.get_settings(reload=True)
+    settings.store()
+
+    assert read_bootstrap(config_path).db_path is None
+    stored = tomllib.loads(config_path.read_text())
+    assert stored["managed_selection"] is False
+    assert stored["db_location"] == legacy_index.as_posix()
+
+
 def test_store_settings_defaults_to_cached_instance(tmp_path, monkeypatch):
     """store_settings() with no argument must fetch and store the cached Settings."""
     import mcp_email_server.config as config_module
@@ -703,17 +800,21 @@ def test_store_failed_write_leaves_original_intact(tmp_path, monkeypatch):
     # Original file untouched; no stray temp files left in the directory.
     assert cfg.read_text() == "report_blocked_mutations = false\n"
     assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
-    leftover = [p.name for p in tmp_path.iterdir() if p.name != "config.toml"]
+    lock_path = Path(f"{cfg}.lock")
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+    leftover = [p.name for p in tmp_path.iterdir() if p.name not in {"config.toml", "config.toml.lock"}]
     assert leftover == [], f"temp files left behind: {leftover}"
 
 
 def test_store_non_posix_falls_back_to_plain_write(tmp_path, monkeypatch):
     """On non-POSIX platforms store() writes via write_text (no fd-level permissions)."""
+    import mcp_email_server.bootstrap as bootstrap_module
     import mcp_email_server.config as config_module
     from mcp_email_server.config import Settings
 
     cfg = tmp_path / "config.toml"
     monkeypatch.setitem(Settings.model_config, "toml_file", cfg)
+    monkeypatch.setattr(bootstrap_module, "_SECURE_BOOTSTRAP_FILES_SUPPORTED", False)
     config_module._settings = None
     try:
         settings = config_module.get_settings(reload=True)
@@ -722,6 +823,101 @@ def test_store_non_posix_falls_back_to_plain_write(tmp_path, monkeypatch):
         assert cfg.read_text() == settings._to_toml()
     finally:
         config_module._settings = None
+
+
+def test_legacy_store_and_reset_remain_available_without_secure_bootstrap_primitives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mcp_email_server.bootstrap as bootstrap_module
+
+    config_path = tmp_path / "legacy" / "config.toml"
+    monkeypatch.setattr(bootstrap_module, "_SECURE_BOOTSTRAP_FILES_SUPPORTED", False)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+
+    settings = Settings(report_blocked_mutations=True)
+    settings.store()
+
+    assert config_path.exists()
+    assert "report_blocked_mutations" in tomllib.loads(config_path.read_text())
+    assert stat.S_IMODE(config_path.parent.stat().st_mode) == 0o700
+    assert not Path(f"{config_path}.lock").exists()
+
+    config_module.delete_settings()
+
+    assert not config_path.exists()
+    assert not Path(f"{config_path}.lock").exists()
+
+
+@pytest.mark.parametrize("target", ["keyring", "plaintext"])
+def test_legacy_credential_migration_remains_available_without_secure_bootstrap_primitives(
+    target: Literal["keyring", "plaintext"],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import mcp_email_server.bootstrap as bootstrap_module
+
+    config_path = tmp_path / "legacy" / "config.toml"
+    monkeypatch.setattr(bootstrap_module, "_SECURE_BOOTSTRAP_FILES_SUPPORTED", False)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+
+    Settings.migrate_credentials(target)
+
+    assert tomllib.loads(config_path.read_text())["credential_storage"] == target
+    assert not Path(f"{config_path}.lock").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+def test_legacy_store_does_not_chmod_existing_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "existing"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    config_path = parent / "config.toml"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+
+    Settings().store()
+
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+def test_missing_reset_leaves_parent_ready_for_secure_managed_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_email_server.bootstrap import write_bootstrap
+    from mcp_email_server.managed import ManagedCatalog
+
+    parent = tmp_path / "fresh"
+    config_path = parent / "config.toml"
+    catalog_path = parent / "managed.sqlite3"
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+
+    config_module.delete_settings()
+
+    assert not config_path.exists()
+    assert not parent.exists()
+    assert not Path(f"{config_path}.lock").exists()
+
+    catalog = ManagedCatalog.initialize(catalog_path)
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    bootstrap = write_bootstrap(
+        mode="legacy",
+        db_path=catalog_path,
+        path=config_path,
+        expected_revision=0,
+        expected_exists=False,
+    )
+
+    assert catalog.lifecycle() == "STAGING"
+    assert bootstrap.db_path == catalog_path
 
 
 def test_report_blocked_mutations_env_overrides_toml(tmp_path, monkeypatch):

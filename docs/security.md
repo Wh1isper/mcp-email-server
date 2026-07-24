@@ -15,8 +15,10 @@ an MCP client or network.
 exactly to IPv4 `127.0.0.1`; port `0` is the default and selects an ephemeral
 port. The command exposes no host, wildcard, share, daemon, debug, reload, CORS,
 or remote mode. Its process-unique route serves only packaged same-origin React
-assets and explicit management use cases. There is no mail, arbitrary file,
-generic RPC, OpenAPI, metrics, or unauthenticated health route. Before binding,
+assets and explicit management use cases. There is no provider-connectivity
+control or route, mail, arbitrary file, generic RPC, OpenAPI, metrics, or
+unauthenticated health route. Provider diagnostics remain available only through
+the low-level `account test` CLI. Before binding,
 the process freezes its bootstrap mode and selected catalog. It does not open
 the catalog during that freeze, so an unavailable selected catalog can still be
 recovered by selecting legacy; status continues comparing against the frozen
@@ -40,14 +42,35 @@ accepted same-origin Fetch Metadata when present, JSON content type, session
 cookie, and separate CSRF header. Request and response bodies are bounded.
 Logout, normal shutdown, startup failure, SIGINT/SIGTERM, or process restart
 invalidates all tokens and sessions. Authentication failures do not redirect.
+GET routes never create preview capabilities or initialize storage. Import
+preview and default initialization are CSRF-protected POSTs. Only after
+authentication and a status read may the frontend call default initialization,
+and only a backend-proven empty installation triggers that call automatically.
+The backend chooses the `managed.sqlite3` sibling path, rechecks the effective
+legacy source, and atomically compares the initial zero revision plus the absent
+bootstrap-file proof against concurrent legacy settings writes. Detected legacy content requires an explicit **Import existing settings**
+preparation click and preview review. Neither path imports secrets, contacts
+providers, activates, or selects managed mode.
 
 Every response uses `Cache-Control: no-store`, a same-origin CSP with framing,
 objects, forms, base changes, workers, and remote runtime assets disabled,
 `nosniff`, `no-referrer`, frame denial, and a restrictive permissions policy.
 The application ships no CDN code, remote font, analytics, telemetry, service
 worker, or runtime asset download. Secret values occur only in protected
-credential mutation bodies, are cleared by the frontend after every outcome,
-and never enter URLs, browser storage, responses, logs, or conflict summaries.
+credential mutation bodies. The account editor may derive non-secret names and
+server suggestions from the typed email domain, but performs no remote discovery.
+Password fields live only in the active account editor or that account's
+**Password** component; the frontend clears them after every outcome, when
+an optional SMTP section is disabled, when the selected account or credential
+role changes, and when the component unmounts. Secrets
+never enter URLs, browser storage, responses, logs, or conflict summaries.
+
+Web/application errors expose only bounded categories and fixed safe messages,
+never exception text. Management access logs contain only a fixed operation id,
+bounded allowlisted method, status, and duration. They never contain route/path
+parameters or templates, raw paths, URLs or queries, request/response bodies,
+account/email/filesystem values, session/CSRF/bootstrap tokens, secrets, or
+exception text.
 
 The route and cookie names are random defense in depth, not substitutes for the
 session checks. This is explicitly a local single-user trust boundary. A
@@ -58,77 +81,130 @@ multi-user or hostile-same-UID sandbox.
 
 ## Managed credential storage
 
-Managed mode requires an operating-system keyring backend and never falls back
-to TOML plaintext. SQLite stores only random opaque binding references and
-bounded lifecycle states. A create or rotation writes a new immutable keyring
-candidate, commits it as active only if the account revision still matches, and
-records the old binding as cleanup-required in that same transaction. It then
-best-effort removes the old candidate and marks cleanup complete. A crash before
-deletion therefore remains visible to `config doctor`. The active credential is
-never overwritten in place.
+Managed mode never falls back to TOML plaintext. Its default managed secret
+backend is platform-specific:
+
+- Linux stores values in the dedicated `managed_secret` table inside the same
+  owner-only managed SQLite database as the catalog;
+- macOS and any other non-Linux platform that satisfies the managed catalog's
+  required POSIX owner/no-follow/locking guarantees use the operating-system
+  keyring. Platforms without those filesystem guarantees are not currently
+  supported for managed catalogs.
+
+Only the `SecretStore` adapter reads or writes these values. Catalog queries,
+projections, CLI/UI responses, diagnostics, and logs never select or expose the
+`managed_secret.secret_value` column or a keyring value. On Linux, however, the
+managed catalog is a secret-bearing database: file copies, snapshots, and backups
+include plaintext `managed_secret.secret_value` values. Keep every copy under
+protection equivalent to the owner-only original; do not upload, share, or treat
+it as a non-secret account database.
+
+A create or rotation stores a new immutable value and commits it as active only
+if the reviewed account revision still matches. On Linux, inserting
+`managed_secret`, activating its binding, incrementing the binding/account
+revision, and marking any old active value `CLEANUP_REQUIRED` are one SQLite
+transaction. On a keyring-backed platform, the new value is written before one
+compare-and-swap activation transaction. A conflict or failure before activation
+returns an error, best-effort deletes any unreferenced keyring value, persists no
+provisional binding, and leaves the current binding authority unchanged.
+
+The active credential is never overwritten in place. Rotation first makes the
+new value authoritative and marks the old active value `CLEANUP_REQUIRED`; it
+then deletes the old value and clears cleanup state after confirmed success.
+Only an external or follow-up deletion failure retains `CLEANUP_REQUIRED`, so a
+crash before deletion remains visible to `config doctor` and `config
+cleanup-credentials`. Failed saves expose no follow-up password action beyond
+retrying a new save after correcting the reported problem.
 
 Credential removal is available only for a disabled account. It atomically
-detaches the binding and increments the account revision before attempting the
-external keyring deletion, so an enabled provider operation cannot continue to
-use a credential that is being removed. A successful replacement atomically
-claims any older pending candidates before deleting them, so concurrent
-activation cannot turn a cleanup target into an active missing secret. Failed
-deletion remains
-`CLEANUP_REQUIRED`. `config cleanup-credentials` processes at most 100 rows per
-invocation and first atomically claims stale `PENDING` candidates older than five
-minutes; it never deletes an active binding. This claim prevents concurrent
-activation from racing a cleanup delete.
+detaches the binding and increments the account revision before attempting value
+deletion, so an enabled provider operation cannot continue to use a credential
+that is being removed. Failed deletion remains `CLEANUP_REQUIRED`. `config
+cleanup-credentials` processes at most 100 cleanup rows per invocation,
+revalidates that each value is superseded, and never deletes an active binding.
 
-Enter managed credentials through the masked prompt or `--password-stdin`.
-Never place them in argv. `config doctor`, account summaries, errors, logs, and
-MCP results do not expose secret values or candidate locators. The CLI `--json`
-mode uses reviewed presentation fields rather than recursively serializing
-application objects; it likewise omits secret values, candidate locators,
-database paths, and import preview tokens. Secret-writing JSON commands require
-`--password-stdin` only to preserve a single result document and remain
-user-operated; JSON does not make an agent a safe credential channel. A missing
-or unreadable active secret fails closed rather than selecting a legacy account
-or plaintext fallback.
+Enter managed credentials only through user-controlled terminal stdin (the
+masked prompt or explicit `--password-stdin`). Never place them in argv. `config
+doctor`, account summaries, errors, logs, and MCP results do not expose secret
+values or internal locators. The CLI `--json` mode uses reviewed presentation
+fields rather than recursively serializing application objects; it likewise
+omits secret values, locators, database paths, and import preview tokens.
+Secret-writing JSON commands require `--password-stdin` only to preserve a
+single result document and remain user-operated; JSON does not make an agent a
+safe credential channel. A missing or unreadable active secret fails closed
+rather than selecting a legacy account or plaintext fallback.
 
 Managed bootstrap/catalog support requires POSIX ownership, no-follow,
 directory-descriptor, and advisory-lock primitives. Bootstrap files, their
 immediate parent directory, the SQLite database, sidecars, and lock must be
 owned by the current user and must not grant group or world access. Symlinked,
 hard-linked where forbidden, or non-regular paths are rejected. New directories
-and files are created with `0700` and `0600` permissions respectively. Selection
-changes compare the expected monotonic bootstrap revision while holding the
-private sibling lock, preventing concurrent last-writer-wins authority changes.
-A platform without these guarantees fails before creating managed targets rather
-than using a weaker fallback. Correct permissions before retrying; do not bypass
-these checks by moving secrets into the catalog.
+and files are created with `0700` and `0600` permissions respectively. On Linux,
+these controls protect both catalog state and the `managed_secret` table.
+Selection changes compare the expected monotonic bootstrap revision while
+holding the private sibling lock, preventing concurrent last-writer-wins
+authority changes. Historical `db_location` remains the legacy metadata index;
+managed selection is stored separately as `managed_db_location`, so staging
+preparation cannot redirect legacy metadata writes into a managed catalog.
+Recording that selection creates management authority even while legacy mail
+mode remains active, so the bootstrap file and parent receive the same security
+validation in either mode. On supported POSIX platforms, one cross-process lock
+covers each complete legacy store, reset, or credential migration: source load,
+keyring effects, bootstrap-preserving TOML commit, and checked cleanup. A newly
+created legacy configuration parent is `0700`; an existing legacy parent is not
+silently changed, and a fresh reset creates no filesystem artifact.
+
+A platform without these filesystem guarantees fails before creating managed
+targets or changing bootstrap authority rather than using a weaker fallback. On
+a supported POSIX non-Linux platform, an unavailable system keyring fails the managed
+credential operation without changing its binding. Legacy-only store, reset,
+and credential migration retain their historical platform behavior; they remain
+valid legacy compatibility and import sources.
 
 The managed secret service is separate from legacy account-name-based entries.
-Its internal candidate names are intentionally not a diagnostic or user-facing
-contract.
+Its opaque handles are intentionally not a diagnostic or user-facing contract.
+Every UI mutation over a selected catalog submits the exact catalog identity and
+bootstrap revision bound to the workspace snapshot that produced the displayed
+data, in addition to catalog/account revisions. A later status response cannot
+retarget that snapshot; a changed selection remounts and reloads the workspace.
+The service binds one catalog instance and rejects selection drift before its
+next access. Import additionally rechecks selection before each secret resolution
+and immediately before every account, credential, and policy write. Preview
+capability state is one-time, ten-minute, expired on access, and capped at 32
+entries. Cleanup-required state is never treated as a missing binding by import.
 
 Soft account removal is a tombstone plus bounded credential-cleanup operation.
 It retains stable operational identity, endpoint rows, and binding metadata, but
-claims every referenced candidate as `CLEANUP_REQUIRED` before committing the
-tombstone and then attempts to delete up to 100 referenced keyring values.
-Successful deletions are finalized as superseded; unavailable keyring or
-post-commit bookkeeping leaves conservative cleanup state for `config doctor`
-and `config cleanup-credentials`. A tombstoned account has no provider authority
-or public per-role credential-removal command.
+marks every referenced value `CLEANUP_REQUIRED` before committing the tombstone
+and then attempts to delete up to 100 values. Successful deletions are finalized
+as superseded; unavailable storage or post-commit bookkeeping leaves conservative
+cleanup state for `config doctor` and `config cleanup-credentials`. A tombstoned
+account has no provider authority or public per-role credential-removal command,
+and its normalized name remains reserved permanently in this delivery.
 
 ### Legacy import security
 
-`config import-legacy` previews stored TOML only. Preview ignores environment
-overlays, does not resolve plaintext or keyring credentials, and performs no
-managed write. The plan exposes only non-secret endpoint/policy settings,
+`config import-legacy` previews the effective legacy TOML/environment view.
+Preview parses environment account and policy precedence but does not resolve or
+expose plaintext, environment, or keyring credential values and performs no
+managed write. Environment password presence is detected by enumerating variable
+names without retrieving its value; role/base values are read only during
+confirmed apply. The plan exposes only non-secret endpoint/policy settings,
 credential source classes, and exact target revisions. CLI apply displays that
-plan before reading its interactive confirmation; UI confirmation is bound to a
-one-time preview token. Confirmed apply is limited to `STAGING`, checks all
-destination conflicts before resolving any secret, revalidates reviewed source
-identity and target revisions before each credential resolution/write, and
-installs credentials through the same immutable candidate protocol as manual
-setup. It never deletes or rewrites the legacy source or its keyring entries, and
-does not activate or select managed mode. Provider-style legacy accounts are
-reported unsupported rather than partially imported.
+plan before reading interactive confirmation; a no-op plan needs no
+confirmation. For a changed UI plan, the user checks an explicit review box and
+the adapter submits the fixed `IMPORT` confirmation value; it cannot apply while
+the box is clear. UI confirmation is bound to a one-time preview token. The
+private preview is additionally bound to the selected catalog path and bootstrap
+revision. Confirmed apply is limited to `STAGING`, preflights normalized-name
+collisions and account capacity, checks destination conflicts before resolving
+any secret, revalidates reviewed source identity and target revisions before
+each credential resolution/write, and installs credentials through the same save protocol as manual setup. A
+failed save leaves destination binding authority unchanged; cleanup-required
+outcomes are reported explicitly. Import never deletes or rewrites TOML,
+environment, or legacy keyring state and does not activate or select managed
+mode. Provider-style legacy accounts are reported unsupported rather than
+partially imported.
 
 ## Temporary oversized results
 
@@ -214,10 +290,11 @@ keyring for normal loads or saves:
 credential_storage = "plaintext"
 ```
 
-On POSIX systems, the file is created atomically with owner-only `0600`
-permissions. On non-POSIX systems, the application does not install an
-equivalent owner-restricted ACL. Protect the file using operating system or
-container controls.
+On POSIX systems, a new immediate configuration parent uses `0700` and the file
+is created atomically with owner-only `0600` permissions; existing legacy parent
+permissions are not silently changed. On non-POSIX systems, the application does
+not install an equivalent owner-restricted ACL. Protect the file using operating
+system or container controls.
 
 ### Keyring representation
 
@@ -242,9 +319,10 @@ container platform. If a literal secret must be stored in a client
 configuration, restrict that file to the account running the client and keep it
 out of version control and diagnostic output.
 
-Neither MCP nor the local management UI accepts legacy environment secrets for
-account-management writes. Treat environment-composited accounts as runtime
-compatibility inputs and migrate them through an explicit preview/apply flow.
+Neither MCP nor ordinary local-UI account forms read legacy environment secrets.
+Treat environment-composited accounts as runtime compatibility inputs and copy
+them only through the explicit, reviewed import flow; the environment value is
+read during confirmed apply, never during preview.
 
 ## Credential migration
 
@@ -302,8 +380,8 @@ responsibility.
 
 ## Recipient allowlist
 
-By default, the server can address any recipient. Restrict both `send_email`
-and `save_to_mailbox` with exact addresses:
+Sending is disabled when the allowed-recipient collection is empty. Enable and
+restrict both `send_email` and `save_to_mailbox` by adding exact addresses:
 
 ```toml
 allowed_recipients = [
@@ -321,8 +399,10 @@ MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS='alice@example.com,bob@example.com'
 Every To, CC, and BCC address must be allowed. Matching is case-insensitive and
 understands display-name forms such as `Alice <alice@example.com>`.
 
-`list_allowed_recipients` is always visible in the static MCP tool catalog and
-returns an empty list when unrestricted. An empty list permits all recipients.
+`list_allowed_recipients` is always visible in the static MCP tool catalog. An
+empty result means sending is disabled; it never means unrestricted sending.
+The Web UI edits recipients as individual add/edit/remove items and states this
+empty behavior explicitly.
 
 ## Sender allowlist
 
@@ -365,7 +445,9 @@ report_blocked_mutations = true
 
 This is more explicit but reveals that a blocked message exists.
 `list_allowed_senders` is always visible in the static MCP tool catalog and
-returns an empty list when unrestricted.
+returns an empty list when unrestricted. Unlike recipients, an empty
+allowed-sender collection does not restrict reading. The Web UI edits sender
+patterns as individual add/edit/remove items.
 
 The sender allowlist is local filtering, not sender authentication. A spoofed
 `From` header can match. Continue to rely on provider-side SPF, DKIM, DMARC,

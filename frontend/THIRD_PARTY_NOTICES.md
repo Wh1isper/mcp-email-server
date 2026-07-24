@@ -5,6 +5,8 @@ This frontend is built from the pinned packages in `package-lock.json`. The prim
 | Package                                       | License    |
 | --------------------------------------------- | ---------- |
 | React, React DOM, and React type definitions  | MIT        |
+| Lucide React                                  | ISC        |
+| Radix Colors                                  | MIT        |
 | Vite and `@vitejs/plugin-react`               | MIT        |
 | Vitest                                        | MIT        |
 | TypeScript                                    | Apache-2.0 |

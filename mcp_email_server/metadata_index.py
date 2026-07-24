@@ -17,7 +17,6 @@ from mcp_email_server.managed import (
     _OPERATIONAL_DATABASE_SCHEMA,
     _OPERATIONAL_SCHEMA,
     _SCHEMA,
-    _SCHEMA_V1,
     SCHEMA_VERSION,
     ManagedCatalogError,
     _connect,
@@ -134,11 +133,13 @@ def _preflight_schema_ownership(connection: sqlite3.Connection, mode: IndexMode)
         if _has_schema_objects(connection) or mode == "managed":
             _fail("Operational database schema is missing or incompatible")
         return
-    if row["version"] not in (1, SCHEMA_VERSION):
+    if (mode == "managed" and row["version"] != SCHEMA_VERSION) or (
+        mode == "legacy" and row["version"] not in (1, SCHEMA_VERSION)
+    ):
         _fail("Operational database schema version is unsupported")
     try:
         if mode == "managed":
-            _validate_managed_schema(connection, _SCHEMA_V1 if row["version"] == 1 else _SCHEMA)
+            _validate_managed_schema(connection, _SCHEMA)
         else:
             _validate_operational_schema(connection)
     except ManagedCatalogError as exc:
@@ -188,18 +189,18 @@ def _initialize(  # noqa: C901 - bounded initialization and ownership checks
                 row = _schema_version(connection)
                 if row is None:
                     _fail("Operational database initialization did not complete")
-            if row["version"] not in (1, SCHEMA_VERSION):
+            if (mode == "managed" and row["version"] != SCHEMA_VERSION) or (
+                mode == "legacy" and row["version"] not in (1, SCHEMA_VERSION)
+            ):
                 _fail("Operational database schema version is unsupported")
             try:
                 if mode == "managed":
-                    _validate_managed_schema(connection, _SCHEMA_V1 if row["version"] == 1 else _SCHEMA)
+                    _validate_managed_schema(connection, _SCHEMA)
                 else:
                     _validate_operational_schema(connection)
             except ManagedCatalogError as exc:
                 raise MetadataIndexError("Operational database schema is incomplete or incompatible") from exc
             if row["version"] == 1:
-                if mode == "managed":
-                    _fail("Managed catalog schema migration is required before index access")
                 connection.execute(
                     "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = 1",
                     (SCHEMA_VERSION,),

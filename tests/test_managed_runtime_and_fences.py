@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from typer.testing import CliRunner
 from mcp_email_server import bootstrap as bootstrap_module
 from mcp_email_server import config as config_module
 from mcp_email_server import keyring_store
+from mcp_email_server import managed as managed_module
 from mcp_email_server.adapters.reads import LocalReadBackend
 from mcp_email_server.bootstrap import BOOTSTRAP_VERSION, ManagedModeWriteError, freeze_process_bootstrap
 from mcp_email_server.cli import _validate_managed_runtime, app
@@ -111,8 +113,9 @@ def test_managed_get_settings_uses_non_secret_catalog_not_legacy_or_environment(
     assert all(account.account_name not in {"legacy-tripwire", "default"} for account in settings.emails)
 
 
-def test_unavailable_managed_keyring_never_falls_back_to_plaintext(tmp_path, broken_keyring):
-    parent = _private_directory(tmp_path / "managed-keyring")
+def test_linux_managed_store_is_independent_of_unavailable_keyring(monkeypatch, tmp_path, broken_keyring):
+    monkeypatch.setattr(managed_module.sys, "platform", "linux")
+    parent = _private_directory(tmp_path / "managed-sqlite")
     catalog = ManagedCatalog.initialize(parent / "catalog.sqlite3")
     catalog.add_account(
         name="alice",
@@ -127,15 +130,13 @@ def test_unavailable_managed_keyring_never_falls_back_to_plaintext(tmp_path, bro
         outgoing=None,
     )
 
-    result = catalog.set_secret("alice", "incoming", "must-not-persist")
+    result = catalog.set_secret("alice", "incoming", "managed-sqlite-secret")
 
-    assert result.status == "pending_repair_required"
-    assert result.cleanup_required == 1
-    assert b"must-not-persist" not in catalog.path.read_bytes()
-    report = catalog.doctor()
-    assert report.pending_bindings == 0
-    assert report.cleanup_required_bindings == 0
-    assert report.repair_required_bindings == 1
+    assert result.status == "active"
+    assert result.cleanup_required == 0
+    with sqlite3.connect(catalog.path) as connection:
+        assert connection.execute("SELECT secret_value FROM managed_secret").fetchone()[0] == "managed-sqlite-secret"
+    assert catalog.doctor().cleanup_required_bindings == 0
 
 
 def test_transport_preflight_freezes_managed_authority_until_restart(monkeypatch, tmp_path, fake_keyring) -> None:
