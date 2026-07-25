@@ -15,6 +15,7 @@ from mcp_email_server.bootstrap import (
     BootstrapRevisionError,
     ManagedModeWriteError,
     assert_legacy_writable,
+    bootstrap_path,
     read_bootstrap,
     write_bootstrap,
 )
@@ -60,8 +61,9 @@ def test_pre_managed_toml_defaults_to_legacy(tmp_path):
 )
 def test_invalid_existing_bootstrap_fails_closed(tmp_path, content):
     path = tmp_path / "config.toml"
-    path.write_text(content)
-    path.chmod(0o600)
+    authority = bootstrap_path(path)
+    authority.write_text(content)
+    authority.chmod(0o600)
 
     with pytest.raises(BootstrapError):
         read_bootstrap(path)
@@ -70,10 +72,12 @@ def test_invalid_existing_bootstrap_fails_closed(tmp_path, content):
 def test_managed_relative_database_is_resolved_from_bootstrap_parent(tmp_path):
     parent = _private_directory(tmp_path / "private")
     path = parent / "config.toml"
-    path.write_text(
-        f'bootstrap_version = {BOOTSTRAP_VERSION}\nmode = "managed"\ndb_location = "state/catalog.sqlite3"\n'
+    authority = bootstrap_path(path)
+    authority.write_text(
+        f"bootstrap_version = {BOOTSTRAP_VERSION}\nbootstrap_revision = 1\n"
+        'mode = "managed"\nmanaged_selection = true\nmanaged_db_location = "state/catalog.sqlite3"\n'
     )
-    path.chmod(0o600)
+    authority.chmod(0o600)
 
     bootstrap = read_bootstrap(path)
 
@@ -85,26 +89,25 @@ def test_write_bootstrap_preserves_legacy_rows_and_is_private(tmp_path):
     path = parent / "config.toml"
     legacy_index = parent / "db.sqlite3"
     path.write_text(
-        f'credential_storage = "plaintext"\ndb_location = "{legacy_index.as_posix()}"\n'
+        f'# keep this formatting\ncredential_storage = "plaintext"\ndb_location = "{legacy_index.as_posix()}"\n'
         '[[emails]]\naccount_name = "legacy"\n'
     )
+    original = path.read_bytes()
     database = parent / "catalog.sqlite3"
 
     historical = read_bootstrap(path)
     selected = write_bootstrap(mode="legacy", db_path=database, path=path)
 
-    content = path.read_text()
-    stored = tomllib.loads(content)
+    stored = tomllib.loads(bootstrap_path(path).read_text())
     assert historical.db_path is None
     assert selected.mode == "legacy"
     assert selected.db_path == database
-    assert 'account_name = "legacy"' in content
+    assert path.read_bytes() == original
     assert stored["bootstrap_version"] == BOOTSTRAP_VERSION
-    assert stored["db_location"] == legacy_index.as_posix()
     assert stored["managed_selection"] is True
     assert stored["managed_db_location"] == database.as_posix()
     if os.name == "posix":
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(bootstrap_path(path).stat().st_mode) == 0o600
 
 
 def test_revision_only_legacy_write_never_promotes_historical_db_location(tmp_path: Path) -> None:
@@ -121,7 +124,8 @@ def test_revision_only_legacy_write_never_promotes_historical_db_location(tmp_pa
     assert before.db_path is None
     assert written.db_path is None
     assert after.db_path is None
-    assert tomllib.loads(path.read_text())["managed_selection"] is False
+    assert tomllib.loads(bootstrap_path(path).read_text())["managed_selection"] is False
+    assert path.read_text() == f'mode = "legacy"\ndb_location = "{legacy_index.as_posix()}"\n'
 
 
 def test_revisioned_pre_release_db_location_fallback_remains_compatible(tmp_path: Path) -> None:
@@ -151,14 +155,14 @@ def test_bootstrap_write_uses_revisioned_compare_and_swap(tmp_path: Path) -> Non
 
     assert first.revision == 1
     assert second.revision == 2
-    before_conflict = path.read_bytes()
+    before_conflict = bootstrap_path(path).read_bytes()
     with pytest.raises(BootstrapError, match="changed"):
         write_bootstrap(mode="managed", path=path, expected_revision=first.revision)
-    assert path.read_bytes() == before_conflict
+    assert bootstrap_path(path).read_bytes() == before_conflict
     assert read_bootstrap(path).revision == second.revision
 
 
-def test_empty_install_compare_and_swap_rejects_concurrent_legacy_file(tmp_path: Path) -> None:
+def test_bootstrap_compare_and_swap_never_rewrites_concurrent_legacy_source(tmp_path: Path) -> None:
     parent = _private_directory(tmp_path / "private")
     path = parent / "config.toml"
     observed = read_bootstrap(path)
@@ -168,14 +172,14 @@ def test_empty_install_compare_and_swap_rejects_concurrent_legacy_file(tmp_path:
     legacy_content = 'credential_storage = "plaintext"\n[[emails]]\naccount_name = "legacy"\n'
     path.write_text(legacy_content)
 
-    with pytest.raises(BootstrapRevisionError, match="existence changed"):
-        write_bootstrap(
-            mode="legacy",
-            db_path=parent / "catalog.sqlite3",
-            path=path,
-            expected_revision=observed.revision,
-            expected_exists=False,
-        )
+    selected = write_bootstrap(
+        mode="legacy",
+        db_path=parent / "catalog.sqlite3",
+        path=path,
+        expected_revision=observed.revision,
+        expected_exists=False,
+    )
+    assert selected.revision == 1
     assert path.read_text() == legacy_content
 
 

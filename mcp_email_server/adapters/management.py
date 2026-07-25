@@ -31,6 +31,8 @@ from mcp_email_server.bootstrap import (
     BootstrapError,
     BootstrapRevisionError,
     ManagedModeWriteError,
+    _write_bootstrap_locked,
+    bootstrap_file_lock,
     configured_path,
     freeze_process_bootstrap,
     process_bootstrap,
@@ -95,14 +97,90 @@ class LocalManagementBackend:
         *,
         expected_revision: int,
         expected_exists: bool | None = None,
+        expected_source: LegacySourceSnapshot | None = None,
     ) -> None:
         try:
-            write_bootstrap(
-                mode=mode,
-                db_path=db_path,
-                expected_revision=expected_revision,
-                expected_exists=expected_exists,
-            )
+            if expected_source is None:
+                write_bootstrap(
+                    mode=mode,
+                    db_path=db_path,
+                    expected_revision=expected_revision,
+                    expected_exists=expected_exists,
+                )
+                return
+            source_path = configured_path()
+            with bootstrap_file_lock(source_path):
+                if self.load_legacy_source() != expected_source:
+                    raise ManagementError(
+                        "Legacy source changed; reload and retry",
+                        reason="import_preview_stale",
+                    )
+                _write_bootstrap_locked(
+                    mode=mode,
+                    db_path=db_path,
+                    path=source_path,
+                    expected_revision=expected_revision,
+                    expected_exists=expected_exists,
+                )
+        except BootstrapRevisionError as exc:
+            raise RevisionConflictError("bootstrap") from exc
+        except (BootstrapError, OSError) as exc:
+            raise ManagementError("Bootstrap selection could not be updated") from exc
+
+    def guarded_import_cutover(
+        self,
+        *,
+        target_path: Path,
+        expected_bootstrap_revision: int,
+        expected_source: LegacySourceSnapshot,
+        expected_resolved_secrets: tuple[tuple[str, BindingRole, str], ...],
+        expected_catalog_revision: int,
+        expected_account_revisions: tuple[tuple[str, int, bool], ...],
+    ) -> None:
+        source_path = configured_path()
+        try:
+            with bootstrap_file_lock(source_path):
+                bootstrap = read_bootstrap(source_path)
+                if (
+                    bootstrap.revision != expected_bootstrap_revision
+                    or bootstrap.mode != "legacy"
+                    or bootstrap.db_path != target_path
+                ):
+                    raise RevisionConflictError("bootstrap")
+                current_source = self.load_legacy_source()
+                if current_source != expected_source:
+                    raise ManagementError(
+                        "Legacy import preview is stale; preview and retry",
+                        reason="import_preview_stale",
+                    )
+                # Resolve private legacy values while the shared source lock
+                # excludes supported legacy writers, but before taking the SQLite
+                # writer fence: catalog transactions never span keyring access.
+                source_accounts = {account.name: account for account in current_source.accounts}
+                for account_name, role, expected_secret in expected_resolved_secrets:
+                    account = source_accounts.get(account_name)
+                    if account is None or self.resolve_legacy_secret(account_name, role, account) != expected_secret:
+                        raise ManagementError(
+                            "Legacy import credential source changed; preview and retry",
+                            reason="import_preview_stale",
+                        )
+                catalog = ManagedCatalog(target_path)
+                with catalog.import_cutover_guard(
+                    expected_catalog_revision=expected_catalog_revision,
+                    expected_account_revisions=expected_account_revisions,
+                ):
+                    if self.load_legacy_source() != expected_source:
+                        raise ManagementError(
+                            "Legacy import preview is stale; preview and retry",
+                            reason="import_preview_stale",
+                        )
+                    _write_bootstrap_locked(
+                        mode="managed",
+                        db_path=target_path,
+                        path=source_path,
+                        expected_revision=expected_bootstrap_revision,
+                        expected_exists=None,
+                    )
         except BootstrapRevisionError as exc:
             raise RevisionConflictError("bootstrap") from exc
         except (BootstrapError, OSError) as exc:

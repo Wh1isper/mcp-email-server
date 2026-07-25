@@ -44,7 +44,9 @@ export function ImportPanel({ api, onChanged }: { api: ManagementApi; onChanged?
       const report = await api.applyImport(plan, confirmed ? 'IMPORT' : '')
       setNotice(report.attention_required.length
         ? `Imported ${report.created.length} account(s); ${report.attention_required.length} password(s) still need attention.`
-        : `Import complete. ${report.created.length} account(s) added and ${report.resumed.length} password(s) restored.`)
+        : report.mode === 'managed'
+          ? `Import complete. ${report.created.length} account(s) added. Restart the mail server to use the new settings.`
+          : `Imported ${report.created.length} supported account(s). Previous settings remain in use because some account types need review.`)
       setPlan(null)
       setConfirmed(false)
       onChanged?.()
@@ -95,7 +97,10 @@ export function ImportPanel({ api, onChanged }: { api: ManagementApi; onChanged?
             <div className="details-body"><p>Created <time dateTime={plan.created_at}>{plan.created_at}</time></p><p className="bounded-text">Source ID: <code>{plan.source_fingerprint}</code></p><p>Account settings version: {plan.target_revision}; safety settings version: {plan.target_policy_revision}</p></div>
           </details>
           {hasConflicts ? <div className="message message-error" role="alert">One or more accounts conflict with saved settings. Resolve them before importing.</div> : !hasChanges ? (
-            <div className="message" role="status"><strong>Already up to date.</strong> There is nothing to import.</div>
+            <div className="confirmation action-stack">
+              <div className="message" role="status"><strong>Accounts are already copied.</strong> Finish setup to verify the saved passwords and use these settings.</div>
+              <button type="button" className="with-icon" disabled={busy} onClick={() => void apply()}><Download size={17} aria-hidden="true" />Finish setup</button>
+            </div>
           ) : (
             <div className="confirmation action-stack">
               <label className="confirmation-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I reviewed these accounts and want to copy them.</label>

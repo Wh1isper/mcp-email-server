@@ -41,7 +41,7 @@ export function HealthPanel({ api }: { api: ManagementApi }) {
         <article className="panel action-stack">
           <h3>Account setup</h3>
           <button type="button" className="with-icon" disabled={Boolean(busy)} onClick={() => void runDoctor()}><Stethoscope size={17} aria-hidden="true" />{busy === 'doctor' ? 'Running…' : 'Check account setup'}</button>
-          {doctor ? <div aria-live="polite"><dl className="compact-dl"><div><dt>Setup status</dt><dd>{doctor.lifecycle === 'ACTIVE' ? 'Ready to use' : 'In progress'}</dd></div><div><dt>Enabled accounts</dt><dd>{doctor.enabled_account_count} of {doctor.account_count}</dd></div><div><dt>Old passwords to clean up</dt><dd>{doctor.cleanup_required_bindings}</dd></div></dl>{doctor.problems.length ? <ul className="problem-list">{doctor.problems.map((problem) => <li key={problem}>{problemMessage(problem)}</li>)}</ul> : <StatusMessage message="No account setup problems found." />}</div> : null}
+          {doctor ? <div aria-live="polite"><dl className="compact-dl"><div><dt>Enabled accounts</dt><dd>{doctor.enabled_account_count} of {doctor.account_count}</dd></div><div><dt>Old passwords to clean up</dt><dd>{doctor.cleanup_required_bindings}</dd></div></dl>{doctor.problems.length ? <ul className="problem-list">{doctor.problems.map((problem) => <li key={problem}>{problemMessage(problem)}</li>)}</ul> : <StatusMessage message="No account setup problems found." />}</div> : null}
         </article>
         <article className="panel action-stack">
           <h3>Email search</h3>

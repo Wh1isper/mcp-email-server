@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, Import, Plus, Power, RefreshCw, RotateCcw } from 'lucide-react'
+import { Import, Plus, Power, RefreshCw, RotateCcw } from 'lucide-react'
 
 import type { ManagementApi } from '../api'
-import type { CatalogTarget, Lifecycle, ManagementStatus } from '../types'
+import type { ManagementStatus } from '../types'
 import { ConflictNotice, errorMessage, problemMessage, StatusMessage } from './Feedback'
 
 interface StatusPanelProps {
@@ -23,7 +23,6 @@ const legacyHasContent = (status: ManagementStatus): boolean => Boolean(
 )
 
 const modeLabel = (mode: ManagementStatus['mode']): string => mode === 'managed' ? 'New account settings' : 'Previous settings'
-const lifecycleLabel = (lifecycle: Lifecycle): string => lifecycle === 'ACTIVE' ? 'Ready to use' : 'Setup in progress'
 
 export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, onStatusChange, onNavigate }: StatusPanelProps) {
   const [status, setStatus] = useState<ManagementStatus | null>(null)
@@ -53,7 +52,10 @@ export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, o
     }
   }, [api, onStatusChange])
 
-  useEffect(() => { void load() }, [load, refreshKey])
+  useEffect(() => {
+    setNotice('')
+    void load()
+  }, [load, refreshKey])
   useEffect(() => {
     catalogRevisionHintRef.current = catalogRevisionHint
     if (catalogRevisionHint === null) return
@@ -100,9 +102,6 @@ export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, o
 
   const hasLegacy = status ? legacyHasContent(status) : false
   const revision = status?.report?.catalog_revision ?? 0
-  const catalogTarget: CatalogTarget | null = status?.selected_catalog
-    ? { expected_bootstrap_revision: status.bootstrap_revision, expected_catalog: status.selected_catalog }
-    : null
   const catalogProblems = status?.report?.problems.filter(
     (problem) => !(problem === 'no_enabled_account' && status.report?.account_count === 0),
   ) ?? []
@@ -110,7 +109,6 @@ export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, o
     status
     && status.mode === 'managed'
     && status.running_mode === 'managed'
-    && status.report?.lifecycle === 'ACTIVE'
     && !status.restart_required,
   )
   const emptyWorkspace = Boolean(
@@ -126,7 +124,9 @@ export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, o
     if (!status) return
     const succeeded = await act(
       () => api.initializeDefaultCatalog(status.bootstrap_revision, false).then(() => undefined),
-      hasLegacy ? 'Import is ready for review.' : 'Your private account settings are ready.',
+      hasLegacy
+        ? 'Import is ready for review. Previous settings remain in use until the import succeeds.'
+        : 'Your private account settings are ready and selected for the next restart.',
     )
     if (succeeded) onNavigate?.(hasLegacy ? 'settings' : 'accounts')
   }
@@ -157,17 +157,6 @@ export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, o
         </>
       ) : (
         <div className="setup-copy"><strong>Account settings ready</strong><span>Add your first account when you’re ready. You only need an email address and password to start.</span></div>
-      )
-    }
-    if (status.report.lifecycle === 'STAGING') {
-      return (
-        <>
-          <div className="setup-copy"><strong>{status.report.account_count} account{status.report.account_count === 1 ? '' : 's'} saved</strong><span>Finish setup after every enabled account has its required server and password settings.</span></div>
-          <button type="button" className="with-icon" disabled={busy || !catalogTarget || catalogProblems.length > 0} onClick={() => void act(
-            () => catalogTarget ? api.activateCatalog(revision, catalogTarget) : Promise.resolve(),
-            'Account settings validated. One final confirmation remains.',
-          )}><CheckCircle2 size={17} aria-hidden="true" />Finish setup</button>
-        </>
       )
     }
     if (status.mode === 'legacy') {
@@ -203,13 +192,12 @@ export function StatusPanel({ api, refreshKey = 0, catalogRevisionHint = null, o
             <dl className="compact-dl">
               <div><dt>Next restart will use</dt><dd>{modeLabel(status.mode)}</dd></div>
               <div><dt>Mail server is using</dt><dd>{modeLabel(status.running_mode)}</dd></div>
-              <div><dt>Setup status</dt><dd>{status.report ? lifecycleLabel(status.report.lifecycle) : 'Unavailable'}</dd></div>
               <div><dt>Setup version</dt><dd>{status.bootstrap_revision}</dd></div>
             </dl>
             {status.selected_catalog ? <p className="bounded-text"><strong>Settings file</strong><br /><code>{status.selected_catalog}</code></p> : null}
             <div className="button-row">
               <button type="button" className="secondary with-icon" disabled={busy} onClick={() => void load()}><RefreshCw size={16} aria-hidden="true" />Refresh status</button>
-              {status.mode === 'managed' ? <button type="button" className="secondary with-icon" disabled={busy} onClick={() => void act(
+              {status.mode === 'managed' && hasLegacy ? <button type="button" className="secondary with-icon" disabled={busy} onClick={() => void act(
                 () => api.selectMode('legacy', status.bootstrap_revision),
                 'Previous settings will be used after restart.',
               )}><RotateCcw size={16} aria-hidden="true" />Use previous settings after restart</button> : null}

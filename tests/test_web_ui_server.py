@@ -154,13 +154,13 @@ def test_ui_freezes_running_selection_during_unavailable_catalog_recovery(
 
         def run(self, *, sockets) -> None:
             assert sockets[0].getsockname()[0] == "127.0.0.1"
-            before = self.state.management.lifecycle.status()
-            self.state.management.lifecycle.select(
+            before = self.state.management.catalog.status()
+            self.state.management.catalog.select(
                 "legacy",
                 expected_bootstrap_revision=before.bootstrap_revision,
             )
             observed["before"] = before
-            observed["after"] = self.state.management.lifecycle.status()
+            observed["after"] = self.state.management.catalog.status()
 
     monkeypatch.setattr(server_module.uvicorn, "Server", FakeServer)
     monkeypatch.setattr(server_module.webbrowser, "open", MagicMock(return_value=True))

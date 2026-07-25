@@ -43,7 +43,7 @@ const accountProblem = (problem: string, category: string): { account: string; r
 }
 
 export const problemMessage = (problem: string): string => {
-  if (problem === 'no_enabled_account') return 'Enable at least one account before finishing setup.'
+  if (problem === 'no_enabled_account') return 'Enable at least one account before using these settings.'
   const incomplete = accountProblem(problem, 'account_incomplete')
   if (incomplete) {
     const service = incomplete.role === 'outgoing' ? 'outgoing mail' : 'incoming mail'
@@ -63,7 +63,6 @@ const summaryLabel = (key: string): string => {
     account_revision: 'Account version',
     bootstrap_revision: 'Setup version',
     catalog_revision: 'Settings version',
-    lifecycle: 'Setup status',
     mode: 'Settings source',
     policy_revision: 'Safety settings version',
     running_mode: 'Active settings source',
@@ -73,8 +72,6 @@ const summaryLabel = (key: string): string => {
 }
 
 const summaryValue = (key: string, value: unknown): string => {
-  if (key === 'lifecycle' && value === 'STAGING') return 'Setup in progress'
-  if (key === 'lifecycle' && value === 'ACTIVE') return 'Ready to use'
   if ((key === 'mode' || key === 'running_mode') && value === 'legacy') return 'Previous settings'
   if ((key === 'mode' || key === 'running_mode') && value === 'managed') return 'New account settings'
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)

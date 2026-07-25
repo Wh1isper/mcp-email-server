@@ -133,10 +133,10 @@ def test_managed_catalog_enforces_account_and_policy_cardinality(monkeypatch, tm
     assert len(catalog.list_accounts()) == 1
 
 
-def test_initialize_creates_minimal_private_staging_catalog(tmp_path):
+def test_initialize_creates_minimal_private_catalog(tmp_path):
     catalog = _catalog(tmp_path)
 
-    assert catalog.lifecycle() == "STAGING"
+    assert catalog.catalog_revision() == 1
     with closing(sqlite3.connect(catalog.path)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
@@ -161,7 +161,7 @@ def test_initialize_creates_minimal_private_staging_catalog(tmp_path):
         assert stat.S_IMODE(catalog.path.parent.stat().st_mode) == 0o700
 
 
-def test_initialize_adopts_existing_staging_catalog_without_resetting_state(tmp_path: Path) -> None:
+def test_initialize_adopts_existing_catalog_without_resetting_state(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     policy = catalog.policy()
     catalog.update_policy(
@@ -176,25 +176,21 @@ def test_initialize_adopts_existing_staging_catalog_without_resetting_state(tmp_
     adopted = ManagedCatalog.initialize(catalog.path)
 
     assert adopted.path == catalog.path
-    assert adopted.lifecycle() == "STAGING"
     assert adopted.catalog_revision() == revision
     assert adopted.policy().allowed_recipients == ("alice@example.test",)
 
 
-def test_initialize_rejects_active_catalog_without_modifying_it(tmp_path: Path) -> None:
+def test_initialize_adopts_configured_catalog_without_modifying_it(tmp_path: Path) -> None:
     store = FakeSecretStore()
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
-    catalog.activate()
     revision = catalog.catalog_revision()
 
-    with pytest.raises(ManagedCatalogInitializationConflictError, match="not in the staging lifecycle"):
-        ManagedCatalog.initialize(catalog.path)
+    adopted = ManagedCatalog.initialize(catalog.path)
 
-    assert catalog.lifecycle() == "ACTIVE"
-    assert catalog.catalog_revision() == revision
-    assert catalog.list_accounts()[0].name == "alice"
+    assert adopted.catalog_revision() == revision
+    assert adopted.list_accounts()[0].name == "alice"
 
 
 def test_initialize_rejects_foreign_existing_file_without_modifying_it(tmp_path: Path) -> None:
@@ -218,13 +214,13 @@ def test_pre_release_schema_version_is_rejected_without_migration(tmp_path: Path
         connection.commit()
 
     with pytest.raises(ManagedCatalogError, match="version is unsupported"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
     with closing(sqlite3.connect(catalog.path)) as connection:
         assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
 
 
-def test_v2_open_rejects_persistent_invariant_corruption(tmp_path: Path) -> None:
+def test_v3_open_rejects_persistent_invariant_corruption(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path, FakeSecretStore())
     with closing(sqlite3.connect(catalog.path)) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
@@ -235,7 +231,7 @@ def test_v2_open_rejects_persistent_invariant_corruption(tmp_path: Path) -> None
         connection.commit()
 
     with pytest.raises(ManagedCatalogError, match="invalid references"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 def test_normalized_name_and_tombstone_prevent_reuse(tmp_path: Path) -> None:
@@ -255,32 +251,28 @@ def test_normalized_name_and_tombstone_prevent_reuse(tmp_path: Path) -> None:
     assert duplicate_error.value.reason == "account_name_exists"
 
 
-def test_add_and_activate_round_trip_never_persists_secret(tmp_path):
+def test_add_and_resolve_round_trip_never_persists_secret(tmp_path):
     store = FakeSecretStore()
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
 
     catalog.set_secret("alice", "incoming", "super-secret-password")
-    catalog.activate()
     settings = catalog.load_settings()
 
     account = settings.emails[0]
     assert account.account_name == "alice"
     assert account.incoming.password.get_secret_value() == ""
-    resolved = catalog.load_account("alice", roles=("incoming",), require_active_catalog=True)
+    resolved = catalog.load_account("alice", roles=("incoming",))
     assert resolved.incoming.password.get_secret_value() == "super-secret-password"
     assert b"super-secret-password" not in catalog.path.read_bytes()
-    assert catalog.lifecycle() == "ACTIVE"
 
 
-def test_activation_requires_complete_enabled_account(tmp_path):
+def test_incomplete_enabled_account_is_excluded_from_effective_settings(tmp_path):
     catalog = _catalog(tmp_path, FakeSecretStore())
     _add_account(catalog)
 
-    with pytest.raises(ManagedCatalogError, match="incomplete"):
-        catalog.activate()
-
-    assert catalog.lifecycle() == "STAGING"
+    assert catalog.load_settings().emails == []
+    assert catalog.doctor().problems == ("account_incomplete:alice:incoming",)
 
 
 def test_one_account_can_be_resolved_while_another_is_incomplete(tmp_path):
@@ -313,16 +305,10 @@ def test_outgoing_endpoint_requires_active_outgoing_binding(tmp_path):
     _add_account(catalog, outgoing=True)
     catalog.set_secret("alice", "incoming", "incoming-secret")
 
-    with pytest.raises(ManagedCatalogError, match="outgoing"):
-        catalog.activate()
+    assert catalog.load_settings().emails == []
 
     catalog.set_secret("alice", "outgoing", "outgoing-secret")
-    catalog.activate()
-    account = catalog.load_account(
-        "alice",
-        roles=("incoming", "outgoing"),
-        require_active_catalog=True,
-    )
+    account = catalog.load_account("alice", roles=("incoming", "outgoing"))
     assert account.outgoing is not None
     assert account.outgoing.password.get_secret_value() == "outgoing-secret"
 
@@ -492,7 +478,6 @@ def test_selected_account_rejects_authority_change_while_secret_resolves(
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     result = catalog.set_secret("alice", "incoming", "active-secret")
-    catalog.activate()
 
     def block_get(_locator: str) -> None:
         entered.set()
@@ -504,7 +489,6 @@ def test_selected_account_rejects_authority_change_while_secret_resolves(
             catalog.resolve_account,
             "alice",
             roles=("incoming",),
-            require_active_catalog=True,
         )
         assert entered.wait(timeout=5)
         if authority_change == "disable":
@@ -631,7 +615,6 @@ def test_disabled_account_is_excluded_from_runtime_without_secret_access(tmp_pat
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
-    catalog.activate()
     catalog.disable_account("alice", expected_revision=2)
     store.fail_get = True
 
@@ -645,30 +628,28 @@ def test_missing_or_unreadable_active_secret_fails_closed(tmp_path):
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
-    catalog.activate()
     store.values.clear()
 
     with pytest.raises(ManagedCatalogError, match="missing"):
-        catalog.load_account("alice", roles=("incoming",), require_active_catalog=True)
+        catalog.load_account("alice", roles=("incoming",))
 
 
-def test_active_catalog_rejects_new_account_without_harming_existing_snapshot(tmp_path):
+def test_new_incomplete_account_does_not_hide_existing_effective_account(tmp_path):
     store = FakeSecretStore()
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
-    catalog.activate()
 
-    with pytest.raises(ManagedCatalogError, match="STAGING"):
-        catalog.add_account(
-            name="incomplete",
-            full_name="Incomplete",
-            email_address="incomplete@example.test",
-            incoming=_server(),
-            outgoing=None,
-        )
+    catalog.add_account(
+        name="incomplete",
+        full_name="Incomplete",
+        email_address="incomplete@example.test",
+        incoming=_server(),
+        outgoing=None,
+    )
 
     assert [account.account_name for account in catalog.load_settings().emails] == ["alice"]
+    assert "account_incomplete:incomplete:incoming" in catalog.doctor().problems
 
 
 def test_rotation_crash_before_cleanup_remains_doctor_visible(tmp_path):
@@ -718,7 +699,6 @@ def test_active_account_update_is_revision_guarded_and_invalidates_remote_projec
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
-    catalog.activate()
     account_id, revision = catalog.account_revision("alice")
     with closing(sqlite3.connect(catalog.path)) as connection:
         connection.execute(
@@ -751,10 +731,7 @@ def test_active_account_update_is_revision_guarded_and_invalidates_remote_projec
     assert details.incoming.host == "imap-new.example.test"
     assert details.save_to_sent is False
     assert details.sent_folder_name == "Sent Items"
-    assert (
-        catalog.load_account("alice-renamed", require_active_catalog=True).incoming.password.get_secret_value()
-        == "secret"
-    )
+    assert catalog.load_account("alice-renamed").incoming.password.get_secret_value() == "secret"
     with closing(sqlite3.connect(catalog.path)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM mailbox_projection").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM operational_account").fetchone()[0] == 1
@@ -767,7 +744,6 @@ def test_enabled_update_cannot_add_unbound_outgoing_endpoint(tmp_path: Path) -> 
     catalog = _catalog(tmp_path, store)
     _add_account(catalog)
     catalog.set_secret("alice", "incoming", "secret")
-    catalog.activate()
     revision = catalog.show_account("alice").revision
 
     with pytest.raises(ManagedCatalogError, match="incomplete"):
@@ -1130,7 +1106,7 @@ def test_insecure_database_permissions_are_rejected(tmp_path):
     catalog.path.chmod(0o644)
 
     with pytest.raises(ManagedCatalogSecurityError, match="owner-only"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
@@ -1147,7 +1123,7 @@ def test_catalog_sidecar_and_lock_symlinks_are_rejected(tmp_path: Path, suffix: 
         pytest.skip("symlinks unavailable")
 
     with pytest.raises(ManagedCatalogSecurityError, match="symlink"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
     assert target.read_bytes() == b"preserve"
 
@@ -1161,7 +1137,7 @@ def test_catalog_sidecar_and_lock_permissions_are_rejected(tmp_path: Path, suffi
     entry.chmod(0o644)
 
     with pytest.raises(ManagedCatalogSecurityError, match="owner-only"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
@@ -1178,7 +1154,7 @@ def test_catalog_sidecar_and_lock_hard_links_are_rejected(tmp_path: Path, suffix
         pytest.skip("hard links unavailable")
 
     with pytest.raises(ManagedCatalogSecurityError, match="hard links"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
@@ -1189,7 +1165,7 @@ def test_catalog_sidecar_and_lock_non_regular_entries_are_rejected(tmp_path: Pat
     entry.mkdir()
 
     with pytest.raises(ManagedCatalogSecurityError, match="regular file"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 def test_database_symlink_is_rejected(tmp_path):
@@ -1201,22 +1177,22 @@ def test_database_symlink_is_rejected(tmp_path):
         pytest.skip("symlinks unavailable")
 
     with pytest.raises(ManagedCatalogSecurityError, match="symlink"):
-        ManagedCatalog(link).lifecycle()
+        ManagedCatalog(link).catalog_revision()
 
 
 def test_concurrent_readers_do_not_fail_on_sidecar_shutdown_races(tmp_path):
     catalog = _catalog(tmp_path)
 
-    def read_lifecycle(_index: int) -> str:
-        result = ""
+    def read_revision(_index: int) -> int:
+        result = 0
         for _ in range(20):
-            result = catalog.lifecycle()
+            result = catalog.catalog_revision()
         return result
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        results = list(executor.map(read_lifecycle, range(8)))
+        results = list(executor.map(read_revision, range(8)))
 
-    assert results == ["STAGING"] * 8
+    assert results == [1] * 8
 
 
 def test_wal_retry_uses_one_wall_clock_busy_deadline() -> None:
@@ -1257,7 +1233,7 @@ def test_corrupt_database_is_rejected_with_bounded_error(tmp_path):
     path.chmod(0o600)
 
     with pytest.raises(ManagedCatalogError, match=r"corrupt|unavailable"):
-        ManagedCatalog(path).lifecycle()
+        ManagedCatalog(path).catalog_revision()
 
 
 def test_unrelated_managed_database_is_rejected_before_enabling_wal(tmp_path: Path) -> None:
@@ -1272,10 +1248,26 @@ def test_unrelated_managed_database_is_rejected_before_enabling_wal(tmp_path: Pa
     original_bytes = path.read_bytes()
 
     with pytest.raises(ManagedCatalogError, match="schema"):
-        ManagedCatalog(path).lifecycle()
+        ManagedCatalog(path).catalog_revision()
 
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
     assert path.read_bytes() == original_bytes
     assert not Path(f"{path}-wal").exists()
     assert not Path(f"{path}-shm").exists()
+
+
+def test_import_cutover_guard_detects_account_only_credential_drift(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path, FakeSecretStore())
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "first-secret", expected_revision=1)
+    assert catalog.catalog_revision() == 2
+    catalog.set_secret("alice", "incoming", "rotated-secret", expected_revision=2)
+    assert catalog.catalog_revision() == 2
+
+    with pytest.raises(ManagedCatalogError, match="changed"):
+        with catalog.import_cutover_guard(
+            expected_catalog_revision=2,
+            expected_account_revisions=(("alice", 2, True),),
+        ):
+            pytest.fail("stale account authority must not enter the cutover critical section")

@@ -427,7 +427,7 @@ def test_managed_catalog_rejects_unsupported_schema_version(tmp_path: Path) -> N
         connection.commit()
 
     with pytest.raises(ManagedCatalogError, match="version is unsupported"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 def test_managed_baseline_missing_operational_table_fails_closed(tmp_path: Path) -> None:
@@ -438,7 +438,7 @@ def test_managed_baseline_missing_operational_table_fails_closed(tmp_path: Path)
         connection.commit()
 
     with pytest.raises(ManagedCatalogError, match="schema"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 def test_managed_baseline_rejects_table_with_same_columns_but_missing_constraints(tmp_path: Path) -> None:
@@ -461,7 +461,7 @@ def test_managed_baseline_rejects_table_with_same_columns_but_missing_constraint
         connection.commit()
 
     with pytest.raises(ManagedCatalogError, match="schema"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 def test_managed_baseline_rejects_same_name_index_with_wrong_shape(tmp_path: Path) -> None:
@@ -473,7 +473,7 @@ def test_managed_baseline_rejects_same_name_index_with_wrong_shape(tmp_path: Pat
         connection.commit()
 
     with pytest.raises(ManagedCatalogError, match="schema"):
-        catalog.lifecycle()
+        catalog.catalog_revision()
 
 
 def test_mutation_invalidation_removes_only_selected_mailbox_coverage(tmp_path: Path) -> None:

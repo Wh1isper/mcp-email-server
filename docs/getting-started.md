@@ -57,10 +57,12 @@ invoke `add_email_account`. After upgrading, restart each MCP client so it
 refreshes `tools/list`; a stale caller will no longer find that tool.
 
 Existing TOML accounts remain available in `legacy` mode. To adopt managed mode,
-initialize a staging catalog, preview and explicitly apply `config
-import-legacy`, test the accounts, activate the catalog, select managed mode,
-and restart the MCP client. Import does not select managed mode or modify the
-source TOML and its legacy keyring entries. The preview uses the effective
+initialize the migration destination, preview and explicitly apply `config
+import-legacy`, test the accounts, and restart the MCP client when requested.
+Preparation keeps legacy selected. A complete successful import automatically
+selects managed mode when every source account type is supported; a failure or
+unsupported provider keeps legacy selected. Import never modifies the source
+TOML or its legacy keyring entries. The preview uses the effective
 legacy view, so a complete environment account and environment policy overrides
 are included with the same replacement/precedence rules used by legacy runtime.
 Credential values remain absent from preview and are read only during confirmed
@@ -79,7 +81,8 @@ suppress browser launch or `--port PORT` to request a fixed loopback port.
 On first use:
 
 1. after the one-time browser authentication, let the UI prepare
-   `managed.sqlite3` beside the active configuration file; this authenticated
+   `managed.sqlite3` in the private directory shared by the legacy source and
+   its separate bootstrap sidecar; this authenticated
    POST happens automatically only for a truly empty installation, while a
    detected legacy source requires an explicit **Import existing settings**
    preparation and review;
@@ -96,9 +99,9 @@ On first use:
 4. under **Settings & help**, add each allowed recipient needed for sending and
    each optional allowed-sender pattern as an individual item. No recipients
    disables sending; no senders leaves reading unrestricted;
-5. use the contextual **Finish setup** action, then **Use these accounts**.
-   Finishing setup validates structural completeness; it does not contact or
-   certify IMAP/SMTP providers;
+5. saved complete accounts are immediately usable by managed runtime; there is
+   no catalog activation or second save. Incomplete accounts remain visible in
+   diagnostics but do not hide complete accounts;
 6. restart every MCP client process after the UI reports that restart is
    required.
 
@@ -117,7 +120,7 @@ operations remain available through the managed CLI below.
 ## Configure an account with the managed CLI
 
 For an explicit SQLite-backed catalog, install the command at a stable path and
-run the staged workflow:
+run the direct workflow:
 
 ```bash
 mcp-email-server config init \
@@ -127,8 +130,6 @@ mcp-email-server account add work \
   --full-name "John Doe" \
   --imap-host imap.example.com
 mcp-email-server account test work incoming
-mcp-email-server config activate
-mcp-email-server config select managed
 ```
 
 The account command reads the password through user-controlled terminal input
@@ -138,8 +139,9 @@ management operation. Managed mode requires the POSIX owner/no-follow/locking pr
 [Security](security.md). Linux uses the owner-only managed SQLite secret store by
 default; supported POSIX non-Linux platforms additionally require a working system
 keyring. Managed mode does not fall back to plaintext or weaker filesystem
-checks. Restart the MCP client
-after selection. See
+checks. Fresh initialization selects managed immediately unless existing v1
+configuration needs reviewed import. Restart the MCP client when `config status`
+reports that it is required. See
 [Managed CLI setup](configuration.md#managed-cli-setup) for SMTP, stdin,
 diagnostics, disablement, and switching back to legacy mode.
 

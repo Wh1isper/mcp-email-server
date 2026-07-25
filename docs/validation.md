@@ -87,14 +87,14 @@ Changes to the management UI run three layers in the regular suite:
 
 Critical browser flows are exercised with locked Playwright/Chromium against a
 real CLI process launched under a PTY: fragment removal and bootstrap exchange,
-cookie-session reload, stale-link replay, empty-install automatic staging
-preparation, explicit earlier-settings import preparation, the two-destination
+cookie-session reload, stale-link replay, empty-install automatic managed
+initialization, v1-safe earlier-settings import preparation that keeps legacy selected, the two-destination
 account-first navigation, email-and-password-first account creation with editable
 server suggestions, folded advanced/outgoing settings without a connection
 preview, pause/enable/edit/removal, per-account **Password** rotation, individual
-policy-item editing and both empty states, policy revision propagation, explicit
-structural activation followed by separate selection and restart guidance,
-hidden no-action empty/settled status, task-language conflict review, progressively disclosed
+policy-item editing and both empty states, policy revision propagation, immediate
+account usability without catalog activation, successful-import automatic cutover
+and restart guidance, hidden no-action empty/settled status, task-language conflict review, progressively disclosed
 effective-source import preview and checkbox-confirmed apply, secret-state
 clearing, logout, and process shutdown. Run:
 
@@ -136,7 +136,7 @@ command plus reset and credential migration in JSON mode. It parses the complete
 stdout as one document and checks `schema_version: 1`, command identity, success,
 post-operation revisions/restart state, explicit data/warnings, secret absence,
 typed error codes with fixed safe messages, and nonzero single-document
-validation failures. Lifecycle mutation tests prove committed result DTOs are
+validation failures. Catalog mutation tests prove committed result DTOs are
 used without a fallible post-write status read. It also proves JSON does not grant command authority and
 secret writes consume only user-controlled stdin. A migration cleanup regression verifies that JSON exposes counts and
 warning codes without keyring entry locators. Connectivity tests use a real managed catalog for the missing-SMTP preflight
@@ -188,7 +188,7 @@ seeder and observer, so the system is not solely verifying itself.
 | Area          | Assertions                                                                                                  |
 | ------------- | ----------------------------------------------------------------------------------------------------------- |
 | MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                              |
-| Configuration | legacy TOML plus managed CLI staging, activation, explicit selection, and process restart                   |
+| Configuration | v1 TOML compatibility, direct fresh init, reviewed import cutover, explicit recovery selection, and restart |
 | Managed mode  | a Linux SQLite-secret managed account reaches live IMAP; a missing selected database fails without fallback |
 | SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                           |
 | IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                              |

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import secrets
 import time
 import unicodedata
@@ -28,7 +29,6 @@ ConnectivityFailureCategory = Literal[
     "authentication_or_provider_rejected",
     "tls_or_connection_failed",
 ]
-Lifecycle = Literal["STAGING", "ACTIVE"]
 ManagementMode = Literal["legacy", "managed"]
 LegacyCredentialStorage = Literal["keyring", "plaintext"]
 ManagementFailureReason = Literal[
@@ -39,6 +39,7 @@ ManagementFailureReason = Literal[
     "catalog_not_configured",
     "catalog_unavailable",
     "credential_store_unavailable",
+    "import_credential_conflict",
     "import_preview_stale",
     "import_target_changed",
     "invalid_input",
@@ -172,7 +173,6 @@ class ManagedPolicy:
 
 @dataclass(frozen=True)
 class DoctorReport:
-    lifecycle: Lifecycle
     schema_version: int
     catalog_revision: int
     account_count: int
@@ -194,16 +194,10 @@ class BootstrapSnapshot:
 @dataclass(frozen=True)
 class CatalogInitializationResult:
     mode: ManagementMode
+    database: str
     bootstrap_revision: int
     restart_required: bool
     catalog_revision: int
-    lifecycle: Lifecycle
-
-
-@dataclass(frozen=True)
-class CatalogActivationResult:
-    catalog_revision: int
-    lifecycle: Lifecycle
 
 
 @dataclass(frozen=True)
@@ -399,12 +393,17 @@ class LegacyImportReport:
     created: tuple[str, ...]
     resumed: tuple[str, ...]
     attention_required: tuple[str, ...] = ()
+    mode: ManagementMode = "legacy"
+    bootstrap_revision: int = 0
+    restart_required: bool = False
 
 
 @dataclass(frozen=True)
 class _StoredLegacyPreview:
     plan: LegacyImportPlan
+    source: LegacySourceSnapshot
     target_path: Path
+    target_accounts: tuple[tuple[str, int, bool], ...]
     bootstrap_revision: int
     expires_at: float
 
@@ -412,15 +411,11 @@ class _StoredLegacyPreview:
 class ManagedCatalogPort(Protocol):
     path: Path
 
-    def lifecycle(self) -> Lifecycle: ...
-
     def catalog_revision(self) -> int: ...
 
     def doctor(self) -> DoctorReport: ...
 
     def index_health(self) -> IndexHealth: ...
-
-    def activate(self, *, expected_revision: int) -> int: ...
 
     def policy(self) -> ManagedPolicy: ...
 
@@ -434,14 +429,13 @@ class ManagedCatalogPort(Protocol):
         report_blocked_mutations: bool,
     ) -> int: ...
 
-    def validate_ready(self, *, require_active: bool = True) -> None: ...
+    def validate_ready(self) -> None: ...
 
     def load_account(
         self,
         name: str,
         *,
         roles: tuple[BindingRole, ...] = ("incoming", "outgoing"),
-        require_active_catalog: bool = False,
     ) -> EmailSettings: ...
 
     def add_account(
@@ -520,6 +514,18 @@ class ManagementBackend(Protocol):
         *,
         expected_revision: int,
         expected_exists: bool | None = None,
+        expected_source: LegacySourceSnapshot | None = None,
+    ) -> None: ...
+
+    def guarded_import_cutover(
+        self,
+        *,
+        target_path: Path,
+        expected_bootstrap_revision: int,
+        expected_source: LegacySourceSnapshot,
+        expected_resolved_secrets: tuple[tuple[str, BindingRole, str], ...],
+        expected_catalog_revision: int,
+        expected_account_revisions: tuple[tuple[str, int, bool], ...],
     ) -> None: ...
 
     def load_legacy_source(self) -> LegacySourceSnapshot: ...
@@ -593,77 +599,106 @@ class _ConfiguredCatalogService:
         )
 
 
-class CatalogLifecycleService(_ConfiguredCatalogService):
-    """Own explicit catalog initialization, activation, and mode selection."""
+class CatalogService(_ConfiguredCatalogService):
+    """Own managed catalog initialization and runtime mode selection."""
+
+    @staticmethod
+    def _source_has_content(source: LegacySourceSnapshot) -> bool:
+        return bool(
+            source.accounts
+            or source.unsupported_provider_names
+            or source.enable_attachment_download
+            or source.allowed_recipients
+            or source.allowed_senders
+            or source.report_blocked_mutations
+        )
+
+    @staticmethod
+    def _selection_identity(mode: ManagementMode, path: Path | None) -> tuple[ManagementMode, Path | None]:
+        return mode, path if mode == "managed" else None
 
     def initialize_default(
         self,
         *,
         expected_bootstrap_revision: int,
         require_empty_install: bool = False,
-    ) -> Path:
+    ) -> CatalogInitializationResult:
         bootstrap = self._backend.read_bootstrap()
         if bootstrap.revision != expected_bootstrap_revision:
             raise RevisionConflictError("bootstrap")
-        if require_empty_install:
-            source = self._backend.load_legacy_source()
-            if (
-                bootstrap.exists
-                or bootstrap.db_path is not None
-                or source.accounts
-                or source.unsupported_provider_names
-                or source.enable_attachment_download
-                or source.allowed_recipients
-                or source.allowed_senders
-                or source.report_blocked_mutations
-            ):
-                raise RevisionConflictError("bootstrap")
+        source = self._backend.load_legacy_source()
+        source_has_content = self._source_has_content(source)
+        if require_empty_install and (bootstrap.exists or bootstrap.db_path is not None or source_has_content):
+            raise RevisionConflictError("bootstrap")
         database = self._backend.default_catalog_path()
         if bootstrap.db_path is not None and bootstrap.db_path != database:
             raise ManagementError("A different managed database is already selected")
         if bootstrap.db_path == database:
             catalog = self._backend.open_catalog(database)
-            if catalog.lifecycle() != "STAGING":
-                raise ManagementError("The selected default catalog is not a STAGING catalog")
-            catalog.doctor()
-            return database
-        if bootstrap.mode == "managed":
-            raise ManagementError(
-                "Cannot initialize a replacement catalog while managed mode is selected. "
-                "Select legacy, restart, and retry."
-            )
-        catalog = self._backend.initialize_catalog(database)
-        self._backend.write_selection(
-            bootstrap.mode,
-            catalog.path,
-            expected_revision=expected_bootstrap_revision,
-            expected_exists=False if require_empty_install else None,
-        )
-        return database
-
-    def initialize(self, database: Path) -> CatalogInitializationResult:
-        bootstrap = self._backend.read_bootstrap()
-        if bootstrap.mode == "managed":
-            raise ManagementError(
-                "Cannot initialize a replacement catalog while managed mode is selected. "
-                "Select legacy, restart, and retry."
-            )
-        catalog = self._backend.initialize_catalog(database)
-        lifecycle = catalog.lifecycle()
+            catalog.validate_ready()
+        else:
+            if bootstrap.mode == "managed":
+                raise ManagementError(
+                    "Cannot initialize a replacement catalog while managed mode is selected. "
+                    "Select legacy, restart, and retry."
+                )
+            catalog = self._backend.initialize_catalog(database)
+        target_mode: ManagementMode = "legacy" if source_has_content and bootstrap.mode == "legacy" else "managed"
         catalog_revision = catalog.catalog_revision()
-        self._backend.write_selection(
-            bootstrap.mode,
-            catalog.path,
-            expected_revision=bootstrap.revision,
-        )
+        bootstrap_revision = bootstrap.revision
+        if bootstrap.mode != target_mode or bootstrap.db_path != catalog.path:
+            self._backend.write_selection(
+                target_mode,
+                catalog.path,
+                expected_revision=expected_bootstrap_revision,
+                expected_exists=False if require_empty_install else None,
+                expected_source=source,
+            )
+            bootstrap_revision += 1
         running_mode = bootstrap.running_mode if bootstrap.running_mode is not None else bootstrap.mode
         running_path = bootstrap.running_db_path if bootstrap.running_mode is not None else bootstrap.db_path
         return CatalogInitializationResult(
-            mode=bootstrap.mode,
-            bootstrap_revision=bootstrap.revision + 1,
-            restart_required=(running_mode, running_path) != (bootstrap.mode, catalog.path),
+            mode=target_mode,
+            database=catalog.path.as_posix(),
+            bootstrap_revision=bootstrap_revision,
+            restart_required=self._selection_identity(running_mode, running_path)
+            != self._selection_identity(target_mode, catalog.path),
             catalog_revision=catalog_revision,
-            lifecycle=lifecycle,
+        )
+
+    def initialize(self, database: Path) -> CatalogInitializationResult:
+        bootstrap = self._backend.read_bootstrap()
+        normalized = Path(os.path.abspath(database.expanduser()))
+        if bootstrap.mode == "managed" and bootstrap.db_path != normalized:
+            raise ManagementError(
+                "Cannot initialize a replacement catalog while managed mode is selected. "
+                "Select legacy, restart, and retry."
+            )
+        catalog = self._backend.initialize_catalog(normalized)
+        catalog.validate_ready()
+        catalog_revision = catalog.catalog_revision()
+        source = self._backend.load_legacy_source()
+        target_mode: ManagementMode = (
+            "legacy" if self._source_has_content(source) and bootstrap.mode == "legacy" else "managed"
+        )
+        bootstrap_revision = bootstrap.revision
+        if bootstrap.mode != target_mode or bootstrap.db_path != catalog.path:
+            self._backend.write_selection(
+                target_mode,
+                catalog.path,
+                expected_revision=bootstrap.revision,
+                expected_source=source,
+            )
+            bootstrap_revision += 1
+        running_mode = bootstrap.running_mode if bootstrap.running_mode is not None else bootstrap.mode
+        running_path = bootstrap.running_db_path if bootstrap.running_mode is not None else bootstrap.db_path
+        return CatalogInitializationResult(
+            mode=target_mode,
+            database=catalog.path.as_posix(),
+            bootstrap_revision=bootstrap_revision,
+            restart_required=self._selection_identity(running_mode, running_path)
+            != self._selection_identity(target_mode, catalog.path),
+            catalog_revision=catalog_revision,
         )
 
     def status(self) -> ManagementStatus:
@@ -699,7 +734,8 @@ class CatalogLifecycleService(_ConfiguredCatalogService):
             mode=bootstrap.mode,
             selected_catalog=bootstrap.db_path.as_posix() if bootstrap.db_path is not None else None,
             bootstrap_revision=bootstrap.revision,
-            restart_required=(running_mode, running_db_path) != (bootstrap.mode, bootstrap.db_path),
+            restart_required=self._selection_identity(running_mode, running_db_path)
+            != self._selection_identity(bootstrap.mode, bootstrap.db_path),
             report=report,
             catalog_problem=catalog_problem,
             bootstrap_exists=bootstrap.exists,
@@ -712,10 +748,6 @@ class CatalogLifecycleService(_ConfiguredCatalogService):
 
     def doctor(self) -> DoctorReport:
         return self._catalog().doctor()
-
-    def activate(self, *, expected_revision: int) -> CatalogActivationResult:
-        catalog_revision = self._catalog().activate(expected_revision=expected_revision)
-        return CatalogActivationResult(catalog_revision=catalog_revision, lifecycle="ACTIVE")
 
     def select(
         self,
@@ -735,9 +767,7 @@ class CatalogLifecycleService(_ConfiguredCatalogService):
             catalog = self._backend.open_catalog(bootstrap.db_path)
             if catalog.catalog_revision() != expected_catalog_revision:
                 raise RevisionConflictError("catalog")
-            if catalog.lifecycle() != "ACTIVE":
-                raise ManagementError("Managed catalog must be ACTIVE before selection")
-            catalog.validate_ready(require_active=True)
+            catalog.validate_ready()
         self._backend.write_selection(
             mode,
             bootstrap.db_path,
@@ -748,7 +778,8 @@ class CatalogLifecycleService(_ConfiguredCatalogService):
         return ModeSelectionResult(
             mode=mode,
             bootstrap_revision=expected_bootstrap_revision + 1,
-            restart_required=(running_mode, running_path) != (mode, bootstrap.db_path),
+            restart_required=self._selection_identity(running_mode, running_path)
+            != self._selection_identity(mode, bootstrap.db_path),
         )
 
 
@@ -1064,7 +1095,9 @@ class LegacyImportService(_ConfiguredCatalogService):
         source = self._backend.load_legacy_source()
         bootstrap = self._backend.read_bootstrap()
         if bootstrap.db_path is None:
-            raise ManagementError("No managed database is configured. Prepare the staging catalog before importing.")
+            raise ManagementError(
+                "No managed database is configured. Prepare private account storage before importing."
+            )
         catalog = self._backend.open_catalog(bootstrap.db_path)
         fingerprint = self._source_fingerprint(source)
         target_revision = catalog.catalog_revision()
@@ -1079,6 +1112,16 @@ class LegacyImportService(_ConfiguredCatalogService):
             created_at=created_at,
         )
         self._assert_target_snapshot(catalog, plan, expected_catalog_revision=target_revision)
+        target_accounts = tuple(
+            (account.name, account.revision, account.enabled) for account in catalog.list_accounts()
+        )
+        if target_accounts != tuple(
+            (account.name, account.revision, account.enabled) for account in catalog.list_accounts()
+        ):
+            raise ManagementError(
+                "Legacy import preview is stale; preview and retry",
+                reason="import_preview_stale",
+            )
         now = time.monotonic()
         with self._preview_lock:
             self._previews = {
@@ -1089,7 +1132,9 @@ class LegacyImportService(_ConfiguredCatalogService):
                 self._previews.pop(oldest)
             self._previews[token] = _StoredLegacyPreview(
                 plan=plan,
+                source=source,
                 target_path=bootstrap.db_path,
+                target_accounts=target_accounts,
                 bootstrap_revision=bootstrap.revision,
                 expires_at=now + self._PREVIEW_TTL_SECONDS,
             )
@@ -1177,8 +1222,6 @@ class LegacyImportService(_ConfiguredCatalogService):
         expected_revision: int,
         confirmation: str,
     ) -> LegacyImportReport:
-        if confirmation != "IMPORT":
-            raise ManagementError("Legacy import confirmation must be exactly IMPORT")
         with self._preview_lock:
             stored = self._previews.pop(preview_token, None)
         if stored is None or stored.expires_at < time.monotonic():
@@ -1187,6 +1230,13 @@ class LegacyImportService(_ConfiguredCatalogService):
                 reason="import_preview_stale",
             )
         plan = stored.plan
+        requires_confirmation = plan.policy_action == "update" or any(
+            item.action in {"create", "resume_credentials"} for item in plan.accounts
+        )
+        if requires_confirmation and confirmation != "IMPORT":
+            raise ManagementError("Legacy import confirmation must be exactly IMPORT")
+        if not requires_confirmation and confirmation not in {"", "IMPORT"}:
+            raise ManagementError("Legacy import confirmation is invalid")
         if expected_revision != plan.target_revision:
             raise ManagementError(
                 "Legacy import preview is stale; preview and retry",
@@ -1196,8 +1246,6 @@ class LegacyImportService(_ConfiguredCatalogService):
         self._assert_source_snapshot(plan)
         catalog = self._backend.open_catalog(stored.target_path)
         self._assert_target_snapshot(catalog, plan, expected_catalog_revision=expected_revision)
-        if catalog.lifecycle() != "STAGING":
-            raise ManagementError("Legacy import can be applied only to a STAGING managed catalog")
         if plan.has_conflicts:
             conflicts = ", ".join(account.name for account in plan.accounts if account.action == "conflict")
             raise ManagementError(f"Legacy import has destination conflicts: {conflicts}")
@@ -1208,6 +1256,8 @@ class LegacyImportService(_ConfiguredCatalogService):
         accounts = ManagedAccountService(self._backend, catalog=catalog)
         credentials = CredentialManagementService(self._backend, catalog=catalog)
         expected_catalog_revision = plan.target_revision
+        expected_resolved_secrets: list[tuple[str, BindingRole, str]] = []
+        expected_account_revisions = {name: (revision, enabled) for name, revision, enabled in stored.target_accounts}
         for item in plan.accounts:
             account = item.source
             if item.action == "create":
@@ -1219,6 +1269,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                     )
                 self._assert_selected_target(stored)
                 incoming_secret = self._backend.resolve_legacy_secret(account.name, "incoming", account)
+                expected_resolved_secrets.append((account.name, "incoming", incoming_secret))
                 outgoing_secret: str | None = None
                 if account.outgoing is not None:
                     self._assert_account_target(catalog, item)
@@ -1229,6 +1280,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                         )
                     self._assert_selected_target(stored)
                     outgoing_secret = self._backend.resolve_legacy_secret(account.name, "outgoing", account)
+                    expected_resolved_secrets.append((account.name, "outgoing", outgoing_secret))
                 self._assert_source_snapshot(plan)
                 self._assert_account_target(catalog, item)
                 if catalog.catalog_revision() != expected_catalog_revision:
@@ -1255,6 +1307,8 @@ class LegacyImportService(_ConfiguredCatalogService):
                     if mutation is not None and mutation.status != "active":
                         attention_required.append(f"{account.name}:{role}:{mutation.status}")
                 expected_catalog_revision += 1
+                final_revision = result.outgoing.revision if result.outgoing is not None else result.incoming.revision
+                expected_account_revisions[account.name] = (final_revision, True)
                 created.append(account.name)
             elif item.action == "resume_credentials":
                 if item.expected_target_revision is None:
@@ -1269,6 +1323,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                         )
                     self._assert_selected_target(stored)
                     secret = self._backend.resolve_legacy_secret(account.name, role, account)
+                    expected_resolved_secrets.append((account.name, role, secret))
                     self._assert_source_snapshot(plan)
                     self._assert_account_target(catalog, item, expected_revision=expected_account_revision)
                     if catalog.catalog_revision() != expected_catalog_revision:
@@ -1286,7 +1341,63 @@ class LegacyImportService(_ConfiguredCatalogService):
                     if mutation.status != "active":
                         attention_required.append(f"{account.name}:{role}:{mutation.status}")
                     expected_account_revision = mutation.revision
+                expected_account_revisions[account.name] = (expected_account_revision, True)
                 resumed.append(account.name)
+            elif item.action == "unchanged" and not plan.unsupported_provider_names:
+                if item.expected_target_revision is None:
+                    raise ManagementError("Legacy import preview is invalid; preview and retry")
+                roles: tuple[BindingRole, ...] = (
+                    ("incoming", "outgoing") if account.outgoing is not None else ("incoming",)
+                )
+                self._assert_account_target(catalog, item)
+                if catalog.catalog_revision() != expected_catalog_revision:
+                    raise ManagementError(
+                        "Legacy import preview is stale; preview and retry",
+                        reason="import_preview_stale",
+                    )
+                self._assert_selected_target(stored)
+                legacy_secrets: dict[BindingRole, str] = {}
+                for role in roles:
+                    secret = self._backend.resolve_legacy_secret(account.name, role, account)
+                    legacy_secrets[role] = secret
+                    expected_resolved_secrets.append((account.name, role, secret))
+                self._assert_source_snapshot(plan)
+                self._assert_account_target(catalog, item)
+                if catalog.catalog_revision() != expected_catalog_revision:
+                    raise ManagementError(
+                        "Legacy import preview is stale; preview and retry",
+                        reason="import_preview_stale",
+                    )
+                self._assert_selected_target(stored)
+                managed_account = catalog.load_account(account.name, roles=roles)
+                managed_secrets: dict[BindingRole, str] = {
+                    "incoming": managed_account.incoming.password.get_secret_value(),
+                }
+                if account.outgoing is not None:
+                    if managed_account.outgoing is None:
+                        raise ManagementError(
+                            "Legacy import preview is stale; preview and retry",
+                            reason="import_preview_stale",
+                        )
+                    managed_secrets["outgoing"] = managed_account.outgoing.password.get_secret_value()
+                self._assert_account_target(catalog, item)
+                if catalog.catalog_revision() != expected_catalog_revision:
+                    raise ManagementError(
+                        "Legacy import preview is stale; preview and retry",
+                        reason="import_preview_stale",
+                    )
+                if any(
+                    not secrets.compare_digest(
+                        legacy_secrets[role].encode("utf-8"),
+                        managed_secrets[role].encode("utf-8"),
+                    )
+                    for role in roles
+                ):
+                    raise ManagementError(
+                        "Legacy and managed credentials differ; update or remove the managed credential, "
+                        "then preview and retry",
+                        reason="import_credential_conflict",
+                    )
         if plan.policy_action == "update":
             self._assert_selected_target(stored)
             self._assert_source_snapshot(plan)
@@ -1304,11 +1415,44 @@ class LegacyImportService(_ConfiguredCatalogService):
                 allowed_senders=plan.source_policy.allowed_senders,
                 report_blocked_mutations=plan.source_policy.report_blocked_mutations,
             )
+            expected_catalog_revision += 1
+        bootstrap = self._backend.read_bootstrap()
+        mode = bootstrap.mode
+        bootstrap_revision = bootstrap.revision
+        running_mode = bootstrap.running_mode if bootstrap.running_mode is not None else bootstrap.mode
+        running_path = bootstrap.running_db_path if bootstrap.running_mode is not None else bootstrap.db_path
+        restart_required = CatalogService._selection_identity(
+            running_mode,
+            running_path,
+        ) != CatalogService._selection_identity(bootstrap.mode, bootstrap.db_path)
+        if not plan.unsupported_provider_names and not attention_required and bootstrap.mode == "legacy":
+            self._backend.guarded_import_cutover(
+                target_path=stored.target_path,
+                expected_bootstrap_revision=bootstrap.revision,
+                expected_source=stored.source,
+                expected_resolved_secrets=tuple(expected_resolved_secrets),
+                expected_catalog_revision=expected_catalog_revision,
+                expected_account_revisions=tuple(
+                    (name, revision, enabled)
+                    for name, (revision, enabled) in sorted(expected_account_revisions.items())
+                ),
+            )
+            mode = "managed"
+            bootstrap_revision += 1
+            running_mode = bootstrap.running_mode if bootstrap.running_mode is not None else bootstrap.mode
+            running_path = bootstrap.running_db_path if bootstrap.running_mode is not None else bootstrap.db_path
+            restart_required = CatalogService._selection_identity(running_mode, running_path) != (
+                "managed",
+                stored.target_path,
+            )
         return LegacyImportReport(
             plan=plan,
             created=tuple(created),
             resumed=tuple(resumed),
             attention_required=tuple(attention_required),
+            mode=mode,
+            bootstrap_revision=bootstrap_revision,
+            restart_required=restart_required,
         )
 
 
@@ -1429,7 +1573,7 @@ class LegacyCompatibilityService:
 
 @dataclass(frozen=True)
 class ManagementServices:
-    lifecycle: CatalogLifecycleService
+    catalog: CatalogService
     accounts: ManagedAccountService
     credentials: CredentialManagementService
     policy: PolicyManagementService
@@ -1441,7 +1585,7 @@ class ManagementServices:
     @classmethod
     def compose(cls, backend: ManagementBackend) -> ManagementServices:
         return cls(
-            lifecycle=CatalogLifecycleService(backend),
+            catalog=CatalogService(backend),
             accounts=ManagedAccountService(backend),
             credentials=CredentialManagementService(backend),
             policy=PolicyManagementService(backend),

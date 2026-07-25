@@ -30,14 +30,15 @@ For a published release whose notes state that it includes Local Email App V2,
 `uvx mcp-email-server@latest ui` is the equivalent temporary invocation.
 
 Keep the foreground command running. On a truly empty installation, the
-authenticated browser session prepares a private staging catalog at the safe
-local default; existing TOML or environment configuration instead offers an
-explicit import review. The account-first UI has only **Email accounts** and
-**Settings & help** as primary destinations. Start with the email address and
-password; the UI fills common connection settings from the email domain and
-keeps them editable, while outgoing mail remains optional. Use
-**Password & test** on the saved account, finish setup, explicitly choose the
-new accounts, and restart the MCP client.
+authenticated browser session prepares private account storage at the safe local
+default; existing TOML or environment configuration instead offers an explicit
+import review while the previous settings keep running. The account-first UI has
+only **Email accounts** and **Settings & help** as primary destinations. Start
+with the email address and password; the UI fills common connection settings from
+the email domain and keeps them editable, while outgoing mail remains optional.
+A saved complete account is ready without a separate activation step. Use
+**Password & test** on the saved account if desired, then restart the MCP client
+to apply the selected settings.
 
 ### 2. Configure the MCP client
 

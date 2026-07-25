@@ -26,6 +26,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
+from mcp_email_server.bootstrap import read_bootstrap
 from mcp_email_server.managed import SCHEMA_VERSION
 
 pytestmark = pytest.mark.e2e
@@ -249,7 +250,7 @@ def _run_cli(console_script: Path, env: dict[str, str], arguments: list[str], *,
 
 @pytest.mark.asyncio
 async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenmail(tmp_path: Path) -> None:
-    """Prove CLI staging -> test -> activation -> restart -> live managed IMAP."""
+    """Prove CLI setup -> test -> restart -> live managed IMAP without catalog activation."""
     _wait_until_ready()
     _ensure_empty_mailboxes(ALICE, ["INBOX", "Drafts", "Archive"])
     subject = f"managed-index-{uuid.uuid4().hex}"
@@ -273,7 +274,10 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
     })
 
     _run_cli(console_script, server_env, ["config", "init", "--database", str(database)])
-    assert 'mode = "legacy"' in config_path.read_text()
+    bootstrap = read_bootstrap(config_path)
+    assert bootstrap.mode == "managed"
+    assert bootstrap.db_path == database
+    assert not config_path.exists()
     add_arguments = [
         "account",
         "add",
@@ -296,11 +300,8 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
     assert ALICE[1] not in add_output
     test_output = _run_cli(console_script, server_env, ["account", "test", "alice-managed"])
     assert "connectivity test passed" in test_output
-    _run_cli(console_script, server_env, ["config", "activate"])
-    assert 'mode = "legacy"' in config_path.read_text()
-    select_output = _run_cli(console_script, server_env, ["config", "select", "managed"])
-    assert "Restart" in select_output
-    assert 'mode = "managed"' in config_path.read_text()
+    assert read_bootstrap(config_path).mode == "managed"
+    assert not config_path.exists()
 
     server = StdioServerParameters(
         command=str(console_script),
@@ -502,7 +503,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
 
 @pytest.mark.asyncio
 async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_greenmail(tmp_path: Path) -> None:
-    """Prove effective legacy preview, confirmed import, activation, and stdio."""
+    """Prove effective legacy preview, confirmed import, automatic cutover, and stdio."""
     _wait_until_ready()
     app_dir = tmp_path / "managed-import"
     app_dir.mkdir(mode=0o700)
@@ -548,12 +549,14 @@ async def test_explicit_legacy_import_preview_apply_and_managed_stdio_against_gr
     )
     assert "created=environment-only,alice,bob" in applied
     assert config_path.read_bytes() == stored_source
+    bootstrap = read_bootstrap(config_path)
+    assert bootstrap.mode == "managed"
+    assert bootstrap.db_path == database
+    assert bootstrap.revision == 2
     test_output = _run_cli(console_script, server_env, ["account", "test", "alice"])
     assert "connectivity test passed" in test_output
     environment_test = _run_cli(console_script, server_env, ["account", "test", "environment-only"])
     assert "connectivity test passed" in environment_test
-    _run_cli(console_script, server_env, ["config", "activate"])
-    _run_cli(console_script, server_env, ["config", "select", "managed"])
 
     server = StdioServerParameters(
         command=str(console_script),
@@ -619,8 +622,6 @@ async def test_managed_stdio_missing_database_fails_closed_without_legacy_fallba
         ],
         stdin=f"{ALICE[1]}\n",
     )
-    _run_cli(console_script, server_env, ["config", "activate"])
-    _run_cli(console_script, server_env, ["config", "select", "managed"])
     # Preserve a complete legacy account as a fallback tripwire. Managed startup
     # must ignore it even when the selected database disappears.
     with config_path.open("a") as destination:

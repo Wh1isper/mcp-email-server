@@ -4,8 +4,8 @@
 
 Managed mode uses one owner-only SQLite file for up to three ownership classes:
 
-- authoritative non-secret catalog state: catalog lifecycle, accounts,
-  endpoints, policy, revisions, secret-binding lifecycle, and import state;
+- authoritative non-secret catalog state: accounts, endpoints, policy, revisions,
+  secret-binding lifecycle, and import state;
 - on Linux, authoritative managed secret values in the dedicated
   `managed_secret` table owned by the `SecretStore` adapter;
 - rebuildable metadata projection: logical mailboxes, placement metadata,
@@ -19,7 +19,7 @@ or retention of projection data cannot alter catalog authority.
 The exact physical schema is versioned and verified by exact-schema and unsupported-version tests. The
 logical model includes:
 
-- catalog metadata: stable ID, lifecycle, revision, schema version, timestamps;
+- catalog metadata: stable ID, revision, schema version, timestamps;
 - accounts: stable ID, normalized unique name, display data, lifecycle,
   revision, timestamps;
 - IMAP/SMTP endpoint configuration without credentials;
@@ -65,12 +65,15 @@ remains supported through the explicit spec 04 workflow.
 
 ## Filesystem Layout and Locking
 
-The database, existing `-wal` and `-shm` sidecars, bootstrap file, and any
-application lock file are security-sensitive. Supported paths are local and
+The database, existing `-wal` and `-shm` sidecars, the independent bootstrap
+sidecar (`config.bootstrap.toml` for a `config.toml` legacy source), and every
+application lock file are security-sensitive. The bootstrap lock is derived from
+the sidecar as `config.bootstrap.toml.lock`; selection writes atomically replace
+the sidecar and never replace the legacy source. Supported paths are local and
 owned by the current user. Network filesystems and platforms that cannot provide
 the required ownership/no-follow semantics fail with remediation.
 
-Concurrent initialization and activation use an application lock with bounded
+Concurrent initialization and catalog access use an application lock with bounded
 wait. SQLite busy timeout is finite and maps to a typed busy error. Locks are not
 held while contacting providers or the system keyring. A Linux
 `managed_secret` insert is local database work and occurs under the same bounded
@@ -178,7 +181,7 @@ remain separate operator procedures outside this delivery.
    unsafe modes, insecure parents, and detected identity replacement fail
    closed within the stated local single-user trust boundary.
 4. Newly created WAL/SHM files are post-validated and owner-only.
-5. Concurrent initialize/activate and busy timeout behavior is deterministic and
+5. Concurrent initialization/open and busy timeout behavior is deterministic and
    bounded.
 6. Unsupported pre-release schema versions are rejected without mutation; future crash and migration tests never advertise a partially migrated schema.
 7. External network, system-keyring, and large filesystem work is absent from

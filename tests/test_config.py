@@ -11,6 +11,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from mcp_email_server import config as config_module
+from mcp_email_server.bootstrap import bootstrap_path, read_bootstrap
 from mcp_email_server.config import (
     EmailServer,
     EmailSettings,
@@ -389,7 +390,8 @@ def test_legacy_reset_preserves_recorded_managed_selection(
 
     config_module.delete_settings()
 
-    assert tomllib.loads(config_path.read_text()) == {
+    assert not config_path.exists()
+    assert tomllib.loads(bootstrap_path(config_path).read_text()) == {
         "bootstrap_version": 1,
         "bootstrap_revision": 3,
         "mode": "legacy",
@@ -398,7 +400,7 @@ def test_legacy_reset_preserves_recorded_managed_selection(
     }
 
 
-def test_revisioned_bootstrap_fields_round_trip_through_legacy_settings(
+def test_combined_bootstrap_fields_migrate_to_sidecar_on_legacy_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -425,18 +427,19 @@ def test_revisioned_bootstrap_fields_round_trip_through_legacy_settings(
 
     store_settings(settings)
     reloaded = config_module.get_settings(reload=True)
-    assert reloaded.bootstrap_revision == 3
-    assert reloaded.managed_selection is True
-    assert reloaded.managed_db_location == "/private/managed.sqlite3"
+    assert reloaded.bootstrap_revision is None
+    assert reloaded.managed_selection is None
+    assert reloaded.managed_db_location is None
     assert reloaded.db_location == "/private/legacy-index.sqlite3"
+    durable = read_bootstrap(config_path)
+    assert durable.revision == 3
+    assert durable.db_path == Path("/private/managed.sqlite3")
 
 
 def test_settings_store_preserves_explicit_revisioned_no_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from mcp_email_server.bootstrap import read_bootstrap
-
     parent = tmp_path / "private"
     parent.mkdir(mode=0o700)
     parent.chmod(0o700)
@@ -455,9 +458,12 @@ def test_settings_store_preserves_explicit_revisioned_no_selection(
     settings = config_module.get_settings(reload=True)
     settings.store()
 
-    assert read_bootstrap(config_path).db_path is None
+    durable = read_bootstrap(config_path)
+    assert durable.db_path is None
+    assert durable.revision == 3
+    assert tomllib.loads(bootstrap_path(config_path).read_text())["managed_selection"] is False
     stored = tomllib.loads(config_path.read_text())
-    assert stored["managed_selection"] is False
+    assert "managed_selection" not in stored
     assert stored["db_location"] == legacy_index.as_posix()
 
 
@@ -800,9 +806,9 @@ def test_store_failed_write_leaves_original_intact(tmp_path, monkeypatch):
     # Original file untouched; no stray temp files left in the directory.
     assert cfg.read_text() == "report_blocked_mutations = false\n"
     assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
-    lock_path = Path(f"{cfg}.lock")
+    lock_path = Path(f"{bootstrap_path(cfg)}.lock")
     assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
-    leftover = [p.name for p in tmp_path.iterdir() if p.name not in {"config.toml", "config.toml.lock"}]
+    leftover = [p.name for p in tmp_path.iterdir() if p.name not in {"config.toml", lock_path.name}]
     assert leftover == [], f"temp files left behind: {leftover}"
 
 
@@ -916,7 +922,7 @@ def test_missing_reset_leaves_parent_ready_for_secure_managed_initialization(
         expected_exists=False,
     )
 
-    assert catalog.lifecycle() == "STAGING"
+    assert catalog.catalog_revision() == 1
     assert bootstrap.db_path == catalog_path
 
 

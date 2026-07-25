@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 
 import mcp_email_server.config as config_module
 from mcp_email_server import keyring_store
-from mcp_email_server.bootstrap import BootstrapError
+from mcp_email_server.bootstrap import BootstrapError, bootstrap_path
 from mcp_email_server.cli import app as cli_app
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings, Settings, delete_settings
 from mcp_email_server.keyring_store import SENTINEL, SERVICE
@@ -930,14 +930,15 @@ def test_reset_unparseable_bootstrap_fails_closed_without_unlink(tmp_path, monke
     monkeypatch.delenv("MCP_EMAIL_SERVER_CREDENTIAL_STORAGE", raising=False)
     cfg = tmp_path / "config.toml"
     monkeypatch.setattr(config_module, "CONFIG_PATH", cfg)
-    content = "this is not [ valid toml =::"
-    cfg.write_text(content)
+    source = 'credential_storage = "plaintext"\n'
+    cfg.write_text(source)
+    bootstrap_path(cfg).write_text("this is not [ valid toml =::")
 
-    # Once this file also owns explicit mode selection, an unparseable file may
-    # represent managed mode. Reset must not guess legacy and destroy it.
+    # The private sidecar owns explicit mode selection. Reset must not guess
+    # legacy and destroy the independent source when that authority is invalid.
     with pytest.raises(BootstrapError, match="parse bootstrap"):
         delete_settings()
-    assert cfg.read_text() == content
+    assert cfg.read_text() == source
 
 
 # 8. Sentinel value rejected everywhere

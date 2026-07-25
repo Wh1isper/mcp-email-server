@@ -51,14 +51,17 @@ than merging individual fields.
 
 ## A different configuration file is loaded
 
-The default file is:
+The default legacy source and derived bootstrap authority are:
 
 ```text
 ~/.config/mcp-email-server/config.toml
+~/.config/mcp-email-server/config.bootstrap.toml
 ```
 
-`MCP_EMAIL_SERVER_CONFIG_PATH` selects another path. The path is resolved when
-the configuration module is imported, so restart the server after changing it.
+`MCP_EMAIL_SERVER_CONFIG_PATH` selects another legacy source path; the bootstrap
+sidecar is its sibling with `.bootstrap` inserted before the TOML suffix. The
+path is resolved when the configuration module is imported, so restart the server
+after changing it. Selection and reviewed import do not rewrite the source file.
 
 On first use, the server can copy a legacy file from:
 
@@ -85,32 +88,38 @@ branch on `schema_version`, `ok`, `command`, typed `error.code`, and stable data
 rather than matching fixed safe message prose. JSON output grants no authority to
 run another command. Managed startup requires all of the following:
 
-- a parseable owner-only bootstrap with `bootstrap_version = 1`,
-  `mode = "managed"`, and `managed_db_location`;
+- a parseable owner-only bootstrap sidecar with `bootstrap_version = 1`,
+  `managed_selection = true`, `mode = "managed"`, and
+  `managed_db_location`;
 - a present, regular, non-symlink SQLite file in an owner-only immediate parent;
-- a supported schema and an `ACTIVE` catalog;
-- complete endpoint/binding pairs for enabled accounts;
-- readable active credentials in the owner-only managed SQLite secret store on
-  Linux, or in the same system-keyring session on a supported non-Linux
-  platform.
+- the exact supported managed schema.
 
-The server deliberately does not fall back to TOML accounts when any of these
-checks fails. `config status` still returns bounded bootstrap state and
+The server deliberately does not fall back to TOML accounts when a bootstrap or
+catalog check fails. An incomplete enabled account is omitted individually and
+reported by `config doctor`; it does not block other complete accounts. Active
+credentials are resolved only immediately before constructing that account's
+provider, from the owner-only managed SQLite secret store on Linux or the same
+system-keyring session on a supported non-Linux platform. An unreadable secret
+therefore fails that account operation and is reported by `config doctor`, rather
+than blocking unrelated complete accounts at startup. `config status` still
+returns bounded bootstrap state and
 `catalog_status=unavailable` when the selected database is missing, corrupt,
 incompatible, or insecure. A fresh installation reports
 `catalog_status=not_configured`; an agent must hand setup back to the user rather
 than collecting credentials. In an unavailable state, deliberately run `mcp-email-server
 config select legacy` and restart; this recovery transition uses a revisioned
 bootstrap compare-and-swap and does not open the failed catalog. If the bootstrap
-itself is unparseable, repair or restore it manually; `reset` cannot safely infer
-its mode and therefore does not unlink it.
+sidecar itself is unparseable, repair or restore that sidecar manually; `reset`
+cannot safely infer its mode and therefore does not unlink the independent legacy
+source.
 
 There are no released managed-catalog users for this pre-release redesign, so
 older development catalog schemas are rejected rather than migrated. While
 legacy mode is selected, preserve the old file for rollback and initialize a
 fresh owner-only path with `mcp-email-server config init --database NEW_PATH`.
-Then re-enter accounts or use the reviewed legacy import flow before activation
-and selection. Remove the obsolete development catalog only after verifying the
+Then re-enter accounts or use the reviewed legacy import flow. Fresh setup
+selects managed immediately; an existing v1 source remains selected until a
+complete import succeeds. Remove the obsolete development catalog only after verifying the
 replacement; on Linux, treat every old catalog copy as secret-bearing.
 
 If a managed password save fails, correct the reported storage or revision
@@ -216,9 +225,9 @@ form's connection disclosures, together with login name, port, security,
 certificate, sending, and Sent-folder details. There is no redundant connection
 preview; advanced settings and optional outgoing mail stay folded until needed.
 Provider connectivity testing is CLI-only. Empty-workspace and settled-ready
-banners with no next action are hidden; actionable activation, selection,
-restart, or conflict states remain visible,
-and activation never implies provider connectivity.
+banners with no next action are hidden; actionable import, selection, restart,
+or conflict states remain visible. There is no catalog activation step, and a
+saved account is not a provider-connectivity certification.
 There is no supported remote, wildcard, CORS, or shared-link mode. Managed
 catalog/bootstrap operations, attachment writes, and oversized spill require
 the documented POSIX filesystem primitives. An unsupported-platform error is a
@@ -434,12 +443,12 @@ See [DNS rebinding protection](transports.md#dns-rebinding-protection).
 ## Legacy import reports a conflict or missing credential
 
 Run `mcp-email-server config import-legacy` without `--apply` to preview again.
-A conflict means the staging destination differs from the effective legacy
+A conflict means the managed destination differs from the effective legacy
 account, collides after managed name normalization, or retains that name from a
 soft removal. Planning also rejects normalized collisions within the source and
 account-limit overflow. Import checks all such conditions before resolving
 secrets or writing, and it will not overwrite the destination. Use a fresh
-staging database or reconcile the destination manually.
+database or reconcile the destination manually.
 
 Preview includes complete environment-only accounts and environment policy
 overrides with legacy runtime precedence, but never reads their secret values or
@@ -450,10 +459,20 @@ unlock or repair the legacy keyring entry or restore the environment value and
 repeat the reviewed apply. A stale-preview error means the effective source,
 selected catalog path/bootstrap revision, or an exact catalog, policy, or
 account target revision changed; create and review a new preview rather than
-retrying an old confirmation. Matching account rows are reused and only missing bindings are filled. A failed
-credential save leaves destination authority unchanged; cleanup-required results
-need the reported cleanup. TOML, environment, and legacy keyring entries are
-never deleted.
+retrying an old confirmation. Matching account rows are reused and only missing
+bindings are filled. Once every source account type is supported, even when every
+row is already present, run `--apply` without a confirmation prompt or choose
+**Finish setup**: finalization privately verifies that each active managed
+password equals the current legacy password before cutover.
+`import_credential_conflict` means they differ; update or remove the
+managed credential and preview again. Import does not guess which password should
+win and overwrites neither side. A failed credential save leaves destination
+authority unchanged and legacy runtime selected; cleanup-required results need
+the reported cleanup. A fully successful
+import selects managed automatically only when all source account types are
+supported. Unsupported providers keep legacy selected until the user explicitly
+chooses otherwise. TOML, environment, and legacy keyring entries are never
+deleted.
 
 ## Duplicate account name
 

@@ -33,7 +33,7 @@ bounded, rebuildable observations.
 | [`01-system-context.md`](01-system-context.md)                                                         | actors, scope, process model, trust boundaries, and global invariants                         |
 | [`02-domain-model-and-authority.md`](02-domain-model-and-authority.md)                                 | domain language, identities, sources of truth, revisions, and policy ownership                |
 | [`03-application-architecture.md`](03-application-architecture.md)                                     | layers, services, ports, composition, request boundaries, and resource lifecycle              |
-| [`04-configuration-and-managed-catalog.md`](04-configuration-and-managed-catalog.md)                   | bootstrap, legacy/managed selection, catalog lifecycle, account lifecycle, policy, and import |
+| [`04-configuration-and-managed-catalog.md`](04-configuration-and-managed-catalog.md)                   | bootstrap, legacy/managed selection, catalog authority, account lifecycle, policy, and import |
 | [`05-credentials-and-secret-lifecycle.md`](05-credentials-and-secret-lifecycle.md)                     | secret authority, late resolution, candidate rotation, removal, cleanup, and redaction        |
 | [`06-mail-read-model-and-metadata-index.md`](06-mail-read-model-and-metadata-index.md)                 | mailbox discovery, metadata projection, coverage, provider fallback, bodies, and attachments  |
 | [`07-mail-mutations-and-provider-effects.md`](07-mail-mutations-and-provider-effects.md)               | mark, append, move, archive, delete, SMTP, sent-copy, cancellation, and uncertain outcomes    |
@@ -119,7 +119,7 @@ point and is replaced in place by the embedded local React UI. There is no new
 
 The delivery governed by these specs includes:
 
-- explicit managed initialization, activation, selection, and diagnostics;
+- immediate managed initialization for fresh installs, v1-safe reviewed migration, selection, and diagnostics;
 - account create/read/update/disable/re-enable/soft-remove;
 - managed policy and credential lifecycle;
 - preview-first, explicit legacy import;

@@ -36,11 +36,7 @@ def resolve_local_account(
             raise RuntimeError("Managed mode requires a database path")
         catalog = ManagedCatalog(bootstrap.db_path)
         try:
-            resolution = catalog.resolve_account(
-                account_name,
-                roles=roles,
-                require_active_catalog=True,
-            )
+            resolution = catalog.resolve_account(account_name, roles=roles)
         except ManagedCatalogError as exc:
             if "not found or is disabled" in str(exc):
                 raise ValueError(f"Account {account_name} was not found") from None

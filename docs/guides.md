@@ -240,8 +240,8 @@ Keep the mailbox argument consistent with the mailbox used to obtain the
 
 ## Import legacy accounts into a managed catalog
 
-Create the destination without selecting it, preview the effective legacy
-source, and apply only after reviewing every action:
+Create the destination while keeping legacy runtime selected, preview the
+effective legacy source, and apply only after reviewing every action:
 
 ```bash
 mcp-email-server config init \
@@ -251,8 +251,7 @@ mcp-email-server config import-legacy --apply
 # Review the displayed plan, then type IMPORT at the prompt.
 mcp-email-server account list
 mcp-email-server account test work incoming
-mcp-email-server config activate
-mcp-email-server config select managed
+# Restart MCP clients when config status reports restart_required=true.
 ```
 
 The source uses the TOML file selected by `MCP_EMAIL_SERVER_CONFIG_PATH` plus
@@ -263,13 +262,15 @@ without accessing credential values or the keyring, so it can still show actions
 while the legacy keyring is locked. `--apply` prints that complete plan before
 accepting the interactive `IMPORT` confirmation; a no-op plan does not prompt.
 Apply then fails safely if a required current TOML, environment, or keyring
-credential cannot be read.
+credential cannot be read. A full successful import automatically selects
+managed mode. Any failure keeps legacy selected; unsupported provider account
+types are reported and prevent automatic cutover.
 
 A `conflict` means the destination already has a different account with that
 normalized name or retains a soft-removal tombstone. Import never overwrites
 that row.
-Resolve it deliberately by choosing a fresh staging catalog or reconciling the
-account manually. An exact repeat is `unchanged`; an interrupted matching import
+Resolve it deliberately by choosing a fresh catalog or reconciling the account
+manually. An exact repeat is `unchanged`; an interrupted matching import
 can report `resume_credentials` and install only missing bindings. The source is
 left untouched in every case.
 

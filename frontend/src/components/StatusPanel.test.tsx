@@ -21,13 +21,13 @@ test('shows current non-secret conflict summary and does not auto-replay', async
     legacy_source: { account_count: 0, unsupported_provider_count: 0, policy_customized: false },
     legacy_source_problem: null,
     report: {
-      lifecycle: 'ACTIVE', schema_version: 1, catalog_revision: 5,
+      schema_version: 1, catalog_revision: 5,
       account_count: 1, enabled_account_count: 1,
       cleanup_required_bindings: 0, problems: [],
     },
   })
   vi.mocked(api.selectMode).mockRejectedValue(new RevisionConflictError({
-    category: 'conflict', message: 'Catalog revision changed.', current: { catalog_revision: 6, lifecycle: 'ACTIVE' },
+    category: 'conflict', message: 'Catalog revision changed.', current: { catalog_revision: 6 },
   }))
   render(<StatusPanel api={api} />)
 
@@ -36,11 +36,11 @@ test('shows current non-secret conflict summary and does not auto-replay', async
   expect(await screen.findByRole('heading', { name: 'Review the latest settings' })).toBeInTheDocument()
   expect(screen.getByText('Settings version')).toBeInTheDocument()
   expect(screen.getByText('6')).toBeInTheDocument()
-  expect(screen.getByRole('alert')).not.toHaveTextContent(/catalog|revision|lifecycle|legacy/i)
+  expect(screen.getByRole('alert')).not.toHaveTextContent(/catalog|revision|legacy/i)
   expect(api.selectMode).toHaveBeenCalledTimes(1)
 })
 
-test('uses a newer policy revision hint for activation before status refresh completes', async () => {
+test('uses a newer policy revision hint when selecting managed settings', async () => {
   const user = userEvent.setup()
   const api = createMockApi()
   vi.mocked(api.status).mockResolvedValue({
@@ -49,7 +49,7 @@ test('uses a newer policy revision hint for activation before status refresh com
     bootstrap_revision: 1,
     restart_required: false,
     report: {
-      lifecycle: 'STAGING', schema_version: 2, catalog_revision: 5,
+      schema_version: 3, catalog_revision: 5,
       account_count: 1, enabled_account_count: 1,
       cleanup_required_bindings: 0, problems: [],
     },
@@ -62,26 +62,23 @@ test('uses a newer policy revision hint for activation before status refresh com
     legacy_source_problem: null,
   })
   const view = render(<StatusPanel api={api} />)
-  await screen.findByRole('button', { name: 'Finish setup' })
+  await screen.findByRole('button', { name: 'Use these accounts' })
 
   view.rerender(<StatusPanel api={api} catalogRevisionHint={6} />)
-  await user.click(screen.getByRole('button', { name: 'Finish setup' }))
+  await user.click(screen.getByRole('button', { name: 'Use these accounts' }))
 
-  expect(api.activateCatalog).toHaveBeenCalledWith(6, {
-    expected_bootstrap_revision: 1,
-    expected_catalog: '/private/managed.sqlite3',
-  })
+  expect(api.selectMode).toHaveBeenCalledWith('managed', 1, 6)
 })
 
-test('blocks structural activation problems without running provider preflight', async () => {
+test('shows structural account problems without a separate activation action', async () => {
   const api = createMockApi()
   vi.mocked(api.status).mockResolvedValue({
-    mode: 'legacy',
+    mode: 'managed',
     selected_catalog: '/private/managed.sqlite3',
     bootstrap_revision: 2,
-    restart_required: false,
+    restart_required: true,
     report: {
-      lifecycle: 'STAGING', schema_version: 2, catalog_revision: 7,
+      schema_version: 3, catalog_revision: 7,
       account_count: 1, enabled_account_count: 1,
       cleanup_required_bindings: 0,
       problems: ['account_incomplete:work:incoming'],
@@ -97,13 +94,13 @@ test('blocks structural activation problems without running provider preflight',
 
   render(<StatusPanel api={api} />)
 
-  expect(await screen.findByRole('button', { name: 'Finish setup' })).toBeDisabled()
-  expect(screen.getByText(/work needs complete incoming mail settings and a saved password/i)).toBeVisible()
+  expect(await screen.findByText(/work needs complete incoming mail settings and a saved password/i)).toBeVisible()
+  expect(screen.getByText(/restart the mail server to apply this change/i)).toBeVisible()
+  expect(screen.queryByRole('button', { name: /finish setup/i })).not.toBeInTheDocument()
   expect(screen.queryByText(/test.*connection|provider/i)).not.toBeInTheDocument()
-  expect(api.activateCatalog).not.toHaveBeenCalled()
 })
 
-test('automatically prepares only a backend-proven empty installation', async () => {
+test('automatically initializes and selects managed settings only for a backend-proven empty installation', async () => {
   const api = createMockApi()
   vi.mocked(api.status)
     .mockResolvedValueOnce({
@@ -121,12 +118,12 @@ test('automatically prepares only a backend-proven empty installation', async ()
       legacy_source_problem: null,
     })
     .mockResolvedValue({
-      mode: 'legacy',
+      mode: 'managed',
       selected_catalog: '/private/managed.sqlite3',
       bootstrap_revision: 1,
       restart_required: true,
       report: {
-        lifecycle: 'STAGING', schema_version: 2, catalog_revision: 1,
+        schema_version: 3, catalog_revision: 1,
         account_count: 0, enabled_account_count: 0,
         cleanup_required_bindings: 0, problems: [],
       },
@@ -144,42 +141,89 @@ test('automatically prepares only a backend-proven empty installation', async ()
   expect(await screen.findByText('Setup details')).toBeInTheDocument()
   await waitFor(() => expect(api.initializeDefaultCatalog).toHaveBeenCalledOnce())
   await waitFor(() => expect(api.status).toHaveBeenCalledTimes(2))
-  expect(screen.queryByText('Account settings ready')).not.toBeInTheDocument()
   expect(api.initializeDefaultCatalog).toHaveBeenCalledWith(0, true)
-  expect(screen.queryByText('Your private account settings are ready.')).not.toBeInTheDocument()
-  expect(screen.queryByText('STAGING')).not.toBeInTheDocument()
+  expect(screen.getByText('New account settings')).toBeInTheDocument()
+  expect(screen.queryByText('Account settings ready')).not.toBeInTheDocument()
 })
 
-test('earlier environment or file settings require an explicit import action', async () => {
+test('earlier settings stay selected while an explicit import is prepared', async () => {
+  const user = userEvent.setup()
   const api = createMockApi()
-  vi.mocked(api.status).mockResolvedValue({
-    mode: 'legacy',
-    selected_catalog: null,
-    bootstrap_revision: 0,
-    restart_required: false,
-    report: null,
+  const onNavigate = vi.fn()
+  vi.mocked(api.status)
+    .mockResolvedValueOnce({
+      mode: 'legacy',
+      selected_catalog: null,
+      bootstrap_revision: 0,
+      restart_required: false,
+      report: null,
+      catalog_problem: null,
+      bootstrap_exists: true,
+      running_mode: 'legacy',
+      running_catalog: null,
+      default_catalog: '/private/managed.sqlite3',
+      legacy_source: { account_count: 1, unsupported_provider_count: 0, policy_customized: true },
+      legacy_source_problem: null,
+    })
+    .mockResolvedValue({
+      mode: 'legacy',
+      selected_catalog: '/private/managed.sqlite3',
+      bootstrap_revision: 1,
+      restart_required: false,
+      report: {
+        schema_version: 3, catalog_revision: 1,
+        account_count: 0, enabled_account_count: 0,
+        cleanup_required_bindings: 0, problems: ['no_enabled_account'],
+      },
+      catalog_problem: null,
+      bootstrap_exists: true,
+      running_mode: 'legacy',
+      running_catalog: null,
+      default_catalog: '/private/managed.sqlite3',
+      legacy_source: { account_count: 1, unsupported_provider_count: 0, policy_customized: true },
+      legacy_source_problem: null,
+    })
+
+  const { rerender } = render(<StatusPanel api={api} onNavigate={onNavigate} />)
+
+  const action = await screen.findByRole('button', { name: 'Import existing settings' })
+  expect(api.initializeDefaultCatalog).not.toHaveBeenCalled()
+  await user.click(action)
+
+  await waitFor(() => expect(api.initializeDefaultCatalog).toHaveBeenCalledWith(0, false))
+  expect(await screen.findByText(/previous settings remain in use until the import succeeds/i)).toBeVisible()
+  expect(onNavigate).toHaveBeenCalledWith('settings')
+
+  vi.mocked(api.status).mockResolvedValueOnce({
+    mode: 'managed',
+    selected_catalog: '/private/managed.sqlite3',
+    bootstrap_revision: 2,
+    restart_required: true,
+    report: {
+      schema_version: 3, catalog_revision: 2,
+      account_count: 1, enabled_account_count: 1,
+      cleanup_required_bindings: 0, problems: [],
+    },
     catalog_problem: null,
-    bootstrap_exists: false,
+    bootstrap_exists: true,
     running_mode: 'legacy',
     running_catalog: null,
     default_catalog: '/private/managed.sqlite3',
     legacy_source: { account_count: 1, unsupported_provider_count: 0, policy_customized: true },
     legacy_source_problem: null,
   })
+  rerender(<StatusPanel api={api} refreshKey={1} onNavigate={onNavigate} />)
 
-  render(<StatusPanel api={api} />)
-
-  expect(await screen.findByRole('button', { name: 'Import existing settings' })).toBeInTheDocument()
-  expect(api.initializeDefaultCatalog).not.toHaveBeenCalled()
+  expect(await screen.findByText('Email accounts configured')).toBeVisible()
+  expect(screen.queryByText(/previous settings remain in use until the import succeeds/i)).not.toBeInTheDocument()
 })
 
-test('empty account context avoids duplicate actions and implementation vocabulary', async () => {
+test('empty account context avoids duplicate setup actions', async () => {
   const api = createMockApi()
   render(<StatusPanel api={api} />)
 
   expect(await screen.findByText('Setup details')).toBeInTheDocument()
   expect(screen.queryByText('Account settings ready')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Add email account' })).not.toBeInTheDocument()
-  expect(screen.queryByText('Lifecycle controls')).not.toBeInTheDocument()
-  expect(screen.queryByText('Select managed mode')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Use previous settings after restart' })).not.toBeInTheDocument()
 })

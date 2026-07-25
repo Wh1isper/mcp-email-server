@@ -427,7 +427,7 @@ export function AccountsPanel({ api, target, onChanged }: { api: ManagementApi; 
     try { setEditor(await api.account(name)) } catch (caught) { setError(caught) } finally { setBusyName('') }
   }
 
-  const lifecycle = async (account: AccountSummary, enabled: boolean) => {
+  const toggleEnabled = async (account: AccountSummary, enabled: boolean) => {
     setBusyName(account.name)
     setError(null)
     try {
@@ -508,7 +508,7 @@ export function AccountsPanel({ api, target, onChanged }: { api: ManagementApi; 
                   <details className="account-more">
                     <summary><MoreHorizontal size={17} aria-hidden="true" />More</summary>
                     <div className="details-body action-stack">
-                      <button type="button" className="secondary with-icon" disabled={Boolean(busyName)} onClick={() => void lifecycle(account, !account.enabled)}>{account.enabled ? <Pause size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}{account.enabled ? 'Pause account' : 'Enable account'}</button>
+                      <button type="button" className="secondary with-icon" disabled={Boolean(busyName)} onClick={() => void toggleEnabled(account, !account.enabled)}>{account.enabled ? <Pause size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}{account.enabled ? 'Pause account' : 'Enable account'}</button>
                       <button type="button" className="text-danger with-icon" disabled={Boolean(busyName)} onClick={() => { setRemoveName(account.name); setConfirmation('') }}><Trash2 size={16} aria-hidden="true" />Remove account</button>
                     </div>
                   </details>

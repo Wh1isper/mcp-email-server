@@ -332,8 +332,9 @@ def test_route_inventory_has_no_mail_rpc_debug_openapi_or_filesystem_surface() -
     app = create_local_ui_app(state)
     paths = {getattr(route, "path", "") for route in app.routes}
 
-    assert len(paths) == 25
+    assert len(paths) == 24
     assert f"{state.route_prefix}/api/catalog/initialize-default" in paths
+    assert f"{state.route_prefix}/api/catalog/activate" not in paths
     assert not any(path.endswith("/repair") for path in paths)
     assert not any(
         forbidden in path

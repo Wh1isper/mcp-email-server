@@ -53,8 +53,13 @@ export interface ManagementApi {
   session(): Promise<void>
   logout(): Promise<void>
   status(): Promise<ManagementStatus>
-  initializeDefaultCatalog(expectedBootstrapRevision: number, requireEmptyInstall: boolean): Promise<{ database: string }>
-  activateCatalog(expectedRevision: number, target: CatalogTarget): Promise<void>
+  initializeDefaultCatalog(expectedBootstrapRevision: number, requireEmptyInstall: boolean): Promise<{
+    database: string
+    mode: ManagementMode
+    bootstrap_revision: number
+    restart_required: boolean
+    catalog_revision: number
+  }>
   selectMode(
     mode: ManagementMode,
     expectedBootstrapRevision: number,
@@ -168,8 +173,6 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
         expected_bootstrap_revision: expectedBootstrapRevision,
         require_empty_install: requireEmptyInstall,
       }),
-    activateCatalog: (expectedRevision, target) =>
-      catalogMutate('catalog/activate', { expected_revision: expectedRevision }, target),
     selectMode: (mode, expectedBootstrapRevision, expectedCatalogRevision) =>
       mutate('catalog/select', {
         mode,

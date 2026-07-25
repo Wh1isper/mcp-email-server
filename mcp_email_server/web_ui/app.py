@@ -282,7 +282,7 @@ async def _current_summary(request: Request, state: LocalUiState) -> dict[str, o
         if "/accounts/" in path:
             account = await run_in_threadpool(state.management.accounts.show, _account_name(request))
             return _account_details(account)
-        status = await run_in_threadpool(state.management.lifecycle.status)
+        status = await run_in_threadpool(state.management.catalog.status)
         return _asdict(status)
     except Exception:
         return {}
@@ -343,7 +343,7 @@ async def _logout(request: Request, state: LocalUiState, _payload: EmptyRequest)
 async def _status(request: Request) -> Response:
     state: LocalUiState = request.app.state.local_ui
     await _require_session(request, state)
-    return _json(_asdict(await run_in_threadpool(state.management.lifecycle.status)))
+    return _json(_asdict(await run_in_threadpool(state.management.catalog.status)))
 
 
 @_mutation(InitializeDefaultCatalogRequest)
@@ -352,12 +352,12 @@ async def _initialize_default(
     state: LocalUiState,
     payload: InitializeDefaultCatalogRequest,
 ) -> object:
-    path = await run_in_threadpool(
-        state.management.lifecycle.initialize_default,
+    result = await run_in_threadpool(
+        state.management.catalog.initialize_default,
         expected_bootstrap_revision=payload.expected_bootstrap_revision,
         require_empty_install=payload.require_empty_install,
     )
-    return {"status": "initialized", "database": path.as_posix()}
+    return {"status": "initialized", **_asdict(result)}
 
 
 def _bound_service(service: Any, payload: Any) -> Any:
@@ -367,17 +367,10 @@ def _bound_service(service: Any, payload: Any) -> Any:
     )
 
 
-@_mutation(ExpectedRevisionRequest)
-async def _activate(_request: Request, state: LocalUiState, payload: ExpectedRevisionRequest) -> object:
-    lifecycle = _bound_service(state.management.lifecycle, payload)
-    await run_in_threadpool(lifecycle.activate, expected_revision=payload.expected_revision)
-    return {"status": "active"}
-
-
 @_mutation(SelectCatalogRequest)
 async def _select(_request: Request, state: LocalUiState, payload: SelectCatalogRequest) -> object:
     await run_in_threadpool(
-        state.management.lifecycle.select,
+        state.management.catalog.select,
         payload.mode,
         expected_bootstrap_revision=payload.expected_bootstrap_revision,
         expected_catalog_revision=payload.expected_catalog_revision,
@@ -544,13 +537,16 @@ async def _apply_import(_request: Request, state: LocalUiState, payload: ApplyIm
         "created": list(result.created),
         "resumed": list(result.resumed),
         "attention_required": list(result.attention_required),
+        "mode": result.mode,
+        "bootstrap_revision": result.bootstrap_revision,
+        "restart_required": result.restart_required,
     }
 
 
 async def _doctor(request: Request) -> Response:
     state: LocalUiState = request.app.state.local_ui
     await _require_session(request, state)
-    return _json(_asdict(await run_in_threadpool(state.management.lifecycle.doctor)))
+    return _json(_asdict(await run_in_threadpool(state.management.catalog.doctor)))
 
 
 async def _index_health(request: Request) -> Response:
@@ -646,12 +642,6 @@ def create_local_ui_app(state: LocalUiState) -> Starlette:  # noqa: C901 - expli
             _initialize_default,
             methods=["POST"],
             name="management.catalog.initialize_default",
-        ),
-        Route(
-            f"{prefix}/api/catalog/activate",
-            _activate,
-            methods=["POST"],
-            name="management.catalog.activate",
         ),
         Route(
             f"{prefix}/api/catalog/select",

@@ -14,14 +14,21 @@ mcp-email-server supports two explicitly selectable configuration modes:
   credentials default to the operating-system keyring. Managed catalogs are not
   currently supported without those filesystem guarantees.
 
-A missing configuration file or a pre-managed TOML file without `mode` remains
-`legacy` for backward compatibility. Historical `db_location` continues to name
-the rebuildable legacy metadata index; it is not a managed catalog selection.
-Every new bootstrap write records `bootstrap_version = 1`, a monotonic
-`bootstrap_revision`, an explicit mode, and any selected catalog separately as
-`managed_db_location`. Legacy Settings accepts and preserves these bootstrap
-fields. Selection uses the bootstrap revision as a compare-and-swap token under
-a bounded private lock; it is separate from the managed catalog revision.
+A missing configuration file or a v1 TOML source without separate bootstrap
+authority remains `legacy` for backward compatibility. Historical `db_location`
+continues to name the rebuildable legacy metadata index; it is not a managed
+catalog selection. For the default source `config.toml`, selection authority is
+stored separately in the owner-only sibling `config.bootstrap.toml`. Every new
+sidecar write records `bootstrap_version = 1`, a monotonic `bootstrap_revision`,
+an explicit mode, a `managed_selection` marker, and any selected catalog as
+`managed_db_location`. Selection uses the bootstrap revision as a
+compare-and-swap token under the private `config.bootstrap.toml.lock`; it is
+separate from the managed catalog revision. Selection and import never reserialize
+or rewrite the v1 source, so comments, ordering, whitespace, and rollback bytes
+remain unchanged. A pre-release combined file is accepted read-only; a later
+selection write, or the authority step preceding an explicit legacy source write,
+materializes its selection into the sidecar without that step changing source
+bytes.
 
 ## Configuration file
 
@@ -31,8 +38,10 @@ The default path is:
 ~/.config/mcp-email-server/config.toml
 ```
 
-Set `MCP_EMAIL_SERVER_CONFIG_PATH` to use a different path. Relative paths are
-resolved against the server process's working directory.
+Set `MCP_EMAIL_SERVER_CONFIG_PATH` to use a different legacy TOML source path.
+Relative paths are resolved against the server process's working directory. The
+bootstrap sidecar is derived in the same directory by adding `.bootstrap` before
+the TOML suffix: `/path/work.toml` uses `/path/work.bootstrap.toml`.
 
 On first use, if the current file does not exist and a legacy file exists at
 `~/.config/zerolib/mcp_email_server/config.toml`, the legacy file is copied to
@@ -52,14 +61,19 @@ attached terminal and prints the URL only there. A noninteractive invocation
 fails before serving rather than exposing its bootstrap token in logs.
 
 After authentication and status inspection, a truly empty installation issues
-one CSRF-protected POST that prepares `managed.sqlite3` beside the active
-configuration file. The POST rechecks the effective legacy source, then binds
+one CSRF-protected POST that prepares `managed.sqlite3` in the same private
+directory as the active source and bootstrap sidecar. The POST rechecks the
+effective legacy source, then binds
 both the zero revision and absent-file proof under the same supported-POSIX lock
 used by legacy settings writes. No GET mutates state.
 If effective TOML/environment legacy content exists, the UI does not initialize
 automatically; **Import existing settings** is an explicit preparation and
-review action. Both paths create only a `STAGING` catalog: they do not import,
-activate, select managed mode, contact a provider, or restart a process.
+review action. A fresh installation creates the catalog and selects managed mode
+in one step. With existing v1 content, preparation records the migration
+destination while legacy remains selected; it does not import or contact a
+provider. A complete reviewed import automatically selects managed mode when all
+source account types are supported. Failure or unsupported provider types leave
+legacy selected, and no path restarts the process automatically.
 
 The UI is account-first and has two primary destinations. **Email accounts**
 lists saved accounts and keeps edit, pause/enable, soft removal, and password
@@ -82,11 +96,12 @@ catalog reports inactive password data left by a failed external deletion,
 remains; cleanup is catalog-wide and never removes an active password.
 
 A contextual status area distinguishes settings chosen for the next restart
-from those currently running and exposes **Finish setup**, **Use these accounts**,
+from those currently running and exposes import, explicit recovery selection,
 and restart steps when actionable. Banners with no next action are hidden for an
-empty workspace and for settled ready state. Activation
-and selection remain separate: activation validates structural completeness and
-does not contact or imply connectivity to a provider. Ordinary status, conflict,
+empty workspace and for settled ready state. There is no catalog activation or
+second save step. Account completeness is evaluated per account: an incomplete
+account appears in diagnostics and is omitted from MCP discovery without
+blocking complete accounts. Ordinary status, conflict,
 credential, import, and troubleshooting messages map implementation states to
 task language. Catalog-
 dependent content remains unavailable until the catalog is usable. Mutable
@@ -108,7 +123,7 @@ for its one-time bootstrap, platform, and session boundaries.
 
 ## Managed CLI setup
 
-Managed setup deliberately separates catalog activation from mode selection:
+A fresh managed setup creates and selects its catalog in one step:
 
 ```bash
 mcp-email-server config init --database ~/.config/mcp-email-server/catalog.sqlite3
@@ -120,9 +135,9 @@ mcp-email-server account add work \
   --imap-user john@example.com
 
 mcp-email-server account test work incoming
-mcp-email-server config activate
-mcp-email-server config select managed
 ```
+
+Restart MCP clients when `config status` reports `restart_required=true`.
 
 `account add` prompts for the IMAP password with masked input. Add SMTP with
 `--smtp-host`, `--smtp-port`, and `--smtp-user`; the command then prompts for a
@@ -130,19 +145,22 @@ separate SMTP password. For non-interactive setup, pass `--password-stdin` and
 provide one line for IMAP, followed by one SMTP line when SMTP is configured.
 Passwords are never accepted as ordinary command-line values.
 
-`config init` creates a `STAGING` SQLite catalog and records its path while
-leaving legacy mode selected. Retrying the same path safely adopts an existing
-owner-only, valid `STAGING` catalog without resetting its data or revisions; an
-active, corrupt, foreign, or insecure target is rejected. This makes a retry
-possible if catalog creation committed but the bootstrap compare-and-swap did
-not. Initialization is rejected while managed mode is selected so it cannot
-replace the active authority with a staging database. Account creation is
-likewise limited to `STAGING`; use `account set-secret` for credential
-rotation after activation. `config activate` requires at least one
-enabled account with an active IMAP credential and a complete optional SMTP
-pair. This is structural validation only: activation does not contact or certify
-an IMAP/SMTP provider. `config select managed` accepts only an `ACTIVE` catalog. Restart every
-MCP server process after `config select`.
+`config init` creates a usable SQLite catalog with no staging lifecycle. On a
+fresh installation it selects managed mode immediately. If it detects effective
+v1 TOML accounts, environment configuration, providers, or customized policy,
+it records the migration destination but leaves legacy mode in use until the
+reviewed import succeeds. Retrying the same owner-only, structurally valid path
+adopts it without resetting data or revisions; a corrupt, foreign, insecure, or
+incompatible target is rejected. This makes a retry possible if catalog creation
+committed but the bootstrap compare-and-swap did not. Initialization cannot
+replace a different catalog while managed mode is selected.
+
+Accounts may be added or updated at any time. A complete account becomes
+available without catalog activation or another save. An incomplete enabled
+account remains visible to `config doctor` but is omitted from runtime discovery;
+it does not block complete accounts. `config select managed` validates catalog
+schema/security and the reviewed revision, not global account completeness.
+Restart every MCP server process after a selection change.
 
 Useful inspection and management commands are:
 
@@ -165,8 +183,8 @@ mcp-email-server config select legacy
 
 ### Machine-readable CLI output
 
-The managed CLI is the low-level agent management API. Its exact `STAGING`,
-`ACTIVE`, catalog, revision, and restart-state terms are intentional and are more
+The managed CLI is the low-level agent management API. Its exact catalog,
+revision, binding-state, and restart-state terms are intentional and are more
 technical than Web UI task language. Every finite `config` and `account` command
 supports a leaf `--json` option, as do `reset` and `migrate-credentials`. Put it
 after the command:
@@ -201,6 +219,7 @@ still treat an unknown code as unsupported rather than guessing from its message
 | `catalog_not_configured`       | Initialize or select a managed catalog before the catalog command.       |
 | `catalog_unavailable`          | The selected catalog cannot be opened or validated; run status/doctor.   |
 | `credential_store_unavailable` | Restore access to the selected managed secret store and retry.           |
+| `import_credential_conflict`   | Legacy and active managed passwords differ; reconcile before cutover.    |
 | `import_preview_stale`         | Source or destination changed, or preview expired; preview again.        |
 | `import_target_changed`        | The selected import destination changed; preview the new target.         |
 | `invalid_input`                | Correct the command values; framework usage errors remain non-JSON.      |
@@ -318,7 +337,7 @@ than truncating authority data.
 
 ### Import stored legacy configuration
 
-Import is explicit and preview-first. Initialize a staging catalog, then run:
+Import is explicit and preview-first. Initialize a migration destination, then run:
 
 ```bash
 mcp-email-server config import-legacy
@@ -333,10 +352,17 @@ overrides. Credential source is reported as `plaintext`, `keyring`, or
 `environment`; preview uses redacted endpoint models, does not read environment
 password values or the keyring, and does not place TOML password material in the
 snapshot or plan. Password-variable presence is detected by enumerating names,
-not retrieving values. Apply is accepted only for a `STAGING` catalog. It resolves required
-plaintext, keyring, or current environment credentials through the normal
-managed save workflow, leaves the source TOML, environment, and legacy keyring
-entries unchanged, and never activates or selects the destination automatically.
+not retrieving values. Apply resolves required plaintext, keyring, or current
+environment credentials through the normal managed save workflow and leaves the
+source TOML, environment, and legacy keyring entries unchanged. Preparation keeps
+legacy selected. A complete successful import automatically selects managed mode only when every
+source account type is supported and no cleanup attention remains. Final cutover
+holds the shared source/selection lock and a managed-catalog writer fence while
+rechecking the exact source snapshot, imported private credential values, final
+catalog/account revisions, and bootstrap compare-and-swap. Any failure or drift
+keeps legacy selected; unsupported provider-style accounts are reported and
+prevent automatic cutover until the user explicitly decides whether to select
+the supported managed subset.
 
 Each preview has a random one-time token, a SHA-256 fingerprint of the bounded
 non-secret source snapshot, creation time, a ten-minute lifetime, and exact
@@ -345,8 +371,11 @@ non-secret endpoint/TLS/user/save-to-sent settings and whether each credential
 comes from plaintext TOML, the legacy keyring, or environment; no secret value
 or reusable locator is shown. CLI `--apply` prints this plan before it prompts
 for the exact word `IMPORT`, so confirmation cannot be supplied before review.
-A no-op plan prints an unchanged result without prompting. Apply consumes the
-token, verifies that the selected catalog path and bootstrap revision still
+A no-change plan needs no prompt, but when all source account types are supported,
+**Finish setup**/`--apply` still verifies that each legacy password equals its
+active managed counterpart and attempts the guarded final cutover; it never
+returns early merely because no rows need writing.
+Apply consumes the token, verifies that the selected catalog path and bootstrap revision still
 match the private preview, and rejects expiry or source/target drift before the
 next credential resolution or write. Selection is checked again immediately
 before every account, credential, and policy write; apply advances only revisions
@@ -355,17 +384,21 @@ caused by its own completed steps. Preview capability state is expired on access
 not a state-changing GET.
 
 A repeated import is deterministic: exact matching accounts and policy are
-reported unchanged, genuinely `MISSING` bindings can be filled, and a changed,
-renamed, normalized-name-colliding, or previously soft-removed destination is
-reported as a conflict before any secret resolution or destination write.
+reported unchanged only after their active managed passwords are privately proven
+equal to the current legacy values, genuinely `MISSING` bindings can be filled,
+and a changed, renamed, normalized-name-colliding, or previously soft-removed
+destination is reported as a conflict before any destination write. A password
+mismatch is a credential conflict: neither side is overwritten and legacy remains
+selected until the user updates or removes the managed credential and retries.
 Planning also rejects normalized collisions within the source and account-limit
 overflow. If the effective source account changes between planning and
 credential resolution, apply fails and requires a new preview rather than
 mixing an old endpoint with a new secret. A committed credential outcome that needs cleanup is reported explicitly rather
 than claimed as clean success. A cleanup-required binding becomes an explicit
 conflict until cleanup completes. Failed credential saves preserve prior binding
-authority. Resolve conflicts or cleanup attention, preview again, test imported
-endpoints, then activate and select the catalog.
+authority. Resolve conflicts or cleanup attention, preview again, and test
+imported endpoints. A complete supported import has already selected managed
+mode; otherwise make any later selection explicit.
 
 ## Operational metadata database
 
@@ -637,9 +670,10 @@ values are treated as false. Do not add surrounding whitespace to these values.
 HTTP transport variables are documented separately in
 [Transports](transports.md#streamable-http).
 
-In managed mode, `MCP_EMAIL_SERVER_CONFIG_PATH` still selects the bootstrap
-file, but legacy account, allowlist, attachment, mutation-reporting, and
-credential-storage overlays do not replace managed catalog values.
+In managed mode, `MCP_EMAIL_SERVER_CONFIG_PATH` still selects the legacy source
+path from which the bootstrap sidecar path is derived, but legacy account,
+allowlist, attachment, mutation-reporting, and credential-storage overlays do
+not replace managed catalog values.
 
 ## Reset configuration
 
@@ -650,16 +684,14 @@ keyring entries with:
 mcp-email-server reset --confirm RESET
 ```
 
-In legacy mode this operation removes all persistently configured accounts. If
-a managed catalog selection is already recorded for staging or the next restart,
-reset preserves its version, revision, mode, and `managed_db_location` instead of
-unlinking bootstrap authority. Environment-based configuration remains effective as long as its variables are
-present. In managed mode it is rejected before any TOML, database, or keyring
-mutation; select legacy and restart before intentionally resetting the legacy
-source. An unparseable bootstrap also fails closed because its selected mode
-cannot be established safely. Resetting a truly absent configuration creates no
-directory or lock artifact. A newly created legacy configuration parent uses
-`0700` on POSIX, while an existing legacy parent is not silently changed.
-configuration creates no
-directory or lock artifact. A newly created legacy configuration parent uses
-`0700` on POSIX, while an existing legacy parent is not silently changed.
+In legacy mode this operation removes all persistently configured accounts from
+the legacy source. The independent bootstrap sidecar is retained, including any
+managed catalog selected for a future restart; reset never needs to rewrite the
+source to preserve that authority. Environment-based configuration remains
+effective as long as its variables are present. In managed mode reset is rejected
+before any TOML, database, or keyring mutation; select legacy and restart before
+intentionally resetting the legacy source. An unparseable bootstrap sidecar also
+fails closed because its selected mode cannot be established safely. Resetting a
+truly absent source with no sidecar creates no directory or lock artifact. A
+newly created legacy configuration parent uses `0700` on POSIX, while an existing
+legacy parent is not silently changed.

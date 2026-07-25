@@ -239,6 +239,7 @@ _JSON_ERROR_MESSAGES: dict[str, str] = {
     "credential_store_unavailable": "The managed credential store is unavailable.",
     "credential_unavailable": "The managed credential is unavailable.",
     "endpoint_unavailable": "The requested endpoint is unavailable.",
+    "import_credential_conflict": "Legacy and managed credentials differ.",
     "import_preview_stale": "The import preview is stale or expired.",
     "import_target_changed": "The import target changed after preview.",
     "invalid_input": "The command input is invalid.",
@@ -294,7 +295,6 @@ def _doctor_data(report: object) -> dict[str, object]:
     if not isinstance(report, DoctorReport):
         raise TypeError("Expected DoctorReport")
     return {
-        "lifecycle": report.lifecycle,
         "schema_version": report.schema_version,
         "catalog_revision": report.catalog_revision,
         "accounts": report.account_count,
@@ -305,7 +305,7 @@ def _doctor_data(report: object) -> dict[str, object]:
 
 
 def _bind_catalog_service(management: Any, service: Any) -> tuple[Any, Any]:
-    status = management.lifecycle.status()
+    status = management.catalog.status()
     if status.selected_catalog is None:
         raise ManagementError(
             "No managed database is configured. Run `mcp-email-server config init --database PATH`.",
@@ -428,10 +428,10 @@ def config_init(
     database: Path = typer.Option(..., "--database", help="Path for the new managed SQLite catalog."),  # noqa: B008
     json_output: JsonOutput = False,
 ) -> None:
-    """Create a STAGING managed catalog without selecting managed mode."""
+    """Create managed storage and select it unless legacy settings need import."""
     try:
-        lifecycle = get_application_runtime().management.lifecycle
-        result = lifecycle.initialize(database)
+        catalog = get_application_runtime().management.catalog
+        result = catalog.initialize(database)
         if json_output:
             _echo_json(
                 "config.init",
@@ -440,24 +440,33 @@ def config_init(
                     "bootstrap_revision": result.bootstrap_revision,
                     "restart_required": result.restart_required,
                     "catalog_revision": result.catalog_revision,
-                    "lifecycle": result.lifecycle,
-                    "next_steps": ["account.add", "account.test", "config.activate", "config.select"],
+                    "next_steps": (
+                        ["config.import-legacy"]
+                        if result.mode == "legacy"
+                        else ["account.add", "account.test", "restart_mcp_clients"]
+                    ),
                 },
             )
             return
     except ManagementError as exc:
         _fail_cli(exc)
-    typer.echo(
-        "Created STAGING managed catalog. Next: add an account, test it, run `config activate`, "
-        "then `config select managed` and restart MCP clients."
-    )
+    if result.mode == "legacy":
+        typer.echo(
+            "Created a private migration destination. Existing settings remain in use until a reviewed import "
+            "succeeds; next run `config import-legacy --apply`."
+        )
+    else:
+        typer.echo(
+            "Created and selected the managed catalog. Add an account, then restart MCP clients if reported by "
+            "`config status`."
+        )
 
 
 @config_app.command("status")
 def config_status(json_output: JsonOutput = False) -> None:
     """Show selected mode and bounded managed catalog status."""
     try:
-        status = get_application_runtime().management.lifecycle.status()
+        status = get_application_runtime().management.catalog.status()
         catalog_status = (
             "unavailable"
             if status.catalog_problem is not None
@@ -499,7 +508,6 @@ def config_status(json_output: JsonOutput = False) -> None:
             typer.echo("catalog_status=not_configured")
         typer.echo(f"restart_required={str(status.restart_required).lower()}")
         if status.report is not None:
-            typer.echo(f"lifecycle={status.report.lifecycle}")
             typer.echo(f"accounts={status.report.account_count}")
             typer.echo(f"enabled_accounts={status.report.enabled_account_count}")
     except ManagementError as exc:
@@ -510,13 +518,12 @@ def config_status(json_output: JsonOutput = False) -> None:
 def config_doctor(json_output: JsonOutput = False) -> None:
     """Report bounded catalog, binding, and cleanup health without locators."""
     try:
-        report = get_application_runtime().management.lifecycle.doctor()
+        report = get_application_runtime().management.catalog.doctor()
     except ManagementError as exc:
         _fail_cli(exc)
     if json_output:
         _echo_json("config.doctor", _doctor_data(report))
         return
-    typer.echo(f"lifecycle={report.lifecycle}")
     typer.echo(f"schema_version={report.schema_version}")
     typer.echo(f"catalog_revision={report.catalog_revision}")
     typer.echo(f"accounts={report.account_count}")
@@ -689,7 +696,7 @@ def _echo_legacy_import_plan(plan: LegacyImportPlan) -> None:
 
 @config_app.command("import-legacy")
 def config_import_legacy(
-    apply: bool = typer.Option(False, "--apply", help="Review, confirm, and apply the import to STAGING."),
+    apply: bool = typer.Option(False, "--apply", help="Review, confirm, and apply the import."),
     json_output: JsonOutput = False,
 ) -> None:
     """Preview or apply the effective legacy TOML and environment configuration."""
@@ -710,13 +717,10 @@ def config_import_legacy(
     if plan.has_conflicts:
         conflicts = ", ".join(item.name for item in plan.accounts if item.action == "conflict")
         _fail_cli(ManagementError(f"Legacy import has destination conflicts: {conflicts}"))
-    has_changes = plan.policy_action == "update" or any(item.action != "unchanged" for item in plan.accounts)
-    if not has_changes:
-        typer.echo("created=none")
-        typer.echo("resumed=none")
-        typer.echo("attention_required=none")
-        return
-    confirmation = typer.prompt("Type IMPORT to apply this exact preview")
+    has_changes = plan.policy_action == "update" or any(
+        item.action in {"create", "resume_credentials"} for item in plan.accounts
+    )
+    confirmation = typer.prompt("Type IMPORT to apply this exact preview") if has_changes else ""
     try:
         report = service.apply(
             preview_token=plan.preview_token,
@@ -728,38 +732,18 @@ def config_import_legacy(
     typer.echo("created=" + (",".join(report.created) if report.created else "none"))
     typer.echo("resumed=" + (",".join(report.resumed) if report.resumed else "none"))
     typer.echo("attention_required=" + (",".join(report.attention_required) if report.attention_required else "none"))
-
-
-@config_app.command("activate")
-def config_activate(json_output: JsonOutput = False) -> None:
-    """Validate the complete STAGING snapshot and mark it ACTIVE."""
-    try:
-        management = get_application_runtime().management
-        lifecycle, status = _bind_catalog_service(management, management.lifecycle)
-        result = lifecycle.activate(expected_revision=status.report.catalog_revision)
-        if json_output:
-            _echo_json(
-                "config.activate",
-                {
-                    "lifecycle": result.lifecycle,
-                    "catalog_revision": result.catalog_revision,
-                    "next_steps": ["config.select", "restart_mcp_clients"],
-                },
-            )
-            return
-    except ManagementError as exc:
-        _fail_cli(exc)
-    typer.echo("Managed catalog is ACTIVE. Select managed mode separately when ready.")
+    typer.echo(f"mode={report.mode}")
+    typer.echo(f"restart_required={str(report.restart_required).lower()}")
 
 
 @config_app.command("select")
 def config_select(mode: ConfigMode, json_output: JsonOutput = False) -> None:
-    """Atomically select legacy or an already ACTIVE managed catalog."""
+    """Atomically select legacy or the configured managed catalog."""
     try:
-        lifecycle = get_application_runtime().management.lifecycle
-        status = lifecycle.status()
+        catalog = get_application_runtime().management.catalog
+        status = catalog.status()
         expected_catalog_revision = status.report.catalog_revision if status.report is not None else None
-        result = lifecycle.select(
+        result = catalog.select(
             mode.value,
             expected_bootstrap_revision=status.bootstrap_revision,
             expected_catalog_revision=expected_catalog_revision,

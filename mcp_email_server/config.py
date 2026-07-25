@@ -25,9 +25,9 @@ from pydantic_settings import (
 from mcp_email_server import keyring_store
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.bootstrap import (
-    BOOTSTRAP_VERSION,
     Bootstrap,
     Mode,
+    _materialize_bootstrap_locked,
     assert_legacy_writable,
     bootstrap_file_lock,
     process_bootstrap,
@@ -39,6 +39,13 @@ DEFAULT_CONFIG_PATH = "~/.config/mcp-email-server/config.toml"
 LEGACY_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
 CredentialStorage = Literal["auto", "keyring", "plaintext"]
 _VALID_CREDENTIAL_STORAGE_MODES: tuple[CredentialStorage, ...] = ("auto", "keyring", "plaintext")
+_BOOTSTRAP_FIELDS = {
+    "bootstrap_version",
+    "bootstrap_revision",
+    "mode",
+    "managed_selection",
+    "managed_db_location",
+}
 
 
 class LegacyCredentialMigrationLoadError(ValueError):
@@ -665,7 +672,7 @@ class Settings(BaseSettings):
 
     def _to_toml(self, *, use_keyring: bool = False, credential_storage: CredentialStorage | None = None) -> str:
         context = {"secrets": "keyring"} if use_keyring else None
-        data = self.model_dump(exclude_none=True, context=context)
+        data = self.model_dump(exclude=_BOOTSTRAP_FIELDS, exclude_none=True, context=context)
         if credential_storage is not None:
             data["credential_storage"] = credential_storage
         return tomli_w.dumps(data)
@@ -764,7 +771,7 @@ class Settings(BaseSettings):
     def _store_locked(
         self,
         toml_file: Path,
-        durable_bootstrap: Bootstrap,
+        _durable_bootstrap: Bootstrap,
         *,
         purge_loaded_keyring_references: bool = False,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -804,13 +811,6 @@ class Settings(BaseSettings):
         # override would produce plaintext mode alongside __KEYRING__ sentinels and
         # become unloadable as soon as the override was removed.
         persisted_storage = effective if self._credential_storage_override is not None else self.credential_storage
-        self.bootstrap_version = durable_bootstrap.version or BOOTSTRAP_VERSION
-        self.bootstrap_revision = durable_bootstrap.revision
-        self.mode = durable_bootstrap.mode
-        self.managed_selection = durable_bootstrap.db_path is not None
-        self.managed_db_location = (
-            durable_bootstrap.db_path.as_posix() if durable_bootstrap.db_path is not None else None
-        )
         content = self._to_toml(use_keyring=use_keyring, credential_storage=persisted_storage)
         self._write_toml(toml_file, content)
         cleanup = self._purge_loaded_keyring_references() if purge_loaded_keyring_references else ((), ())
@@ -829,7 +829,7 @@ class Settings(BaseSettings):
         assert_legacy_writable("migrate legacy credentials", toml_file)
         toml_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with bootstrap_file_lock(toml_file, require_secure_parent=False):
-            durable_bootstrap = read_bootstrap(toml_file)
+            durable_bootstrap = _materialize_bootstrap_locked(read_bootstrap(toml_file))
             try:
                 settings = cls.load_for_migration()
             except Exception as exc:
@@ -854,11 +854,11 @@ class Settings(BaseSettings):
         # catalog without changing permissions on an existing legacy directory.
         toml_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-        # The lock covers keyring effects, bootstrap-preserving TOML commit, and
-        # any migration cleanup as one logical legacy operation. Re-read durable
+        # The shared source/sidecar lock covers keyring effects, the legacy TOML
+        # commit, and any migration cleanup as one logical operation. Re-read durable
         # authority before any secret effect.
         with bootstrap_file_lock(toml_file, require_secure_parent=False):
-            durable_bootstrap = read_bootstrap(toml_file)
+            durable_bootstrap = _materialize_bootstrap_locked(read_bootstrap(toml_file))
             self._store_locked(toml_file, durable_bootstrap)
 
 
@@ -877,7 +877,7 @@ def get_settings(reload: bool = False) -> Settings:
             # constructing Settings(), which would parse legacy rows and overlays.
             from mcp_email_server.managed import ManagedCatalog
 
-            loaded = ManagedCatalog(bootstrap.db_path).load_settings(require_active=True)
+            loaded = ManagedCatalog(bootstrap.db_path).load_settings()
         else:
             loaded = Settings()
         _settings = loaded
@@ -955,24 +955,17 @@ def delete_settings() -> None:
         logger.info(f"Settings file {CONFIG_PATH} does not exist")
         return
     with bootstrap_file_lock(CONFIG_PATH, require_secure_parent=False):
-        durable = read_bootstrap(CONFIG_PATH)
+        durable = _materialize_bootstrap_locked(read_bootstrap(CONFIG_PATH))
         if not CONFIG_PATH.exists():
             logger.info(f"Settings file {CONFIG_PATH} does not exist")
             return
         raw = tomllib.loads(CONFIG_PATH.read_text())
-        if durable.db_path is None:
-            CONFIG_PATH.unlink()
-            message = f"Deleted settings file {CONFIG_PATH}"
-        else:
-            bootstrap_only = {
-                "bootstrap_version": durable.version or BOOTSTRAP_VERSION,
-                "bootstrap_revision": durable.revision,
-                "mode": durable.mode,
-                "managed_selection": True,
-                "managed_db_location": durable.db_path.as_posix(),
-            }
-            Settings._write_toml(CONFIG_PATH, tomli_w.dumps(bootstrap_only))
-            message = f"Deleted legacy settings while preserving managed selection in {CONFIG_PATH}"
+        CONFIG_PATH.unlink()
+        message = (
+            "Deleted legacy settings while preserving managed selection in its private sidecar"
+            if durable.db_path is not None
+            else f"Deleted settings file {CONFIG_PATH}"
+        )
         # Commit removal first: a failed unlink/replace must not leave an old
         # sentinel file after its referenced secret was deleted. Keep cleanup
         # inside the same transaction so no writer can reuse an entry mid-purge.

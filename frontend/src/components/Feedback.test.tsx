@@ -24,7 +24,7 @@ test('maps known setup problem codes while preserving account names', () => {
   expect(problemMessage('active_secret_unavailable:team:west:outgoing'))
     .toBe("team:west's outgoing mail password is unavailable. Save it again.")
   expect(problemMessage('no_enabled_account'))
-    .toBe('Enable at least one account before finishing setup.')
+    .toBe('Enable at least one account before using these settings.')
 })
 
 test('preserves paths and user-owned values in conflict summaries', () => {
@@ -34,7 +34,7 @@ test('preserves paths and user-owned values in conflict summaries', () => {
     current: {
       selected_catalog: '/private/managed.sqlite3',
       account_name: 'catalog',
-      lifecycle: 'ACTIVE',
+      mode: 'managed',
     },
   })
 
@@ -42,5 +42,5 @@ test('preserves paths and user-owned values in conflict summaries', () => {
 
   expect(screen.getByText('/private/managed.sqlite3')).toBeVisible()
   expect(screen.getByText('catalog')).toBeVisible()
-  expect(screen.getByText('Ready to use')).toBeVisible()
+  expect(screen.getByText('New account settings')).toBeVisible()
 })

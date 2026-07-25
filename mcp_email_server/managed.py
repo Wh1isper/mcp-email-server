@@ -31,7 +31,6 @@ from mcp_email_server.application.management import (
     DoctorReport,
     EndpointSummary,
     IndexHealth,
-    Lifecycle,
     ManagedPolicy,
     ManagementError,
     RevisionConflictError,
@@ -39,7 +38,7 @@ from mcp_email_server.application.management import (
 from mcp_email_server.config import EmailServer, EmailSettings, Settings
 from mcp_email_server.log import logger
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
@@ -62,7 +61,7 @@ class ManagedSecretStoreUnavailableError(ManagedCatalogError):
 
 
 class ManagedCatalogInitializationConflictError(ManagedCatalogError):
-    """An existing initialization target is not a compatible staging catalog."""
+    """An existing initialization target is not a compatible managed catalog."""
 
 
 class _ManagedCatalogAlreadyExistsError(ManagedCatalogError):
@@ -81,7 +80,6 @@ class ManagedCatalogSecurityError(ManagedCatalogError):
 class _ManagedAuthoritySnapshot:
     """Internal comparable authority; opaque locators must never be represented."""
 
-    catalog_lifecycle: Lifecycle
     catalog_revision: int
     policy: ManagedPolicy
     account_id: str
@@ -453,7 +451,6 @@ CREATE TABLE schema_metadata (
 );
 CREATE TABLE catalog (
     id TEXT PRIMARY KEY CHECK (id = 'local'),
-    lifecycle TEXT NOT NULL CHECK (lifecycle IN ('STAGING', 'ACTIVE')),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     enable_attachment_download INTEGER NOT NULL CHECK (enable_attachment_download IN (0, 1)),
     allowed_recipients_json TEXT NOT NULL,
@@ -614,14 +611,14 @@ def _validate_managed_invariants(connection: sqlite3.Connection) -> None:
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ManagedCatalogError("Managed catalog contains invalid references")
     catalogs = connection.execute(
-        """SELECT id, lifecycle, revision, enable_attachment_download,
+        """SELECT id, revision, enable_attachment_download,
                   allowed_recipients_json, allowed_senders_json, report_blocked_mutations
              FROM catalog"""
     ).fetchall()
     if len(catalogs) != 1 or catalogs[0]["id"] != "local":
         raise ManagedCatalogError("Managed catalog authority row is invalid")
     catalog = catalogs[0]
-    if catalog["lifecycle"] not in ("STAGING", "ACTIVE") or not isinstance(catalog["revision"], int):
+    if not isinstance(catalog["revision"], int):
         raise ManagedCatalogError("Managed catalog authority state is invalid")
     if catalog["revision"] < 1:
         raise ManagedCatalogError("Managed catalog authority revision is invalid")
@@ -652,20 +649,16 @@ class ManagedCatalog:
         normalized = Path(os.path.abspath(path.expanduser()))
         try:
             _prepare_new_file(normalized)
-        except _ManagedCatalogAlreadyExistsError as collision:
+        except _ManagedCatalogAlreadyExistsError:
             existing = cls(normalized)
             try:
-                lifecycle = existing.lifecycle()
+                existing.catalog_revision()
             except ManagedCatalogSecurityError:
                 raise
             except ManagedCatalogError as exc:
                 raise ManagedCatalogInitializationConflictError(
                     "Existing target is not a compatible managed catalog"
                 ) from exc
-            if lifecycle != "STAGING":
-                raise ManagedCatalogInitializationConflictError(
-                    "Existing managed catalog is not in the staging lifecycle"
-                ) from collision
             return existing
         try:
             with _connect(normalized) as connection:
@@ -673,9 +666,9 @@ class ManagedCatalog:
                 connection.execute("INSERT INTO schema_metadata(singleton, version) VALUES (1, ?)", (SCHEMA_VERSION,))
                 connection.execute(
                     """INSERT INTO catalog(
-                           id, lifecycle, revision, enable_attachment_download,
+                           id, revision, enable_attachment_download,
                            allowed_recipients_json, allowed_senders_json, report_blocked_mutations
-                       ) VALUES ('local', 'STAGING', 1, 0, '[]', '[]', 0)"""
+                       ) VALUES ('local', 1, 0, '[]', '[]', 0)"""
                 )
                 connection.commit()
         except Exception:
@@ -711,19 +704,44 @@ class ManagedCatalog:
         _validate_managed_schema(connection, _SCHEMA)
         _validate_managed_invariants(connection)
 
-    def lifecycle(self) -> Lifecycle:
-        with self._connection() as connection:
-            row = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
-            if row is None or row["lifecycle"] not in ("STAGING", "ACTIVE"):
-                raise ManagedCatalogError("Managed catalog lifecycle is invalid")
-            return row["lifecycle"]
-
     def catalog_revision(self) -> int:
         with self._connection() as connection:
             row = connection.execute("SELECT revision FROM catalog WHERE id = 'local'").fetchone()
         if row is None or not isinstance(row["revision"], int) or row["revision"] < 1:
             raise ManagedCatalogError("Managed catalog revision is invalid")
         return row["revision"]
+
+    @contextlib.contextmanager
+    def import_cutover_guard(
+        self,
+        *,
+        expected_catalog_revision: int,
+        expected_account_revisions: tuple[tuple[str, int, bool], ...],
+    ) -> Iterator[None]:
+        """Fence managed writers while final reviewed import state is selected."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                catalog = connection.execute("SELECT revision FROM catalog WHERE id = 'local'").fetchone()
+                if catalog is None or catalog["revision"] != expected_catalog_revision:
+                    raise ManagedRevisionConflictError("catalog")
+                for name, expected_revision, expected_enabled in expected_account_revisions:
+                    account = connection.execute(
+                        """SELECT revision, enabled, removed_at FROM managed_account
+                           WHERE normalized_name = ?""",
+                        (_normalize_account_name(name),),
+                    ).fetchone()
+                    if (
+                        account is None
+                        or account["revision"] != expected_revision
+                        or bool(account["enabled"]) is not expected_enabled
+                        or account["removed_at"] is not None
+                    ):
+                        raise ManagedRevisionConflictError("account", name=name)
+                yield
+            finally:
+                if connection.in_transaction:
+                    connection.rollback()
 
     @staticmethod
     def _policy_from_row(row: sqlite3.Row) -> ManagedPolicy:
@@ -815,11 +833,11 @@ class ManagedCatalog:
         with self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
-                lifecycle = connection.execute("SELECT lifecycle, revision FROM catalog WHERE id = 'local'").fetchone()
-                if lifecycle is None or lifecycle["lifecycle"] != "STAGING":
+                catalog = connection.execute("SELECT revision FROM catalog WHERE id = 'local'").fetchone()
+                if catalog is None:
                     connection.rollback()
-                    raise ManagedCatalogError("New accounts can be added only while the managed catalog is STAGING")
-                if expected_revision is not None and lifecycle["revision"] != expected_revision:
+                    raise ManagedCatalogError("Managed catalog row is missing")
+                if expected_revision is not None and catalog["revision"] != expected_revision:
                     connection.rollback()
                     raise ManagedRevisionConflictError("catalog")
                 account_count = connection.execute(
@@ -861,7 +879,7 @@ class ManagedCatalog:
                     self._insert_endpoint(connection, account_id, "outgoing", outgoing)
                 cursor = connection.execute(
                     "UPDATE catalog SET revision = revision + 1 WHERE id = 'local' AND revision = ?",
-                    (lifecycle["revision"],),
+                    (catalog["revision"],),
                 )
                 if cursor.rowcount != 1:
                     connection.rollback()
@@ -1634,9 +1652,9 @@ class ManagedCatalog:
 
     def doctor(self) -> DoctorReport:
         with self._connection() as connection:
-            catalog = connection.execute("SELECT lifecycle, revision FROM catalog WHERE id = 'local'").fetchone()
-            if catalog is None or catalog["lifecycle"] not in ("STAGING", "ACTIVE"):
-                raise ManagedCatalogError("Managed catalog lifecycle is invalid")
+            catalog = connection.execute("SELECT revision FROM catalog WHERE id = 'local'").fetchone()
+            if catalog is None:
+                raise ManagedCatalogError("Managed catalog row is missing")
             counts = connection.execute(
                 """SELECT COUNT(*) accounts, COALESCE(SUM(enabled), 0) enabled
                    FROM managed_account WHERE removed_at IS NULL"""
@@ -1658,7 +1676,6 @@ class ManagedCatalog:
             except ManagedCatalogError:
                 problems.append(f"active_secret_unavailable:{binding['name']}:{binding['role']}")
         return DoctorReport(
-            lifecycle=catalog["lifecycle"],
             schema_version=SCHEMA_VERSION,
             catalog_revision=catalog["revision"],
             account_count=counts["accounts"],
@@ -1681,50 +1698,22 @@ class ManagedCatalog:
             problems=problems,
         )
 
-    def activate(self, *, expected_revision: int | None = None) -> int:
+    def validate_ready(self) -> None:
+        """Validate selected non-secret catalog structure and authority metadata."""
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT lifecycle, revision FROM catalog WHERE id = 'local'").fetchone()
-            if row is None:
-                connection.rollback()
+            if connection.execute("SELECT 1 FROM catalog WHERE id = 'local'").fetchone() is None:
                 raise ManagedCatalogError("Managed catalog row is missing")
-            if expected_revision is not None and row["revision"] != expected_revision:
-                connection.rollback()
-                raise ManagedRevisionConflictError("catalog")
-            problems = self._problems(connection)
-            if problems:
-                connection.rollback()
-                raise ManagedCatalogError("Managed catalog is incomplete: " + ", ".join(problems))
-            connection.execute(
-                """UPDATE catalog SET lifecycle = 'ACTIVE', revision = revision + 1
-                   WHERE id = 'local' AND revision = ?""",
-                (row["revision"],),
-            )
-            connection.commit()
-        return row["revision"] + 1
-
-    def validate_ready(self, *, require_active: bool = True) -> None:
-        """Validate selected non-secret catalog and binding metadata only."""
-        with self._connection() as connection:
-            catalog = connection.execute("SELECT lifecycle FROM catalog WHERE id = 'local'").fetchone()
-            if catalog is None:
-                raise ManagedCatalogError("Managed catalog row is missing")
-            if require_active and catalog["lifecycle"] != "ACTIVE":
-                raise ManagedCatalogError("Selected managed catalog is not active")
-            if require_active and self._problems(connection, require_enabled=False):
-                raise ManagedCatalogError("Selected managed catalog is incomplete")
 
     def _read_account_authority(
         self,
         name: str,
         *,
         roles: tuple[BindingRole, ...],
-        require_active_catalog: bool,
     ) -> _ManagedAuthoritySnapshot:
         with self._connection() as connection:
             catalog = connection.execute("SELECT * FROM catalog WHERE id = 'local'").fetchone()
-            if catalog is None or (require_active_catalog and catalog["lifecycle"] != "ACTIVE"):
-                raise ManagedCatalogError("Managed catalog is not active")
+            if catalog is None:
+                raise ManagedCatalogError("Managed catalog row is missing")
             account = connection.execute(
                 """SELECT * FROM managed_account
                    WHERE normalized_name = ? AND enabled = 1 AND removed_at IS NULL""",
@@ -1756,7 +1745,6 @@ class ManagedCatalog:
             if role not in endpoints or role not in bindings:
                 raise ManagedCatalogError(f"Managed account has no active {role} binding")
         return _ManagedAuthoritySnapshot(
-            catalog_lifecycle=catalog["lifecycle"],
             catalog_revision=catalog["revision"],
             policy=self._policy_from_row(catalog),
             account_id=account["id"],
@@ -1789,35 +1777,19 @@ class ManagedCatalog:
         name: str,
         *,
         roles: tuple[BindingRole, ...] = ("incoming",),
-        require_active_catalog: bool = False,
     ) -> ManagedAccountResolution:
         """Resolve selected roles and reject any authority drift around SecretStore reads."""
         if len(set(roles)) != len(roles) or any(role not in ("incoming", "outgoing") for role in roles):
             raise ManagedCatalogError("Managed account roles are invalid")
-        initial = self._read_account_authority(
-            name,
-            roles=roles,
-            require_active_catalog=require_active_catalog,
-        )
+        initial = self._read_account_authority(name, roles=roles)
         # Revalidate after request/policy inspection and before resolving values.
-        if (
-            self._read_account_authority(
-                name,
-                roles=roles,
-                require_active_catalog=require_active_catalog,
-            )
-            != initial
-        ):
+        if self._read_account_authority(name, roles=roles) != initial:
             raise ManagedCatalogError("Managed account authority changed; reload and retry")
         locators = dict(initial.binding_locators)
         secrets = {role: self.secret_store.get(locators[role]) for role in roles}
         # SecretStore access may block while account, policy, endpoint, or binding
         # authority changes. Never combine a fresh value with a stale snapshot.
-        current = self._read_account_authority(
-            name,
-            roles=roles,
-            require_active_catalog=require_active_catalog,
-        )
+        current = self._read_account_authority(name, roles=roles)
         if current != initial:
             raise ManagedCatalogError("Managed account authority changed; reload and retry")
         incoming = self._email_server(current.incoming, secrets.get("incoming", ""))
@@ -1842,26 +1814,15 @@ class ManagedCatalog:
         name: str,
         *,
         roles: tuple[BindingRole, ...] = ("incoming",),
-        require_active_catalog: bool = False,
     ) -> EmailSettings:
         """Compatibility projection for one securely revisioned account resolution."""
-        return self.resolve_account(
-            name,
-            roles=roles,
-            require_active_catalog=require_active_catalog,
-        ).account
+        return self.resolve_account(name, roles=roles).account
 
-    def load_settings(self, *, require_active: bool = True) -> Settings:
+    def load_settings(self) -> Settings:
         with self._connection() as connection:
             catalog = connection.execute("SELECT * FROM catalog WHERE id = 'local'").fetchone()
             if catalog is None:
                 raise ManagedCatalogError("Managed catalog row is missing")
-            if require_active and catalog["lifecycle"] != "ACTIVE":
-                raise ManagedCatalogError("Selected managed catalog is not active")
-            if require_active:
-                problems = self._problems(connection, require_enabled=False)
-                if problems:
-                    raise ManagedCatalogError("Selected managed catalog is incomplete")
             accounts = connection.execute(
                 """SELECT * FROM managed_account
                    WHERE enabled = 1 AND removed_at IS NULL ORDER BY name LIMIT ?""",
@@ -1882,14 +1843,18 @@ class ManagedCatalog:
                         (account["id"],),
                     )
                 }
-                incoming = self._resolve_endpoint(
-                    endpoints.get("incoming"), bindings.get("incoming"), resolve_secret=False
-                )
-                outgoing = self._resolve_endpoint(
-                    endpoints.get("outgoing"), bindings.get("outgoing"), resolve_secret=False
-                )
-                if incoming is None:
-                    raise ManagedCatalogError("Enabled managed account has no active incoming binding")
+                incoming_row = endpoints.get("incoming")
+                incoming_binding = bindings.get("incoming")
+                outgoing_row = endpoints.get("outgoing")
+                outgoing_binding = bindings.get("outgoing")
+                if incoming_row is None or incoming_binding is None:
+                    continue
+                if (outgoing_row is None) != (outgoing_binding is None):
+                    continue
+                incoming = self._resolve_endpoint(incoming_row, incoming_binding, resolve_secret=False)
+                outgoing = self._resolve_endpoint(outgoing_row, outgoing_binding, resolve_secret=False)
+                if not isinstance(incoming, EmailServer):
+                    continue
                 resolved.append(
                     EmailSettings(
                         account_name=account["name"],

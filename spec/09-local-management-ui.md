@@ -19,8 +19,9 @@ The UI MUST provide the managed management plane:
   show bootstrap revision, restart requirement, effective legacy-source summary,
   and bounded catalog status, including an unavailable-catalog recovery state
   that can select legacy without opening that catalog;
-- prepare a staging catalog at a backend-selected private default,
-  validate/activate it, and explicitly select it;
+- prepare a usable catalog at a backend-selected private default, selecting it
+  immediately for a fresh install while preserving legacy selection until a
+  reviewed v1 import succeeds;
 - list/show/create/edit managed accounts;
 - disable, re-enable, and soft-remove accounts with confirmation;
 - set/rotate/remove credentials and perform explicit bounded cleanup;
@@ -101,8 +102,10 @@ installation: no bootstrap file/selection, no effective legacy
 account/provider/policy content, and the initial bootstrap revision. The POST
 rechecks the effective source, then binds the zero revision and absent-file proof
 under the shared supported-POSIX bootstrap/legacy writer lock. Legacy content instead requires the user to choose **Import existing settings**
-and review the preview. Neither path imports, activates, selects managed mode,
-contacts a provider, or restarts the process. Logout destroys the session. Restart
+and review the preview. Preparation does not import, contact a provider, switch
+away from legacy runtime, or restart the process. A fully successful reviewed
+import automatically selects managed mode when all source account types are
+supported; failure or unsupported providers keep legacy selected. Logout destroys the session. Restart
 destroys all sessions and makes stale tabs unauthorized.
 
 CORS is disabled: no permissive `Access-Control-Allow-Origin`, credentials, or
@@ -191,21 +194,23 @@ architecture is account-first and has exactly two primary destinations:
   disclosed optional sections without exposing implementation vocabulary.
 
 Setup/status remains persistent context rather than a peer destination. It uses
-task language for **Finish setup**, **Use these accounts**, and restart while
-mapping modes, lifecycle, revisions, binding states, problem codes, and conflict
-summaries to user outcomes. Empty-workspace and settled-ready banners with no
-next action are hidden rather than occupying permanent attention; actionable
-setup, conflict, or restart states
-remain visible. Paths and support versions remain under **Setup details**. Raw
-terms such as `legacy`, `managed`, `catalog`, `bootstrap`, `lifecycle`,
-`revision`, `binding`, and `metadata index` MUST NOT appear in the ordinary
-rendered workflow unless they are part of user-owned data or a file path.
-Activation and selection remain separate explicit mutations and MUST NOT be
-merged, auto-replayed, or hidden behind one action. Activation checks structural
-completeness only and neither contacts nor implies connectivity to a provider.
-Catalog-dependent content remains unmounted until the selected catalog is usable.
-Opening one optional settings disclosure mounts only that section, so closed
-sections neither fetch nor mutate state.
+task language for import readiness, **Use these accounts** only when an explicit
+mode choice remains necessary, and restart while mapping modes, account states,
+revisions, binding states, problem codes, and conflict summaries to user
+outcomes. Empty-workspace and settled-ready banners with no next action are
+hidden rather than occupying permanent attention; actionable setup, conflict,
+or restart states remain visible. Paths and support versions remain under
+**Setup details**. Raw terms such as `legacy`, `managed`, `catalog`, `bootstrap`,
+`lifecycle`, `revision`, `binding`, and `metadata index` MUST NOT appear in the
+ordinary rendered workflow unless they are part of user-owned data or a file
+path. There is no catalog activation mutation: a structurally complete enabled
+account is usable as soon as its save succeeds. A fully successful reviewed
+legacy import with no unsupported provider type compare-and-swap selects managed
+mode automatically; an import failure or unsupported provider leaves legacy
+mode selected and preserves an explicit user choice. Conflicts MUST NOT be
+auto-replayed. Catalog-dependent content remains unmounted until the selected
+catalog is usable. Opening one optional settings disclosure mounts only that
+section, so closed sections neither fetch nor mutate state.
 
 The add-account form is email/password-first. It derives an editable sender name
 and account nickname, uses a finite local preset table for common email domains,
@@ -281,15 +286,16 @@ MCP-App, or unintended source-map files enter artifacts.
    no CORS, headers, and bounded errors.
 3. Sentinel secrets are absent from URLs after exchange, history, HTML, JSON
    responses, logs, browser storage, screenshots/traces, exceptions, and assets.
-4. CLI and UI exercise the same management services for lifecycle, account,
+4. CLI and UI exercise the same management services for catalog, account,
    credential, cleanup, policy, import, doctor, health, and revision conflict
    flows;
    route inventory proves provider connectivity is not exposed by the Web UI.
-5. Browser E2E covers empty-install automatic staging preparation, explicit
-   earlier-settings import preparation, two-destination keyboard navigation,
+5. Browser E2E covers empty-install automatic account-storage preparation,
+   explicit earlier-settings import preparation and automatic successful cutover,
+   two-destination keyboard navigation,
    reload with session, stale/replayed bootstrap, email-and-password-first account
    create with editable suggestions and no connection preview, folded advanced
-   and optional outgoing settings, edit/lifecycle and soft removal, per-account
+   and optional outgoing settings, edit/enable/disable and soft removal, per-account
    **Password** rotation and failed-save unchanged-authority behavior,
    individual policy-item editing with both empty
    semantics, hidden settled-ready status, checkbox-confirmed import

@@ -1,0 +1,34 @@
+credential_storage = "plaintext"
+db_location = "/tmp/v1-metadata.sqlite3"
+enable_attachment_download = true
+allowed_recipients = ["Recipient@Example.Test"]
+allowed_senders = ["*@Example.Test"]
+report_blocked_mutations = true
+
+[[emails]]
+account_name = "v1-alice"
+description = "Main-branch v1 fixture"
+full_name = "Alice V1"
+email_address = "alice@example.test"
+save_to_sent = true
+sent_folder_name = "Sent Items"
+created_at = "2025-01-01T00:00:00+00:00"
+updated_at = "2025-01-01T00:00:00+00:00"
+
+[emails.incoming]
+user_name = "alice@example.test"
+password = "v1-incoming-fixture-secret"
+host = "imap.example.test"
+port = 993
+use_ssl = true
+start_ssl = false
+verify_ssl = true
+
+[emails.outgoing]
+user_name = "alice@example.test"
+password = "v1-outgoing-fixture-secret"
+host = "smtp.example.test"
+port = 465
+use_ssl = true
+start_ssl = false
+verify_ssl = true

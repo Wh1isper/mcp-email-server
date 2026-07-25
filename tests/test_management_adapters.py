@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import traceback
 from collections.abc import Iterator, MutableMapping
@@ -15,12 +16,14 @@ from mcp_email_server import keyring_store
 from mcp_email_server.adapters import management as management_module
 from mcp_email_server.adapters.management import LocalManagementBackend
 from mcp_email_server.application.management import (
+    BindingRole,
     ConnectivityCheckError,
     EndpointSummary,
     LegacyAccountSnapshot,
+    LegacySourceSnapshot,
     ManagementError,
 )
-from mcp_email_server.bootstrap import BootstrapError
+from mcp_email_server.bootstrap import BootstrapError, read_bootstrap, write_bootstrap
 from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ImapAuthenticationError
 from mcp_email_server.managed import ManagedCatalog
@@ -465,3 +468,159 @@ def test_absent_legacy_file_is_an_empty_import_source(monkeypatch: pytest.Monkey
     monkeypatch.setattr(management_module, "configured_path", lambda: tmp_path / "missing.toml")
 
     assert LocalManagementBackend()._read_legacy_raw() == {}
+
+
+def _guarded_cutover_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[LocalManagementBackend, LegacySourceSnapshot, ManagedCatalog, Path]:
+    parent = tmp_path / "guarded-cutover"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    config_path = parent / "config.toml"
+    database = parent / "managed.sqlite3"
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    backend = LocalManagementBackend()
+    raw = _legacy_raw()
+    monkeypatch.setattr(backend, "_read_legacy_raw", lambda: raw)
+    account = backend._effective_legacy_accounts(raw)[0]
+    source = LegacySourceSnapshot(
+        accounts=(account,),
+        unsupported_provider_names=(),
+        enable_attachment_download=False,
+        allowed_recipients=(),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+    catalog = ManagedCatalog.initialize(database)
+    write_bootstrap(mode="legacy", db_path=database, path=config_path, expected_revision=0)
+    return backend, source, catalog, config_path
+
+
+def test_guarded_import_cutover_rejects_final_catalog_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend, source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+    catalog.add_account(
+        name="concurrent",
+        full_name="Concurrent",
+        email_address="concurrent@example.test",
+        incoming=EndpointSummary(
+            host="imap.example.test",
+            port=993,
+            use_ssl=True,
+            start_ssl=False,
+            verify_ssl=True,
+            user_name="concurrent@example.test",
+        ),
+        outgoing=None,
+        expected_revision=1,
+    )
+
+    with pytest.raises(ManagementError, match="revision"):
+        backend.guarded_import_cutover(
+            target_path=catalog.path,
+            expected_bootstrap_revision=1,
+            expected_source=source,
+            expected_resolved_secrets=(),
+            expected_catalog_revision=1,
+            expected_account_revisions=(),
+        )
+
+    assert read_bootstrap(config_path).mode == "legacy"
+
+
+def test_guarded_import_cutover_rechecks_private_credential_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend, source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+
+    with pytest.raises(ManagementError, match="credential source changed"):
+        backend.guarded_import_cutover(
+            target_path=catalog.path,
+            expected_bootstrap_revision=1,
+            expected_source=source,
+            expected_resolved_secrets=(("alice", "incoming", "different-secret"),),
+            expected_catalog_revision=1,
+            expected_account_revisions=(),
+        )
+
+    assert read_bootstrap(config_path).mode == "legacy"
+
+
+def test_guarded_import_cutover_resolves_private_values_before_catalog_writer_fence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend, source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+    original_guard = ManagedCatalog.import_cutover_guard
+    original_resolve = backend.resolve_legacy_secret
+    in_catalog_guard = False
+    resolved = False
+
+    @contextlib.contextmanager
+    def observed_guard(
+        self: ManagedCatalog,
+        *,
+        expected_catalog_revision: int,
+        expected_account_revisions: tuple[tuple[str, int, bool], ...],
+    ) -> Iterator[None]:
+        nonlocal in_catalog_guard
+        in_catalog_guard = True
+        try:
+            with original_guard(
+                self,
+                expected_catalog_revision=expected_catalog_revision,
+                expected_account_revisions=expected_account_revisions,
+            ):
+                yield
+        finally:
+            in_catalog_guard = False
+
+    def observed_resolve(
+        account_name: str,
+        role: BindingRole,
+        expected_account: LegacyAccountSnapshot,
+    ) -> str:
+        nonlocal resolved
+        assert not in_catalog_guard
+        resolved = True
+        return original_resolve(account_name, role, expected_account)
+
+    monkeypatch.setattr(ManagedCatalog, "import_cutover_guard", observed_guard)
+    monkeypatch.setattr(backend, "resolve_legacy_secret", observed_resolve)
+
+    backend.guarded_import_cutover(
+        target_path=catalog.path,
+        expected_bootstrap_revision=1,
+        expected_source=source,
+        expected_resolved_secrets=(("alice", "incoming", "legacy-secret"),),
+        expected_catalog_revision=1,
+        expected_account_revisions=(),
+    )
+
+    assert resolved is True
+    assert read_bootstrap(config_path).mode == "managed"
+
+
+def test_guarded_import_cutover_commits_only_after_final_source_and_target_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend, source, catalog, config_path = _guarded_cutover_fixture(monkeypatch, tmp_path)
+
+    backend.guarded_import_cutover(
+        target_path=catalog.path,
+        expected_bootstrap_revision=1,
+        expected_source=source,
+        expected_resolved_secrets=(("alice", "incoming", "legacy-secret"),),
+        expected_catalog_revision=1,
+        expected_account_revisions=(),
+    )
+
+    selected = read_bootstrap(config_path)
+    assert selected.mode == "managed"
+    assert selected.revision == 2
+    assert selected.db_path == catalog.path

@@ -22,16 +22,29 @@ const emptyPlan = (): LegacyImportPlan => ({
   target_policy_revision: 1,
 })
 
-test('previews on entry and does not require confirmation for a no-op plan', async () => {
+test('finalizes a no-change plan without requiring confirmation', async () => {
+  const user = userEvent.setup()
   const api = createMockApi()
-  vi.mocked(api.previewImport).mockResolvedValue(emptyPlan())
+  const onChanged = vi.fn()
+  const plan = emptyPlan()
+  vi.mocked(api.previewImport).mockResolvedValue(plan)
+  vi.mocked(api.applyImport).mockResolvedValue({
+    created: [],
+    resumed: [],
+    attention_required: [],
+    mode: 'managed',
+    bootstrap_revision: 2,
+    restart_required: true,
+  })
 
-  render(<ImportPanel api={api} />)
+  render(<ImportPanel api={api} onChanged={onChanged} />)
 
-  expect(await screen.findByText('Already up to date.', { selector: 'strong' })).toBeInTheDocument()
+  expect(await screen.findByText('Accounts are already copied.', { selector: 'strong' })).toBeInTheDocument()
   expect(api.previewImport).toHaveBeenCalledOnce()
-  expect(screen.queryByLabelText('Confirmation')).not.toBeInTheDocument()
-  expect(api.applyImport).not.toHaveBeenCalled()
+  expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Finish setup' }))
+  expect(api.applyImport).toHaveBeenCalledWith(plan, '')
+  expect(onChanged).toHaveBeenCalledOnce()
 })
 
 test('reports password attention and notifies the account workspace after import', async () => {
@@ -45,6 +58,9 @@ test('reports password attention and notifies the account workspace after import
     created: ['work'],
     resumed: [],
     attention_required: ['work:incoming:cleanup_required'],
+    mode: 'managed',
+    bootstrap_revision: 2,
+    restart_required: true,
   })
 
   render(<ImportPanel api={api} onChanged={onChanged} />)

@@ -12,13 +12,13 @@ from click import Command, Group, Option
 from typer.main import get_command
 from typer.testing import CliRunner
 
+from mcp_email_server import config as config_module
 from mcp_email_server.adapters.management import LocalManagementBackend
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.management import (
     AccountCreationResult,
     AccountDetails,
     AccountRemovalResult,
-    CatalogActivationResult,
     CatalogInitializationResult,
     ConnectivityResult,
     CredentialCleanupReport,
@@ -36,19 +36,19 @@ from mcp_email_server.application.management import (
     ManagementServices,
     ModeSelectionResult,
 )
-from mcp_email_server.bootstrap import BootstrapError, read_bootstrap, write_bootstrap
+from mcp_email_server.bootstrap import BootstrapError, bootstrap_path, read_bootstrap, write_bootstrap
 from mcp_email_server.cli import app
 from mcp_email_server.config import Settings
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
 
 
 def _configure_bound_management(management: MagicMock, *, catalog_revision: int = 7) -> None:
-    management.lifecycle.status.return_value = SimpleNamespace(
+    management.catalog.status.return_value = SimpleNamespace(
         selected_catalog="/private/catalog.sqlite3",
         bootstrap_revision=2,
         report=SimpleNamespace(catalog_revision=catalog_revision),
     )
-    for service_name in ("lifecycle", "accounts", "credentials", "policy", "connectivity"):
+    for service_name in ("catalog", "accounts", "credentials", "policy", "connectivity"):
         service = getattr(management, service_name)
         service.bind.return_value = service
 
@@ -75,7 +75,7 @@ def _base_account_args() -> list[str]:
     ]
 
 
-def test_cli_managed_setup_activation_and_selection(monkeypatch, tmp_path, fake_keyring):
+def test_cli_managed_setup_is_immediately_selected(monkeypatch, tmp_path, fake_keyring):
     parent = _private_directory(tmp_path / "app")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -85,32 +85,125 @@ def test_cli_managed_setup_activation_and_selection(monkeypatch, tmp_path, fake_
     initialized = runner.invoke(app, ["config", "init", "--database", str(database)])
     added = runner.invoke(app, _base_account_args(), input="incoming-secret\n")
     listed = runner.invoke(app, ["account", "list"])
-    staging_select = runner.invoke(app, ["config", "select", "managed"])
-    activated = runner.invoke(app, ["config", "activate"])
-    selected = runner.invoke(app, ["config", "select", "managed"])
+    removed_activate = runner.invoke(app, ["config", "activate"])
 
     assert initialized.exit_code == 0, initialized.output
     assert read_bootstrap(config_path).mode == "managed"
-    # Selection is observed only after the final command; init itself was legacy.
     assert added.exit_code == 0, added.output
     assert "incoming-secret" not in added.output
     assert listed.exit_code == 0
     assert "alice" in listed.output
     assert "incoming=ACTIVE" in listed.output
     assert "incoming-secret" not in listed.output
-    assert staging_select.exit_code == 1
-    assert "must be ACTIVE" in staging_select.output
-    assert activated.exit_code == 0, activated.output
-    assert selected.exit_code == 0, selected.output
-    assert "Restart" in selected.output
+    assert removed_activate.exit_code != 0
+    assert "No such command" in removed_activate.output
     assert read_bootstrap(config_path).mode == "managed"
-    assert ManagedCatalog(database).lifecycle() == "ACTIVE"
+    assert ManagedCatalog(database).catalog_revision() == 2
     replacement = parent / "replacement.sqlite3"
     rejected_init = runner.invoke(app, ["config", "init", "--database", str(replacement)])
     assert rejected_init.exit_code == 1
     assert "Select legacy" in rejected_init.output
     assert not replacement.exists()
     assert read_bootstrap(config_path).db_path == database
+
+
+def test_main_branch_v1_config_remains_usable_and_imports_before_automatic_cutover(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_keyring,
+) -> None:
+    parent = _private_directory(tmp_path / "v1-upgrade")
+    config_path = parent / "config.toml"
+    database = parent / "catalog.sqlite3"
+    fixture = Path(__file__).parent / "fixtures" / "v1_config.toml"
+    original = fixture.read_bytes()
+    config_path.write_bytes(original)
+    config_path.chmod(0o600)
+    monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+
+    legacy = Settings()
+    assert [account.account_name for account in legacy.emails] == ["v1-alice"]
+    assert legacy.emails[0].incoming.password.get_secret_value() == "v1-incoming-fixture-secret"
+
+    runner = CliRunner()
+    initialized = runner.invoke(app, ["config", "init", "--database", str(database)])
+
+    assert initialized.exit_code == 0, initialized.output
+    assert "Existing settings remain in use" in initialized.output
+    prepared = read_bootstrap(config_path)
+    assert prepared.mode == "legacy"
+    assert prepared.db_path == database
+    assert config_path.read_bytes() == original
+
+    imported = runner.invoke(app, ["config", "import-legacy", "--apply"], input="IMPORT\n")
+
+    assert imported.exit_code == 0, imported.output
+    assert "mode=managed" in imported.output
+    assert "restart_required=true" in imported.output
+    selected = read_bootstrap(config_path)
+    assert selected.mode == "managed"
+    assert selected.db_path == database
+    assert config_path.read_bytes() == original
+    catalog = ManagedCatalog(database)
+    account = catalog.load_account("v1-alice", roles=("incoming", "outgoing"))
+    assert account.incoming.password.get_secret_value() == "v1-incoming-fixture-secret"
+    assert account.outgoing is not None
+    assert account.outgoing.password.get_secret_value() == "v1-outgoing-fixture-secret"
+    assert catalog.policy().allowed_recipients == ("recipient@example.test",)
+    assert catalog.policy().allowed_senders == ("*@example.test",)
+
+    selected_legacy = runner.invoke(app, ["config", "select", "legacy"])
+    finalized = runner.invoke(app, ["config", "import-legacy", "--apply"])
+
+    assert selected_legacy.exit_code == 0, selected_legacy.output
+    assert finalized.exit_code == 0, finalized.output
+    assert "account=v1-alice action=unchanged" in finalized.output
+    assert "created=none" in finalized.output
+    assert "mode=managed" in finalized.output
+    assert read_bootstrap(config_path).mode == "managed"
+    assert config_path.read_bytes() == original
+
+    matching_unicode_secret = "unicode-secret-密碼甲"  # noqa: S105 - synthetic Unicode regression value
+    different_unicode_secret = "unicode-secret-密碼乙"  # noqa: S105 - synthetic Unicode regression value
+    rotated = runner.invoke(
+        app,
+        ["account", "set-secret", "v1-alice", "incoming", "--password-stdin"],
+        input=f"{matching_unicode_secret}\n",
+    )
+    selected_legacy_again = runner.invoke(app, ["config", "select", "legacy"])
+    matching_unicode_source = original.replace(
+        b"v1-incoming-fixture-secret",
+        matching_unicode_secret.encode("utf-8"),
+    )
+    config_path.write_bytes(matching_unicode_source)
+    unicode_finalized = runner.invoke(app, ["config", "import-legacy", "--apply"])
+
+    assert rotated.exit_code == 0, rotated.output
+    assert selected_legacy_again.exit_code == 0, selected_legacy_again.output
+    assert unicode_finalized.exit_code == 0, unicode_finalized.output
+    assert "mode=managed" in unicode_finalized.output
+    assert matching_unicode_secret not in unicode_finalized.output
+    assert read_bootstrap(config_path).mode == "managed"
+
+    selected_legacy_third = runner.invoke(app, ["config", "select", "legacy"])
+    config_path.write_bytes(
+        matching_unicode_source.replace(
+            matching_unicode_secret.encode("utf-8"),
+            different_unicode_secret.encode("utf-8"),
+        )
+    )
+    credential_conflict = runner.invoke(app, ["config", "import-legacy", "--apply"])
+    conflict_surface = credential_conflict.output + str(credential_conflict.exception or "")
+
+    assert selected_legacy_third.exit_code == 0, selected_legacy_third.output
+    assert credential_conflict.exit_code == 1
+    assert "credentials differ" in credential_conflict.output
+    assert matching_unicode_secret not in conflict_surface
+    assert different_unicode_secret not in conflict_surface
+    assert read_bootstrap(config_path).mode == "legacy"
+    assert catalog.load_account("v1-alice").incoming.password.get_secret_value() == matching_unicode_secret
 
 
 def test_cli_can_select_legacy_when_selected_managed_catalog_is_missing(monkeypatch, tmp_path) -> None:
@@ -131,7 +224,7 @@ def test_cli_can_select_legacy_when_selected_managed_catalog_is_missing(monkeypa
     assert not missing_database.exists()
 
 
-def test_config_init_does_not_select_managed(monkeypatch, tmp_path):
+def test_config_init_selects_managed(monkeypatch, tmp_path):
     parent = _private_directory(tmp_path / "app")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -140,8 +233,8 @@ def test_config_init_does_not_select_managed(monkeypatch, tmp_path):
     result = CliRunner().invoke(app, ["config", "init", "--database", str(database)])
 
     assert result.exit_code == 0
-    assert read_bootstrap(config_path).mode == "legacy"
-    assert ManagedCatalog(database).lifecycle() == "STAGING"
+    assert read_bootstrap(config_path).mode == "managed"
+    assert ManagedCatalog(database).catalog_revision() == 1
 
 
 def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tmp_path) -> None:
@@ -246,7 +339,6 @@ def test_select_managed_validates_binding_metadata_without_resolving_secret(monk
     runner = CliRunner()
     assert runner.invoke(app, ["config", "init", "--database", str(database)]).exit_code == 0
     assert runner.invoke(app, _base_account_args(), input="incoming-secret\n").exit_code == 0
-    assert runner.invoke(app, ["config", "activate"]).exit_code == 0
     with sqlite3.connect(database) as connection:
         connection.execute("DELETE FROM managed_secret")
         connection.commit()
@@ -257,7 +349,7 @@ def test_select_managed_validates_binding_metadata_without_resolving_secret(monk
     assert "incoming-secret" not in selected.output
     assert read_bootstrap(config_path).mode == "managed"
     with pytest.raises(ManagedCatalogError, match="missing"):
-        ManagedCatalog(database).load_account("alice", roles=("incoming",), require_active_catalog=True)
+        ManagedCatalog(database).load_account("alice", roles=("incoming",))
 
 
 def test_account_add_has_no_secret_argv_option() -> None:
@@ -514,11 +606,7 @@ api_key = "provider-secret"
         input="IMPORT\n",
     )
     keyring_after_apply = dict(fake_keyring._store)
-    repeated = runner.invoke(
-        app,
-        ["config", "import-legacy", "--apply"],
-        input="IMPORT\n",
-    )
+    repeated = runner.invoke(app, ["config", "import-legacy", "--apply"])
 
     assert missing_confirmation.exit_code == 1
     assert "exactly IMPORT" in missing_confirmation.output
@@ -527,6 +615,7 @@ api_key = "provider-secret"
     assert repeated.exit_code == 0, repeated.output
     assert "account=stored action=unchanged" in repeated.output
     assert "created=none" in repeated.output
+    assert "mode=legacy" in repeated.output
     assert fake_keyring._store == keyring_after_apply
     assert config_path.read_bytes() == source_after_init
     catalog = ManagedCatalog(database)
@@ -534,7 +623,7 @@ api_key = "provider-secret"
     assert account.incoming.password.get_secret_value() == "stored-secret"
     environment_account = catalog.load_account("environment-only")
     assert environment_account.incoming.password.get_secret_value() == "environment-secret"
-    assert {item.account_name for item in catalog.load_settings(require_active=False).emails} == {
+    assert {item.account_name for item in catalog.load_settings().emails} == {
         "stored",
         "environment-only",
     }
@@ -586,7 +675,9 @@ verify_ssl = true
     assert preview.exit_code == 0, preview.output
     assert "action=create" in preview.output
     assert applied.exit_code == 1
-    assert "credential is unavailable" in applied.output
+    assert "credential" in applied.output
+    assert "unavailable" in applied.output
+    assert read_bootstrap(config_path).mode == "legacy"
     assert ManagedCatalog(database).list_accounts() == []
 
 
@@ -667,9 +758,10 @@ def test_cli_json_error_is_single_document_and_preflight_precedes_secret_read(mo
 def test_agent_readable_status_error_omits_bootstrap_path(monkeypatch, tmp_path: Path) -> None:
     parent = _private_directory(tmp_path / "private-owner-name")
     config_path = parent / "private-config.toml"
-    config_path.write_text("[local_app\n", encoding="utf-8")
+    authority_path = bootstrap_path(config_path)
+    authority_path.write_text("[local_app\n", encoding="utf-8")
     if os.name == "posix":
-        config_path.chmod(0o600)
+        authority_path.chmod(0o600)
     monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
 
     result = CliRunner().invoke(app, ["config", "status", "--json"])
@@ -723,21 +815,20 @@ def test_json_mode_maps_account_validation_errors_to_single_documents(monkeypatc
     assert message == "The command input is invalid."
 
 
-def test_lifecycle_json_mutations_use_committed_results_without_post_write_status(
+def test_catalog_json_mutations_use_committed_results_without_post_write_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     management = MagicMock()
     _configure_bound_management(management)
-    management.lifecycle.initialize.return_value = CatalogInitializationResult(
-        mode="legacy",
+    management.catalog.initialize.return_value = CatalogInitializationResult(
+        mode="managed",
+        database="/private/catalog.sqlite3",
         bootstrap_revision=3,
         restart_required=True,
         catalog_revision=1,
-        lifecycle="STAGING",
     )
-    management.lifecycle.activate.return_value = CatalogActivationResult(catalog_revision=8, lifecycle="ACTIVE")
-    management.lifecycle.select.return_value = ModeSelectionResult(
+    management.catalog.select.return_value = ModeSelectionResult(
         mode="legacy",
         bootstrap_revision=3,
         restart_required=False,
@@ -748,28 +839,23 @@ def test_lifecycle_json_mutations_use_committed_results_without_post_write_statu
     )
     runner = CliRunner()
 
-    management.lifecycle.status.side_effect = AssertionError("init must not observe after commit")
+    management.catalog.status.side_effect = AssertionError("init must not observe after commit")
     initialized = runner.invoke(
         app,
         ["config", "init", "--database", str(tmp_path / "catalog.sqlite3"), "--json"],
     )
     assert initialized.exit_code == 0
-    management.lifecycle.status.assert_not_called()
+    management.catalog.status.assert_not_called()
 
-    management.lifecycle.status.reset_mock(side_effect=True)
-    management.lifecycle.status.return_value = SimpleNamespace(
+    management.catalog.status.reset_mock(side_effect=True)
+    management.catalog.status.return_value = SimpleNamespace(
         selected_catalog="/private/catalog.sqlite3",
         bootstrap_revision=2,
         report=SimpleNamespace(catalog_revision=7),
     )
-    activated = runner.invoke(app, ["config", "activate", "--json"])
-    assert activated.exit_code == 0
-    management.lifecycle.status.assert_called_once_with()
-
-    management.lifecycle.status.reset_mock()
     selected = runner.invoke(app, ["config", "select", "legacy", "--json"])
     assert selected.exit_code == 0
-    management.lifecycle.status.assert_called_once_with()
+    management.catalog.status.assert_called_once_with()
 
 
 def test_every_finite_management_command_emits_one_json_success_document(monkeypatch, tmp_path: Path) -> None:
@@ -782,8 +868,7 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
         user_name="alice@example.test",
     )
     doctor = DoctorReport(
-        lifecycle="STAGING",
-        schema_version=1,
+        schema_version=3,
         catalog_revision=7,
         account_count=1,
         enabled_account_count=1,
@@ -813,7 +898,7 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
     credential = CredentialMutationResult(status="active", revision=8)
     management = MagicMock()
     _configure_bound_management(management)
-    management.lifecycle.status.return_value = SimpleNamespace(
+    management.catalog.status.return_value = SimpleNamespace(
         mode="legacy",
         selected_catalog="configured",
         bootstrap_revision=2,
@@ -821,20 +906,19 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
         report=doctor,
         catalog_problem=None,
     )
-    management.lifecycle.initialize.return_value = CatalogInitializationResult(
-        mode="legacy",
+    management.catalog.initialize.return_value = CatalogInitializationResult(
+        mode="managed",
+        database="/private/catalog.sqlite3",
         bootstrap_revision=3,
         restart_required=True,
         catalog_revision=1,
-        lifecycle="STAGING",
     )
-    management.lifecycle.activate.return_value = CatalogActivationResult(catalog_revision=8, lifecycle="ACTIVE")
-    management.lifecycle.select.return_value = ModeSelectionResult(
+    management.catalog.select.return_value = ModeSelectionResult(
         mode="legacy",
         bootstrap_revision=3,
         restart_required=False,
     )
-    management.lifecycle.doctor.return_value = doctor
+    management.catalog.doctor.return_value = doctor
     management.index_health.get.return_value = IndexHealth("healthy", 1, 0, ())
     management.policy.get.return_value = policy
     management.policy.update.return_value = policy
@@ -882,7 +966,6 @@ def test_every_finite_management_command_emits_one_json_success_document(monkeyp
         ("config.update-policy", ["config", "update-policy", "--expected-revision", "3", "--json"], None),
         ("config.cleanup-credentials", ["config", "cleanup-credentials", "--json"], None),
         ("config.import-legacy", ["config", "import-legacy", "--json"], None),
-        ("config.activate", ["config", "activate", "--json"], None),
         ("config.select", ["config", "select", "legacy", "--json"], None),
         ("account.add", [*_base_account_args(), "--json"], "incoming-secret\n"),
         (
@@ -1022,7 +1105,6 @@ def test_all_finite_management_commands_advertise_json_mode() -> None:
             "update-policy",
             "cleanup-credentials",
             "import-legacy",
-            "activate",
             "select",
         },
         "account": {

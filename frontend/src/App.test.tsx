@@ -16,7 +16,6 @@ test('exchanges bootstrap and presents account-first navigation', async () => {
     'Email accounts', 'Settings & help',
   ])
   expect(screen.queryByRole('button', { name: 'Credentials' })).not.toBeInTheDocument()
-  expect(screen.queryByText('Lifecycle controls')).not.toBeInTheDocument()
 })
 
 test('reload resumes a cookie session and opens progressively disclosed settings', async () => {

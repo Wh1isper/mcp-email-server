@@ -1,5 +1,4 @@
 export type ManagementMode = 'legacy' | 'managed'
-export type Lifecycle = 'STAGING' | 'ACTIVE'
 
 export interface CatalogTarget {
   expected_bootstrap_revision: number
@@ -10,7 +9,6 @@ export type BindingRole = 'incoming' | 'outgoing'
 export type BindingState = 'MISSING' | 'ACTIVE' | 'SUPERSEDED' | 'CLEANUP_REQUIRED'
 
 export interface DoctorReport {
-  lifecycle: Lifecycle
   schema_version: number
   catalog_revision: number
   account_count: number
@@ -132,6 +130,9 @@ export interface LegacyImportReport {
   created: string[]
   resumed: string[]
   attention_required: string[]
+  mode: ManagementMode
+  bootstrap_revision: number
+  restart_required: boolean
 }
 
 export interface AccountRemovalResult {

@@ -40,39 +40,24 @@ describe('bootstrap and API security behavior', () => {
     expect(second?.[1]?.cache).toBe('no-store')
   })
 
-  test('binds catalog mutations to an explicit snapshot even after later status reads', async () => {
+  test('initializes and selects the default catalog in one mutation', async () => {
     window.history.replaceState(null, '', '/route/')
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({ csrf: 'csrf-value' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        mode: 'legacy',
-        selected_catalog: '/private/catalog.sqlite3',
-        bootstrap_revision: 4,
-        report: { catalog_revision: 7 },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        mode: 'legacy',
-        selected_catalog: '/private/other.sqlite3',
-        bootstrap_revision: 5,
-        report: { catalog_revision: 7 },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'active' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ database: '/private/catalog.sqlite3' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     const api = createApi(fetcher)
     await api.session()
-    await api.status()
-    const reviewedTarget = { expected_bootstrap_revision: 4, expected_catalog: '/private/catalog.sqlite3' }
-    await api.status()
 
-    await api.activateCatalog(7, reviewedTarget)
+    await api.initializeDefaultCatalog(4, true)
 
-    const mutationBody = fetcher.mock.calls[3]?.[1]?.body
+    expect(fetcher.mock.calls[1]?.[0]).toBe('/route/api/catalog/initialize-default')
+    const mutationBody = fetcher.mock.calls[1]?.[1]?.body
     expect(typeof mutationBody).toBe('string')
     if (typeof mutationBody !== 'string') throw new Error('Expected a JSON request body')
     expect(JSON.parse(mutationBody)).toEqual({
-      expected_revision: 7,
       expected_bootstrap_revision: 4,
-      expected_catalog: '/private/catalog.sqlite3',
+      require_empty_install: true,
     })
   })
 

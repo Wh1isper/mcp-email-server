@@ -158,4 +158,4 @@ class UpdatePolicyRequest(CatalogTargetRequest):
 class ApplyImportRequest(RequestModel):
     expected_revision: int = Field(ge=1)
     preview_token: str = Field(min_length=1, max_length=4096)
-    confirmation: str = Field(min_length=1, max_length=64)
+    confirmation: str = Field(max_length=64)

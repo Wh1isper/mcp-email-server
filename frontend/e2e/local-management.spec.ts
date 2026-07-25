@@ -222,11 +222,8 @@ test('real browser completes secure local management workflows', async ({ browse
     await expect(page.getByText('Safety settings saved.')).toBeVisible()
     await navigation.getByRole('button', { name: 'Email accounts' }).click()
 
-    await page.getByRole('button', { name: 'Finish setup' }).click()
-    await expect(page.getByRole('button', { name: 'Use these accounts' })).toBeVisible()
-    await expect(page.getByText(/restart the mail server/i)).toHaveCount(0)
-    await page.getByRole('button', { name: 'Use these accounts' }).click()
     await expect(page.getByText(/Restart the mail server to apply this change/i)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Use these accounts' })).toHaveCount(0)
 
     await page.getByText('More', { exact: true }).click()
     await page.getByRole('button', { name: 'Pause account' }).click()
@@ -325,7 +322,9 @@ test('real browser explicitly prepares and imports detected earlier settings', a
 
     await page.getByRole('checkbox', { name: 'I reviewed these accounts and want to copy them.' }).check()
     await page.getByRole('button', { name: 'Import accounts' }).click()
-    await expect(page.getByText('Import complete. 1 account(s) added and 0 password(s) restored.')).toBeVisible()
+    await expect(page.getByText('Email accounts configured')).toBeVisible()
+    await expect(page.getByText('Restart the mail server to apply this change.')).toBeVisible()
+    await expect(page.getByText(/previous settings remain in use until the import succeeds/i)).toHaveCount(0)
 
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Email accounts' }).click()
     await expect(page.getByRole('heading', { name: 'earlier@example.test' })).toBeVisible()

@@ -63,8 +63,8 @@ here and ask me to verify status.
 
 The exact command is version-aware and comes from checked project documentation,
 not an invented shell sequence. For the matching V2 release, the CLI is the
-low-level agent management API and deliberately retains `STAGING`, `ACTIVE`,
-revision, catalog, and restart-state vocabulary. Bounded agent-run checks use
+low-level agent management API and deliberately retains revision, catalog,
+binding-state, and restart-state vocabulary. Bounded agent-run checks use
 `mcp-email-server config status --json`, `mcp-email-server config doctor --json`,
 and, when the user asks for a specific post-setup provider diagnostic,
 `mcp-email-server account test ACCOUNT ROLE --json`. The connectivity service is
@@ -72,7 +72,7 @@ not exposed by the Web UI.
 
 The agent requires the stable `schema_version: 1` envelope, validates `ok` and
 `command`, treats unknown schemas/codes as unsupported, and summarizes only
-approved lifecycle, count, post-operation revision/restart, binding-health,
+approved mode, count, post-operation revision/restart, binding-health,
 connectivity, problem, and handoff fields. Dispatched errors have a typed stable
 `error.code` and its fixed safe message. The agent never infers permission to run
 another command merely because that command also supports JSON.

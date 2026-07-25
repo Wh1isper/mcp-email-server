@@ -62,7 +62,7 @@ def _private_directory(path: Path) -> Path:
     return path
 
 
-def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, activate: bool = True):
+def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, complete: bool = True):
     parent = _private_directory(tmp_path / "managed")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -79,9 +79,8 @@ def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, activate: bool
         ),
         outgoing=None,
     )
-    catalog.set_secret("managed-alice", "incoming", "runtime-secret")
-    if activate:
-        catalog.activate()
+    if complete:
+        catalog.set_secret("managed-alice", "incoming", "runtime-secret")
     config_path.write_text(
         f"bootstrap_version = {BOOTSTRAP_VERSION}\n"
         'mode = "managed"\n'
@@ -220,11 +219,10 @@ def test_managed_missing_database_does_not_fall_back_to_legacy(monkeypatch, tmp_
         get_settings(reload=True)
 
 
-def test_managed_staging_catalog_does_not_fall_back_to_legacy(monkeypatch, tmp_path, fake_keyring):
-    _select_managed(monkeypatch, tmp_path, fake_keyring, activate=False)
+def test_managed_incomplete_account_does_not_fall_back_to_legacy(monkeypatch, tmp_path, fake_keyring):
+    _select_managed(monkeypatch, tmp_path, fake_keyring, complete=False)
 
-    with pytest.raises(Exception, match="not active"):
-        get_settings(reload=True)
+    assert get_settings(reload=True).emails == []
 
 
 def test_settings_store_and_delete_are_fenced_before_legacy_effects(monkeypatch, tmp_path, fake_keyring):

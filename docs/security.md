@@ -49,8 +49,10 @@ and only a backend-proven empty installation triggers that call automatically.
 The backend chooses the `managed.sqlite3` sibling path, rechecks the effective
 legacy source, and atomically compares the initial zero revision plus the absent
 bootstrap-file proof against concurrent legacy settings writes. Detected legacy content requires an explicit **Import existing settings**
-preparation click and preview review. Neither path imports secrets, contacts
-providers, activates, or selects managed mode.
+preparation click and preview review. Fresh initialization selects managed mode
+without importing or contacting providers. Legacy preparation keeps the prior
+runtime selected; only a fully successful reviewed import with no unsupported
+provider types automatically selects managed. Failure leaves legacy selected.
 
 Every response uses `Cache-Control: no-store`, a same-origin CSP with framing,
 objects, forms, base changes, workers, and remote runtime assets disabled,
@@ -135,24 +137,28 @@ safe credential channel. A missing or unreadable active secret fails closed
 rather than selecting a legacy account or plaintext fallback.
 
 Managed bootstrap/catalog support requires POSIX ownership, no-follow,
-directory-descriptor, and advisory-lock primitives. Bootstrap files, their
-immediate parent directory, the SQLite database, sidecars, and lock must be
-owned by the current user and must not grant group or world access. Symlinked,
+directory-descriptor, and advisory-lock primitives. Selection authority lives in
+an owner-only sibling sidecar (`config.bootstrap.toml` for `config.toml`), not in
+the legacy source. Bootstrap sidecars, their immediate parent directory, the
+SQLite database, SQLite sidecars, and locks must be owned by the current user and
+must not grant group or world access. Symlinked,
 hard-linked where forbidden, or non-regular paths are rejected. New directories
 and files are created with `0700` and `0600` permissions respectively. On Linux,
 these controls protect both catalog state and the `managed_secret` table.
 Selection changes compare the expected monotonic bootstrap revision while
 holding the private sibling lock, preventing concurrent last-writer-wins
 authority changes. Historical `db_location` remains the legacy metadata index;
-managed selection is stored separately as `managed_db_location`, so staging
+managed selection is stored separately as `managed_db_location`, so migration
 preparation cannot redirect legacy metadata writes into a managed catalog.
 Recording that selection creates management authority even while legacy mail
-mode remains active, so the bootstrap file and parent receive the same security
-validation in either mode. On supported POSIX platforms, one cross-process lock
-covers each complete legacy store, reset, or credential migration: source load,
-keyring effects, bootstrap-preserving TOML commit, and checked cleanup. A newly
-created legacy configuration parent is `0700`; an existing legacy parent is not
-silently changed, and a fresh reset creates no filesystem artifact.
+mode remains active, so the bootstrap sidecar and parent receive the same security
+validation in either mode. Selection writes atomically replace only that sidecar;
+initialization and import cutover never reserialize the independent legacy source.
+On supported POSIX platforms, one cross-process sidecar lock covers each complete
+legacy store, reset, or credential migration: source load, keyring effects, source
+commit, and checked cleanup. A newly created legacy configuration parent is
+`0700`; an existing legacy parent is not silently changed, and a fresh reset with
+neither source nor sidecar creates no filesystem artifact.
 
 A platform without these filesystem guarantees fails before creating managed
 targets or changing bootstrap authority rather than using a weaker fallback. On
@@ -191,20 +197,29 @@ managed write. Environment password presence is detected by enumerating variable
 names without retrieving its value; role/base values are read only during
 confirmed apply. The plan exposes only non-secret endpoint/policy settings,
 credential source classes, and exact target revisions. CLI apply displays that
-plan before reading interactive confirmation; a no-op plan needs no
-confirmation. For a changed UI plan, the user checks an explicit review box and
+plan before reading interactive confirmation; a no-change plan needs no
+confirmation but still executes credential proof and guarded finalization. For a
+changed UI plan, the user checks an explicit review box and
 the adapter submits the fixed `IMPORT` confirmation value; it cannot apply while
 the box is clear. UI confirmation is bound to a one-time preview token. The
 private preview is additionally bound to the selected catalog path and bootstrap
-revision. Confirmed apply is limited to `STAGING`, preflights normalized-name
-collisions and account capacity, checks destination conflicts before resolving
-any secret, revalidates reviewed source identity and target revisions before
-each credential resolution/write, and installs credentials through the same save protocol as manual setup. A
-failed save leaves destination binding authority unchanged; cleanup-required
-outcomes are reported explicitly. Import never deletes or rewrites TOML,
-environment, or legacy keyring state and does not activate or select managed
-mode. Provider-style legacy accounts are reported unsupported rather than
-partially imported.
+revision. Confirmed apply preflights normalized-name collisions and account
+capacity, checks destination conflicts before resolving any secret, revalidates
+reviewed source identity and target revisions before each credential
+resolution/write, and installs credentials through the same save protocol as
+manual setup. Before an otherwise eligible cutover, an `unchanged` active role is
+privately resolved on both sides and must compare equal; mismatch overwrites
+neither side and blocks cutover. Its
+legacy value and managed account revision remain bound into finalization. Final
+automatic cutover holds the shared source/selection lock, rechecks the complete
+source snapshot and each proven or imported private credential value,
+then holds a SQLite writer fence while checking the final catalog revision and
+each imported account revision/enabled state. The bootstrap sidecar CAS completes
+before either fence is released. A failed save, any drift, unsupported provider,
+or cleanup attention leaves legacy runtime selected. Import never deletes,
+rewrites, or reformats TOML, environment, or legacy keyring state. Provider-style
+legacy accounts are reported unsupported and prevent automatic cutover rather
+than being silently lost.
 
 ## Temporary oversized results
 
