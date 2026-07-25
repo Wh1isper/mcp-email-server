@@ -2,7 +2,7 @@
     "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
     "name": "mcp-email-server",
     "version": "0.0.1",
-    "description": "Safe, non-secret setup guidance for mcp-email-server.",
+    "description": "Email MCP tools with safe, non-secret setup guidance.",
     "owner": {
         "name": "wh1isper"
     },
@@ -10,7 +10,7 @@
         {
             "name": "mcp-email-server",
             "source": "./plugins/mcp-email-server",
-            "description": "Diagnose mcp-email-server and hand secret entry to its user-operated CLI or local UI.",
+            "description": "Use email through MCP while handing secret entry to the user-operated CLI or local UI.",
             "version": "0.0.1",
             "author": {
                 "name": "wh1isper"

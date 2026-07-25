@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import io
 from unittest.mock import MagicMock
 
@@ -19,7 +20,7 @@ def test_global_version_check_is_bounded() -> None:
     result = CliRunner().invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.0.1"
+    assert result.stdout.strip() == importlib.metadata.version("mcp-email-server")
 
 
 def test_ui_cli_exposes_only_no_open_and_port(monkeypatch) -> None:

@@ -19,7 +19,14 @@ mcp-email-server reset --confirm RESET [--json]
 mcp-email-server migrate-credentials [--to keyring|plaintext] [--json]
 mcp-email-server config {init|status|doctor|index-health|policy|update-policy|cleanup-credentials|import-legacy|select}
 mcp-email-server account {add|set-secret|list|show|update|disable|enable|remove|remove-secret|test}
+mcp-email-server-plugin
 ```
+
+`mcp-email-server-plugin` is the dedicated plugin entry point. It accepts no
+transport or management command and starts the same bounded stdio server directly.
+Because this entry point is introduced with the mail-only Local Email App V2
+catalog, resolving `mcp-email-server@latest` fails closed on earlier packages
+instead of starting their legacy MCP surface.
 
 Run `mcp-email-server COMMAND --help` or
 `mcp-email-server config|account COMMAND --help` for current options. Managed

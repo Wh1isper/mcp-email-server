@@ -1,16 +1,20 @@
 # Safe commands and handoffs
 
+## Bundled MCP mail tools
+
+The plugin host starts the declared local stdio server with `uvx --from mcp-email-server@latest mcp-email-server-plugin`. This plugin-only entry point is unavailable in legacy application releases, which therefore fail closed instead of exposing their older MCP catalog. Use only the mail tools the host exposes, and follow their schemas, annotations, configured recipient/sender policy, and confirmation boundaries. The bundled MCP surface does not authorize account setup, credential changes, direct configuration access, or additional shell commands.
+
 ## Agent-run checks
 
-The agent may run only these bounded, non-secret application checks:
+After the user intentionally installs and enables the reviewed plugin, the agent may run only these bounded, non-secret application checks when diagnosis is needed:
 
 ```text
-mcp-email-server --version
-mcp-email-server config status --json
-mcp-email-server config doctor --json
+uvx mcp-email-server@latest --version
+uvx mcp-email-server@latest config status --json
+uvx mcp-email-server@latest config doctor --json
 ```
 
-Run the version check first. The plugin and application versions should match (`0.0.1` for this release). If the executable does not support the listed command or the versions differ, stop and use documentation from the installed application release; do not guess a replacement command. Parse status and doctor only when `schema_version` is `1`, `ok` is true, and `command` matches the requested check. Treat an unknown schema, command, or error code as unsupported. Summarize only non-secret mode, catalog status, restart requirement, lifecycle/schema/revision, account counts, binding-health counts, and bounded problems or handoff hints; never expose or infer omitted fields.
+The plugin manifest version and application version are independent; do not compare them or infer the running application version from plugin metadata. If the executable does not support a listed command, stop and use documentation from the current published application; do not guess a replacement command. Parse status and doctor only when `schema_version` is `1`, `ok` is true, and `command` matches the requested check. Treat an unknown schema, command, or error code as unsupported. Summarize only non-secret mode, catalog status, restart requirement, lifecycle/schema/revision, account counts, binding-health counts, and bounded problems or handoff hints; never expose or infer omitted fields.
 
 Do not augment these checks with environment dumps, filesystem searches, configuration/database reads, keyring queries, raw logs, network probes, or MCP calls. JSON support on another CLI command does not authorize the agent to run it.
 
@@ -19,7 +23,7 @@ Do not augment these checks with environment dumps, filesystem searches, configu
 For adding or editing an account, tell the user to run this themselves in a local terminal:
 
 ```text
-mcp-email-server ui
+uvx mcp-email-server@latest ui
 ```
 
 The user must open and operate the authenticated local browser UI themselves. The agent must not execute the command, inspect browser state, or receive the bootstrap URL.
@@ -27,8 +31,8 @@ The user must open and operate the authenticated local browser UI themselves. Th
 A terminal-only user may inspect the installed release's interactive syntax and then run it themselves:
 
 ```text
-mcp-email-server account add --help
-mcp-email-server account set-secret --help
+uvx mcp-email-server@latest account add --help
+uvx mcp-email-server@latest account set-secret --help
 ```
 
 Secret prompts belong to that user-controlled terminal. Do not ask the user to pipe, forward, capture, paste, or save their input for the agent. Account names and endpoint settings are not permission to receive credentials.

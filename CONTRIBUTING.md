@@ -169,15 +169,20 @@ This section is for project maintainers.
 1. Create an API token on [PyPI](https://pypi.org/).
 2. Add it to the repository's GitHub Actions secrets as `PYPI_TOKEN`.
 3. Create a [GitHub release](https://github.com/wh1isper/mcp-email-server/releases/new).
-4. Create a version tag in the form `vX.Y.Z` as part of the release.
+4. Create a canonical `X.Y.Z` version tag, optionally prefixed with `v`, as part of the release.
 
-Commit the intended package, plugin, marketplace, installation-guide, and lock
-versions before creating the tag; `vX.Y.Z` must match the committed Python
-package version. The release workflow does not rewrite version
-metadata or the lockfile: it pins and verifies the peeled tag commit, then reruns
-the complete Python 3.11-3.14 matrix against that exact tree. A separate
-unprivileged validation job rebuilds the locked frontend, rejects staged-asset
-drift, runs the default-Python, documentation, browser, packaging, and GreenMail
-gates, builds the final wheel and sdist once, and records their checksums. The
+The release tag is the application version authority. The workflow pins and
+verifies the peeled release-tag commit, then deterministically stamps its normalized value
+into `pyproject.toml` and the matching editable entry in `uv.lock` inside each
+isolated release job. It does not rewrite plugin metadata. The complete Python
+3.11-3.14 matrix runs against that stamped release tree. A separate unprivileged
+validation job rebuilds the locked frontend, rejects staged-asset drift, runs the
+default-Python, documentation, browser, packaging, and GreenMail gates, builds
+the final wheel and sdist once, and records their checksums. The
 credential-bearing publish job can only download, checksum, and publish those
 unchanged verified artifacts; it contains no build step.
+
+Plugin semver is independent from the Python application. Bump the plugin
+manifests and marketplace entry only when the bundled manifests, `.mcp.json`,
+skill, or other plugin content changes; application releases selected through
+`@latest` do not require a plugin version change.

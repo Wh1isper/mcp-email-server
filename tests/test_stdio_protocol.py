@@ -307,6 +307,45 @@ def test_raw_stdio_accepts_regular_file_redirection_and_devnull_eof(tmp_path: Pa
     assert response["result"]["protocolVersion"] == "2025-06-18"
 
 
+def test_plugin_stdio_startup_failure_is_bounded_without_traceback(tmp_path: Path) -> None:
+    app_dir = tmp_path / "plugin-startup"
+    app_dir.mkdir(mode=0o700)
+    config = app_dir / "config.toml"
+    database = app_dir / "managed.sqlite3"
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    environment["MCP_EMAIL_SERVER_CONFIG_PATH"] = str(config)
+    environment["MCP_EMAIL_SERVER_LOG_LEVEL"] = "WARNING"
+    executable = Path(sys.executable).with_name("mcp-email-server")
+    plugin_executable = Path(sys.executable).with_name("mcp-email-server-plugin")
+
+    initialized = subprocess.run(  # noqa: S603 - exact test-owned executable and arguments
+        [str(executable), "config", "init", "--database", str(database)],
+        cwd=REPOSITORY,
+        env=environment,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    database.rename(database.with_suffix(".missing"))
+
+    completed = subprocess.run(  # noqa: S603 - exact test-owned plugin executable
+        [str(plugin_executable)],
+        cwd=REPOSITORY,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == b""
+    assert b"Error:" in completed.stderr
+    assert b"Traceback" not in completed.stderr
+    assert b"click.exceptions.Exit" not in completed.stderr
+    assert os.fsencode(tmp_path) not in completed.stderr
+
+
 async def _wait_for_path(path: Path) -> None:
     deadline = asyncio.get_running_loop().time() + 10
     while not path.exists():

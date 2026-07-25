@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+        "mcp-email-server": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "--from",
+                "mcp-email-server@latest",
+                "mcp-email-server-plugin"
+            ]
+        }
+    }
+}

@@ -7,9 +7,11 @@ the Local Email App without exposing account credentials to a model or MCP
 protocol. The project therefore ships a small agent integration package that can
 be installed through supported Codex and Claude Code skill/plugin mechanisms.
 
-This package is guidance and orchestration metadata. It is not a credential
-channel, authorization boundary, management API, MCP tool, or substitute for the
-local CLI and Web UI.
+This package combines a standards-compliant local stdio MCP declaration with
+safe guidance and orchestration metadata. The MCP server provides only the mail
+workflow surface from spec 10. The package is not a credential channel,
+authorization boundary, management API, or substitute for the local CLI and Web
+UI.
 
 ## Security Decision
 
@@ -37,8 +39,9 @@ that continues accepting credentials.
 
 The integration may help an agent:
 
-- detect whether `mcp-email-server` is installed and report its non-secret
-  version;
+- use the mail tools exposed by the bundled local MCP server while respecting
+  their schemas, annotations, allowlists, and confirmation boundaries;
+- report the current published application's non-secret version;
 - explain the distinction between MCP mail workflows and local management;
 - inspect bounded read-only mode/status output that contains no secrets or
   reusable secret locators;
@@ -56,19 +59,19 @@ When a user asks an agent to add or modify an account, the skill MUST stop befor
 credential collection and provide a concise handoff such as:
 
 ```text
-Run `mcp-email-server ui` in your local terminal, or run the documented
-interactive account setup command. Complete credential entry there, then return
+Run `uvx mcp-email-server@latest ui` in your local terminal, or run the
+documented interactive account setup command. Complete credential entry there,
+then return
 here and ask me to verify status.
 ```
 
-The exact command is version-aware and comes from checked project documentation,
-not an invented shell sequence. For the matching V2 release, the CLI is the
-low-level agent management API and deliberately retains revision, catalog,
-binding-state, and restart-state vocabulary. Bounded agent-run checks use
-`mcp-email-server config status --json`, `mcp-email-server config doctor --json`,
-and, when the user asks for a specific post-setup provider diagnostic,
-`mcp-email-server account test ACCOUNT ROLE --json`. The connectivity service is
-not exposed by the Web UI.
+The exact command comes from checked project documentation, not an invented
+shell sequence. The CLI is the low-level management API and deliberately retains
+revision, catalog, binding-state, and restart-state vocabulary. The plugin's MCP
+declaration and bounded checks use the same current-published application channel:
+`uvx mcp-email-server@latest`. Agent-run diagnostics are limited to the version
+check, `config status --json`, and `config doctor --json`. Provider connectivity
+checks and all management commands remain user-operated.
 
 The agent requires the stable `schema_version: 1` envelope, validates `ok` and
 `command`, treats unknown schemas/codes as unsupported, and summarizes only
@@ -100,7 +103,7 @@ The skill/plugin MUST NOT:
   secret-bearing tool calls safe;
 - install binaries/plugins, modify shell startup files, or change MCP client
   configuration without explicit user intent and a visible diff/summary;
-- download or execute unpinned helper code merely to perform account setup;
+- download or execute unreviewed helper code merely to perform account setup;
 - start a remotely bound service, daemon, share tunnel, or generic management
   endpoint.
 
@@ -109,32 +112,32 @@ must explain the limitation instead of degrading to chat-based secret entry.
 
 ## Repository and Distribution Model
 
-The main project repository is the authority for the integration so application,
-CLI, docs, and guidance can be versioned together. It contains:
+The main project repository is the authority for the integration. Application
+and plugin releases have independent lifecycles: the plugin changes when its
+manifests, MCP declaration, skill, or related content change, while its
+`@latest` selector follows the current published Python application. The
+repository contains:
 
-- one concise canonical skill body;
-- only the references needed for versioned commands and troubleshooting;
-- minimal vendor manifests/wrappers required by supported Codex and Claude Code
-  installation mechanisms;
-- validation that staged vendor copies are semantically identical to the
-  canonical source;
-- installation documentation with explicit source, version, and update/remove
-  steps.
+- one concise canonical skill body with no embedded release number;
+- only the references needed for current-channel commands and troubleshooting;
+- one shared root `.mcp.json` referenced by both vendor manifests;
+- minimal marketplace and plugin manifests required by supported Codex and
+  Claude Code installation mechanisms;
+- validation that both hosts load identical canonical content;
+- installation documentation with explicit source and update/remove steps.
 
-A representative layout is:
+The implemented layout is:
 
 ```text
-integrations/
-  agents/
-    mcp-email-server/
-      SKILL.md
-      references/
-        commands.md
-        security-handoff.md
-    codex/
-      ... minimal installation metadata or staged skill ...
-    claude-code/
-      ... minimal plugin manifest or staged skill ...
+plugins/mcp-email-server/
+  .mcp.json
+  .codex-plugin/plugin.json
+  .claude-plugin/plugin.json
+  skills/safe-email-operations/
+    SKILL.md
+    references/
+      installation.md
+      safe-commands.md
 ```
 
 Actual vendor paths and manifests follow the supported host specifications at
@@ -142,9 +145,11 @@ implementation time. The canonical workflow and security rules MUST NOT be
 forked manually into divergent copies. If a host requires duplication, a
 deterministic staging/check script generates or verifies it.
 
-The skill itself should be mostly declarative. The first release SHOULD avoid
-bundled executable scripts; invoking the installed, version-matched
-`mcp-email-server` CLI is preferable. Any future helper script requires a
+The skill itself remains declarative and contains no bundled executable script.
+The shared MCP declaration runs `uvx --from mcp-email-server@latest
+mcp-email-server-plugin`; it contains no credentials or environment forwarding.
+That dedicated entry point is introduced with the mail-only contract, so legacy
+releases fail closed instead of exposing their older MCP catalog. Any future helper script requires a
 specific need, source review, deterministic tests, and the same no-secret rule.
 
 ## Installation Contract
@@ -162,21 +167,23 @@ The project MUST NOT curl-and-execute an opaque shell script as the primary
 installation path. Generated vendor packages contain no credentials, telemetry,
 remote code loaders, binary payloads, or unrelated agent instructions.
 
-Plugin/skill installation and Python application installation are separate
-steps. The integration may explain supported Python installation commands, but
-must not silently install or upgrade the application while handling an account
-request.
+Installing the plugin and publishing the Python application remain separate
+release lifecycles. Before plugin installation, guidance discloses that enabling
+the bundled MCP server allows `uvx` to resolve or download the current published
+application and run it locally. The skill must not install the plugin, replace
+`@latest` with an unreviewed source, or perform account setup silently.
 
 ## Version and Capability Handling
 
-The integration checks the installed application version before suggesting
-commands. It does not assume a command exists because it appears in the latest
-repository. If versions differ, it recommends either version-matched guidance or
-an explicit application upgrade.
+Plugin semver identifies the bundled plugin content only; it does not identify
+the Python application selected by `@latest`. Skill prose contains no concrete
+release number and never requires the two versions to match. The exact running
+application version comes only from the bounded application version check.
 
-Read-only automation uses structured/bounded CLI output when available. Human
-interactive commands remain user-operated. After handoff, verification reports
-only non-secret lifecycle and connectivity categories.
+Bounded automation uses structured CLI output from the same current-published
+channel when available. Unknown commands, schemas, or error codes are unsupported
+rather than guessed. Human interactive commands remain user-operated. After
+handoff, verification reports only approved non-secret lifecycle categories.
 
 ## Relationship to Other Interfaces
 
@@ -184,8 +191,8 @@ only non-secret lifecycle and connectivity categories.
 - CLI is the complete low-level management and connectivity-diagnostic surface;
   the local Web UI intentionally omits provider connectivity, as defined in
   specs 04, 05, and 09.
-- The agent integration explains and invokes safe entry points but owns no
-  business workflow or persistence.
+- The agent integration packages that same MCP entry point and explains safe
+  setup, but owns no additional business workflow or persistence.
 - The integration is optional. The application remains fully usable without a
   coding agent, plugin marketplace, or skill installation.
 
@@ -198,16 +205,22 @@ only non-secret lifecycle and connectivity categories.
 3. Scenario tests for “add my account,” “rotate my password,” and “paste this app
    password” always hand off to user-operated CLI/UI and never request or retain
    the value in chat.
-4. The integration can perform only documented bounded non-secret
-   status/version/connectivity diagnostics without direct TOML, SQLite, keyring,
-   or `SecretStore` access; status, doctor, and account test require the tested
-   schema-version-1 envelope and reject unknown schema versions or error codes.
+4. The integration can perform only documented bounded non-secret version,
+   status, and doctor diagnostics without direct TOML, SQLite, keyring, or
+   `SecretStore` access; status and doctor require the tested schema-version-1
+   envelope and reject unknown schema versions or error codes.
 5. Static scans and behavioral tests find no credential placeholders, secret
    forwarding, bootstrap-token relay, opaque remote scripts, telemetry, or
    remote-management behavior.
-6. Install, source/version verification, update, uninstall, and application
-   version mismatch are documented and tested for both supported hosts.
-7. Vendor-specific staged content cannot drift from the canonical skill without
-   failing repository checks.
-8. Removing the historical MCP account-add tool has explicit release notes and
-   migration guidance to interactive CLI and local UI.
+6. Install, source verification, update, uninstall, `uvx` prerequisites, and
+   independent plugin/application version lifecycles are documented and tested
+   for both supported hosts.
+7. Both plugin manifests reference one validated root `.mcp.json` that starts
+   the dedicated `mcp-email-server-plugin` entry point from
+   `mcp-email-server@latest`, forwards no credentials, fails closed on legacy
+   releases, and exposes no management tool.
+8. Vendor-specific manifests cannot drift from the canonical skill or MCP
+   declaration without failing repository checks, and skill guidance contains no
+   concrete release number.
+9. Removing the historical MCP account-add tool has explicit release notes and
+   optional migration guidance to interactive CLI and local UI.

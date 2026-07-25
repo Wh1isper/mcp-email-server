@@ -107,7 +107,7 @@ contract. This README is the only ordered navigation map.
 | MCP stdio             | bounded mail discovery and mail workflows; no account management or secret entry |
 | CLI                   | complete headless management, recovery, automation, and safe secret input        |
 | Local Web UI          | complete graphical management plane; no mailbox reader or composer               |
-| Agent skill/plugin    | optional non-secret discovery and user handoff to CLI/UI                         |
+| Agent skill/plugin    | optional local MCP packaging plus non-secret discovery and CLI/UI handoff        |
 | SSE / Streamable HTTP | retained compatibility commands, not the target managed architecture             |
 | MCP Apps              | not part of this delivery; requires a separate accepted proposal                 |
 

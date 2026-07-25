@@ -8,11 +8,34 @@
 An MCP server for reading, searching, organizing, and sending email through
 IMAP and SMTP.
 
-> [!IMPORTANT]
-> This branch documents the Local Email App V2 contract. PyPI 0.16.0 and earlier
-> use the legacy Gradio/TOML UI and still expose `add_email_account`. Review
-> [version availability and upgrade guidance](docs/getting-started.md#version-availability)
-> before using an `@latest` command.
+> [!NOTE]
+> Version 1.0.0 introduces Local Email App V2. Updating the package does not
+> automatically import existing settings created with PyPI 0.16.0 and earlier:
+> they remain active in backward-compatible `legacy` mode, so there is no required
+> migration. If you
+> would like to use the new managed storage, you can review and import those
+> settings whenever it is convenient.
+
+## Optional migration for existing installations
+
+An `@latest` release that includes Local Email App V2 offers a preview-first
+CLI migration:
+
+```bash
+uvx mcp-email-server@latest config init \
+  --database ~/.config/mcp-email-server/managed.sqlite3
+uvx mcp-email-server@latest config import-legacy
+uvx mcp-email-server@latest config import-legacy --apply
+uvx mcp-email-server@latest config doctor
+```
+
+The apply step displays the plan again and asks for `IMPORT` confirmation. A
+complete import selects managed mode; otherwise the existing legacy settings
+remain selected. The source TOML file and its legacy keyring entries are left
+untouched. You can also run `uvx mcp-email-server@latest ui` and choose **Import
+existing settings**. After a successful import, restart running MCP clients. See
+the detailed [upgrade guidance](docs/getting-started.md#upgrading-to-local-email-app-v2)
+and [import troubleshooting](docs/troubleshooting.md#legacy-import-reports-a-conflict-or-missing-credential).
 
 ## Quick start
 

@@ -12,7 +12,7 @@ Primary repository areas:
 - `mcp_email_server/emails/` — IMAP and SMTP behavior and response models.
 - `mcp_email_server/ui.py` / the replacement Web UI package — the local loopback management adapter and packaged static assets.
 - `frontend/` — React/TypeScript management UI source and locked maintainer build.
-- `integrations/` — optional Codex/Claude Code skill/plugin packaging for safe non-secret setup guidance.
+- `plugins/`, `.agents/`, and `.claude-plugin/` — optional Codex/Claude Code plugin packaging, shared local MCP launch metadata, and safe non-secret setup guidance.
 - `tests/` — unit, contract, integration, security, and browser-facing tests.
 - `docs/` — user documentation published with MkDocs.
 - `spec/` — unpublished normative architecture and product contracts kept as flat numbered documents.
@@ -40,8 +40,10 @@ other supported platforms use the operating-system keyring. Application
 services resolve only the selected account/role secret immediately before
 provider construction. Legacy TOML/environment/keyring behavior remains an
 explicit compatibility mode and import source, but MCP exposes no account or
-credential management in either mode. Historical `add_email_account` is removed;
-optional agent skills hand users to interactive CLI/UI without receiving secrets.
+credential management in either mode. Historical `add_email_account` is removed. The optional Codex/Claude plugin
+launches the current published mail-only stdio server through a shared `.mcp.json`;
+its semver is independent from the Python application, while its skill hands
+account and credential setup to interactive CLI/UI without receiving secrets.
 Attachment compatibility preserves the caller's exact destination behind
 explicit policy and filesystem defenses.
 Centralized limits apply to application and serialized results. MCP Apps, remote
@@ -152,7 +154,7 @@ Keep related files synchronized:
 - Credential or access-control changes: implementation, tests, `docs/security.md`, and troubleshooting guidance.
 - MCP surface changes: `mcp_email_server/app.py`, tests, and `docs/tools.md`.
 - CLI or transport changes: `mcp_email_server/cli.py`, tests, and `docs/transports.md`.
-- Agent integration changes: canonical `SKILL.md`, minimal vendor manifests/staged copies, install/update/remove fixtures, security scenarios, and integration documentation.
+- Agent integration changes: canonical `SKILL.md`, shared `.mcp.json`, minimal vendor manifests/staged copies, independent plugin/application versioning, install/update/remove fixtures, security scenarios, and integration documentation.
 - Frontend dependency changes: `frontend/package.json`, its lockfile, notices, source/build checks, and staged packaged assets.
 - Web UI route/session/security changes: backend tests, browser tests, and `docs/security.md` plus affected setup/troubleshooting docs.
 - Packaged asset changes: explicit sdist/wheel content assertions and Node-free from-sdist verification.

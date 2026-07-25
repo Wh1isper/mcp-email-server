@@ -274,29 +274,43 @@ manually. An exact repeat is `unchanged`; an interrupted matching import
 can report `resume_credentials` and install only missing bindings. The source is
 left untouched in every case.
 
-## Optional Codex and Claude Code guidance plugin
+## Optional Codex and Claude Code plugin
 
-The repository publishes one optional `safe-email-operations` guidance plugin
-through the Codex and Claude Code marketplace manifests. The plugin does not
-install or run the Python application, expose a management API, or receive
-credentials. It permits only the bounded version check plus `config status
+The repository publishes one optional plugin through the Codex and Claude Code
+marketplace manifests. Both manifests reference the same root `.mcp.json`, which
+starts `uvx --from mcp-email-server@latest mcp-email-server-plugin` as a local
+bundled MCP server, plus the canonical `safe-email-operations` skill. The
+plugin-only entry point is absent from legacy releases, so they fail closed
+instead of exposing their older MCP catalog. This local stdio integration is for
+Codex, ChatGPT desktop, and Claude Code hosts that support local plugin processes;
+it is not a remote ChatGPT web connector.
+
+Plugin and Python application releases are independent. The plugin version
+changes only when the bundled manifest, MCP declaration, skill, or related plugin
+content changes. `@latest` deliberately resolves the current published Python
+application, so first use can require network access and the running application
+can advance without a plugin update. Installing the plugin does not store email
+credentials, but enabling it allows the host to resolve the package and start the
+server locally. `uvx` must already be available on `PATH`.
+
+The MCP surface contains mail operations, not account or credential management.
+The skill allows only the bounded `@latest` version check plus `config status
 --json` and `config doctor --json`, validates the JSON schema/command fields, and
 hands all account creation or credential entry back to the user-operated terminal
 or local browser. JSON availability on another command does not grant the agent
 permission to run it. The plugin must never launch the UI, copy its bootstrap URL,
 edit the catalog directly, or accept a secret in chat.
 
-Before installation, pin and inspect the official repository release, both
-marketplace manifests, the plugin manifest, and the canonical skill. Plugin
-version `0.0.1` is matched to application version `0.0.1`; stop using
-release-specific commands if they differ. Installation, update, and removal are
-explicit user actions. The complete pinned commands and source-verification
-checklist live in the plugin's `references/installation.md`; never curl and
-execute an installer or put repository credentials in a marketplace URL.
+Before installation, inspect the official repository source, both marketplace
+manifests, both plugin manifests, `.mcp.json`, and the canonical skill.
+Installation, update, enablement, and removal are explicit user actions. The
+complete commands and source-verification checklist live in the plugin's
+`references/installation.md`; never curl and execute an installer or put
+repository credentials in a marketplace URL.
 
 If a user asks an agent to add an account or rotate a password, the safe handoff
-is: run `mcp-email-server ui` locally and complete secret entry in the browser,
-or use the documented masked interactive CLI in the user's terminal. Do not
+is: run `uvx mcp-email-server@latest ui` locally and complete secret entry in the
+browser, or use the documented masked interactive CLI in the user's terminal. Do not
 paste credentials or the one-time UI URL into chat. If no user-controlled
 terminal or browser is available, setup cannot be completed safely through the
 plugin.

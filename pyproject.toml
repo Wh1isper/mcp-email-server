@@ -36,6 +36,7 @@ dependencies = [
 
 [project.scripts]
 mcp-email-server = "mcp_email_server.cli:app"
+mcp-email-server-plugin = "mcp_email_server.cli:plugin_stdio"
 
 [project.urls]
 Homepage = "https://mcp-email-server.wh1isper.top/"

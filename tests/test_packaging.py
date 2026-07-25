@@ -202,6 +202,10 @@ def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) ->
             for name in wheel_names
             if name.startswith("mcp_email_server/") and not name.endswith("/")
         }
+        entry_points_name = next(name for name in wheel_names if name.endswith(".dist-info/entry_points.txt"))
+        entry_points = archive.read(entry_points_name).decode("utf-8")
+    assert "mcp-email-server = mcp_email_server.cli:app" in entry_points
+    assert "mcp-email-server-plugin = mcp_email_server.cli:plugin_stdio" in entry_points
     expected_runtime = {
         path.relative_to(REPOSITORY).as_posix(): path.read_bytes()
         for path in (REPOSITORY / "mcp_email_server").rglob("*")
@@ -249,6 +253,7 @@ def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) ->
         "codecov.yaml",
         "plugins/mcp-email-server/.codex-plugin/plugin.json",
         "plugins/mcp-email-server/.claude-plugin/plugin.json",
+        "plugins/mcp-email-server/.mcp.json",
         "plugins/mcp-email-server/skills/safe-email-operations/SKILL.md",
         "plugins/mcp-email-server/skills/safe-email-operations/references/installation.md",
         "plugins/mcp-email-server/skills/safe-email-operations/references/safe-commands.md",
@@ -407,9 +412,7 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
     release_matrix = _workflow_job(release, "release-python-matrix")
     assert main_matrix["strategy"]["matrix"]["python-version"] == supported  # type: ignore[index]
     assert release_matrix["strategy"]["matrix"]["python-version"] == supported  # type: ignore[index]
-    assert (
-        _workflow_job_runs(main, "tests-and-type-check")[0] == _workflow_job_runs(release, "release-python-matrix")[0]
-    )
+    assert _workflow_job_runs(main, "tests-and-type-check")[0] in _workflow_job_runs(release, "release-python-matrix")
 
     validation_runs = _workflow_job_runs(release, "release-validation-and-build")
     assert validation_runs.index("make build") < validation_runs.index("make verify-dist")
@@ -437,20 +440,24 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
     assert isinstance(source_command, str)
     assert "refs/tags/${RELEASE_TAG}^{commit}" in source_command
     assert 'test "$tag_sha" = "$EVENT_SHA"' in source_command
-    assert 'test "$RELEASE_TAG" = "v${package_version}"' in source_command
+    assert 'release_version="$(python3 dev/set_release_version.py "$RELEASE_TAG")"' in source_command
+    assert 'test "$RELEASE_TAG" = "$release_version" || test "$RELEASE_TAG" = "v${release_version}"' in source_command
+    assert 'echo "release_version=$release_version" >> "$GITHUB_OUTPUT"' in source_command
 
     expected_ref = "${{ needs.verify-release-source.outputs.release_sha }}"
+    stamp_command = 'python3 dev/set_release_version.py "${{ needs.verify-release-source.outputs.release_version }}"'
     for job_name in ("release-python-matrix", "release-validation-and-build"):
         steps = _workflow_steps(release, job_name)
         checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v6")
         options = checkout["with"]
         assert isinstance(options, dict)
         assert options["ref"] == expected_ref
+        assert stamp_command in _workflow_job_runs(release, job_name)
 
     release_commands = [
         command
         for job_name in ("verify-release-source", "release-python-matrix", "release-validation-and-build", "publish")
         for command in _workflow_job_runs(release, job_name)
     ]
-    assert not any("set_release_version" in command for command in release_commands)
+    assert sum("set_release_version" in command for command in release_commands) == 3
     assert "uv lock" not in release_commands

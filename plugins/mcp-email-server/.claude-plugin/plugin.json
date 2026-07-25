@@ -3,7 +3,7 @@
     "name": "mcp-email-server",
     "displayName": "Safe Email Operations",
     "version": "0.0.1",
-    "description": "Safe, non-secret setup and diagnostic guidance for mcp-email-server.",
+    "description": "Email MCP tools with safe, non-secret setup and diagnostic guidance.",
     "author": {
         "name": "wh1isper",
         "url": "https://github.com/Wh1isper"
@@ -12,5 +12,6 @@
     "repository": "https://github.com/Wh1isper/mcp-email-server",
     "license": "MIT",
     "keywords": ["email", "mcp", "security"],
-    "skills": "./skills/"
+    "skills": "./skills/",
+    "mcpServers": "./.mcp.json"
 }

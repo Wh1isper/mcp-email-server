@@ -1248,6 +1248,14 @@ def stdio() -> None:
     run_bounded_stdio(mcp)
 
 
+def plugin_stdio() -> None:
+    """Run plugin stdio without exposing the management command tree."""
+    try:
+        stdio()
+    except click.exceptions.Exit as exc:
+        raise SystemExit(exc.exit_code) from None
+
+
 @app.command()
 def sse(
     host: str = typer.Option("localhost", "--host", help="HTTP bind host."),

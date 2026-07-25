@@ -102,11 +102,10 @@ parser/provider payloads, and redaction on unexpected failures.
   individual allowlist-item editing and distinct empty semantics, hidden no-action
   empty/settled status, secret-state clearing, conflict review, accessibility semantics,
   and deterministic production build.
-- Agent integration: canonical skill validation, bounded JSON
-  status/doctor/account-test parsing without deriving command authority,
-  Codex/Claude Code installation fixtures, vendor-copy drift checks,
-  version mismatch, safe handoff scenarios, and forbidden secret/bootstrap-token
-  behavior.
+- Agent integration: canonical skill validation, bounded JSON status/doctor
+  parsing without deriving command authority, one shared Codex/Claude Code
+  `.mcp.json` declaration, independent plugin/application version lifecycles,
+  safe handoff scenarios, and forbidden secret/bootstrap-token behavior.
 
 ### End to end
 
@@ -123,9 +122,10 @@ bounded cleanup and never print sentinel secrets.
 Before delivery, all of the following pass from a clean checkout:
 
 1. supported Python matrix (3.11 through 3.14 unless project support changes),
-   rerun against the exact peeled release-tag commit, whose `vX.Y.Z` tag matches
-   committed package metadata, before publish without rewriting version metadata
-   or the lockfile;
+   rerun from the exact peeled release-tag commit after the isolated release job
+   deterministically stamps its canonical `X.Y.Z` value (accepting an optional
+   `v` tag prefix) into only Python package metadata and the matching editable
+   lock entry;
 2. formatting, lint, type checking, lock consistency, and full Python tests with
    combined in-process/subprocess statement-and-branch coverage at or above the
    configured 80% aggregate threshold, plus an 80% changed-line Codecov target;
@@ -144,8 +144,9 @@ Before delivery, all of the following pass from a clean checkout:
 --port 0` bootstrap/authenticated asset/status smoke;
 11. PTY-backed local-wheel `uvx` smoke including bootstrap/authenticated
     asset/status access and graceful termination;
-12. Codex and Claude Code integration install/update/remove fixtures, canonical
-    content drift, application-version mismatch, and no-secret handoff scenarios;
+12. Codex and Claude Code integration install/update/remove fixtures, shared
+    MCP-declaration drift, independent version lifecycles, current-channel launch,
+    and no-secret handoff scenarios;
 13. independent architecture, correctness, and security review with all material
     findings resolved or explicitly accepted by the maintainer;
 14. clean git tree after generated-asset drift and all checks.
@@ -154,9 +155,11 @@ CI and release publishing invoke the same authoritative artifact build/verify
 workflow. Release cannot publish an artifact that skipped the supported Python
 matrix, frontend build, notices, from-sdist reconstruction, authenticated
 installed/`uvx` UI smoke, or asset verification. The release workflow pins and
-verifies the peeled tag commit without mutating its metadata or lockfile, builds
-`dist/` once in an unprivileged validation job, records checksums, and gives the
-credential-bearing publish job only those unchanged verified bytes.
+verifies the peeled tag commit, deterministically stamps only application package
+and lock metadata from the canonical tag, then builds `dist/` once in an
+unprivileged validation job. It records checksums and gives the credential-bearing
+publish job only those unchanged verified bytes. Plugin metadata is not part of
+application release stamping.
 
 ## Artifact Contract
 
@@ -191,8 +194,9 @@ change:
   path, SQLite files/sidecars, and transport posture;
 - tools for the exact mail-only MCP contract, removal of account-add, and
   migration to CLI/UI;
-- agent integration guidance for verified Codex/Claude Code install, safe
-  credential handoff, version matching, update, and removal;
+- agent integration guidance for verified Codex/Claude Code install, shared
+  local MCP launch, safe credential handoff, independent version lifecycles,
+  update, and removal;
 - transports for stdio baseline and local UI non-transport status;
 - troubleshooting for doctor/cleanup, conflicts, insecure files, provider
   ambiguity, ports/browser, and artifact startup;

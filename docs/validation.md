@@ -120,13 +120,16 @@ the release workflow, so CI validates one exact wheel/sdist pair rather than
 independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
-repeated for every interpreter version. The release workflow verifies the
-peeled tag commit, requires `vX.Y.Z` to match the committed Python package
-version, and reruns Python 3.11-3.14 against that exact tree; it does not rewrite
-version metadata or the lockfile. A separate validation job
-repeats the frontend, static, default-Python, docs, browser, package, and
-GreenMail gates, builds `dist/` once, and runs `make verify-dist` against those
-exact wheel/sdist bytes. Verification includes authenticated UI smoke from both
+repeated for every interpreter version. The release workflow verifies the exact
+peeled tag commit, validates canonical `X.Y.Z` with an optional `v` prefix, and
+deterministically stamps the normalized value into only the isolated release jobs'
+Python package metadata and
+matching editable lock entry. It then reruns Python 3.11-3.14 against the stamped
+release tree. Plugin versions are independent and are not rewritten by an
+application release. A separate validation job repeats the frontend, static,
+default-Python, docs, browser, package, and GreenMail gates, builds `dist/` once,
+and runs `make verify-dist` against those exact wheel/sdist bytes. Verification
+includes authenticated UI smoke from both
 the wheel rebuilt from the sdist without Node and the original release wheel.
 The credential-bearing publish job receives only the checksum-verified artifacts
 and cannot rebuild them.
