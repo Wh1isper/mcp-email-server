@@ -2051,6 +2051,12 @@ class EmailClient:
         )
         logger.debug("SMTP outgoing message:\n%s", msg.as_string())
 
+        all_recipients = recipients.copy()
+        if cc:
+            all_recipients.extend(cc)
+        if bcc:
+            all_recipients.extend(bcc)
+
         try:
             async with aiosmtplib.SMTP(
                 hostname=self.email_server.host,
@@ -2060,13 +2066,6 @@ class EmailClient:
                 tls_context=self._get_smtp_ssl_context(),
             ) as smtp:
                 await smtp.login(self.email_server.user_name, self.email_server.password.get_secret_value())
-
-                # Create a combined list of all recipients for delivery
-                all_recipients = recipients.copy()
-                if cc:
-                    all_recipients.extend(cc)
-                if bcc:
-                    all_recipients.extend(bcc)
 
                 logger.debug(
                     "SMTP sending to %s via %s:%s",
