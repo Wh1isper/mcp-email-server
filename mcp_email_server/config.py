@@ -218,6 +218,8 @@ class EmailServer(BaseModel):
     use_ssl: bool = True  # Usually port 465
     start_ssl: bool = False  # Usually port 587
     verify_ssl: bool = True  # Set to False for self-signed certificates (e.g., ProtonMail Bridge)
+    smtp_user_agent: str = "mcp-email-server/1.0"
+    smtp_x_mailer: str = "mcp-email-server"
 
     @field_serializer("password")
     def serialize_password(self, v: SecretStr, info: SerializationInfo) -> str:

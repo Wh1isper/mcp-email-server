@@ -131,6 +131,9 @@ class TestComposeMessage:
         assert msg["From"] == "Test User <test@example.com>"
         assert msg["Date"] is not None
         assert msg["Message-Id"] is not None
+        assert msg["MIME-Version"] == "1.0"
+        assert msg["User-Agent"] == "mcp-email-server/1.0"
+        assert msg["X-Mailer"] == "mcp-email-server"
 
     def test_html_message(self, email_client):
         msg = email_client.compose_message(
@@ -179,6 +182,37 @@ class TestComposeMessage:
         )
         # Should not raise; subject is encoded via Header
         assert msg["Subject"] is not None
+
+    def test_rfc_compliance_headers(self, email_client):
+        """Verify RFC 2045 MIME-Version and RFC 5322 User-Agent/X-Mailer headers."""
+        msg = email_client.compose_message(
+            recipients=["r@example.com"],
+            subject="RFC",
+            body="test",
+        )
+        assert msg["MIME-Version"] == "1.0"
+        assert msg["User-Agent"] == "mcp-email-server/1.0"
+        assert msg["X-Mailer"] == "mcp-email-server"
+
+    def test_rfc_compliance_headers_custom_values(self, outgoing_server):
+        """Verify custom User-Agent and X-Mailer values."""
+        server = EmailServer(
+            user_name="test_user",
+            password="test_password",
+            host="smtp.example.com",
+            port=465,
+            use_ssl=True,
+            smtp_user_agent="MyApp/2.0",
+            smtp_x_mailer="MyMailer",
+        )
+        client = EmailClient(server, sender="User <user@example.com>")
+        msg = client.compose_message(
+            recipients=["r@example.com"],
+            subject="Custom",
+            body="test",
+        )
+        assert msg["User-Agent"] == "MyApp/2.0"
+        assert msg["X-Mailer"] == "MyMailer"
 
     def test_with_attachments(self, email_client, tmp_path):
         test_file = tmp_path / "doc.txt"

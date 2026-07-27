@@ -1824,6 +1824,10 @@ class EmailClient:
         sender_for_domain = sender_address or self.sender
         sender_domain = sender_for_domain.rsplit("@", 1)[-1].rstrip(">")
         msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
+        # RFC 2045 / 5322 mandatory and recommended headers
+        msg["MIME-Version"] = "1.0"
+        msg["User-Agent"] = self.email_server.smtp_user_agent
+        msg["X-Mailer"] = self.email_server.smtp_x_mailer
 
         return msg
 
