@@ -256,7 +256,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Search for text in the entire message \u2014 headers and body (IMAP TEXT).",
+                        "description": "Search for text in the entire message — headers and body (IMAP TEXT).",
                         "title": "Text"
                     },
                     "has_attachment": {
@@ -652,7 +652,7 @@
         },
         {
             "name": "list_allowed_recipients",
-            "description": "List the configured recipient allowlist \u2014 the addresses that send_email is permitted to send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted.",
+            "description": "List the configured recipient allowlist — the addresses that send_email is permitted to send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_recipientsArguments",
@@ -682,7 +682,7 @@
         },
         {
             "name": "list_allowed_senders",
-            "description": "List the configured inbound sender allowlist \u2014 the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Returns an empty list when unrestricted.",
+            "description": "List the configured inbound sender allowlist — the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_sendersArguments",
@@ -871,7 +871,7 @@
         },
         {
             "name": "save_to_mailbox",
-            "description": "Compose an email and save it to an IMAP folder (e.g., Drafts). Shares recipient, body, attachment, and threading parameters with send_email; adds mailbox and flags, and does not support reply_to. Default folder is Drafts with \\Draft and \\Seen flags. Pure IMAP operation \u2014 works without SMTP configuration. An ambiguous APPEND is reported as unknown and is not retried automatically.",
+            "description": "Compose an email and save it to an IMAP folder (e.g., Drafts). Shares recipient, body, attachment, and threading parameters with send_email; adds mailbox and flags, and does not support reply_to. Default folder is Drafts with \\Draft and \\Seen flags. Pure IMAP operation — works without SMTP configuration. An ambiguous APPEND is reported as unknown and is not retried automatically.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -1093,8 +1093,83 @@
             }
         },
         {
+            "name": "set_email_flags",
+            "description": "Add or remove approved IMAP flags on one or more emails by email_id. Supported flags are \\Seen, \\Flagged, \\Answered, and \\Draft; \\Deleted and provider-specific keywords are not supported. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_ids": {
+                        "description": "List of email_id values whose flags should be changed.",
+                        "items": {
+                            "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Email Ids",
+                        "type": "array"
+                    },
+                    "operation": {
+                        "description": "Whether to add or remove every supplied flag.",
+                        "enum": ["add", "remove"],
+                        "title": "Operation",
+                        "type": "string"
+                    },
+                    "flags": {
+                        "description": "Unique approved flags to add or remove: \\Seen, \\Flagged, \\Answered, or \\Draft.",
+                        "items": {
+                            "enum": [
+                                "\\Seen",
+                                "\\Flagged",
+                                "\\Answered",
+                                "\\Draft"
+                            ],
+                            "type": "string"
+                        },
+                        "maxItems": 4,
+                        "minItems": 1,
+                        "title": "Flags",
+                        "type": "array"
+                    },
+                    "mailbox": {
+                        "default": "INBOX",
+                        "description": "The mailbox containing the emails.",
+                        "maxLength": 1024,
+                        "title": "Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": ["account_name", "email_ids", "operation", "flags"],
+                "title": "set_email_flagsArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "set_email_flagsOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "mark_emails_as_read",
-            "description": "Mark one or more emails as read by email_id. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "description": "Mark one or more emails as read by email_id. This is the common-workflow equivalent of adding \\Seen with set_email_flags. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
                 "properties": {
                     "account_name": {

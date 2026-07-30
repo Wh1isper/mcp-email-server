@@ -9,7 +9,7 @@ You can contribute in many ways:
 
 ## Report Bugs
 
-Report bugs at https://github.com/wh1isper/mcp-email-server/issues
+Report bugs at https://github.com/Wh1isper/mcp-email-server/issues
 
 If you are reporting a bug, please include:
 
@@ -33,7 +33,7 @@ mcp-email-server could always use more documentation, whether as part of the off
 
 ## Submit Feedback
 
-The best way to send feedback is to file an issue at https://github.com/wh1isper/mcp-email-server/issues.
+The best way to send feedback is to file an issue at https://github.com/Wh1isper/mcp-email-server/issues.
 
 If you are proposing a new feature:
 
@@ -168,7 +168,7 @@ This section is for project maintainers.
 
 1. Create an API token on [PyPI](https://pypi.org/).
 2. Add it to the repository's GitHub Actions secrets as `PYPI_TOKEN`.
-3. Create a [GitHub release](https://github.com/wh1isper/mcp-email-server/releases/new).
+3. Create a [GitHub release](https://github.com/Wh1isper/mcp-email-server/releases/new).
 4. Create a canonical `X.Y.Z` version tag, optionally prefixed with `v`, as part of the release.
 
 The release tag is the application version authority. The workflow pins and

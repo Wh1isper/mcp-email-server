@@ -445,7 +445,7 @@ The allowlist protects:
 - Metadata listing and pagination.
 - Body retrieval and optional read marking.
 - Attachment download.
-- Deletion and read-state mutations.
+- Deletion and approved flag/read-state mutations.
 - Move and archive operations.
 
 A blocked message's body and attachments are not fetched or marked as read. By
@@ -478,7 +478,11 @@ apply an effect twice; inspect the provider mailbox or delivery evidence first.
 
 Scoped delete and the COPY/delete move fallback require `UIDPLUS` and use only
 `UID EXPUNGE`. They never use mailbox-wide `EXPUNGE`, which could commit another
-client's pending deletions. Metadata projection invalidation is rebuildable: if
+client's pending deletions. The generic `set_email_flags` tool rejects
+`\Deleted`, so it cannot bypass this scoped deletion boundary; it also rejects
+the server-controlled `\Recent` flag and provider-specific keywords.
+
+Metadata projection invalidation is rebuildable: if
 it fails after a provider effect, the result keeps the provider evidence and
 adds a reconciliation warning instead of claiming rollback.
 

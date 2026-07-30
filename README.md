@@ -1,9 +1,9 @@
 # mcp-email-server
 
-[![Release](https://img.shields.io/github/v/release/wh1isper/mcp-email-server)](https://github.com/wh1isper/mcp-email-server/releases)
-[![Build status](https://img.shields.io/github/actions/workflow/status/wh1isper/mcp-email-server/main.yml?branch=main)](https://github.com/wh1isper/mcp-email-server/actions/workflows/main.yml?query=branch%3Amain)
+[![Release](https://img.shields.io/github/v/release/Wh1isper/mcp-email-server)](https://github.com/Wh1isper/mcp-email-server/releases)
+[![Build status](https://img.shields.io/github/actions/workflow/status/Wh1isper/mcp-email-server/main.yml?branch=main)](https://github.com/Wh1isper/mcp-email-server/actions/workflows/main.yml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/Wh1isper/mcp-email-server/graph/badge.svg?token=0mToRybKx8)](https://codecov.io/gh/Wh1isper/mcp-email-server)
-[![License](https://img.shields.io/github/license/wh1isper/mcp-email-server)](https://github.com/wh1isper/mcp-email-server/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/Wh1isper/mcp-email-server)](https://github.com/Wh1isper/mcp-email-server/blob/main/LICENSE)
 
 An MCP server for reading, searching, organizing, and sending email through
 IMAP and SMTP.
@@ -105,8 +105,8 @@ see the [documentation](https://mcp-email-server.wh1isper.top/).
 
 ## Development
 
-See [CONTRIBUTING.md](https://github.com/wh1isper/mcp-email-server/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/Wh1isper/mcp-email-server/blob/main/CONTRIBUTING.md).
 
 ## License
 
-This project is licensed under the terms of the [LICENSE](https://github.com/wh1isper/mcp-email-server/blob/main/LICENSE).
+This project is licensed under the terms of the [LICENSE](https://github.com/Wh1isper/mcp-email-server/blob/main/LICENSE).

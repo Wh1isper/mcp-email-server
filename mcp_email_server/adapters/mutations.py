@@ -16,7 +16,6 @@ from mcp_email_server.application.mutations import (
     BatchMutationOutcome,
     DeleteCommand,
     DeliveryMutationOutcome,
-    MarkReadCommand,
     MoveCommand,
     MutationAccountSnapshot,
     MutationProjection,
@@ -27,6 +26,7 @@ from mcp_email_server.application.mutations import (
     SaveToMailboxCommand,
     SendCommand,
     SentCopyMutationOutcome,
+    SetEmailFlagsCommand,
 )
 from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ClassicEmailHandler, _validate_flags
@@ -59,14 +59,16 @@ class ClassicMutationProvider:
     def __init__(self, handler: ClassicEmailHandler) -> None:
         self._handler = handler
 
-    async def mark_read(
+    async def set_flags(
         self,
-        command: MarkReadCommand,
+        command: SetEmailFlagsCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome:
         return await _bounded_mutation_call(
-            self._handler.incoming_client.mark_emails_as_read_with_outcome(
+            self._handler.incoming_client.set_email_flags_with_outcome(
                 list(command.email_ids),
+                command.operation,
+                list(command.flags),
                 command.mailbox,
                 list(account.allowed_senders),
                 account.report_blocked_mutations,

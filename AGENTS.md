@@ -3,6 +3,11 @@
 `mcp-email-server` is a Python MCP server that connects MCP clients to email
 accounts through IMAP and SMTP.
 
+Canonical repository:
+
+- HTTPS: `https://github.com/Wh1isper/mcp-email-server`
+- SSH: `git@github.com:Wh1isper/mcp-email-server.git`
+
 Primary repository areas:
 
 - `mcp_email_server/app.py` — FastMCP server, resources, tools, and tool visibility.

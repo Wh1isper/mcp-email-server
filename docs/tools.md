@@ -76,7 +76,7 @@ Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 | `list_emails_metadata`, `list_mailboxes`                                     | yes       | no          | yes        | yes        |
 | `get_emails_content`                                                         | no        | no          | yes        | yes        |
 | `send_email`, `save_to_mailbox`                                              | no        | no          | no         | yes        |
-| `mark_emails_as_read`                                                        | no        | no          | yes        | yes        |
+| `set_email_flags`, `mark_emails_as_read`                                     | no        | no          | yes        | yes        |
 | `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`      | no        | yes         | no         | yes        |
 
 `get_emails_content` is conservatively non-read-only because
@@ -251,9 +251,32 @@ account name and both IMAP LIST values are validated before provider access;
 `pattern` must be non-empty and pattern/reference values are each limited to
 1,024 UTF-8 bytes.
 
+### `set_email_flags`
+
+Adds or removes approved IMAP flags from one or more message IDs in the selected
+mailbox. `operation` must be `add` or `remove`, and applies to every supplied
+flag. The non-empty `flags` list accepts unique values from:
+
+- `\Seen`
+- `\Flagged`
+- `\Answered`
+- `\Draft`
+
+The provider sends one UID-scoped `+FLAGS.SILENT` or `-FLAGS.SILENT` operation
+per message so results retain caller order and per-ID evidence. The operation is
+logically idempotent, but an `unknown` result is not retried automatically
+because the mailbox UID epoch or current authority may have changed.
+
+`\Deleted` is intentionally rejected and remains owned by `delete_emails`,
+which applies target-scoped expunge safety. `\Recent` is server-controlled, and
+provider-specific keywords are not part of the portable public contract. To
+mark a message unread, remove `\Seen`.
+
 ### `mark_emails_as_read`
 
-Marks one or more message IDs as read in the selected mailbox.
+Marks one or more message IDs as read in the selected mailbox. This focused
+common-workflow tool uses the same implementation as `set_email_flags` with
+`operation="add"` and `flags=["\\Seen"]`.
 
 ### `move_emails`
 
@@ -288,8 +311,10 @@ be authoritative but the rebuildable local metadata projection could not be
 invalidated.
 
 Mutation requests accept 1 to 100 unique canonical positive decimal IMAP UIDs.
-Mailbox names are limited to 1,024 UTF-8 bytes. Compose requests allow at most
-100 total To/CC/BCC entries of at most 1,024 UTF-8 bytes each; every entry must
+`set_email_flags` accepts one to four unique approved flags and exactly one
+add/remove operation. Mailbox names are limited to 1,024 UTF-8 bytes. Compose
+requests allow at most 100 total To/CC/BCC entries of at most 1,024 UTF-8 bytes
+each; every entry must
 contain exactly one address. Compose requests also allow a 64 KiB UTF-8 subject,
 a 1 MiB UTF-8 body, and 20 attachments. Threading and Reply-To values
 are limited to 64 KiB each. Each attachment path is limited to 4,096 bytes,

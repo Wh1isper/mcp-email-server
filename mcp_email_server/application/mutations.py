@@ -19,6 +19,9 @@ from mcp_email_server.application.metadata import RuntimeMode
 MutationStatus = Literal["succeeded", "failed", "unknown"]
 MutationProviderPurpose = Literal["incoming", "outgoing", "sent-copy"]
 SentCopyStatus = Literal["skipped", "succeeded", "failed", "unknown"]
+FlagOperation = Literal["add", "remove"]
+MutableEmailFlag = Literal[r"\Seen", r"\Flagged", r"\Answered", r"\Draft"]
+MUTABLE_EMAIL_FLAGS: frozenset[str] = frozenset({r"\Seen", r"\Flagged", r"\Answered", r"\Draft"})
 
 
 ProviderResultT = TypeVar("ProviderResultT")
@@ -125,6 +128,32 @@ class SendMutationOutcome:
 
     def recipients(self, status: MutationStatus) -> list[str]:
         return [outcome.target for outcome in self.delivery if outcome.status == status]
+
+
+@dataclass(frozen=True)
+class SetEmailFlagsCommand:
+    account_name: str
+    email_ids: tuple[str, ...]
+    operation: FlagOperation
+    flags: tuple[MutableEmailFlag, ...]
+    mailbox: str = "INBOX"
+
+    def validate(self) -> None:
+        _validate_account_name(self.account_name)
+        _validate_email_ids(self.email_ids)
+        validate_mailbox_name(self.mailbox)
+        if self.operation not in ("add", "remove"):
+            raise ValueError("operation must be 'add' or 'remove'")
+        if not self.flags:
+            raise ValueError("flags must not be empty")
+        if len(self.flags) > len(MUTABLE_EMAIL_FLAGS):
+            raise ValueError(f"flags must contain at most {len(MUTABLE_EMAIL_FLAGS)} values")
+        if any(not isinstance(flag, str) for flag in self.flags):
+            raise ValueError("flags must contain strings")
+        if len(set(self.flags)) != len(self.flags):
+            raise ValueError("flags must not contain duplicates")
+        if any(flag not in MUTABLE_EMAIL_FLAGS for flag in self.flags):
+            raise ValueError("flags contain an unsupported mutable email flag")
 
 
 @dataclass(frozen=True)
@@ -244,9 +273,9 @@ class MutationAccountAuthority(Protocol):
 
 
 class MutationProvider(Protocol):
-    async def mark_read(
+    async def set_flags(
         self,
-        command: MarkReadCommand,
+        command: SetEmailFlagsCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome: ...
 
@@ -600,14 +629,14 @@ class _MutationWorkflow:
         return True
 
 
-class MarkReadService(_MutationWorkflow):
-    async def execute(self, command: MarkReadCommand) -> BatchMutationOutcome:
+class SetEmailFlagsService(_MutationWorkflow):
+    async def execute(self, command: SetEmailFlagsCommand) -> BatchMutationOutcome:
         command.validate()
         account = self._resolve(command.account_name)
         access = self._open(account)
         try:
             outcome = _validate_batch_result(
-                await _bounded_provider_effect(access.provider.mark_read(command, access.account))
+                await _bounded_provider_effect(access.provider.set_flags(command, access.account))
             )
         except TimeoutError:
             outcome = _validate_batch_result(_timeout_batch(command.email_ids))
@@ -617,6 +646,24 @@ class MarkReadService(_MutationWorkflow):
         return _validate_batch_result(
             BatchMutationOutcome(
                 outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+            )
+        )
+
+
+class MarkReadService:
+    """Focused mark-read executor backed by the generic mutable-flag workflow."""
+
+    def __init__(self, set_flags: SetEmailFlagsService) -> None:
+        self._set_flags = set_flags
+
+    async def execute(self, command: MarkReadCommand) -> BatchMutationOutcome:
+        return await self._set_flags.execute(
+            SetEmailFlagsCommand(
+                account_name=command.account_name,
+                email_ids=command.email_ids,
+                operation="add",
+                flags=(r"\Seen",),
+                mailbox=command.mailbox,
             )
         )
 
@@ -840,6 +887,7 @@ class SendService(_MutationWorkflow):
 
 @dataclass(frozen=True)
 class MutationServices:
+    set_flags: SetEmailFlagsService
     mark_read: MarkReadService
     save_to_mailbox: SaveToMailboxService
     delete: DeleteService
@@ -855,8 +903,10 @@ class MutationServices:
         projections: MutationProjectionFactory,
     ) -> MutationServices:
         arguments = (accounts, providers, projections)
+        set_flags = SetEmailFlagsService(*arguments)
         return cls(
-            mark_read=MarkReadService(*arguments),
+            set_flags=set_flags,
+            mark_read=MarkReadService(set_flags),
             save_to_mailbox=SaveToMailboxService(*arguments),
             delete=DeleteService(*arguments),
             move=MoveService(*arguments),

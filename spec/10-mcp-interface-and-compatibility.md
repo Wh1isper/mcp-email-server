@@ -59,7 +59,9 @@ against worst-case behavior across optional parameters:
   change remote flags, but that flag effect is idempotent;
 - send and append are non-read-only, non-idempotent, open-world additions rather
   than destructive replacement;
-- mark-read is a non-destructive idempotent remote mutation;
+- approved flag add/remove and the focused mark-read entry point are
+  non-destructive idempotent remote mutations; `\Deleted` is not accepted by
+  the generic flag tool;
 - delete, move, and archive are destructive, non-idempotent remote mutations;
 - attachment download is a non-idempotent filesystem write that may replace the
   caller-selected destination.

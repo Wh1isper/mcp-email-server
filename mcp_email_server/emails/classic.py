@@ -37,9 +37,12 @@ from mcp_email_server.application.metadata import (
     MetadataQueryTooBroadError,
 )
 from mcp_email_server.application.mutations import (
+    MUTABLE_EMAIL_FLAGS,
     AppendMutationOutcome,
     BatchMutationOutcome,
     DeliveryMutationOutcome,
+    FlagOperation,
+    MutableEmailFlag,
     MutationStatus,
     SentCopyMutationOutcome,
     TargetMutationOutcome,
@@ -125,6 +128,28 @@ def _validate_flags(flags: list[str]) -> str:
             msg = f"Invalid IMAP flag: {flag!r}"
             raise ValueError(msg)
     return "(" + " ".join(flags) + ")"
+
+
+def _validate_mutable_email_flags(
+    operation: FlagOperation,
+    flags: list[MutableEmailFlag],
+) -> tuple[str, str]:
+    """Validate the bounded public flag policy at the provider boundary."""
+
+    if operation not in ("add", "remove"):
+        raise ValueError("operation must be 'add' or 'remove'")
+    if not flags:
+        raise ValueError("flags must not be empty")
+    if len(flags) > len(MUTABLE_EMAIL_FLAGS):
+        raise ValueError(f"flags must contain at most {len(MUTABLE_EMAIL_FLAGS)} values")
+    if any(not isinstance(flag, str) for flag in flags):
+        raise ValueError("flags must contain strings")
+    if len(set(flags)) != len(flags):
+        raise ValueError("flags must not contain duplicates")
+    if any(flag not in MUTABLE_EMAIL_FLAGS for flag in flags):
+        raise ValueError("flags contain an unsupported mutable email flag")
+    store_operation = "+FLAGS.SILENT" if operation == "add" else "-FLAGS.SILENT"
+    return store_operation, _validate_flags([str(flag) for flag in flags])
 
 
 def encode_mailbox_name(mailbox: str) -> str:
@@ -285,8 +310,8 @@ def _quote_mailbox(mailbox: str) -> str:
     Mailbox names with non-ASCII characters are encoded using Modified UTF-7
     as required by RFC 3501 Section 5.1.3.
 
-    See: https://github.com/wh1isper/mcp-email-server/issues/87
-    See: https://github.com/wh1isper/mcp-email-server/issues/172
+    See: https://github.com/Wh1isper/mcp-email-server/issues/87
+    See: https://github.com/Wh1isper/mcp-email-server/issues/172
     See: https://www.rfc-editor.org/rfc/rfc3501#section-9
     """
     encoded = encode_mailbox_name(mailbox)
@@ -426,7 +451,7 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
     This function first tries the standard id() method, and if it fails,
     falls back to sending a raw command with correct format.
 
-    See: https://github.com/wh1isper/mcp-email-server/issues/85
+    See: https://github.com/Wh1isper/mcp-email-server/issues/85
     """
     try:
         response = await imap.id(name="mcp-email-server", version="1.0.0")
@@ -2326,15 +2351,18 @@ class EmailClient:
             await _best_effort_imap_logout(imap)
         return BatchMutationOutcome(tuple(outcomes[email_id] for email_id in email_ids))
 
-    async def mark_emails_as_read_with_outcome(
+    async def set_email_flags_with_outcome(
         self,
         email_ids: list[str],
+        operation: FlagOperation,
+        flags: list[MutableEmailFlag],
         mailbox: str = "INBOX",
         allowed_senders: list[str] | None = None,
         report_blocked_mutations: bool = False,
     ) -> BatchMutationOutcome:
-        """Set \\Seen once per UID and retain cancellation evidence."""
+        """Add or remove approved flags once per UID and retain effect evidence."""
         _validate_imap_uids(email_ids)
+        store_operation, formatted_flags = _validate_mutable_email_flags(operation, flags)
         imap = await self._connect_imap()
         outcomes: list[TargetMutationOutcome] = []
         try:
@@ -2354,7 +2382,7 @@ class EmailClient:
                     )
                     continue
                 try:
-                    response = await imap.uid("store", email_id, "+FLAGS", r"(\Seen)")
+                    response = await imap.uid("store", email_id, store_operation, formatted_flags)
                 except asyncio.CancelledError:
                     outcomes.append(TargetMutationOutcome(email_id, "unknown", "store-unknown"))
                     for remaining_id in email_ids[index + 1 :]:
@@ -2387,6 +2415,23 @@ class EmailClient:
         finally:
             await _best_effort_imap_logout(imap)
         return BatchMutationOutcome(tuple(outcomes))
+
+    async def mark_emails_as_read_with_outcome(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        allowed_senders: list[str] | None = None,
+        report_blocked_mutations: bool = False,
+    ) -> BatchMutationOutcome:
+        """Focused wrapper for adding \\Seen through the generic flag path."""
+        return await self.set_email_flags_with_outcome(
+            email_ids,
+            "add",
+            [r"\Seen"],
+            mailbox,
+            allowed_senders,
+            report_blocked_mutations,
+        )
 
     async def move_emails_with_outcome(  # noqa: C901 - explicit native/fallback states
         self,

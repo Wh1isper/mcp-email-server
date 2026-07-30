@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosmtplib.errors import SMTPRecipientRefused, SMTPResponseException
 
+from mcp_email_server.application.mutations import FlagOperation, MutableEmailFlag
 from mcp_email_server.emails.classic import EmailClient
 
 
@@ -57,6 +59,67 @@ async def test_mark_read_disconnect_response_is_unknown(email_server) -> None:
         result = await client.mark_emails_as_read_with_outcome(["8"], allowed_senders=[])
 
     assert (result.outcomes[0].status, result.outcomes[0].detail) == ("unknown", "store-unknown")
+
+
+@pytest.mark.asyncio
+async def test_set_email_flags_removes_multiple_flags_with_silent_store(email_server) -> None:
+    client = EmailClient(email_server)
+    imap = _imap()
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        result = await client.set_email_flags_with_outcome(
+            ["8", "9"],
+            "remove",
+            [r"\Seen", r"\Flagged"],
+            mailbox="Archive",
+            allowed_senders=[],
+        )
+
+    assert result.targets("succeeded") == ["8", "9"]
+    assert [call.args for call in imap.uid.await_args_list] == [
+        ("store", "8", "-FLAGS.SILENT", r"(\Seen \Flagged)"),
+        ("store", "9", "-FLAGS.SILENT", r"(\Seen \Flagged)"),
+    ]
+    imap.select.assert_awaited_once_with('"Archive"')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "flags", "message"),
+    [
+        ("replace", [r"\Seen"], "operation must be"),
+        ("add", [], "flags must not be empty"),
+        (
+            "add",
+            [r"\Seen", r"\Flagged", r"\Answered", r"\Draft", r"\Seen"],
+            "flags must contain at most",
+        ),
+        ("remove", [1], "flags must contain strings"),
+        ("remove", [r"\Seen", r"\Seen"], "flags must not contain duplicates"),
+        ("add", [r"\Deleted"], "unsupported mutable email flag"),
+        ("remove", [r"\Recent"], "unsupported mutable email flag"),
+        ("add", ["ProviderKeyword"], "unsupported mutable email flag"),
+    ],
+)
+async def test_set_email_flags_rejects_invalid_contract_before_connect(
+    email_server,
+    operation: str,
+    flags: list[object],
+    message: str,
+) -> None:
+    client = EmailClient(email_server)
+    connect = AsyncMock()
+
+    with (
+        patch.object(client, "_connect_imap", connect),
+        pytest.raises(ValueError, match=message),
+    ):
+        await client.set_email_flags_with_outcome(
+            ["8"],
+            cast(FlagOperation, operation),
+            cast(list[MutableEmailFlag], flags),
+        )
+
+    connect.assert_not_awaited()
 
 
 @pytest.mark.asyncio

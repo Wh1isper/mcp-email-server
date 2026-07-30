@@ -1,5 +1,5 @@
 site_name: mcp-email-server
-repo_url: https://github.com/wh1isper/mcp-email-server
+repo_url: https://github.com/Wh1isper/mcp-email-server
 site_url: https://mcp-email-server.wh1isper.top
 site_description: Read, search, organize, and send email through IMAP and SMTP with MCP
 site_author: wh1isper
@@ -17,7 +17,7 @@ nav:
   - Security: security.md
   - Guides: guides.md
   - Troubleshooting: troubleshooting.md
-  - Contributing: https://github.com/wh1isper/mcp-email-server/blob/main/CONTRIBUTING.md
+  - Contributing: https://github.com/Wh1isper/mcp-email-server/blob/main/CONTRIBUTING.md
 
 plugins:
   - search
@@ -48,7 +48,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/wh1isper/mcp-email-server
+      link: https://github.com/Wh1isper/mcp-email-server
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/mcp-email-server
 

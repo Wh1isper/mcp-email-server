@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from mcp.types import TextContent
@@ -21,6 +21,7 @@ from mcp_email_server.app import (
     move_emails,
     save_to_mailbox,
     send_email,
+    set_email_flags,
 )
 from mcp_email_server.application.accounts import AvailableAccount, EffectiveConfiguration
 from mcp_email_server.application.limits import APPLICATION_LIMITS
@@ -31,6 +32,7 @@ from mcp_email_server.application.mutations import (
     RecipientPolicyDeniedError,
     SendMutationOutcome,
     SentCopyMutationOutcome,
+    SetEmailFlagsCommand,
     TargetMutationOutcome,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
@@ -390,7 +392,13 @@ class TestMcpTools:
         content_ids = tools["get_emails_content"]["email_ids"]
         assert content_ids["maxItems"] == APPLICATION_LIMITS.content_email_ids
         assert content_ids["items"]["maxLength"] == len(str(APPLICATION_LIMITS.maximum_imap_uid))
-        for tool_name in ("delete_emails", "mark_emails_as_read", "move_emails", "archive_emails"):
+        for tool_name in (
+            "delete_emails",
+            "set_email_flags",
+            "mark_emails_as_read",
+            "move_emails",
+            "archive_emails",
+        ):
             ids = tools[tool_name]["email_ids"]
             assert ids["maxItems"] == APPLICATION_LIMITS.mutation_uids
             assert ids["items"]["maxLength"] == len(str(APPLICATION_LIMITS.maximum_imap_uid))
@@ -405,6 +413,11 @@ class TestMcpTools:
         flags = tools["save_to_mailbox"]["flags"]["anyOf"][0]
         assert flags["maxItems"] == APPLICATION_LIMITS.flags
         assert flags["items"]["maxLength"] == APPLICATION_LIMITS.flag_bytes
+        mutable_flags = tools["set_email_flags"]["flags"]
+        assert mutable_flags["minItems"] == 1
+        assert mutable_flags["maxItems"] == 4
+        assert mutable_flags["items"]["enum"] == [r"\Seen", r"\Flagged", r"\Answered", r"\Draft"]
+        assert tools["set_email_flags"]["operation"]["enum"] == ["add", "remove"]
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -811,6 +824,63 @@ class TestMcpTools:
         with patch("mcp_email_server.app.effective_configuration", return_value=configuration):
             result = await list_allowed_senders()
         assert result == ["*@example.com", "bob@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_set_email_flags_command_dispatches_to_runtime_service() -> None:
+    outcome = _batch_outcome(succeeded=("1",))
+    runtime = MagicMock()
+    runtime.mutations.set_flags.execute = AsyncMock(return_value=outcome)
+    command = SetEmailFlagsCommand("test", ("1",), "add", (r"\Seen",))
+
+    with patch("mcp_email_server.app.get_application_runtime", return_value=runtime):
+        assert await app_module.set_email_flags_command(command) is outcome
+
+    runtime.mutations.set_flags.execute.assert_awaited_once_with(command)
+
+
+@pytest.mark.asyncio
+async def test_set_email_flags_maps_command_and_formats_success() -> None:
+    command_handler = AsyncMock(return_value=_batch_outcome(succeeded=("1", "2")))
+    with patch("mcp_email_server.app.set_email_flags_command", command_handler):
+        result = await set_email_flags(
+            "test",
+            ["1", "2"],
+            "remove",
+            [r"\Seen", r"\Flagged"],
+            "Archive",
+        )
+
+    assert result == r"Successfully removed \Seen, \Flagged from 2 email(s)"
+    command = command_handler.await_args.args[0]
+    assert command.account_name == "test"
+    assert command.email_ids == ("1", "2")
+    assert command.operation == "remove"
+    assert command.flags == (r"\Seen", r"\Flagged")
+    assert command.mailbox == "Archive"
+
+
+@pytest.mark.asyncio
+async def test_set_email_flags_formats_add_success() -> None:
+    command_handler = AsyncMock(return_value=_batch_outcome(succeeded=("1",)))
+    with patch("mcp_email_server.app.set_email_flags_command", command_handler):
+        result = await set_email_flags("test", ["1"], "add", [r"\Flagged"])
+
+    assert result == r"Successfully added \Flagged to 1 email(s)"
+
+
+@pytest.mark.asyncio
+async def test_set_email_flags_formats_partial_and_ambiguous_outcomes() -> None:
+    command_handler = AsyncMock(
+        return_value=BatchMutationOutcome((
+            TargetMutationOutcome("1", "succeeded"),
+            TargetMutationOutcome("2", "unknown", "store-unknown"),
+        ))
+    )
+    with patch("mcp_email_server.app.set_email_flags_command", command_handler):
+        result = await set_email_flags("test", ["1", "2"], "add", [r"\Flagged"])
+
+    assert result == "Set-flags result [succeeded: 1; unknown: 2 (store-unknown); warning: reconciliation needed]"
 
 
 @pytest.mark.asyncio

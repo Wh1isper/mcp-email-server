@@ -496,4 +496,4 @@ Include:
   removed.
 - Minimal steps to reproduce the problem.
 
-Report issues at <https://github.com/wh1isper/mcp-email-server/issues>.
+Report issues at <https://github.com/Wh1isper/mcp-email-server/issues>.

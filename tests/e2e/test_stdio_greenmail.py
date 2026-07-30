@@ -340,6 +340,30 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             )
             assert mark["result"] == "Successfully marked 1 email(s) as read"
             assert r"\Seen" in _wait_for_message(ALICE, "INBOX", subject).flags
+            unset_seen = await _call_tool(
+                session,
+                "set_email_flags",
+                {
+                    "account_name": "alice-managed",
+                    "email_ids": [managed_uid],
+                    "operation": "remove",
+                    "flags": [r"\Seen"],
+                },
+            )
+            assert unset_seen["result"] == r"Successfully removed \Seen from 1 email(s)"
+            assert r"\Seen" not in _wait_for_message(ALICE, "INBOX", subject).flags
+            set_flagged = await _call_tool(
+                session,
+                "set_email_flags",
+                {
+                    "account_name": "alice-managed",
+                    "email_ids": [managed_uid],
+                    "operation": "add",
+                    "flags": [r"\Flagged"],
+                },
+            )
+            assert set_flagged["result"] == r"Successfully added \Flagged to 1 email(s)"
+            assert r"\Flagged" in _wait_for_message(ALICE, "INBOX", subject).flags
             with contextlib.closing(sqlite3.connect(database)) as connection:
                 assert connection.execute("SELECT COUNT(*) FROM index_coverage").fetchone()[0] == 0
 
@@ -799,6 +823,7 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                 "send_email",
                 "save_to_mailbox",
                 "delete_emails",
+                "set_email_flags",
                 "mark_emails_as_read",
                 "move_emails",
                 "archive_emails",

@@ -188,19 +188,19 @@ seeder and observer, so the system is not solely verifying itself.
 
 ## GreenMail coverage
 
-| Area          | Assertions                                                                                                  |
-| ------------- | ----------------------------------------------------------------------------------------------------------- |
-| MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                              |
-| Configuration | v1 TOML compatibility, direct fresh init, reviewed import cutover, explicit recovery selection, and restart |
-| Managed mode  | a Linux SQLite-secret managed account reaches live IMAP; a missing selected database fails without fallback |
-| SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                           |
-| IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                              |
-| Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly      |
-| Sent copy     | Alice receives the application-created copy in `Sent`                                                       |
-| Flags         | `mark_emails_as_read` produces `\\Seen`; saved drafts have `\\Draft` and `\\Seen`                           |
-| Mailboxes     | the observer provisions `Sent`, `Drafts`, and `Archive`; MCP discovers and uses them                        |
-| Index         | initial projection, qualified SQLite reuse, filter fallback, bounds, and restart reuse are verified         |
-| Mutations     | explicit move, automatic archive selection, draft save, and delete are observed in IMAP                     |
+| Area          | Assertions                                                                                                           |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                                       |
+| Configuration | v1 TOML compatibility, direct fresh init, reviewed import cutover, explicit recovery selection, and restart          |
+| Managed mode  | a Linux SQLite-secret managed account reaches live IMAP; a missing selected database fails without fallback          |
+| SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                                    |
+| IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                                       |
+| Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly               |
+| Sent copy     | Alice receives the application-created copy in `Sent`                                                                |
+| Flags         | focused mark-read adds `\\Seen`; generic flag mutation removes `\\Seen` and adds `\\Flagged`; drafts retain defaults |
+| Mailboxes     | the observer provisions `Sent`, `Drafts`, and `Archive`; MCP discovers and uses them                                 |
+| Index         | initial projection, qualified SQLite reuse, filter fallback, bounds, and restart reuse are verified                  |
+| Mutations     | explicit move, automatic archive selection, draft save, and delete are observed in IMAP                              |
 
 `list_emails_metadata` currently fetches headers only and therefore returns an
 empty attachment list. Attachment names are verified through

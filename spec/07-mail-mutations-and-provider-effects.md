@@ -42,12 +42,23 @@ UIDVALIDITY where feasible, and avoids using stale projected placement as proof.
 It does not claim to detect every listing-epoch race. An epoch-bound public
 identifier requires a future versioned contract.
 
-## Flags and Mark Read
+## Flags and Read State
 
-Flag updates use UID-scoped IMAP commands and bounded batches. Mark-read and
-mark-unread are explicit mutations separate from body reads. Per-target evidence
-comes from tagged protocol completion and, where required, bounded verification.
-Partial target outcomes are returned individually.
+`set_email_flags` changes one bounded list of UIDs with exactly one operation,
+`add` or `remove`, and one non-empty unique flag list. The public mutable set is
+limited to `\Seen`, `\Flagged`, `\Answered`, and `\Draft`. `\Recent` is
+server-controlled, provider-specific keywords are outside the portable
+contract, and `\Deleted` remains exclusively owned by the scoped
+`delete_emails` workflow.
+
+The provider issues one UID-scoped `+FLAGS.SILENT` or `-FLAGS.SILENT` command per
+target, preserving caller order and per-UID evidence without claiming
+multi-target atomicity. Mark-read remains a focused MCP workflow and delegates
+to the same implementation as adding `\Seen`; removing `\Seen` provides the
+explicit mark-unread operation. Body reads do not mutate flags unless their
+separate `mark_as_read` option requests the focused workflow. Tagged protocol
+completion produces individual success, failure, or unknown outcomes, and an
+ambiguous effect is not retried automatically.
 
 ## Save or Append
 
@@ -153,7 +164,8 @@ paths do not enter public errors.
    effect and resolves only the needed account/role secret.
 2. Per-target results preserve caller order and distinguish success, failure,
    unknown, cancelled-before-effect, and local projection warning.
-3. Body retrieval does not mark read; explicit bounded mark-read does.
+3. Body retrieval does not mark read by default; explicit mark-read and bounded
+   approved flag additions/removals use one shared effect-aware implementation.
 4. Move/archive/delete use native or proven scoped primitives, and tests prove no
    code path issues bare `EXPUNGE` or marks deleted before rejecting unsafe
    capability.

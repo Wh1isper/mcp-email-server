@@ -13,17 +13,21 @@ from mcp_email_server.application.accounts import AvailableAccount, EffectiveCon
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.metadata import ListEmailMetadataQuery
 from mcp_email_server.application.mutations import (
+    MUTABLE_EMAIL_FLAGS,
     AppendMutationOutcome,
     ArchiveCommand,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
     DeleteCommand,
+    FlagOperation,
     MarkReadCommand,
     MoveCommand,
+    MutableEmailFlag,
     RecipientPolicyDeniedError,
     SaveToMailboxCommand,
     SendCommand,
     SendMutationOutcome,
+    SetEmailFlagsCommand,
     TargetMutationOutcome,
 )
 from mcp_email_server.application.reads import (
@@ -72,6 +76,10 @@ async def save_to_mailbox_command(command: SaveToMailboxCommand) -> AppendMutati
 
 async def delete_emails_command(command: DeleteCommand) -> BatchMutationOutcome:
     return await get_application_runtime().mutations.delete.execute(command)
+
+
+async def set_email_flags_command(command: SetEmailFlagsCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.set_flags.execute(command)
 
 
 async def mark_read_command(command: MarkReadCommand) -> BatchMutationOutcome:
@@ -417,7 +425,8 @@ async def list_allowed_recipients() -> PolicyDiscoveryResult:
         "List the configured inbound sender allowlist — the address patterns whose mail the server "
         "will read or act on. When configured, only these senders' mail is visible to the read tools "
         "(list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation "
-        "tools (delete_emails, mark_emails_as_read, move_emails, archive_emails). Returns an empty list "
+        "tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an "
+        "empty list "
         "when unrestricted."
     ),
     annotations=_READ_ONLY_LOCAL,
@@ -674,8 +683,61 @@ async def delete_emails(
 
 @mcp.tool(
     description=(
-        "Mark one or more emails as read by email_id. Use list_emails_metadata first. Partial or ambiguous "
-        "effects report per-ID succeeded/failed/unknown status and are not retried automatically."
+        "Add or remove approved IMAP flags on one or more emails by email_id. Supported flags are \\Seen, "
+        "\\Flagged, \\Answered, and \\Draft; \\Deleted and provider-specific keywords are not supported. "
+        "Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown "
+        "status and are not retried automatically."
+    ),
+    annotations=_IDEMPOTENT_REMOTE_MUTATION,
+)
+async def set_email_flags(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id values whose flags should be changed.",
+        ),
+    ],
+    operation: Annotated[
+        FlagOperation,
+        Field(description="Whether to add or remove every supplied flag."),
+    ],
+    flags: Annotated[
+        list[MutableEmailFlag],
+        Field(
+            min_length=1,
+            max_length=len(MUTABLE_EMAIL_FLAGS),
+            description="Unique approved flags to add or remove: \\Seen, \\Flagged, \\Answered, or \\Draft.",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox containing the emails.",
+        ),
+    ] = "INBOX",
+) -> str:
+    outcome = await set_email_flags_command(
+        SetEmailFlagsCommand(account_name, tuple(email_ids), operation, tuple(flags), mailbox)
+    )
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        verb, preposition = ("added", "to") if operation == "add" else ("removed", "from")
+        return f"Successfully {verb} {', '.join(flags)} {preposition} {len(succeeded)} email(s)"
+    return f"Set-flags result [{_tagged_batch_result(outcome)}]"
+
+
+@mcp.tool(
+    description=(
+        "Mark one or more emails as read by email_id. This is the common-workflow equivalent of adding \\Seen "
+        "with set_email_flags. Use list_emails_metadata first. Partial or ambiguous effects report per-ID "
+        "succeeded/failed/unknown status and are not retried automatically."
     ),
     annotations=_IDEMPOTENT_REMOTE_MUTATION,
 )

@@ -7,19 +7,19 @@ import pytest
 from mcp_email_server.adapters.mutations import ClassicMutationProvider
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
-    MarkReadCommand,
     MutationAccountSnapshot,
     MutationProviderError,
     SaveToMailboxCommand,
     SendCommand,
     SentCopyMutationOutcome,
+    SetEmailFlagsCommand,
 )
 from mcp_email_server.config import EmailSettings
 
 
-def _mark_read_provider(error: BaseException) -> ClassicMutationProvider:
+def _set_flags_provider(error: BaseException) -> ClassicMutationProvider:
     handler = MagicMock()
-    handler.incoming_client.mark_emails_as_read_with_outcome = AsyncMock(side_effect=error)
+    handler.incoming_client.set_email_flags_with_outcome = AsyncMock(side_effect=error)
     return ClassicMutationProvider(handler)
 
 
@@ -37,10 +37,10 @@ def _account() -> MutationAccountSnapshot:
     ],
 )
 async def test_mutation_adapter_preserves_control_and_policy_exceptions(error: BaseException) -> None:
-    provider = _mark_read_provider(error)
+    provider = _set_flags_provider(error)
 
     with pytest.raises(type(error)) as caught:
-        await provider.mark_read(MarkReadCommand("primary", ("1",)), _account())
+        await provider.set_flags(SetEmailFlagsCommand("primary", ("1",), "add", (r"\Seen",)), _account())
 
     assert caught.value is error
 
@@ -48,16 +48,36 @@ async def test_mutation_adapter_preserves_control_and_policy_exceptions(error: B
 @pytest.mark.asyncio
 async def test_mutation_adapter_sanitizes_unexpected_provider_failure() -> None:
     provider_detail = "provider-controlled secret detail"
-    provider = _mark_read_provider(RuntimeError(provider_detail))
+    provider = _set_flags_provider(RuntimeError(provider_detail))
 
     with pytest.raises(
         MutationProviderError,
         match=r"^provider_failure: mutation provider request failed$",
     ) as caught:
-        await provider.mark_read(MarkReadCommand("primary", ("1",)), _account())
+        await provider.set_flags(SetEmailFlagsCommand("primary", ("1",), "add", (r"\Seen",)), _account())
 
     assert provider_detail not in str(caught.value)
     assert caught.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_mutation_adapter_forwards_generic_flag_contract_and_policy() -> None:
+    outcome = MagicMock()
+    handler = MagicMock()
+    handler.incoming_client.set_email_flags_with_outcome = AsyncMock(return_value=outcome)
+    provider = ClassicMutationProvider(handler)
+    account = MutationAccountSnapshot("primary", "managed", ("*@allowed.test",), (), True)
+    command = SetEmailFlagsCommand("primary", ("1", "2"), "remove", (r"\Seen", r"\Flagged"), "Archive")
+
+    assert await provider.set_flags(command, account) is outcome
+    handler.incoming_client.set_email_flags_with_outcome.assert_awaited_once_with(
+        ["1", "2"],
+        "remove",
+        [r"\Seen", r"\Flagged"],
+        "Archive",
+        ["*@allowed.test"],
+        True,
+    )
 
 
 @pytest.mark.asyncio

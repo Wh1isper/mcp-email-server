@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,8 +17,10 @@ from mcp_email_server.application.mutations import (
     BatchMutationOutcome,
     DeleteCommand,
     DeliveryMutationOutcome,
+    FlagOperation,
     MarkReadCommand,
     MoveCommand,
+    MutableEmailFlag,
     MutationAccountSnapshot,
     MutationProjectionError,
     MutationProviderAccess,
@@ -27,6 +30,7 @@ from mcp_email_server.application.mutations import (
     SendCommand,
     SendMutationOutcome,
     SentCopyMutationOutcome,
+    SetEmailFlagsCommand,
     TargetMutationOutcome,
 )
 from mcp_email_server.emails.classic import ClassicEmailHandler
@@ -72,6 +76,50 @@ def _services(
     )
 
 
+@pytest.mark.parametrize(
+    ("operation", "flags", "message"),
+    [
+        ("replace", (r"\Seen",), "operation must be"),
+        ("add", (), "flags must not be empty"),
+        (
+            "add",
+            (r"\Seen", r"\Flagged", r"\Answered", r"\Draft", r"\Seen"),
+            "flags must contain at most",
+        ),
+        ("remove", (1,), "flags must contain strings"),
+        ("remove", (r"\Seen", r"\Seen"), "flags must not contain duplicates"),
+        ("add", (r"\Deleted",), "unsupported mutable email flag"),
+        ("remove", (r"\Recent",), "unsupported mutable email flag"),
+        ("add", ("ProviderKeyword",), "unsupported mutable email flag"),
+    ],
+)
+def test_set_email_flags_command_rejects_unsupported_contract(
+    operation: str,
+    flags: tuple[object, ...],
+    message: str,
+) -> None:
+    command = SetEmailFlagsCommand(
+        "primary",
+        ("1",),
+        cast(FlagOperation, operation),
+        cast(tuple[MutableEmailFlag, ...], flags),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        command.validate()
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+def test_set_email_flags_command_accepts_supported_contract(operation: FlagOperation) -> None:
+    SetEmailFlagsCommand(
+        "primary",
+        ("1", "2"),
+        operation,
+        (r"\Seen", r"\Flagged", r"\Answered", r"\Draft"),
+        "Archive",
+    ).validate()
+
+
 def test_unknown_outcome_models_always_require_reconciliation() -> None:
     batch = BatchMutationOutcome((TargetMutationOutcome("1", "unknown"),))
     append = AppendMutationOutcome("unknown", "", mailbox="Drafts")
@@ -93,7 +141,7 @@ def test_unknown_outcome_models_always_require_reconciliation() -> None:
 @pytest.mark.asyncio
 async def test_mark_read_unknown_is_not_replayed_and_invalidates_projection() -> None:
     provider = MagicMock()
-    provider.mark_read = AsyncMock(
+    provider.set_flags = AsyncMock(
         return_value=_batch(
             TargetMutationOutcome("9", "succeeded"),
             TargetMutationOutcome("10", "unknown", "store"),
@@ -106,7 +154,10 @@ async def test_mark_read_unknown_is_not_replayed_and_invalidates_projection() ->
     assert result.targets("succeeded") == ["9"]
     assert result.targets("unknown") == ["10"]
     assert result.reconciliation_needed is True
-    provider.mark_read.assert_awaited_once()
+    provider.set_flags.assert_awaited_once()
+    flag_command = provider.set_flags.await_args.args[0]
+    assert flag_command.operation == "add"
+    assert flag_command.flags == (r"\Seen",)
     factory.open.assert_called_once_with("primary", expected_mode="managed", purpose="incoming")
     projection.invalidate.assert_awaited_once_with(("INBOX",))
 
@@ -563,11 +614,11 @@ async def test_mutation_timeout_is_unknown_and_never_replayed(monkeypatch, workf
     services, _, _, projection = _services(provider=provider)
 
     if workflow == "mark_read":
-        provider.mark_read = AsyncMock(side_effect=_hang_provider)
+        provider.set_flags = AsyncMock(side_effect=_hang_provider)
         result = await services.mark_read.execute(MarkReadCommand("primary", ("7", "8")))
         assert result.targets("unknown") == ["7", "8"]
         assert result.reconciliation_needed is True
-        provider.mark_read.assert_awaited_once()
+        provider.set_flags.assert_awaited_once()
         projection.invalidate.assert_awaited_once_with(("INBOX",))
     elif workflow == "save":
         provider.save_to_mailbox = AsyncMock(side_effect=_hang_provider)

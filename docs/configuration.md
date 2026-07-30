@@ -578,6 +578,7 @@ account fails its capability check before SMTP access.
 IMAP-only does not mean read-only. These tools can still change mailbox state:
 
 - `save_to_mailbox`
+- `set_email_flags`
 - `mark_emails_as_read`
 - `move_emails`
 - `archive_emails`
