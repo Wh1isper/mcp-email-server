@@ -74,6 +74,20 @@ MAX_TOTAL_ATTACHMENT_BYTES = APPLICATION_LIMITS.total_attachment_bytes
 MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
 
 
+def _serialize_message_for_imap_append(message: Message) -> bytes:
+    """Serialize one IMAP APPEND payload with RFC-compliant CRLF line endings."""
+    return message.as_bytes(policy=message.policy.clone(linesep="\r\n"))
+
+
+def _first_thread_header(message: Message, name: str) -> str | None:
+    """Return the first decoded thread header with folding whitespace normalized."""
+    values = message.get_all(name)
+    if not values:
+        return None
+    normalized = re.sub(r"[ \t]+", " ", str(values[0])).strip()
+    return normalized or None
+
+
 class MetadataPayloadTooLargeError(ValueError):
     """Provider-controlled headers exceeded the bounded metadata budget."""
 
@@ -775,8 +789,12 @@ class EmailClient:
         sender = email_message.get("From", "")
         date_str = email_message.get("Date", "")
 
-        # Extract Message-ID for reply threading
+        # Extract reply-thread headers from the fully parsed message. Keep References
+        # as one unfolded string so it can be passed back to the compose APIs without
+        # imposing a lossy Message-ID tokenization policy.
         message_id = email_message.get("Message-ID")
+        in_reply_to = _first_thread_header(email_message, "In-Reply-To")
+        references = _first_thread_header(email_message, "References")
 
         # Extract recipients and parse date
         to_addresses = self._parse_recipients(email_message)
@@ -847,6 +865,8 @@ class EmailClient:
         return {
             "email_id": email_id or "",
             "message_id": message_id,
+            "in_reply_to": in_reply_to,
+            "references": references,
             "subject": subject,
             "from": sender,
             "to": to_addresses,
@@ -2055,7 +2075,7 @@ class EmailClient:
                     continue
                 try:
                     append_result = await imap.append(
-                        msg.as_bytes(),
+                        _serialize_message_for_imap_append(msg),
                         mailbox=_quote_mailbox(folder),
                         flags=r"(\Seen)",
                     )
@@ -2128,7 +2148,7 @@ class EmailClient:
                     status = result[0] if isinstance(result, tuple) else result
                     if str(status).upper() == "OK":
                         # Folder exists, append the message
-                        msg_bytes = msg.as_bytes()
+                        msg_bytes = _serialize_message_for_imap_append(msg)
                         logger.debug(f"Appending message to '{folder}'")
                         # aioimaplib.append signature: (message_bytes, mailbox, flags, date)
                         append_result = await imap.append(
@@ -2181,7 +2201,7 @@ class EmailClient:
                 return AppendMutationOutcome("failed", message_id, mailbox=mailbox, detail="mailbox-unavailable")
             try:
                 append_result = await imap.append(
-                    msg.as_bytes(),
+                    _serialize_message_for_imap_append(msg),
                     mailbox=_quote_mailbox(mailbox),
                     flags=flags,
                 )
@@ -2239,7 +2259,7 @@ class EmailClient:
                 logger.warning(f"Mailbox '{mailbox}' not found or not selectable: {status}")
                 return None
 
-            msg_bytes = msg.as_bytes()
+            msg_bytes = _serialize_message_for_imap_append(msg)
             append_result = await imap.append(
                 msg_bytes,
                 mailbox=_quote_mailbox(mailbox),
@@ -2869,6 +2889,8 @@ class ClassicEmailHandler(EmailHandler):
                     EmailBodyResponse(
                         email_id=email_data["email_id"],
                         message_id=email_data.get("message_id"),
+                        in_reply_to=email_data.get("in_reply_to"),
+                        references=email_data.get("references"),
                         subject=email_data["subject"],
                         sender=email_data["from"],
                         recipients=email_data["to"],

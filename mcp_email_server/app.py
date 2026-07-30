@@ -343,8 +343,8 @@ async def list_emails_metadata(
 
 @mcp.tool(
     description=(
-        "Get the full content (including body) of one or more emails by their email_id. Use "
-        "list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags."
+        "Get the full content (including body and reply-thread headers) of one or more emails by their email_id. "
+        "Use list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags."
     ),
     annotations=_IDEMPOTENT_REMOTE_MUTATION,
 )

@@ -169,15 +169,31 @@ If a body extends beyond the requested window, the returned body ends with
 `max_body_length`.
 
 The batch response reports requested and retrieved counts and includes
-`failed_ids` for messages that could not be fetched. A request accepts 1 to 500
-canonical positive decimal ASCII IMAP UIDs; zero, leading zero, non-ASCII digits,
-signs, ranges, sets, and values above the IMAP UID limit are rejected before
-provider access. The provider adapter repeats this validation before opening an
-IMAP connection as defense in depth. Raw messages above 50
-MiB are rejected before MIME parsing. The production provider also counts each
-returned body's UTF-8 bytes before retaining it and stops immediately if the
-batch would exceed the 50 MiB aggregate body budget; the application validates
-the aggregate again at its provider boundary.
+`failed_ids` for messages that could not be fetched. Each returned email also
+includes nullable `in_reply_to` and `references` values from the corresponding
+RFC headers. `references` is returned as one decoded, unfolded string with
+folding spaces and tabs normalized. Missing and whitespace-only values become
+`null`; if an invalid message repeats either header, the parser's first observed
+value is returned. This is untrusted observational header data, not a validated
+list of Message-IDs. Well-formed values can be passed back to the compose tools,
+but malformed values containing other control characters can be returned and
+will be rejected by compose validation. These fields are available only from
+full-content reads: they are not part of `list_emails_metadata` and are not
+persisted in the SQLite metadata projection.
+
+A request accepts 1 to 500 canonical positive decimal ASCII IMAP UIDs; zero,
+leading zero, non-ASCII digits, signs, ranges, sets, and values above the IMAP UID
+limit are rejected before provider access. The provider adapter repeats this
+validation before opening an IMAP connection as defense in depth. Raw messages
+above 50 MiB are rejected before MIME parsing. The production provider also
+counts each returned body's UTF-8 bytes before retaining it and stops immediately
+if the batch would exceed the 50 MiB aggregate body budget; the application
+validates the aggregate again at its provider boundary. Each returned thread
+header is limited to 64 KiB of UTF-8 data and both count toward the 4 MiB
+aggregate returned-header budget. The production provider enforces these header
+budgets before retaining each parsed result, and the application independently
+revalidates them at its provider boundary. Oversized values fail explicitly
+rather than being truncated into an invalid thread chain.
 
 When the complete valid batch exceeds the inline MCP response ceiling, the
 server writes the canonical JSON response to a randomly named owner-only file in
@@ -218,7 +234,8 @@ allowed. SMTP delivery reports accepted, rejected, and unknown recipients
 separately when the result is partial or ambiguous. Saving the Sent copy is a
 second IMAP effect and is reported in its own `sent-copy` section; a failed or
 unknown copy never changes an accepted delivery into a failure. Do not retry the
-whole send to repair a Sent copy.
+whole send to repair a Sent copy. Sent-copy APPEND payloads use CRLF line
+endings for compatibility with strict IMAP providers.
 
 ### `save_to_mailbox`
 
@@ -233,10 +250,11 @@ message ID. It includes an assigned IMAP `email_id` only when the server returns
 RFC 4315 `APPENDUID`; otherwise the value is `unknown`, and the target mailbox
 must be searched before a later operation can address the saved message.
 
-The same recipient allowlist used by `send_email` applies to this tool. A known
-APPEND success without `APPENDUID` returns `email_id: unknown`. A lost APPEND
-result is instead tagged `unknown`; the server does not replay it because that
-could create a duplicate draft.
+The same recipient allowlist used by `send_email` applies to this tool. The
+complete MIME payload is serialized with CRLF line endings before IMAP APPEND for
+compatibility with strict providers. A known APPEND success without `APPENDUID`
+returns `email_id: unknown`. A lost APPEND result is instead tagged `unknown`;
+the server does not replay it because that could create a duplicate draft.
 
 ## Mailbox and mutation tools
 
@@ -384,8 +402,8 @@ To preserve conversation threading:
 
 1. Fetch the original message with `get_emails_content`.
 2. Use its RFC `message_id` as `in_reply_to`.
-3. Include that ID and any known ancestor IDs in `references`, separated by
-   spaces.
+3. Build `references` from the returned `references` value followed by the
+   original `message_id`, omitting missing values.
 4. Send the reply with a suitable `Re:` subject.
 
 For a complete example, see [Reply with proper threading](guides.md#reply-with-proper-threading).

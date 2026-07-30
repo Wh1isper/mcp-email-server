@@ -103,7 +103,20 @@ Body reads:
 - enforce a running UTF-8 body-byte budget in the provider adapter before each
   result is retained, then independently revalidate per-message and aggregate
   bytes at the application response boundary;
-- sanitize decode/parser errors and never persist bodies or raw MIME in SQLite.
+- expose nullable `In-Reply-To` and `References` observations only in the
+  full-content response, not metadata listing or the SQLite projection;
+- return each parsed thread header as one decoded, unfolded string with folding
+  spaces and tabs normalized to a single space; missing or whitespace-only values
+  become null, duplicate invalid headers use the parser's first observation, and
+  malformed non-folding controls remain untrusted observations that compose
+  validation may reject;
+- do not claim Message-ID-list syntax validation or silently truncate a chain;
+- limit each returned thread header to the shared 64 KiB header ceiling and count
+  both toward the 4 MiB aggregate returned-header budget, enforcing the running
+  budget before provider-adapter retention and revalidating it at the application
+  response boundary;
+- sanitize decode/parser errors and never persist bodies, thread headers from
+  full-content reads, or raw MIME in SQLite.
 
 Marking read is a separate mutation under spec 07.
 
@@ -158,7 +171,9 @@ catalog authority or secret binding state.
 4. Candidate UID count, fetch batches, headers, bodies, parser work, errors, and
    serialized results have enforced ceilings, including direct service calls.
 5. Body reads use PEEK, preserve input order, and return per-item outcomes for up
-   to the documented limit without persisting content.
+   to the documented limit without persisting content or reply-thread headers;
+   tests cover present, absent, whitespace-only, folded, duplicate, malformed,
+   per-field, and aggregate `In-Reply-To`/`References` behavior.
 6. Attachment tests cover explicit enablement, exact path preservation, size
    limits, symlinks, non-regular targets, permissions, no-clobber/overwrite,
    replacement races, partial cleanup, and absence of path leakage to provider.

@@ -234,9 +234,21 @@ def _validate_content_result(response: EmailContentBatchResponse) -> bytes:
         raise ReadProviderError(
             f"limit_exceeded: email bodies exceed {APPLICATION_LIMITS.aggregate_body_bytes} bytes in total"
         )
+    thread_header_sizes = [
+        len(value.encode("utf-8"))
+        for email in response.emails
+        for value in (email.in_reply_to, email.references)
+        if value is not None
+    ]
+    if any(size > APPLICATION_LIMITS.header_bytes for size in thread_header_sizes):
+        raise ReadProviderError(
+            f"limit_exceeded: an email thread header exceeds {APPLICATION_LIMITS.header_bytes} bytes"
+        )
     header_bytes = sum(
         len(email.email_id.encode("utf-8"))
         + len((email.message_id or "").encode("utf-8"))
+        + len((email.in_reply_to or "").encode("utf-8"))
+        + len((email.references or "").encode("utf-8"))
         + len(email.subject.encode("utf-8"))
         + len(email.sender.encode("utf-8"))
         + sum(len(value.encode("utf-8")) for value in email.recipients)

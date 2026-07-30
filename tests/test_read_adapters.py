@@ -40,6 +40,8 @@ async def test_content_adapter_forwards_snapshot_sender_policy_and_collapses_per
             {
                 "email_id": "1",
                 "message_id": "<one@example.test>",
+                "in_reply_to": "<parent@example.test>",
+                "references": "<root@example.test> <parent@example.test>",
                 "subject": "One",
                 "from": "allowed@example.test",
                 "to": ["work@example.test"],
@@ -56,6 +58,8 @@ async def test_content_adapter_forwards_snapshot_sender_policy_and_collapses_per
     response = await provider.get_content(query, _account())
 
     assert [email.email_id for email in response.emails] == ["1"]
+    assert response.emails[0].in_reply_to == "<parent@example.test>"
+    assert response.emails[0].references == "<root@example.test> <parent@example.test>"
     assert response.failed_ids == ["2"]
     first = handler.incoming_client.get_email_body_by_id.await_args_list[0]
     assert first.args[:4] == ("1", "Archive", False)
@@ -107,6 +111,68 @@ async def test_content_adapter_stops_at_provider_time_aggregate_body_budget(
         )
 
     assert handler.incoming_client.get_email_body_by_id.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_content_adapter_rejects_oversized_thread_header_before_retaining_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reads_adapter,
+        "APPLICATION_LIMITS",
+        replace(reads_adapter.APPLICATION_LIMITS, header_bytes=4),
+    )
+    handler = Mock()
+    handler.incoming_client.get_email_body_by_id = AsyncMock(
+        return_value={
+            "email_id": "1",
+            "message_id": "<one@example.test>",
+            "in_reply_to": None,
+            "references": "ééa",
+            "subject": "One",
+            "from": "allowed@example.test",
+            "to": ["work@example.test"],
+            "date": datetime.now(UTC),
+            "body": "body",
+            "attachments": [],
+        }
+    )
+
+    with pytest.raises(ReadProviderError, match="thread header exceeds 4 bytes"):
+        await ClassicReadProvider(handler).get_content(GetEmailContentQuery("work", ("1",)), _account())
+
+    assert handler.incoming_client.get_email_body_by_id.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_content_adapter_rejects_aggregate_headers_before_retaining_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        reads_adapter,
+        "APPLICATION_LIMITS",
+        replace(reads_adapter.APPLICATION_LIMITS, header_bytes=100, aggregate_header_bytes=4),
+    )
+    handler = Mock()
+    handler.incoming_client.get_email_body_by_id = AsyncMock(
+        return_value={
+            "email_id": "1",
+            "message_id": None,
+            "in_reply_to": None,
+            "references": "root",
+            "subject": "One",
+            "from": "allowed@example.test",
+            "to": ["work@example.test"],
+            "date": datetime.now(UTC),
+            "body": "body",
+            "attachments": [],
+        }
+    )
+
+    with pytest.raises(ReadProviderError, match="headers exceed 4 bytes in total"):
+        await ClassicReadProvider(handler).get_content(GetEmailContentQuery("work", ("1",)), _account())
+
+    assert handler.incoming_client.get_email_body_by_id.await_count == 1
 
 
 @pytest.mark.asyncio

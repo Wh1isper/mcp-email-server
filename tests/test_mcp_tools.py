@@ -542,12 +542,14 @@ class TestMcpTools:
         assert "recipient@example.com" in result
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_maps_application_query_and_preserves_message_id(self):
+    async def test_get_emails_content_maps_application_query_and_preserves_thread_headers(self):
         response = EmailContentBatchResponse(
             emails=[
                 EmailBodyResponse(
                     email_id="123",
                     message_id="<test@example.com>",
+                    in_reply_to="<parent@example.com>",
+                    references="<root@example.com> <parent@example.com>",
                     subject="Test",
                     sender="sender@example.com",
                     recipients=["recipient@example.com"],
@@ -570,6 +572,8 @@ class TestMcpTools:
             )
 
         assert result.emails[0].message_id == "<test@example.com>"
+        assert result.emails[0].in_reply_to == "<parent@example.com>"
+        assert result.emails[0].references == "<root@example.com> <parent@example.com>"
         query = query_handler.await_args.args[0]
         assert query.account_name == "test"
         assert query.email_ids == ("123",)

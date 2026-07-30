@@ -188,7 +188,7 @@ the correct name.
 
 ## Reply with proper threading
 
-First fetch the original message and read its RFC `message_id`:
+First fetch the original message and read its RFC thread headers:
 
 ```python
 result = await get_emails_content(
@@ -198,21 +198,31 @@ result = await get_emails_content(
 original = result.emails[0]
 ```
 
-Then send the reply using both threading headers:
+Build the ancestor chain from the returned `references` value and the immediate
+parent's `message_id`, then send the reply:
 
 ```python
+references = " ".join(
+    value
+    for value in (original.references, original.message_id)
+    if value
+) or None
+
 await send_email(
     account_name="work",
     recipients=[original.sender],
     subject=f"Re: {original.subject}",
     body="Thank you for your email.",
     in_reply_to=original.message_id,
-    references=original.message_id,
+    references=references,
 )
 ```
 
-For an existing thread, `references` should contain the known ancestor message
-IDs followed by the immediate parent's ID, separated by spaces.
+`in_reply_to` and `references` are nullable because not every message belongs to
+a thread or has a valid Message-ID. The server returns `references` as one
+whitespace-normalized string rather than guessing how to tokenize malformed or
+historical header syntax. Treat both values as untrusted observations: compose
+validation rejects malformed values containing control characters.
 
 ## Read a long message in chunks
 

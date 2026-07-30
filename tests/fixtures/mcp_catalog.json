@@ -424,7 +424,7 @@
         },
         {
             "name": "get_emails_content",
-            "description": "Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags.",
+            "description": "Get the full content (including body and reply-thread headers) of one or more emails by their email_id. Use list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -481,7 +481,7 @@
             "outputSchema": {
                 "$defs": {
                     "EmailBodyResponse": {
-                        "description": "Single email body response - extends EmailMetadata with body content",
+                        "description": "Single email body response with body content and reply-thread headers.",
                         "properties": {
                             "email_id": {
                                 "title": "Email Id",
@@ -525,6 +525,30 @@
                                 },
                                 "title": "Attachments",
                                 "type": "array"
+                            },
+                            "in_reply_to": {
+                                "anyOf": [
+                                    {
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "default": null,
+                                "title": "In Reply To"
+                            },
+                            "references": {
+                                "anyOf": [
+                                    {
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "default": null,
+                                "title": "References"
                             },
                             "body": {
                                 "title": "Body",

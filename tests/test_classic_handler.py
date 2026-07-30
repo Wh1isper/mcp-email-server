@@ -482,12 +482,14 @@ class TestClassicEmailHandler:
             assert msg["Reply-To"] == "replyhere@example.com"
 
     @pytest.mark.asyncio
-    async def test_get_emails_content_includes_message_id(self, classic_handler):
-        """Test that get_emails_content returns message_id from parsed email data."""
+    async def test_get_emails_content_includes_thread_headers(self, classic_handler):
+        """Test that get_emails_content preserves reply-thread headers."""
         now = datetime.now(UTC)
         email_data = {
             "email_id": "123",
             "message_id": "<test-message-id@example.com>",
+            "in_reply_to": "<parent@example.com>",
+            "references": "<root@example.com> <parent@example.com>",
             "subject": "Test Subject",
             "from": "sender@example.com",
             "to": ["recipient@example.com"],
@@ -511,6 +513,8 @@ class TestClassicEmailHandler:
             assert isinstance(result.emails[0], EmailBodyResponse)
             assert result.emails[0].email_id == "123"
             assert result.emails[0].message_id == "<test-message-id@example.com>"
+            assert result.emails[0].in_reply_to == "<parent@example.com>"
+            assert result.emails[0].references == "<root@example.com> <parent@example.com>"
             assert result.emails[0].subject == "Test Subject"
             assert result.emails[0].sender == "sender@example.com"
             assert result.emails[0].body == "Test email body"

@@ -65,7 +65,9 @@ ambiguous effect is not retried automatically.
 Saving a message to a mailbox is an IMAP APPEND effect. The request bounds
 headers, recipients, subject, body, encoded message bytes, attachments, and
 destination. File attachments preserve their inferred MIME main type and subtype
-rather than being coerced into `application/*`.
+rather than being coerced into `application/*`. Every APPEND path serializes the
+complete MIME message with CRLF line endings and does not emit bare LF or CR line
+breaks, including draft and sent-copy placement.
 Success requires positive APPEND evidence. If APPEND succeeds but UID mapping or
 projection update is unavailable, the result remains success with an unknown
 placement/projection warning rather than resubmitting.
@@ -177,3 +179,5 @@ paths do not enter public errors.
 8. Public numeric IDs are documented and tested as current-mailbox compatibility
    IDs, not durable listing-epoch tokens.
 9. No management UI route can invoke mail mutations in this delivery.
+10. Byte-level tests prove every IMAP APPEND path serializes MIME messages with
+    CRLF line endings and emits no bare LF or CR line breaks.

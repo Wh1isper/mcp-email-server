@@ -51,6 +51,7 @@ class ClassicReadProvider:
         emails: list[EmailBodyResponse] = []
         failed_ids: list[str] = []
         aggregate_body_bytes = 0
+        aggregate_header_bytes = 0
         for email_id in query.email_ids:
             try:
                 email_data = await self._handler.incoming_client.get_email_body_by_id(
@@ -67,6 +68,8 @@ class ClassicReadProvider:
                 email = EmailBodyResponse(
                     email_id=email_data["email_id"],
                     message_id=email_data.get("message_id"),
+                    in_reply_to=email_data.get("in_reply_to"),
+                    references=email_data.get("references"),
                     subject=email_data["subject"],
                     sender=email_data["from"],
                     recipients=email_data["to"],
@@ -86,6 +89,27 @@ class ClassicReadProvider:
             if aggregate_body_bytes > APPLICATION_LIMITS.aggregate_body_bytes:
                 raise ReadProviderError(
                     f"limit_exceeded: email bodies exceed {APPLICATION_LIMITS.aggregate_body_bytes} bytes in total"
+                )
+            thread_header_sizes = [
+                len(value.encode("utf-8")) for value in (email.in_reply_to, email.references) if value is not None
+            ]
+            if any(size > APPLICATION_LIMITS.header_bytes for size in thread_header_sizes):
+                raise ReadProviderError(
+                    f"limit_exceeded: an email thread header exceeds {APPLICATION_LIMITS.header_bytes} bytes"
+                )
+            aggregate_header_bytes += (
+                len(email.email_id.encode("utf-8"))
+                + len((email.message_id or "").encode("utf-8"))
+                + len((email.in_reply_to or "").encode("utf-8"))
+                + len((email.references or "").encode("utf-8"))
+                + len(email.subject.encode("utf-8"))
+                + len(email.sender.encode("utf-8"))
+                + sum(len(value.encode("utf-8")) for value in email.recipients)
+                + sum(len(value.encode("utf-8")) for value in email.attachments)
+            )
+            if aggregate_header_bytes > APPLICATION_LIMITS.aggregate_header_bytes:
+                raise ReadProviderError(
+                    f"limit_exceeded: email headers exceed {APPLICATION_LIMITS.aggregate_header_bytes} bytes in total"
                 )
             emails.append(email)
         return EmailContentBatchResponse(

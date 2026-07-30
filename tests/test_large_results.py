@@ -30,6 +30,8 @@ def _content_response(body: str) -> EmailContentBatchResponse:
         emails=[
             EmailBodyResponse(
                 email_id="1",
+                in_reply_to="<parent@example.test>",
+                references="<root@example.test> <parent@example.test>",
                 subject="Subject",
                 sender="alice@example.test",
                 recipients=["bob@example.test"],
@@ -331,4 +333,6 @@ async def test_content_service_spills_oversized_result_and_returns_bounded_refer
     assert len(result.model_dump_json().encode()) <= 512
     stored = json.loads(Path(result.output_file_path).read_text())
     assert stored["emails"][0]["body"] == response.emails[0].body
+    assert stored["emails"][0]["in_reply_to"] == response.emails[0].in_reply_to
+    assert stored["emails"][0]["references"] == response.emails[0].references
     await writer.aclose()

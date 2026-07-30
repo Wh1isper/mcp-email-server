@@ -155,11 +155,12 @@ def test_email_metadata_message_id_optional():
     assert metadata.message_id is None
 
 
-def test_email_body_response_includes_message_id():
-    """Test that EmailBodyResponse includes message_id field."""
+def test_email_body_response_includes_thread_headers_without_expanding_metadata():
     response = EmailBodyResponse(
         email_id="123",
-        message_id="<abc123@example.com>",
+        message_id="<current@example.com>",
+        in_reply_to="<parent@example.com>",
+        references="<root@example.com> <parent@example.com>",
         subject="Test",
         sender="sender@example.com",
         recipients=["recipient@example.com"],
@@ -167,4 +168,24 @@ def test_email_body_response_includes_message_id():
         body="Test body",
         attachments=[],
     )
-    assert response.message_id == "<abc123@example.com>"
+
+    assert response.message_id == "<current@example.com>"
+    assert response.in_reply_to == "<parent@example.com>"
+    assert response.references == "<root@example.com> <parent@example.com>"
+    assert "in_reply_to" not in EmailMetadata.model_fields
+    assert "references" not in EmailMetadata.model_fields
+
+
+def test_email_body_response_thread_headers_default_to_none():
+    response = EmailBodyResponse(
+        email_id="123",
+        subject="Test",
+        sender="sender@example.com",
+        recipients=["recipient@example.com"],
+        date=datetime.now(UTC),
+        body="Test body",
+        attachments=[],
+    )
+
+    assert response.in_reply_to is None
+    assert response.references is None

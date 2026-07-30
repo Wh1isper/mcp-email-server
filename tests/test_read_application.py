@@ -310,6 +310,85 @@ async def test_content_aggregate_body_limit_uses_utf8_bytes_at_boundaries(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value", "valid"),
+    [
+        ("in_reply_to", "éé", True),
+        ("in_reply_to", "ééa", False),
+        ("references", "éé", True),
+        ("references", "ééa", False),
+    ],
+)
+async def test_content_thread_header_limit_uses_utf8_bytes_at_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    value: str,
+    valid: bool,
+) -> None:
+    monkeypatch.setattr(
+        reads_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, header_bytes=4),
+    )
+    authority, factory, provider = _ports()
+    response = EmailContentBatchResponse(
+        emails=[_body("1").model_copy(update={field_name: value})],
+        requested_count=1,
+        retrieved_count=1,
+        failed_ids=[],
+    )
+    provider.get_content = AsyncMock(return_value=response)
+    service = EmailContentService(authority, factory, Mock())
+
+    if valid:
+        assert await service.execute(GetEmailContentQuery("work", ("1",))) == response
+    else:
+        with pytest.raises(ReadProviderError, match="thread header exceeds"):
+            await service.execute(GetEmailContentQuery("work", ("1",)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "valid"), [("éé", True), ("ééa", False)])
+async def test_content_thread_headers_count_toward_aggregate_header_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    valid: bool,
+) -> None:
+    authority, factory, provider = _ports()
+    email = _body("1")
+    base_header_bytes = sum(
+        len(item.encode("utf-8"))
+        for item in (
+            email.email_id,
+            email.message_id or "",
+            email.subject,
+            email.sender,
+            *email.recipients,
+            *email.attachments,
+        )
+    )
+    monkeypatch.setattr(
+        reads_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, header_bytes=10, aggregate_header_bytes=base_header_bytes + 4),
+    )
+    response = EmailContentBatchResponse(
+        emails=[email.model_copy(update={"references": value})],
+        requested_count=1,
+        retrieved_count=1,
+        failed_ids=[],
+    )
+    provider.get_content = AsyncMock(return_value=response)
+    service = EmailContentService(authority, factory, Mock())
+
+    if valid:
+        assert await service.execute(GetEmailContentQuery("work", ("1",))) == response
+    else:
+        with pytest.raises(ReadProviderError, match="headers exceed"):
+            await service.execute(GetEmailContentQuery("work", ("1",)))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("failed_count", "valid"), [(1, True), (2, True), (3, False)])
 async def test_content_warning_count_limit_boundaries(
     monkeypatch: pytest.MonkeyPatch,

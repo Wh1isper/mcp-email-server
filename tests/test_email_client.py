@@ -916,6 +916,79 @@ Test body content
         assert result["message_id"] is None
 
 
+def test_parse_email_extracts_unfolded_reply_thread_headers(email_client) -> None:
+    raw_email = b"""Message-ID: <current@example.test>\r
+In-Reply-To: <parent@example.test>\r
+References: <root@example.test>\r
+\t<parent@example.test>\r
+From: sender@example.test\r
+To: recipient@example.test\r
+Subject: Re: Thread\r
+Date: Mon, 1 Jan 2024 12:00:00 +0000\r
+\r
+Reply body\r
+"""
+
+    result = email_client._parse_email_data(raw_email, email_id="1")
+
+    assert result["in_reply_to"] == "<parent@example.test>"
+    assert result["references"] == "<root@example.test> <parent@example.test>"
+    assert "\r" not in result["references"]
+    assert "\n" not in result["references"]
+    assert "\t" not in result["references"]
+
+
+def test_parse_email_returns_none_for_missing_reply_thread_headers(email_client) -> None:
+    raw_email = b"""From: sender@example.test\r
+To: recipient@example.test\r
+Subject: New thread\r
+Date: Mon, 1 Jan 2024 12:00:00 +0000\r
+\r
+Body\r
+"""
+
+    result = email_client._parse_email_data(raw_email, email_id="1")
+
+    assert result["in_reply_to"] is None
+    assert result["references"] is None
+
+
+def test_parse_email_returns_none_for_whitespace_only_reply_thread_headers(email_client) -> None:
+    raw_email = b"""In-Reply-To:   \r
+References:\t \r
+From: sender@example.test\r
+To: recipient@example.test\r
+Subject: Invalid empty thread\r
+Date: Mon, 1 Jan 2024 12:00:00 +0000\r
+\r
+Body\r
+"""
+
+    result = email_client._parse_email_data(raw_email, email_id="1")
+
+    assert result["in_reply_to"] is None
+    assert result["references"] is None
+
+
+def test_parse_email_uses_first_duplicate_thread_header_and_preserves_malformed_observation(email_client) -> None:
+    raw_email = b"""In-Reply-To: <first@example.test>\r
+In-Reply-To: <ignored@example.test>\r
+References: <root@example.test>\x00broken\r
+References: <ignored@example.test>\r
+From: sender@example.test\r
+To: recipient@example.test\r
+Subject: Invalid duplicate thread\r
+Date: Mon, 1 Jan 2024 12:00:00 +0000\r
+\r
+Body\r
+"""
+
+    result = email_client._parse_email_data(raw_email, email_id="1")
+
+    assert result["in_reply_to"] == "<first@example.test>"
+    assert result["references"] == "<root@example.test>\x00broken"
+
+
 class TestSendEmailReplyHeaders:
     @pytest.mark.asyncio
     async def test_send_email_sets_in_reply_to_header(self, email_client):

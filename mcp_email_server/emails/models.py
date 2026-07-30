@@ -45,8 +45,10 @@ class EmailMetadataPageResponse(BaseModel):
 
 
 class EmailBodyResponse(EmailMetadata):
-    """Single email body response - extends EmailMetadata with body content"""
+    """Single email body response with body content and reply-thread headers."""
 
+    in_reply_to: str | None = None
+    references: str | None = None
     body: str
 
 

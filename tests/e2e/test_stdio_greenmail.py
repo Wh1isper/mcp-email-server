@@ -781,6 +781,9 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
     run_id = uuid.uuid4().hex
     sent_subject = f"mcp-e2e-send-{run_id}"
     sent_body = f"Body produced through MCP stdio {run_id}"
+    root_message_id = f"<root-{run_id}@example.test>"
+    parent_message_id = f"<parent-{run_id}@example.test>"
+    references = f"{root_message_id} {parent_message_id}"
     attachment_bytes = b"greenmail attachment roundtrip\x00\xff\n"
     attachment_source = tmp_path / "roundtrip.bin"
     attachment_source.write_bytes(attachment_bytes)
@@ -843,12 +846,16 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                     "subject": sent_subject,
                     "body": sent_body,
                     "attachments": [str(attachment_source)],
+                    "in_reply_to": parent_message_id,
+                    "references": references,
                 },
             )
             assert send_result["result"] == f"Email sent successfully to {BOB[0]} with 1 attachment(s)"
 
             delivered = _wait_for_message(BOB, "INBOX", sent_subject)
             assert sent_body in (delivered.message.get_body(preferencelist=("plain",)).get_content())
+            assert str(delivered.message["In-Reply-To"]) == parent_message_id
+            assert str(delivered.message["References"]) == references
             delivered_attachments = list(delivered.message.iter_attachments())
             assert len(delivered_attachments) == 1
             assert delivered_attachments[0].get_filename() == attachment_source.name
@@ -856,6 +863,18 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
 
             sent_copy = _wait_for_message(ALICE, "Sent", sent_subject)
             assert sent_body in sent_copy.message.get_body(preferencelist=("plain",)).get_content()
+            sent_copy_metadata = await _metadata_for_subject_in_mailbox(session, "alice", "Sent", sent_subject)
+            sent_copy_content = await _call_tool(
+                session,
+                "get_emails_content",
+                {
+                    "account_name": "alice",
+                    "mailbox": "Sent",
+                    "email_ids": [sent_copy_metadata["email_id"]],
+                },
+            )
+            assert sent_copy_content["emails"][0]["in_reply_to"] == parent_message_id
+            assert sent_copy_content["emails"][0]["references"] == references
 
             denied_subject = f"mcp-e2e-denied-send-{run_id}"
             denied_recipient = f"missing-{run_id}@example.test"
@@ -876,8 +895,10 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
             sent_metadata = await _metadata_for_subject(session, "bob", sent_subject)
             assert sent_metadata["sender"].endswith("<alice@example.test>") or sent_metadata["sender"] == ALICE[0]
             assert BOB[0] in sent_metadata["recipients"]
-            # Metadata intentionally fetches headers only; attachment names are populated by the content path.
+            # Metadata intentionally excludes thread headers and attachment names; the full-content path supplies them.
             assert sent_metadata["attachments"] == []
+            assert "in_reply_to" not in sent_metadata
+            assert "references" not in sent_metadata
 
             content = await _call_tool(
                 session,
@@ -887,6 +908,8 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
             assert content["requested_count"] == 1
             assert content["retrieved_count"] == 1
             assert content["failed_ids"] == []
+            assert content["emails"][0]["in_reply_to"] == parent_message_id
+            assert content["emails"][0]["references"] == references
             assert content["emails"][0]["attachments"] == [attachment_source.name]
             assert sent_body in content["emails"][0]["body"]
 

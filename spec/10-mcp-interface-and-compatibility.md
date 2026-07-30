@@ -183,6 +183,14 @@ The current numeric message ID stays a compatibility field without claiming
 UIDVALIDITY provenance. Introducing an epoch-bound identifier is additive or
 versioned, never a silent reinterpretation.
 
+The full-content result additively exposes nullable `in_reply_to` and
+`references` fields. They are optional in the output schema, do not alter tool
+inputs, and are serialized as `null` when absent. Metadata-list output remains
+unchanged, so the addition does not imply indexed or persisted thread headers.
+Exact catalog, direct application, raw stdio, and GreenMail tests cover the new
+result shape. Clients that reject unknown output fields must update their result
+type before consuming this catalog revision.
+
 This delivery adds no `ui://` resources, MCP App metadata, embedded-app CSP, or
 host bridge calls. Any MCP App requires a separate accepted design and security
 model.

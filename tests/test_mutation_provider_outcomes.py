@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from email.mime.text import MIMEText
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -311,6 +313,34 @@ async def test_sent_copy_disconnect_response_is_unknown_and_not_replayed(email_s
 
     assert (result.status, result.mailbox, result.detail) == ("unknown", "Sent", "append-unknown")
     assert imap.append.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    ("mailbox-outcome", "sent-outcome", "mailbox-legacy", "sent-legacy"),
+)
+async def test_all_imap_append_paths_serialize_messages_with_crlf(email_server, operation: str) -> None:
+    client = EmailClient(email_server)
+    message = MIMEText("line one\nline two\r\nline three\rline four", "plain", "us-ascii")
+    message["Message-Id"] = "<line-endings@example.test>"
+    imap = _imap()
+
+    with patch.object(client, "_connect_imap_server", AsyncMock(return_value=imap)):
+        if operation == "mailbox-outcome":
+            await client.append_to_mailbox_with_outcome(message, email_server, "Drafts")
+        elif operation == "sent-outcome":
+            await client.append_to_sent_with_outcome(message, email_server, "Sent")
+        elif operation == "mailbox-legacy":
+            await client.append_to_mailbox(message, email_server, "Drafts")
+        else:
+            await client.append_to_sent(message, email_server, "Sent")
+
+    payload = imap.append.await_args.args[0]
+    assert isinstance(payload, bytes)
+    assert b"\r\n" in payload
+    assert re.search(rb"(?<!\r)\n", payload) is None
+    assert re.search(rb"\r(?!\n)", payload) is None
 
 
 def _smtp() -> AsyncMock:
