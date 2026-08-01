@@ -2,7 +2,6 @@ import asyncio
 import base64
 import binascii
 import email.utils
-import inspect
 import mimetypes
 import re
 import ssl
@@ -455,42 +454,65 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
+def _discard_imap_after_id_failure(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    command: aioimaplib.Command,
+) -> None:
+    """Abort an IMAP stream whose ID response boundary is no longer known."""
+    protocol = imap.protocol
+    if protocol is None:
+        return
+    transport = protocol.transport
+    if transport is not None:
+        with suppress(Exception):
+            if isinstance(transport, asyncio.WriteTransport):
+                transport.abort()
+            else:
+                transport.close()
+    imap.protocol = None
+    pending_command = protocol.pending_async_commands.get(command.untagged_resp_name)
+    if pending_command is command:
+        protocol.pending_async_commands.pop(command.untagged_resp_name, None)
+    command.close(b"IMAP ID connection aborted", "KO")
+
+
 async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
-    """Send IMAP ID command with fallback for strict servers like 163.com.
+    """Send one compact RFC 2971 ID command when the server advertises it.
 
-    aioimaplib's id() method sends ID command with spaces between parentheses
-    and content (e.g., 'ID ( "name" "value" )'), which some strict IMAP servers
-    like 163.com reject with 'BAD Parse command error'.
-
-    This function first tries the standard id() method, and if it fails,
-    falls back to sending a raw command with correct format.
+    aioimaplib formats ID lists with spaces immediately inside the parentheses,
+    which the RFC 2971 grammar does not permit and strict servers such as
+    163.com reject. Send the conformant compact form directly instead of first
+    issuing a malformed command and then retrying it.
 
     See: https://github.com/Wh1isper/mcp-email-server/issues/85
+    See: https://github.com/Wh1isper/mcp-email-server/issues/217
     """
+    protocol = imap.protocol
+    if protocol is None:
+        logger.warning("IMAP ID command failed: IMAP protocol is not connected")
+        return
+    if "ID" not in _imap_capabilities(imap):
+        return
+    command = aioimaplib.Command(
+        "ID",
+        protocol.new_tag(),
+        '("name" "mcp-email-server" "version" "1.0.0")',
+        timeout=imap.timeout,
+    )
     try:
-        response = await imap.id(name="mcp-email-server", version="1.0.0")
-        if response.result != "OK":
-            # Fallback for strict servers (e.g., 163.com)
-            # Send raw command with correct parenthesis format
-            protocol = imap.protocol
-            if protocol is None:
-                logger.warning("IMAP ID command failed: IMAP protocol is not connected")
-                return
-            new_tag = protocol.new_tag()
-            # aioimaplib 2.x returns str; retain compatibility with releases or
-            # test doubles that expose an awaitable tag generator.
-            if inspect.isawaitable(new_tag):
-                new_tag = await new_tag
-            await protocol.execute(
-                aioimaplib.Command(
-                    "ID",
-                    new_tag,
-                    '("name" "mcp-email-server" "version" "1.0.0")',
-                )
-            )
+        response = await protocol.execute(command)
     except asyncio.CancelledError:
+        _discard_imap_after_id_failure(imap, command)
         raise
+    except aioimaplib.CommandTimeout:
+        _discard_imap_after_id_failure(imap, command)
+        logger.warning("IMAP ID command timed out")
+        raise TimeoutError("IMAP ID command timed out") from None
     except Exception:
+        _discard_imap_after_id_failure(imap, command)
+        logger.warning("IMAP ID command failed")
+        raise ImapTransportError("IMAP ID command failed (TRANSPORT)") from None
+    if _imap_status(response) != "OK":
         logger.warning("IMAP ID command failed")
 
 

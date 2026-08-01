@@ -340,6 +340,20 @@ sent_folder_name = "INBOX.Sent"
 Set `save_to_sent = false` if the provider already stores sent messages and an
 additional append is unnecessary.
 
+## IMAP reports a malformed `ID` command
+
+`mcp-email-server` sends at most one compact RFC 2971 `ID` command after login,
+and only when the IMAP server advertises the `ID` capability. This form supports
+strict parsers such as NetEase while avoiding an optional command on providers
+that do not implement the extension.
+
+If logs still show `BAD malformed command`, `IMAP ID command failed`, or a
+subsequent `provider_failure`, first upgrade to a release containing the latest
+IMAP compatibility fixes. Then run `mcp-email-server account test ACCOUNT
+incoming` from a visible terminal. If it still fails, report the provider, server
+hostname, application version, and sanitized IMAP command/response sequence.
+Never include the username, password, message data, or authentication payload.
+
 ## IMAP or SMTP TLS fails
 
 Verify that the port and TLS mode match the provider:
