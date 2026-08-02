@@ -294,6 +294,8 @@ class EmailSettings(AccountAttributes):
         smtp_verify_ssl: bool = True,
         smtp_user_name: str | None = None,
         smtp_password: str | None = None,
+        smtp_user_agent: str | None = None,
+        smtp_x_mailer: str | None = None,
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
     ) -> EmailSettings:
@@ -327,6 +329,8 @@ class EmailSettings(AccountAttributes):
                     use_ssl=smtp_ssl,
                     start_ssl=smtp_start_ssl,
                     verify_ssl=smtp_verify_ssl,
+                    **({"smtp_user_agent": smtp_user_agent} if smtp_user_agent is not None else {}),
+                    **({"smtp_x_mailer": smtp_x_mailer} if smtp_x_mailer is not None else {}),
                 )
                 if smtp_host
                 else None
@@ -355,6 +359,8 @@ class EmailSettings(AccountAttributes):
         - MCP_EMAIL_SERVER_SMTP_SSL (default: true)
         - MCP_EMAIL_SERVER_SMTP_START_SSL (default: false)
         - MCP_EMAIL_SERVER_SMTP_VERIFY_SSL (default: true)
+        - MCP_EMAIL_SERVER_SMTP_USER_AGENT (default: "mcp-email-server/1.0")
+        - MCP_EMAIL_SERVER_SMTP_X_MAILER (default: "mcp-email-server")
         - MCP_EMAIL_SERVER_SAVE_TO_SENT (default: true)
         - MCP_EMAIL_SERVER_SENT_FOLDER_NAME (default: auto-detect)
         """
@@ -396,6 +402,8 @@ class EmailSettings(AccountAttributes):
                 smtp_verify_ssl=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_SMTP_VERIFY_SSL"), True),
                 smtp_user_name=os.getenv("MCP_EMAIL_SERVER_SMTP_USER_NAME", user_name),
                 smtp_password=os.getenv("MCP_EMAIL_SERVER_SMTP_PASSWORD", password),
+                smtp_user_agent=os.getenv("MCP_EMAIL_SERVER_SMTP_USER_AGENT"),
+                smtp_x_mailer=os.getenv("MCP_EMAIL_SERVER_SMTP_X_MAILER"),
                 imap_user_name=os.getenv("MCP_EMAIL_SERVER_IMAP_USER_NAME", user_name),
                 imap_password=os.getenv("MCP_EMAIL_SERVER_IMAP_PASSWORD", password),
                 save_to_sent=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),

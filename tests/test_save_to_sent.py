@@ -176,6 +176,34 @@ class TestEmailSettingsFromEnv:
         assert result is not None
         assert result.sent_folder_name == "INBOX.Sent"
 
+    def test_smtp_user_agent_and_x_mailer_from_env(self, monkeypatch):
+        """Test MCP_EMAIL_SERVER_SMTP_USER_AGENT and MCP_EMAIL_SERVER_SMTP_X_MAILER."""
+        monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "test@example.com")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "pass")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.test.com")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_HOST", "smtp.test.com")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_USER_AGENT", "MyApp/2.0")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_X_MAILER", "MyMailer")
+
+        result = EmailSettings.from_env()
+        assert result is not None
+        assert result.outgoing is not None
+        assert result.outgoing.smtp_user_agent == "MyApp/2.0"
+        assert result.outgoing.smtp_x_mailer == "MyMailer"
+
+    def test_smtp_user_agent_and_x_mailer_defaults_when_unset(self, monkeypatch):
+        """SMTP user agent / x-mailer fall back to their defaults when not set."""
+        monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "test@example.com")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "pass")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "imap.test.com")
+        monkeypatch.setenv("MCP_EMAIL_SERVER_SMTP_HOST", "smtp.test.com")
+
+        result = EmailSettings.from_env()
+        assert result is not None
+        assert result.outgoing is not None
+        assert result.outgoing.smtp_user_agent == "mcp-email-server/1.0"
+        assert result.outgoing.smtp_x_mailer == "mcp-email-server"
+
 
 class TestClassicEmailHandlerSaveToSent:
     """Tests for ClassicEmailHandler save_to_sent functionality."""
