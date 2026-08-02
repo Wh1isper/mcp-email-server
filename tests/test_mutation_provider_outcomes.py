@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import re
 from email.mime.text import MIMEText
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiosmtplib.errors import SMTPRecipientRefused, SMTPResponseException
+from loguru import logger
 
 from mcp_email_server.application.mutations import FlagOperation, MutableEmailFlag
 from mcp_email_server.emails.classic import EmailClient
@@ -632,3 +634,116 @@ def test_attachment_read_enforces_total_limit_at_compose_time(email_server, tmp_
                 "body",
                 attachments=[str(first), str(second)],
             )
+
+
+# ---------------------------------------------------------------------------
+# SMTP logging tests
+# ---------------------------------------------------------------------------
+
+
+class TestSmtpLogging:
+    """Verify SMTP-phase warning/debug logging via Loguru."""
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _capture_log(level: str = "WARNING") -> tuple[io.StringIO, int]:
+        sink = io.StringIO()
+        sid = logger.add(sink, format="{level}:{message}", level=level)
+        return sink, sid
+
+    @staticmethod
+    def _release(sid: int) -> None:
+        logger.remove(sid)
+
+    # ------------------------------------------------------------------
+    # WARNING tests
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_smtp_mail_rejection_logs_warning(self, email_server) -> None:
+        client = EmailClient(email_server, sender="Sender <sender@example.test>")
+        smtp = _smtp()
+        smtp.mail.side_effect = SMTPResponseException(554, b"Reject due to policy restrictions")
+
+        sink, sid = self._capture_log("WARNING")
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+        self._release(sid)
+
+        captured = sink.getvalue()
+        assert (
+            "SMTP MAIL rejected from=sender@example.test code=554 message=Reject due to policy restrictions" in captured
+        )
+
+    @pytest.mark.asyncio
+    async def test_smtp_rcpt_rejection_logs_warning(self, email_server) -> None:
+        client = EmailClient(email_server, sender="Sender <sender@example.test>")
+        smtp = _smtp()
+        smtp.rcpt.side_effect = SMTPRecipientRefused(550, b"Mailbox unavailable", "bad@example.test")
+
+        sink, sid = self._capture_log("WARNING")
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            await client.send_email_with_outcome(["bad@example.test"], "Subject", "body")
+        self._release(sid)
+
+        assert "SMTP RCPT rejected bad@example.test: code=550 message=Mailbox unavailable" in sink.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_smtp_data_rejection_logs_warning(self, email_server) -> None:
+        client = EmailClient(email_server, sender="Sender <sender@example.test>")
+        smtp = _smtp()
+        smtp.data.side_effect = SMTPResponseException(554, b"Reject due to policy restrictions")
+
+        sink, sid = self._capture_log("WARNING")
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+        self._release(sid)
+
+        assert "SMTP DATA rejected: code=554 message=Reject due to policy restrictions" in sink.getvalue()
+
+    @pytest.mark.asyncio
+    async def test_smtp_transport_loss_logs_warning(self, email_server) -> None:
+        client = EmailClient(email_server, sender="Sender <sender@example.test>")
+        smtp = _smtp()
+        smtp.data.side_effect = ConnectionError("connection reset")
+
+        sink, sid = self._capture_log("WARNING")
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+        self._release(sid)
+
+        captured = sink.getvalue()
+        assert "SMTP DATA unknown error: ConnectionError: connection reset" in captured
+
+    @pytest.mark.asyncio
+    async def test_smtp_connection_failure_logs_warning(self, email_server) -> None:
+        client = EmailClient(email_server, sender="Sender <sender@example.test>")
+        smtp = _smtp()
+        smtp.login.side_effect = SMTPResponseException(535, b"Authentication failed")
+
+        sink, sid = self._capture_log("WARNING")
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            with pytest.raises(SMTPResponseException):
+                await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+        self._release(sid)
+
+        captured = sink.getvalue()
+        assert "SMTP connection/login failed for test_user: code=535 message=Authentication failed" in captured
+
+    @pytest.mark.asyncio
+    async def test_smtp_debug_logs_message_bytes(self, email_server) -> None:
+        client = EmailClient(email_server, sender="Sender <sender@example.test>")
+        smtp = _smtp()
+
+        sink, sid = self._capture_log("DEBUG")
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+        self._release(sid)
+
+        captured = sink.getvalue()
+        assert "SMTP outgoing message:" in captured
+        assert "Subject: Subject" in captured
+        assert "To: one@example.test" in captured
