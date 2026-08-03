@@ -235,6 +235,8 @@ async def test_artifact_writer_writes_only_explicit_regular_file(tmp_path: Path)
     destination = tmp_path / "downloads" / "document.pdf"
     payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"document")
 
+    await LocalArtifactWriter().preflight(str(destination))
+    assert not destination.exists()
     saved_path = await LocalArtifactWriter().write(str(destination), payload)
 
     assert saved_path == destination.as_posix()
@@ -248,6 +250,8 @@ async def test_artifact_writer_fails_closed_without_pinned_traversal(monkeypatch
     destination = tmp_path / "download.txt"
     monkeypatch.setattr("mcp_email_server.adapters.reads._SECURE_ATTACHMENT_WRITES_SUPPORTED", False)
 
+    with pytest.raises(PermissionError, match="platform cannot enforce"):
+        await LocalArtifactWriter().preflight(str(destination))
     with pytest.raises(PermissionError, match="platform cannot enforce"):
         await LocalArtifactWriter().write(
             str(destination),
@@ -267,6 +271,8 @@ async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp
     except OSError:
         pytest.skip("symlinks unavailable")
 
+    with pytest.raises(PermissionError):
+        await LocalArtifactWriter().preflight(str(destination))
     with pytest.raises(PermissionError):
         await LocalArtifactWriter().write(
             str(destination),

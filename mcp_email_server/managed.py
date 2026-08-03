@@ -259,7 +259,7 @@ SecurityMetadata = os.stat_result | WindowsFileIdentity
 
 
 def _identity_key(metadata: SecurityMetadata) -> tuple[int, int]:
-    if isinstance(metadata, WindowsFileIdentity):
+    if isinstance(metadata, WindowsFileIdentity):  # pragma: no cover - native Windows CI
         return metadata.key
     return (metadata.st_dev, metadata.st_ino)
 
@@ -273,7 +273,7 @@ def _require_secure_catalog_files() -> None:
 
 def _assert_private_directory(path: Path) -> None:
     _require_secure_catalog_files()
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             validate_private_directory(path)
         except WindowsSecurityError as exc:
@@ -303,7 +303,7 @@ def _assert_private_file(
     label: str = "Managed catalog file",
     allow_disappearing: bool = False,
 ) -> SecurityMetadata:
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             return validate_private_file(path)
         except FileNotFoundError:
@@ -332,7 +332,7 @@ def _assert_private_file(
 
 def _prepare_new_file(path: Path) -> None:
     _require_secure_catalog_files()
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             create_private_file(path)
         except FileExistsError as exc:
@@ -382,31 +382,31 @@ def _prevalidate_sidecars_before_lock(path: Path) -> None:
 
 
 def _harden_windows_sidecars(path: Path) -> None:
-    if os.name != "nt":
-        return
-    for suffix in ("-wal", "-shm"):
-        sidecar = Path(f"{path}{suffix}")
-        try:
-            harden_private_file(sidecar)
-        except FileNotFoundError:
-            continue
-        except WindowsSecurityError as exc:
-            raise ManagedCatalogSecurityError("New managed catalog sidecar could not be secured on Windows") from exc
+    if os.name == "nt":  # pragma: no cover - native Windows CI
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{path}{suffix}")
+            try:
+                harden_private_file(sidecar)
+            except FileNotFoundError:
+                continue
+            except WindowsSecurityError as exc:
+                raise ManagedCatalogSecurityError(
+                    "New managed catalog sidecar could not be secured on Windows"
+                ) from exc
 
 
 def _reconcile_windows_sidecars(path: Path) -> None:
     """Best-effort post-commit reconciliation; the next open still fails closed."""
-    if os.name != "nt":
-        return
-    try:
-        with _application_path_lock(path):
-            _harden_windows_sidecars(path)
-            _validate_sidecars(path)
-    except ManagedCatalogError:
-        # The transaction may already be committed. Do not invite an unsafe
-        # retry by reporting a lock/reconciliation race as an operation failure.
-        # Every subsequent open repeats strict pre-validation before SQLite.
-        logger.warning("Deferred Windows managed-catalog sidecar reconciliation")
+    if os.name == "nt":  # pragma: no cover - native Windows CI
+        try:
+            with _application_path_lock(path):
+                _harden_windows_sidecars(path)
+                _validate_sidecars(path)
+        except ManagedCatalogError:
+            # The transaction may already be committed. Do not invite an unsafe
+            # retry by reporting a lock/reconciliation race as an operation failure.
+            # Every subsequent open repeats strict pre-validation before SQLite.
+            logger.warning("Deferred Windows managed-catalog sidecar reconciliation")
 
 
 def _validate_existing_path(path: Path) -> SecurityMetadata:
@@ -422,7 +422,7 @@ def _lock_path(path: Path) -> Path:
 def _application_path_lock(path: Path) -> Iterator[None]:
     """Serialize security-sensitive open/setup without following the lock path."""
     lock_path = _lock_path(path)
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             with secure_file_lock(lock_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000):
                 yield

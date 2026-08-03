@@ -305,7 +305,7 @@ class LocalArtifactWriter:
                 "Attachment download is unavailable because this platform cannot enforce secure destination traversal"
             )
         try:
-            if os.name == "nt":
+            if os.name == "nt":  # pragma: no cover - native Windows CI
                 preflight_artifact_destination(path)
                 return
             parent_descriptor = LocalArtifactWriter._open_posix_parent(path)
@@ -329,7 +329,7 @@ class LocalArtifactWriter:
                 "Attachment download is unavailable because this platform cannot enforce secure destination traversal"
             )
         try:
-            if os.name == "nt":
+            if os.name == "nt":  # pragma: no cover - native Windows CI
                 write_attachment(path, payload.content)
             else:
                 LocalArtifactWriter._write_posix(path, payload.content)

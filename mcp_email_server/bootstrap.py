@@ -98,7 +98,7 @@ def _require_secure_bootstrap_files() -> None:
 
 def _assert_owner_only_directory(path: Path, *, label: str) -> None:
     _require_secure_bootstrap_files()
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             validate_private_directory(path)
         except WindowsSecurityError as exc:
@@ -122,7 +122,9 @@ def _assert_owner_only_directory(path: Path, *, label: str) -> None:
             raise BootstrapError(f"{label} ancestor permissions are unsafe: {candidate}")
 
 
-def _windows_safe_file_exists(path: Path, *, private: bool) -> bool:
+def _windows_safe_file_exists(  # pragma: no cover - native Windows CI
+    path: Path, *, private: bool
+) -> bool:
     try:
         return safe_regular_file_exists(path, private=private, private_parent=False)
     except WindowsSecurityError as exc:
@@ -131,7 +133,7 @@ def _windows_safe_file_exists(path: Path, *, private: bool) -> bool:
 
 def _assert_owner_only_file(path: Path, *, label: str) -> None:
     _require_secure_bootstrap_files()
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             validate_private_file(path)
         except WindowsSecurityError as exc:
@@ -154,12 +156,12 @@ def read_bootstrap(  # noqa: C901
 ) -> Bootstrap:
     source_path = configured_path() if path is None else Path(os.path.abspath(path.expanduser()))
     authority_path = bootstrap_path(source_path)
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         sidecar_exists = _windows_safe_file_exists(authority_path, private=True)
     else:
         sidecar_exists = authority_path.exists() or authority_path.is_symlink()
     if not sidecar_exists:
-        if os.name == "nt":
+        if os.name == "nt":  # pragma: no cover - native Windows CI
             source_exists = _windows_safe_file_exists(source_path, private=False)
         else:
             source_exists = source_path.exists() or source_path.is_symlink()
@@ -179,7 +181,7 @@ def read_bootstrap(  # noqa: C901
     else:
         if os.name != "nt" and (authority_path.is_symlink() or not authority_path.is_file()):
             raise BootstrapError(f"Bootstrap configuration must be a regular file and not a symlink: {authority_path}")
-        if os.name == "nt":
+        if os.name == "nt":  # pragma: no cover - native Windows CI
             _assert_owner_only_directory(authority_path.parent, label="Bootstrap parent")
             _assert_owner_only_file(authority_path, label="Bootstrap configuration")
         try:
@@ -271,7 +273,7 @@ def assert_legacy_writable(operation: str, path: Path | None = None) -> None:
 
 def _ensure_private_parent(path: Path) -> None:
     _require_secure_bootstrap_files()
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             ensure_private_parent(path)
         except WindowsSecurityError as exc:
@@ -284,7 +286,9 @@ def _ensure_private_parent(path: Path) -> None:
 
 
 @contextlib.contextmanager
-def _windows_bootstrap_lock(lock_path: Path) -> Iterator[None]:
+def _windows_bootstrap_lock(  # pragma: no cover - native Windows CI
+    lock_path: Path,
+) -> Iterator[None]:
     try:
         with secure_file_lock(lock_path, timeout=BOOTSTRAP_LOCK_TIMEOUT_SECONDS):
             yield
@@ -331,8 +335,12 @@ def _posix_bootstrap_lock(lock_path: Path) -> Iterator[None]:
 def bootstrap_file_lock(path: Path, *, require_secure_parent: bool = True) -> Iterator[None]:
     source_path = Path(os.path.abspath(path.expanduser()))
     authority_path = bootstrap_path(source_path)
-    if not require_secure_parent and (os.name == "nt" or not _SECURE_BOOTSTRAP_FILES_SUPPORTED):
+    if not require_secure_parent and os.name == "nt":  # pragma: no cover - native Windows CI
         # Historical legacy-only TOML writes do not establish managed authority.
+        with _LEGACY_BOOTSTRAP_PROCESS_LOCK:
+            yield
+        return
+    if not require_secure_parent and not _SECURE_BOOTSTRAP_FILES_SUPPORTED:
         with _LEGACY_BOOTSTRAP_PROCESS_LOCK:
             yield
         return
@@ -348,7 +356,7 @@ def bootstrap_file_lock(path: Path, *, require_secure_parent: bool = True) -> It
 
 def _atomic_write(path: Path, content: str) -> None:
     _ensure_private_parent(path)
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover - native Windows CI
         try:
             atomic_write_private(path, content.encode("utf-8"), prefix=".mcp-email-bootstrap-")
         except WindowsSecurityError as exc:

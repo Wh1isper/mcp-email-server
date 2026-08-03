@@ -37,7 +37,7 @@ SecurityMetadata = os.stat_result | WindowsFileIdentity
 
 
 def _metadata_key(metadata: SecurityMetadata | object) -> tuple[int, int]:
-    if isinstance(metadata, WindowsFileIdentity):
+    if isinstance(metadata, WindowsFileIdentity):  # pragma: no cover - native Windows CI
         return metadata.key
     device = getattr(metadata, "st_dev", None)
     inode = getattr(metadata, "st_ino", None)
@@ -74,7 +74,7 @@ class LocalLargeResultWriter:
                 "Oversized local results are unavailable because this platform cannot enforce owner-only storage"
             )
         if self._root is None:
-            if os.name == "nt":
+            if os.name == "nt":  # pragma: no cover - native Windows CI
                 try:
                     root, windows_identity = create_private_temp_directory()
                 except WindowsSecurityError as exc:
@@ -112,7 +112,7 @@ class LocalLargeResultWriter:
 
     @staticmethod
     def _validate_root(path: Path) -> SecurityMetadata:
-        if os.name == "nt":
+        if os.name == "nt":  # pragma: no cover - native Windows CI
             try:
                 return validate_private_directory(path)
             except WindowsSecurityError as exc:
@@ -126,7 +126,7 @@ class LocalLargeResultWriter:
 
     @staticmethod
     def _validate_file(path: Path, *, expected_size: int) -> SecurityMetadata:
-        if os.name == "nt":
+        if os.name == "nt":  # pragma: no cover - native Windows CI
             try:
                 return validate_private_file(path, expected_size=expected_size)
             except WindowsSecurityError as exc:
@@ -161,16 +161,16 @@ class LocalLargeResultWriter:
 
     @staticmethod
     def _write_platform_artifact(path: Path, content: bytes) -> SecurityMetadata:
-        if os.name != "nt":
-            return LocalLargeResultWriter._write_posix_artifact(path, content)
-        try:
-            return write_private_new(path, content)
-        except WindowsSecurityError as exc:
-            raise RuntimeError("Large-result artifact could not be written safely on Windows") from exc
+        if os.name == "nt":  # pragma: no cover - native Windows CI
+            try:
+                return write_private_new(path, content)
+            except WindowsSecurityError as exc:
+                raise RuntimeError("Large-result artifact could not be written safely on Windows") from exc
+        return LocalLargeResultWriter._write_posix_artifact(path, content)
 
     @staticmethod
     def _remove_identity_checked(path: Path, metadata: SecurityMetadata) -> None:
-        if isinstance(metadata, WindowsFileIdentity):
+        if isinstance(metadata, WindowsFileIdentity):  # pragma: no cover - native Windows CI
             remove_private_file(path, metadata)
         else:
             with contextlib.suppress(OSError):
@@ -207,7 +207,7 @@ class LocalLargeResultWriter:
     def _remove_artifacts(self) -> bool:
         removed_all = True
         for path, expected in self._paths.items():
-            if isinstance(expected, WindowsFileIdentity):
+            if isinstance(expected, WindowsFileIdentity):  # pragma: no cover - native Windows CI
                 try:
                     checked = validate_private_file(path, expected_size=expected.size)
                 except FileNotFoundError:
@@ -231,21 +231,21 @@ class LocalLargeResultWriter:
         return removed_all
 
     def _release_windows_root_lock(self) -> None:
-        if self._root_windows_lock is not None:
+        if self._root_windows_lock is not None:  # pragma: no cover - native Windows CI
             self._root_windows_lock.__exit__(None, None, None)
             self._root_windows_lock = None
 
     def _remove_root(self) -> None:
         if self._root is None:
             return
-        if os.name != "nt" or self._root_windows_identity is None:
-            with contextlib.suppress(OSError):
-                self._root.rmdir()
+        if os.name == "nt" and self._root_windows_identity is not None:  # pragma: no cover - native Windows CI
+            self._release_windows_root_lock()
+            if self._root_windows_lock_identity is not None:
+                remove_private_file(self._root / ".owner.lock", self._root_windows_lock_identity)
+            remove_private_directory(self._root, self._root_windows_identity)
             return
-        self._release_windows_root_lock()
-        if self._root_windows_lock_identity is not None:
-            remove_private_file(self._root / ".owner.lock", self._root_windows_lock_identity)
-        remove_private_directory(self._root, self._root_windows_identity)
+        with contextlib.suppress(OSError):
+            self._root.rmdir()
 
     def _close(self) -> None:
         with self._lock:

@@ -858,6 +858,38 @@ async def test_windows_large_result_writer_round_trip(tmp_path: Path) -> None:
     assert not artifact.exists()
 
 
+@pytest.mark.asyncio
+async def test_windows_large_result_identity_race_preserves_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _private_root(tmp_path)
+    writer = LocalLargeResultWriter()
+    original_validate = writer._validate_file
+    replacement = b"second"
+    artifact: Path | None = None
+
+    def replace_before_validation(path: Path, *, expected_size: int):
+        nonlocal artifact
+        assert expected_size == len(replacement)
+        atomic_write_private(path, replacement)
+        artifact = path
+        return original_validate(path, expected_size=expected_size)
+
+    monkeypatch.setattr(writer, "_validate_file", replace_before_validation)
+
+    with pytest.raises(RuntimeError, match="artifact identity changed"):
+        await writer.write(prefix="email-content", content=b"secret")
+
+    assert artifact is not None
+    assert artifact.read_bytes() == replacement
+    replacement_identity = validate_private_file(artifact, expected_size=len(replacement))
+    assert replacement_identity.size == len(replacement)
+    artifact.unlink()
+    await writer.aclose()
+    assert not artifact.parent.exists()
+
+
 def test_windows_managed_and_bootstrap_probes_reject_network_paths_and_reparse_parents(tmp_path: Path) -> None:
     unc_catalog = Path(r"\\127.0.0.1\unreachable-share\catalog.sqlite3")
     with pytest.raises(ManagedCatalogSecurityError):

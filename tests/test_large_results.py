@@ -46,6 +46,11 @@ def _content_response(body: str) -> EmailContentBatchResponse:
     )
 
 
+def test_large_result_metadata_requires_stable_identity() -> None:
+    with pytest.raises(TypeError, match="stable identity"):
+        large_results_module._metadata_key(object())
+
+
 @pytest.mark.asyncio
 async def test_large_result_writer_fails_closed_lazily_without_owner_only_storage(monkeypatch) -> None:
     monkeypatch.setattr("mcp_email_server.large_results._SECURE_LOCAL_RESULTS_SUPPORTED", False)
