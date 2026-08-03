@@ -41,19 +41,28 @@ from keyring.errors import PasswordDeleteError
 from mcp_email_server import keyring_store
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings, delete_settings
 
-if os.name == "nt":
 
-    @pytest.fixture
-    def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
-        from mcp_email_server.windows_security import ensure_private_parent
+def _harden_windows_test_directory(path: Path) -> None:
+    if os.name != "nt":
+        return
+    from mcp_email_server.windows_security import (
+        _apply_private_security,
+        _close,
+        _open_path,
+        validate_private_directory,
+    )
 
-        root = tmp_path_factory.mktemp("case") / "private"
-        ensure_private_parent(root / "placeholder")
-        return root
+    handle = _open_path(path, directory=True, security_write=True)
+    try:
+        _apply_private_security(handle)
+    finally:
+        _close(handle)
+    validate_private_directory(path)
 
 
 @pytest.fixture(autouse=True)
 def patch_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _harden_windows_test_directory(tmp_path)
     delete_settings()
     yield
     _TEST_CONFIG_PATH.with_name("config.bootstrap.toml.lock").unlink(missing_ok=True)
