@@ -1,6 +1,7 @@
 """Tests for the save_to_mailbox feature — IMAP APPEND to arbitrary folders."""
 
 from email.mime.text import MIMEText
+from email.policy import SMTP
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -131,8 +132,8 @@ class TestComposeMessage:
         assert msg["From"] == "Test User <test@example.com>"
         assert msg["Date"] is not None
         assert msg["Message-Id"] is not None
-        assert msg["MIME-Version"] == "1.0"
-        assert msg["User-Agent"] == "mcp-email-server/1.0"
+        assert msg.get_all("MIME-Version") == ["1.0"]
+        assert msg["User-Agent"] == "mcp-email-server"
         assert msg["X-Mailer"] == "mcp-email-server"
 
     def test_html_message(self, email_client):
@@ -183,37 +184,6 @@ class TestComposeMessage:
         # Should not raise; subject is encoded via Header
         assert msg["Subject"] is not None
 
-    def test_rfc_compliance_headers(self, email_client):
-        """Verify RFC 2045 MIME-Version and RFC 5322 User-Agent/X-Mailer headers."""
-        msg = email_client.compose_message(
-            recipients=["r@example.com"],
-            subject="RFC",
-            body="test",
-        )
-        assert msg["MIME-Version"] == "1.0"
-        assert msg["User-Agent"] == "mcp-email-server/1.0"
-        assert msg["X-Mailer"] == "mcp-email-server"
-
-    def test_rfc_compliance_headers_custom_values(self, outgoing_server):
-        """Verify custom User-Agent and X-Mailer values."""
-        server = EmailServer(
-            user_name="test_user",
-            password="test_password",
-            host="smtp.example.com",
-            port=465,
-            use_ssl=True,
-            smtp_user_agent="MyApp/2.0",
-            smtp_x_mailer="MyMailer",
-        )
-        client = EmailClient(server, sender="User <user@example.com>")
-        msg = client.compose_message(
-            recipients=["r@example.com"],
-            subject="Custom",
-            body="test",
-        )
-        assert msg["User-Agent"] == "MyApp/2.0"
-        assert msg["X-Mailer"] == "MyMailer"
-
     def test_with_attachments(self, email_client, tmp_path):
         test_file = tmp_path / "doc.txt"
         test_file.write_text("file content")
@@ -224,6 +194,35 @@ class TestComposeMessage:
             attachments=[str(test_file)],
         )
         assert msg.get_content_type() == "multipart/mixed"
+
+
+@pytest.mark.parametrize(
+    ("html", "with_attachment"),
+    [(False, False), (True, False), (False, True)],
+    ids=["plain", "html", "attachment"],
+)
+def test_compose_message_serializes_compatibility_headers_once(
+    email_client, tmp_path, *, html: bool, with_attachment: bool
+) -> None:
+    attachments: list[str] | None = None
+    if with_attachment:
+        attachment = tmp_path / "document.txt"
+        attachment.write_text("attachment content")
+        attachments = [str(attachment)]
+
+    message = email_client.compose_message(
+        recipients=["recipient@example.com"],
+        subject="Compatibility",
+        body="message body",
+        html=html,
+        attachments=attachments,
+    )
+    serialized_headers = message.as_bytes(policy=SMTP).partition(b"\r\n\r\n")[0].split(b"\r\n")
+
+    assert message.get_all("MIME-Version") == ["1.0"]
+    assert serialized_headers.count(b"MIME-Version: 1.0") == 1
+    assert serialized_headers.count(b"User-Agent: mcp-email-server") == 1
+    assert serialized_headers.count(b"X-Mailer: mcp-email-server") == 1
 
 
 def test_compose_message_preserves_attachment_mime_main_type(email_client, tmp_path) -> None:
