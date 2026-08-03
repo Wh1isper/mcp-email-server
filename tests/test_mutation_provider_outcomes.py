@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import ssl
+from collections.abc import Iterator
+from contextlib import contextmanager
 from email.mime.text import MIMEText
 from types import SimpleNamespace
 from typing import cast
@@ -13,7 +16,7 @@ from aiosmtplib.errors import SMTPNotSupported, SMTPRecipientRefused, SMTPRespon
 from loguru import logger
 
 from mcp_email_server.application.mutations import FlagOperation, MutableEmailFlag
-from mcp_email_server.emails.classic import EmailClient
+from mcp_email_server.emails.classic import EmailClient, _smtp_error_category
 
 
 def _imap(*, capabilities: tuple[str, ...] = ("IMAP4rev1", "UIDPLUS")) -> AsyncMock:
@@ -636,208 +639,292 @@ def test_attachment_read_enforces_total_limit_at_compose_time(email_server, tmp_
             )
 
 
-# ---------------------------------------------------------------------------
-# SMTP logging tests
-# ---------------------------------------------------------------------------
+_PRIVATE_SENDER = "private-sender@example.test"
+_PRIVATE_RECIPIENT = "private-recipient@example.test"
+_PRIVATE_BCC = "private-bcc@example.test"
+_PRIVATE_SUBJECT = "Private subject"
+_PRIVATE_BODY = "Private body"
 
 
-class TestSmtpLogging:
-    """Verify SMTP-phase warning/debug logging via Loguru."""
+@contextmanager
+def _captured_smtp_logs(level: str = "WARNING") -> Iterator[io.StringIO]:
+    sink = io.StringIO()
+    sink_id = logger.add(sink, format="{level}:{message}", level=level)
+    try:
+        yield sink
+    finally:
+        logger.remove(sink_id)
 
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _capture_log(level: str = "WARNING") -> tuple[io.StringIO, int]:
-        sink = io.StringIO()
-        sid = logger.add(sink, format="{level}:{message}", level=level)
-        return sink, sid
+def _assert_smtp_log_redacted(captured: str, *extra: str) -> None:
+    sensitive_values = (
+        _PRIVATE_SENDER,
+        _PRIVATE_RECIPIENT,
+        _PRIVATE_BCC,
+        _PRIVATE_SUBJECT,
+        _PRIVATE_BODY,
+        "test_user",
+        "test_password",
+        "test.example.com",
+        *extra,
+    )
+    for value in sensitive_values:
+        assert value not in captured
 
-    @staticmethod
-    def _release(sid: int) -> None:
-        logger.remove(sid)
 
-    # ------------------------------------------------------------------
-    # WARNING tests
-    # ------------------------------------------------------------------
+def _private_smtp_client(email_server) -> EmailClient:
+    return EmailClient(email_server, sender=f"Private Sender <{_PRIVATE_SENDER}>")
 
-    @pytest.mark.asyncio
-    async def test_smtp_mail_rejection_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.mail.side_effect = SMTPResponseException(554, b"Reject due to policy restrictions")
 
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
+async def _send_private_message(client: EmailClient):
+    return await client.send_email_with_outcome([_PRIVATE_RECIPIENT], _PRIVATE_SUBJECT, _PRIVATE_BODY)
 
-        captured = sink.getvalue()
-        assert (
-            "SMTP MAIL rejected from=sender@example.test code=554 message=Reject due to policy restrictions" in captured
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError("private timeout detail"), "timeout"),
+        (ConnectionError("private connection detail"), "connection"),
+        (ssl.SSLError("private TLS detail"), "tls"),
+        (OSError("private I/O detail"), "io"),
+        (RuntimeError("private unexpected detail"), "unexpected"),
+    ],
+)
+def test_smtp_error_category_is_bounded(error: Exception, expected: str) -> None:
+    assert _smtp_error_category(error) == expected
+
+
+@pytest.mark.parametrize(
+    ("smtp_method", "error", "expected_log", "expected_detail"),
+    [
+        (
+            "mail",
+            SMTPResponseException(554, b"private MAIL detail"),
+            "mail outcome=rejected code=554",
+            "smtp-mail-rejected",
+        ),
+        ("mail", SMTPNotSupported("private extension detail"), "mail outcome=unsupported", "smtp-mail-rejected"),
+        (
+            "mail",
+            ConnectionError("private MAIL transport detail"),
+            "mail outcome=unavailable category=connection",
+            "smtp-mail-unavailable",
+        ),
+        (
+            "rcpt",
+            SMTPRecipientRefused(550, b"private RCPT detail", _PRIVATE_RECIPIENT),
+            "rcpt outcome=rejected code=550",
+            "smtp-recipient-rejected",
+        ),
+        (
+            "rcpt",
+            ConnectionError("private RCPT transport detail"),
+            "rcpt outcome=unavailable category=connection",
+            "smtp-session-lost-before-data",
+        ),
+        (
+            "data",
+            SMTPResponseException(554, b"private DATA detail"),
+            "data outcome=rejected code=554",
+            "smtp-data-rejected",
+        ),
+        (
+            "data",
+            ConnectionError("private DATA transport detail"),
+            "data outcome=unknown category=connection",
+            "smtp-data-unknown",
+        ),
+    ],
+    ids=[
+        "mail-rejected",
+        "mail-unsupported",
+        "mail-transport",
+        "rcpt-rejected",
+        "rcpt-transport",
+        "data-rejected",
+        "data-transport",
+    ],
+)
+@pytest.mark.asyncio
+async def test_smtp_transaction_logs_bounded_phase_data(
+    email_server,
+    smtp_method: str,
+    error: Exception,
+    expected_log: str,
+    expected_detail: str,
+) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
+    getattr(smtp, smtp_method).side_effect = error
+
+    with (
+        _captured_smtp_logs() as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        outcome = await _send_private_message(client)
+
+    captured = sink.getvalue()
+    assert f"SMTP phase={expected_log}" in captured
+    assert outcome.outcomes[0].detail == expected_detail
+    _assert_smtp_log_redacted(captured, str(error))
+
+
+@pytest.mark.parametrize(
+    ("phase", "error", "expected_log"),
+    [
+        ("connect", SMTPResponseException(421, b"private connect detail"), "connect outcome=rejected code=421"),
+        ("connect", ConnectionError("private connect transport"), "connect outcome=error category=connection"),
+        (
+            "authenticate",
+            SMTPResponseException(535, b"private authentication detail"),
+            "authenticate outcome=rejected code=535",
+        ),
+        (
+            "authenticate",
+            ConnectionError("private authentication transport"),
+            "authenticate outcome=error category=connection",
+        ),
+    ],
+    ids=["connect-rejected", "connect-transport", "auth-rejected", "auth-transport"],
+)
+@pytest.mark.asyncio
+async def test_smtp_setup_logs_preserve_phase_without_private_data(
+    email_server, phase: str, error: Exception, expected_log: str
+) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
+    if phase == "connect":
+        smtp.__aenter__.side_effect = error
+    else:
+        smtp.login.side_effect = error
+
+    with (
+        _captured_smtp_logs() as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+        pytest.raises(type(error)),
+    ):
+        await _send_private_message(client)
+
+    captured = sink.getvalue()
+    assert f"SMTP phase={expected_log}" in captured
+    _assert_smtp_log_redacted(captured, str(error))
+
+
+@pytest.mark.asyncio
+async def test_smtp_debug_logs_phases_without_message_data(email_server) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
+
+    with (
+        _captured_smtp_logs("DEBUG") as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        outcome = await _send_private_message(client)
+
+    captured = sink.getvalue()
+    assert outcome.outcomes[0].status == "succeeded"
+    assert "SMTP phase=connect outcome=succeeded" in captured
+    assert "SMTP phase=authenticate outcome=succeeded" in captured
+    assert "SMTP phase=message outcome=prepared" in captured
+    _assert_smtp_log_redacted(captured)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_log"),
+    [
+        (SMTPResponseException(450, b"private cleanup detail"), "cleanup outcome=rejected code=450"),
+        (RuntimeError("private cleanup runtime detail"), "cleanup outcome=error category=unexpected"),
+    ],
+    ids=["response", "unexpected"],
+)
+@pytest.mark.asyncio
+async def test_smtp_cleanup_failure_preserves_known_outcome_and_safe_log(
+    email_server, error: Exception, expected_log: str
+) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
+    smtp.__aexit__.side_effect = error
+
+    with (
+        _captured_smtp_logs() as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        outcome = await _send_private_message(client)
+
+    captured = sink.getvalue()
+    assert outcome.outcomes[0].status == "succeeded"
+    assert f"SMTP phase={expected_log}" in captured
+    _assert_smtp_log_redacted(captured, str(error))
+
+
+@pytest.mark.asyncio
+async def test_smtp_cleanup_cancellation_preserves_known_outcome(email_server) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
+    smtp.__aexit__.side_effect = asyncio.CancelledError
+
+    with (
+        _captured_smtp_logs("DEBUG") as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        outcome = await _send_private_message(client)
+
+    captured = sink.getvalue()
+    assert outcome.outcomes[0].status == "succeeded"
+    assert "SMTP phase=cleanup outcome=cancelled" in captured
+    _assert_smtp_log_redacted(captured)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_log"),
+    [
+        (SMTPResponseException(554, b"private send detail"), "send outcome=rejected code=554"),
+        (RuntimeError("private send runtime detail"), "send outcome=error category=unexpected"),
+    ],
+    ids=["response", "unexpected"],
+)
+@pytest.mark.asyncio
+async def test_legacy_send_failure_logs_safe_phase_and_reraises(
+    email_server, error: Exception, expected_log: str
+) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
+    smtp.send_message.side_effect = error
+
+    with (
+        _captured_smtp_logs() as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+        pytest.raises(type(error)),
+    ):
+        await client.send_email(
+            [_PRIVATE_RECIPIENT],
+            _PRIVATE_SUBJECT,
+            _PRIVATE_BODY,
+            bcc=[_PRIVATE_BCC],
         )
 
-    @pytest.mark.asyncio
-    async def test_smtp_rcpt_rejection_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.rcpt.side_effect = SMTPRecipientRefused(550, b"Mailbox unavailable", "bad@example.test")
+    captured = sink.getvalue()
+    assert f"SMTP phase={expected_log}" in captured
+    _assert_smtp_log_redacted(captured, str(error))
 
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["bad@example.test"], "Subject", "body")
-        self._release(sid)
 
-        assert "SMTP RCPT rejected bad@example.test: code=550 message=Mailbox unavailable" in sink.getvalue()
+@pytest.mark.asyncio
+async def test_legacy_send_debug_logs_are_redacted(email_server) -> None:
+    client = _private_smtp_client(email_server)
+    smtp = _smtp()
 
-    @pytest.mark.asyncio
-    async def test_smtp_data_rejection_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.data.side_effect = SMTPResponseException(554, b"Reject due to policy restrictions")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        assert "SMTP DATA rejected: code=554 message=Reject due to policy restrictions" in sink.getvalue()
-
-    @pytest.mark.asyncio
-    async def test_smtp_transport_loss_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.data.side_effect = ConnectionError("connection reset")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP DATA unknown error: ConnectionError: connection reset" in captured
-
-    @pytest.mark.asyncio
-    async def test_smtp_connection_failure_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.login.side_effect = SMTPResponseException(535, b"Authentication failed")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            with pytest.raises(SMTPResponseException):
-                await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP connection/login failed for test_user: code=535 message=Authentication failed" in captured
-
-    @pytest.mark.asyncio
-    async def test_smtp_debug_logs_message_bytes(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-
-        sink, sid = self._capture_log("DEBUG")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP outgoing message:" in captured
-        assert "Subject: Subject" in captured
-        assert "To: one@example.test" in captured
-
-    # ------------------------------------------------------------------
-    # additional branch coverage: generic exceptions + legacy send_email
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_smtp_mail_smtpnotsupported_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.mail.side_effect = SMTPNotSupported("extension not supported")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP MAIL rejected from=sender@example.test: SMTPNotSupported" in captured
-
-    @pytest.mark.asyncio
-    async def test_smtp_mail_generic_exception_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.mail.side_effect = ConnectionError("connection refused")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP MAIL unavailable from=sender@example.test: ConnectionError: connection refused" in captured
-
-    @pytest.mark.asyncio
-    async def test_smtp_rcpt_generic_exception_logs_warning(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.rcpt.side_effect = ConnectionError("transport lost")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            await client.send_email_with_outcome(["bad@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP RCPT unavailable bad@example.test: ConnectionError: transport lost" in captured
-
-    @pytest.mark.asyncio
-    async def test_smtp_connection_exception_recovery_returns_known_outcome(self, email_server) -> None:
-        """SMTP connection exception after successful submit returns known_outcome (covers line 2020)."""
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.__aexit__.side_effect = SMTPResponseException(450, b"close failed")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            outcome = await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP connection/login failed for test_user: code=450 message=close failed" in captured
-        assert outcome.outcomes[0].status == "succeeded"
-
-    @pytest.mark.asyncio
-    async def test_send_email_smtpresponseexception_logs_and_raises(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.send_message.side_effect = SMTPResponseException(554, b"Reject due to policy restrictions")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            with pytest.raises(SMTPResponseException):
-                await client.send_email(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert (
-            "SMTP send failed for ['one@example.test']: code=554 message=Reject due to policy restrictions" in captured
+    with (
+        _captured_smtp_logs("DEBUG") as sink,
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        await client.send_email(
+            [_PRIVATE_RECIPIENT],
+            _PRIVATE_SUBJECT,
+            _PRIVATE_BODY,
+            bcc=[_PRIVATE_BCC],
         )
 
-    @pytest.mark.asyncio
-    async def test_send_email_generic_exception_logs_and_raises(self, email_server) -> None:
-        client = EmailClient(email_server, sender="Sender <sender@example.test>")
-        smtp = _smtp()
-        smtp.send_message.side_effect = RuntimeError("unexpected")
-
-        sink, sid = self._capture_log("WARNING")
-        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
-            with pytest.raises(RuntimeError):
-                await client.send_email(["one@example.test"], "Subject", "body")
-        self._release(sid)
-
-        captured = sink.getvalue()
-        assert "SMTP send failed for ['one@example.test']: RuntimeError: unexpected" in captured
+    captured = sink.getvalue()
+    assert "SMTP phase=send outcome=started" in captured
+    assert "SMTP phase=send outcome=succeeded" in captured
+    _assert_smtp_log_redacted(captured)

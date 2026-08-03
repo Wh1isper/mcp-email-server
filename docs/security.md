@@ -81,6 +81,19 @@ or replace user-owned state; same-UID hostile path replacement is not claimed to
 be contained. Do not treat loopback, owner-only modes, or path preflight as a
 multi-user or hostile-same-UID sandbox.
 
+## Mail provider log redaction
+
+SMTP diagnostics use bounded phase records such as `phase=mail`, `phase=rcpt`,
+`phase=data`, and `phase=cleanup`. Warnings may include a numeric SMTP response
+code or one of the fixed transport categories `timeout`, `connection`, `tls`,
+`io`, or `unexpected`.
+
+These records remain redacted at every log level. They never include account
+usernames, sender or recipient addresses (including BCC), endpoint hostnames,
+provider response text, exception text, subjects, bodies, raw MIME, attachment
+content, or secret values. Enabling `DEBUG` adds safe phase transitions only; it
+does not enable a message-content dump.
+
 ## Managed credential storage
 
 Managed mode never falls back to TOML plaintext. Its default managed secret

@@ -323,6 +323,16 @@ SMTP endpoint and active outgoing credential. In managed mode, inspect it with
 `account show`; disable it before changing or removing credentials, then
 re-enable it with the latest revision.
 
+For delivery diagnostics, enable `DEBUG` and inspect the bounded SMTP records.
+`phase=connect` and `phase=authenticate` cover session setup; `phase=mail`,
+`phase=rcpt`, and `phase=data` identify explicit SMTP commands, while
+`phase=transaction` covers other transaction preparation; `phase=send` is the
+legacy aggregate path; and `phase=cleanup` occurs after a known delivery outcome. A numeric `code` is the SMTP response status. A `category` is a fixed
+transport class rather than raw exception or provider text. Logs intentionally
+omit usernames, addresses, subjects, bodies, raw MIME, attachments, and provider
+response strings at every level. Use the provider's own delivery logs when its
+free-form rejection explanation is required.
+
 ## SMTP delivery succeeds but saving to Sent fails
 
 SMTP delivery and the IMAP append are separate operations. A tagged result can
