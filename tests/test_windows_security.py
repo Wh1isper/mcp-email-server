@@ -111,22 +111,21 @@ def test_windows_legacy_store_and_migration_replace_readable_compatibility_file(
 ) -> None:
     root = _private_root(tmp_path)
     config_path = root / "legacy.toml"
-    settings = Settings(
-        credential_storage="plaintext",
-        emails=[
-            EmailSettings(
-                account_name="alice",
-                full_name="Alice",
-                email_address="alice@example.test",
-                incoming=EmailServer(
-                    user_name="alice@example.test",
-                    password="plaintext-secret",
-                    host="imap.example.test",
-                    port=993,
-                ),
-            )
-        ],
-    )
+    settings = Settings(credential_storage="plaintext")
+    settings.emails = [
+        EmailSettings(
+            account_name="alice",
+            full_name="Alice",
+            email_address="alice@example.test",
+            incoming=EmailServer(
+                user_name="alice@example.test",
+                password="plaintext-secret",
+                host="imap.example.test",
+                port=993,
+            ),
+        )
+    ]
+    settings.credential_storage = "plaintext"
     config_path.write_text(settings._to_toml(credential_storage="plaintext"), encoding="utf-8")
     monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
 

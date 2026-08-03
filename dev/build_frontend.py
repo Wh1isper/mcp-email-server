@@ -16,6 +16,7 @@ STATIC = REPOSITORY / "mcp_email_server" / "web_ui" / "static"
 MANIFEST = FRONTEND / "embedded-assets.json"
 ASSET_REFERENCE = re.compile(r"(?:src|href)=[\"']\./([^\"']+)[\"']")
 _GENERATED_DIRECTORIES = {"coverage", "dist", "node_modules", "playwright-report", "test-results"}
+_TEXT_SOURCE_NAMES = {".gitignore", ".nvmrc"}
 _TEXT_SOURCE_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".py", ".ts", ".tsx"}
 _MANIFEST_VERSION = 1
 
@@ -62,7 +63,8 @@ def _validated_static() -> dict[str, bytes]:
 
 def _portable_source_bytes(path: Path) -> bytes:
     content = path.read_bytes()
-    return content.replace(b"\r\n", b"\n") if path.suffix.lower() in _TEXT_SOURCE_SUFFIXES else content
+    is_text = path.name in _TEXT_SOURCE_NAMES or path.suffix.lower() in _TEXT_SOURCE_SUFFIXES
+    return content.replace(b"\r\n", b"\n") if is_text else content
 
 
 def _frontend_sources() -> dict[str, bytes]:
