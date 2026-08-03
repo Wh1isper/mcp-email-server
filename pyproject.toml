@@ -33,6 +33,7 @@ dependencies = [
     "starlette>=0.40",
     "tomli-w>=1.2.0",
     "typer>=0.15.1",
+    "tzdata>=2025.2 ; sys_platform == 'win32'",
     "uvicorn>=0.30",
 ]
 
@@ -113,6 +114,7 @@ typeCheckingMode = "standard"
 testpaths = ["tests"]
 
 [tool.deptry.package_module_name_map]
+tzdata = ["zoneinfo"]
 pywin32 = [
     "ntsecuritycon",
     "win32api",

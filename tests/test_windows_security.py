@@ -314,6 +314,36 @@ def test_windows_hard_link_and_permissive_dacl_are_rejected(tmp_path: Path) -> N
         validate_private_file(target)
 
 
+def test_windows_pinned_shared_ancestor_can_contain_a_private_managed_parent(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    descriptor = win32security.GetNamedSecurityInfo(
+        os.fspath(shared),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+    )
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid, None)
+    rights = ntsecuritycon.FILE_ADD_SUBDIRECTORY | ntsecuritycon.FILE_DELETE_CHILD | ntsecuritycon.GENERIC_WRITE
+    dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, rights, everyone)
+    win32security.SetNamedSecurityInfo(
+        os.fspath(shared),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        dacl,
+        None,
+    )
+
+    target = shared / "private" / "catalog.sqlite3"
+    ensure_private_parent(target)
+    atomic_write_private(target, b"private")
+
+    validate_private_directory(target.parent)
+    assert validate_private_file(target).size == len(b"private")
+
+
 @pytest.mark.parametrize("rights", _GENERIC_ACE_RIGHTS)
 def test_windows_raw_generic_ace_masks_are_rejected(tmp_path: Path, rights: int) -> None:
     root = _private_root(tmp_path)

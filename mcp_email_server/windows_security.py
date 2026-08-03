@@ -308,7 +308,10 @@ def _validate_acl(
     # A private object has no legitimate allow ACE for an untrusted SID. Using
     # the complete mask also rejects raw generic bits before Windows maps them.
     private_rights = 0xFFFFFFFF
-    _validate_untrusted_aces(dacl, trusted, private_rights if private else dangerous)
+    if private:
+        _validate_untrusted_aces(dacl, trusted, private_rights)
+    elif not directory or sensitive_parent:
+        _validate_untrusted_aces(dacl, trusted, dangerous)
 
 
 def _validate_handle(

@@ -122,13 +122,13 @@ count are checked with it. An existing exact file target must have one hard link
 The current user SID owns private objects. Their DACL is protected and grants
 only the current user, LocalSystem, and built-in Administrators. No other SID
 may have an allow ACE with any access mask; this includes raw generic masks
-before Windows maps them to file or directory rights. Existing
-traversed ancestors may grant ordinary read/traverse and unrelated sibling
-creation, but no untrusted SID may replace/delete the traversed component,
-modify its ACL/owner, or create a reparse substitution at the sensitive parent.
-A null or invalid DACL, unknown allow-ACE form, unresolved ownership, or an owner
-outside the trusted set fails closed. Private immediate parents use the stricter
-private-object policy.
+before Windows maps them to file or directory rights. Existing traversed ancestors may grant broader shared-runner or temporary-root
+rights because every traversed component is pinned by a no-delete-share handle;
+those rights cannot retarget the held chain. The exact file and any non-private
+sensitive immediate parent still reject untrusted write/delete/ACL-owner access
+and reparse substitution. A null DACL, unresolved ownership, or an owner outside
+the trusted set fails closed throughout the chain. Private immediate parents use
+the stricter private-object policy and reject every untrusted allow ACE.
 
 ## Mandatory Pre-open Sequence
 
