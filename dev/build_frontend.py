@@ -120,8 +120,12 @@ def _verify_manifest(files: dict[str, bytes]) -> None:
         raise RuntimeError("embedded frontend manifest has an invalid shape")
     if manifest["version"] != _MANIFEST_VERSION:
         raise RuntimeError("embedded frontend manifest version is unsupported")
-    if manifest["source_sha256"] != _digest(_frontend_sources()):
-        raise RuntimeError("frontend sources differ from the staged asset manifest; run `make frontend`")
+    source_digest = _digest(_frontend_sources())
+    if manifest["source_sha256"] != source_digest:
+        raise RuntimeError(
+            "frontend sources differ from the staged asset manifest; "
+            f"expected {manifest['source_sha256']}, got {source_digest}; run `make frontend`"
+        )
     if manifest["assets"] != _asset_hashes(files):
         raise RuntimeError("packaged frontend assets differ from the staged asset manifest; run `make frontend`")
 
