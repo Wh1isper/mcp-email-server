@@ -133,6 +133,38 @@ jobs:
       - name: Run GreenMail E2E baseline
         run: make test-e2e
 
+  windows-native:
+    name: Native Windows NTFS security and full runtime
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      MCP_EMAIL_SERVER_REQUIRE_WINDOWS_SYMLINK_TESTS: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+
+      - name: Run the full Python suite on Windows
+        run: uv run --python 3.13 python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+
+      - name: Upload native Windows coverage
+        uses: codecov/codecov-action@v4
+
+      - name: Re-run native NTFS security cases with explicit reporting
+        run: uv run --python 3.13 python -m pytest -vv tests/test_windows_security.py
+
+      - name: Check typing with Windows-only dependencies installed
+        run: uv run --python 3.13 python -m pyright
+
   tests-and-type-check:
     runs-on: ubuntu-latest
     strategy:

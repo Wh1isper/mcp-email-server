@@ -80,6 +80,19 @@ async def test_large_result_writer_creates_private_integrity_checked_artifact() 
 
 
 @pytest.mark.asyncio
+async def test_large_result_writer_removes_root_after_consumer_already_removed_artifact() -> None:
+    writer = LocalLargeResultWriter()
+    reference = await writer.write(prefix="email-content", content=b"consumed")
+    path = Path(reference.output_file_path)
+    root = path.parent
+    path.unlink()
+
+    await writer.aclose()
+
+    assert not root.exists()
+
+
+@pytest.mark.asyncio
 async def test_large_result_writer_rejects_precreated_symlink() -> None:
     writer = LocalLargeResultWriter()
     root, _identity = writer._ensure_root()

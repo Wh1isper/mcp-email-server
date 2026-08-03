@@ -39,7 +39,7 @@ from mcp_email_server.application.management import (
 from mcp_email_server.bootstrap import BootstrapError, bootstrap_path, read_bootstrap, write_bootstrap
 from mcp_email_server.cli import app
 from mcp_email_server.config import Settings
-from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
+from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError, ManagedSqliteSecretStore
 
 
 def _configure_bound_management(management: MagicMock, *, catalog_revision: int = 7) -> None:
@@ -331,7 +331,7 @@ def test_cli_import_apply_exits_nonzero_for_conflict_only_plan(monkeypatch) -> N
     management.legacy_import.apply.assert_not_called()
 
 
-def test_select_managed_validates_binding_metadata_without_resolving_secret(monkeypatch, tmp_path):
+def test_select_managed_validates_binding_metadata_without_resolving_secret(monkeypatch, tmp_path, fake_keyring):
     parent = _private_directory(tmp_path / "app")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -339,9 +339,14 @@ def test_select_managed_validates_binding_metadata_without_resolving_secret(monk
     runner = CliRunner()
     assert runner.invoke(app, ["config", "init", "--database", str(database)]).exit_code == 0
     assert runner.invoke(app, _base_account_args(), input="incoming-secret\n").exit_code == 0
+    catalog = ManagedCatalog(database)
     with sqlite3.connect(database) as connection:
-        connection.execute("DELETE FROM managed_secret")
-        connection.commit()
+        locator = connection.execute("SELECT opaque_locator FROM secret_binding WHERE status = 'ACTIVE'").fetchone()[0]
+        if isinstance(catalog.secret_store, ManagedSqliteSecretStore):
+            connection.execute("DELETE FROM managed_secret")
+            connection.commit()
+        else:
+            assert catalog.secret_store.delete(locator) is True
 
     selected = runner.invoke(app, ["config", "select", "managed"])
 

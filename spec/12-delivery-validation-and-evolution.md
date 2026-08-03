@@ -16,19 +16,19 @@ The delivery maintains a reviewable matrix using the following ownership. Exact
 file names may evolve, but every row must have concrete code and test references
 before release.
 
-| Contract area                                      | Owning spec | Required evidence                                                          |
-| -------------------------------------------------- | ----------- | -------------------------------------------------------------------------- |
-| foreground process and trust boundaries            | 01          | startup/shutdown, fail-closed, and route/transport tests                   |
-| identities, revisions, outcomes, bounds vocabulary | 02          | domain purity and invariant tests                                          |
-| layers, late secrets, resource/transaction scopes  | 03          | import/architecture, isolation, lifecycle, and transaction tests           |
-| mode, catalog/account/policy/import lifecycle      | 04          | application + CLI + UI contract and crash/conflict tests                   |
-| secret rotation/removal/cleanup/redaction          | 05          | atomic activation, unchanged-authority failure, leakage, and parity tests  |
-| mailbox/index/body/attachment reads                | 06          | provider fakes, SQLite, filesystem race, bounds, and GreenMail tests       |
-| mutations and independent effects                  | 07          | capability, ambiguity, cancellation, no-bare-expunge, SMTP/sent-copy tests |
-| schema, WAL/SHM security, retention/rebuild        | 08          | exact schema/migration, pre-open race, concurrency, corruption tests       |
-| loopback UI security and packaging                 | 09          | backend, frontend, real-browser, artifact, and no-Node tests               |
-| exact MCP contract and stdio behavior              | 10          | catalog snapshot, raw protocol, generic client, and GreenMail E2E          |
-| agent integration and safe setup handoff           | 11          | Codex/Claude Code install fixtures, scenario, drift, and no-secret tests   |
+| Contract area                                      | Owning spec | Required evidence                                                                           |
+| -------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| foreground process and trust boundaries            | 01          | startup/shutdown, fail-closed, and route/transport tests                                    |
+| identities, revisions, outcomes, bounds vocabulary | 02          | domain purity and invariant tests                                                           |
+| layers, late secrets, resource/transaction scopes  | 03          | import/architecture, isolation, lifecycle, and transaction tests                            |
+| mode, catalog/account/policy/import lifecycle      | 04          | application + CLI + UI contract and crash/conflict tests                                    |
+| secret rotation/removal/cleanup/redaction          | 05          | atomic activation, unchanged-authority failure, leakage, and parity tests                   |
+| mailbox/index/body/attachment reads                | 06          | provider fakes, SQLite, filesystem race, bounds, and GreenMail tests                        |
+| mutations and independent effects                  | 07          | capability, ambiguity, cancellation, no-bare-expunge, SMTP/sent-copy tests                  |
+| schema, WAL/SHM security, retention/rebuild        | 08          | exact schema/migration, POSIX + native Windows pre-open race, concurrency, corruption tests |
+| loopback UI security and packaging                 | 09          | backend, frontend, real-browser, artifact, and no-Node tests                                |
+| exact MCP contract and stdio behavior              | 10          | catalog snapshot, raw protocol, generic client, and GreenMail E2E                           |
+| agent integration and safe setup handoff           | 11          | Codex/Claude Code install fixtures, scenario, drift, and no-secret tests                    |
 
 ### Checked Delivery References
 
@@ -78,11 +78,14 @@ defense.
 
 ### Infrastructure and security
 
-Cover concrete SQLite schema/migrations, DB/WAL/SHM/lock preflight, permissions,
-symlinks and replacement races, Linux `managed_secret` transaction atomicity,
+Cover concrete SQLite schema/migrations, DB/WAL/SHM/lock preflight, permissions
+or DACLs, links/reparse points and replacement races, Linux `managed_secret`
+transaction atomicity, Windows Credential Manager and other
 system-keyring/SecretStore failures, unchanged binding authority after failed
 saves, provider protocol edge cases, attachment no-follow behavior, bounded
-parser/provider payloads, and redaction on unexpected failures.
+parser/provider payloads, and redaction on unexpected failures. Windows
+filesystem-security evidence runs on a real local NTFS volume and is not
+satisfied by mocks.
 
 ### Interface contracts
 
@@ -115,7 +118,10 @@ import. Browser E2E starts the installed UI process and exercises bootstrap,
 management workflows, refresh/logout/stale tabs, conflict, and shutdown.
 
 E2E must not use a developer keyring or real user config. Test fixtures have
-bounded cleanup and never print sentinel secrets.
+bounded cleanup and never print sentinel secrets. A dedicated native Windows
+E2E path covers managed bootstrap/catalog selection, Credential Manager binding,
+stdio startup, local UI startup, attachment materialization, and oversized-result
+spill on the runner's local NTFS workspace.
 
 ## Required Release Gates
 
@@ -149,7 +155,15 @@ Before delivery, all of the following pass from a clean checkout:
     and no-secret handoff scenarios;
 13. independent architecture, correctness, and security review with all material
     findings resolved or explicitly accepted by the maintainer;
-14. clean git tree after generated-asset drift and all checks.
+14. a dedicated `windows-latest` job running the full Python suite plus native
+    NTFS security tests for file/directory symlinks, junctions, hard links,
+    DACL/owner policy, lock contention and killed-process release, concurrent
+    replacement, pre/post-replace termination, complete-old-or-new atomicity,
+    stale cleanup, managed/keyring/stdio/UI/attachment/spill flows, and early
+    rejection of unsupported path/filesystem classes; junction coverage must not
+    depend on Developer Mode, while unavailable symlink privilege is reported
+    distinctly rather than silently converting all reparse coverage to mocks;
+15. clean git tree after generated-asset drift and all checks.
 
 CI and release publishing invoke the same authoritative artifact build/verify
 workflow. Release cannot publish an artifact that skipped the supported Python
@@ -238,7 +252,11 @@ possibility does not add placeholders or generic abstractions now.
    that passed it.
 5. Independent review finds no unresolved material correctness, authorization,
    secret, persistence, provider-effect, packaging, or test-adequacy issue.
-6. User documentation matches implemented behavior and contains none of the
-   rejected overclaims named above.
-7. Future incompatible or deferred work cannot ship by silently changing this
+6. User documentation and README match implemented Windows/POSIX behavior,
+   supported local-NTFS boundaries, remediation, and validation commands and
+   contain none of the rejected overclaims named above.
+7. Native Windows evidence is produced on a real NTFS runner for the required
+   reparse, ACL, lock, replacement, crash, cleanup, and atomic-write cases; mock
+   tests alone cannot satisfy the gate.
+8. Future incompatible or deferred work cannot ship by silently changing this
    contract; it receives an owning spec and migration/compatibility decision.

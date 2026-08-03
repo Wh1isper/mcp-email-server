@@ -145,6 +145,7 @@ async def test_attachment_service_rechecks_fresh_policy_before_provider_write() 
     authority, factory, provider = _ports(initial=_account(downloads=True), fresh=_account(downloads=False))
     provider.fetch_attachment = AsyncMock()
     artifacts = Mock()
+    artifacts.preflight = AsyncMock()
     artifacts.write = AsyncMock()
     command = DownloadAttachmentCommand("work", "1", "document.pdf", "downloads/document.pdf")
 
@@ -156,12 +157,31 @@ async def test_attachment_service_rechecks_fresh_policy_before_provider_write() 
 
 
 @pytest.mark.asyncio
+async def test_attachment_service_preflights_filesystem_before_provider_or_credential_effect() -> None:
+    authority, factory, provider = _ports(initial=_account(downloads=True), fresh=_account(downloads=True))
+    provider.fetch_attachment = AsyncMock()
+    artifacts = Mock()
+    artifacts.preflight = AsyncMock(side_effect=PermissionError("unsupported local storage"))
+    artifacts.write = AsyncMock()
+    command = DownloadAttachmentCommand("work", "1", "document.pdf", "downloads/document.pdf")
+
+    with pytest.raises(PermissionError, match="unsupported local storage"):
+        await AttachmentDownloadService(authority, factory, artifacts).execute(command)
+
+    artifacts.preflight.assert_awaited_once_with(command.save_path)
+    factory.open.assert_not_called()
+    provider.fetch_attachment.assert_not_awaited()
+    artifacts.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_attachment_service_rechecks_authority_after_fetch_before_artifact_write() -> None:
     authority, factory, provider = _ports(initial=_account(downloads=True), fresh=_account(downloads=True))
     authority.resolve.side_effect = [_account(downloads=True), _account(downloads=False)]
     payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"content")
     provider.fetch_attachment = AsyncMock(return_value=payload)
     artifacts = Mock()
+    artifacts.preflight = AsyncMock()
     artifacts.write = AsyncMock()
     command = DownloadAttachmentCommand("work", "1", "document.pdf", "downloads/document.pdf")
 
@@ -178,6 +198,7 @@ async def test_attachment_service_denies_cached_disabled_policy_before_open() ->
     authority, factory, _provider = _ports(initial=_account(downloads=False))
 
     artifacts = Mock()
+    artifacts.preflight = AsyncMock()
     artifacts.write = AsyncMock()
     with pytest.raises(PermissionError, match="disabled"):
         await AttachmentDownloadService(authority, factory, artifacts).execute(
@@ -193,6 +214,7 @@ async def test_attachment_service_writes_only_bounded_provider_payload_through_a
     payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"content")
     provider.fetch_attachment = AsyncMock(return_value=payload)
     artifacts = Mock()
+    artifacts.preflight = AsyncMock()
     artifacts.write = AsyncMock(return_value="/approved/document.pdf")
     command = DownloadAttachmentCommand("work", "1", "document.pdf", "downloads/document.pdf")
 
@@ -215,6 +237,7 @@ async def test_attachment_service_rejects_oversized_payload_before_artifact_writ
         )
     )
     artifacts = Mock()
+    artifacts.preflight = AsyncMock()
     artifacts.write = AsyncMock()
 
     with pytest.raises(ValueError, match="attachment exceeds"):
@@ -472,6 +495,7 @@ async def test_read_provider_calls_have_application_deadline(monkeypatch, workfl
     else:
         provider.fetch_attachment = hang
         artifacts = Mock()
+        artifacts.preflight = AsyncMock()
         artifacts.write = AsyncMock()
         operation = AttachmentDownloadService(authority, factory, artifacts).execute(
             DownloadAttachmentCommand("work", "1", "document.pdf", "downloads/document.pdf")

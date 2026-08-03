@@ -166,6 +166,8 @@ class ReadProviderFactory(Protocol):
 
 
 class ArtifactWriter(Protocol):
+    async def preflight(self, save_path: str) -> None: ...
+
     async def write(self, save_path: str, payload: AttachmentPayload) -> str: ...
 
 
@@ -376,6 +378,9 @@ class AttachmentDownloadService:
             raise PermissionError(
                 "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
             )
+        # Reject unsupported or unsafe local storage before credential resolution,
+        # provider construction, download, or MIME decoding.
+        await self._artifacts.preflight(command.save_path)
         access = self._providers.open(account.account_name, expected_mode=account.mode)
         if not access.account.enable_attachment_download:
             raise PermissionError(

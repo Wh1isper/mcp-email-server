@@ -37,6 +37,16 @@ from mcp_email_server.application.management import (
 )
 from mcp_email_server.config import EmailServer, EmailSettings, Settings
 from mcp_email_server.log import logger
+from mcp_email_server.windows_security import (
+    WindowsFileIdentity,
+    WindowsSecurityError,
+    create_private_file,
+    harden_private_file,
+    secure_file_lock,
+    validate_private_directory,
+    validate_private_file,
+    windows_security_supported,
+)
 
 SCHEMA_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 5_000
@@ -243,7 +253,15 @@ _SECURE_CATALOG_FILES_SUPPORTED = (
     and hasattr(os, "O_DIRECTORY")
     and hasattr(os, "getuid")
     and importlib.util.find_spec("fcntl") is not None
-)
+) or (os.name == "nt" and windows_security_supported())
+
+SecurityMetadata = os.stat_result | WindowsFileIdentity
+
+
+def _identity_key(metadata: SecurityMetadata) -> tuple[int, int]:
+    if isinstance(metadata, WindowsFileIdentity):
+        return metadata.key
+    return (metadata.st_dev, metadata.st_ino)
 
 
 def _require_secure_catalog_files() -> None:
@@ -255,6 +273,14 @@ def _require_secure_catalog_files() -> None:
 
 def _assert_private_directory(path: Path) -> None:
     _require_secure_catalog_files()
+    if os.name == "nt":
+        try:
+            validate_private_directory(path)
+        except WindowsSecurityError as exc:
+            raise ManagedCatalogSecurityError(
+                "Managed catalog parent does not satisfy the Windows private-storage policy"
+            ) from exc
+        return
     current_uid = os.getuid()
     for index, candidate in enumerate((path, *path.parents)):
         try:
@@ -276,7 +302,14 @@ def _assert_private_file(
     *,
     label: str = "Managed catalog file",
     allow_disappearing: bool = False,
-) -> os.stat_result:
+) -> SecurityMetadata:
+    if os.name == "nt":
+        try:
+            return validate_private_file(path)
+        except FileNotFoundError:
+            raise
+        except WindowsSecurityError as exc:
+            raise ManagedCatalogSecurityError(f"{label} does not satisfy the Windows private-file policy") from exc
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -299,6 +332,14 @@ def _assert_private_file(
 
 def _prepare_new_file(path: Path) -> None:
     _require_secure_catalog_files()
+    if os.name == "nt":
+        try:
+            create_private_file(path)
+        except FileExistsError as exc:
+            raise _ManagedCatalogAlreadyExistsError("Managed catalog already exists") from exc
+        except WindowsSecurityError as exc:
+            raise ManagedCatalogSecurityError("Managed catalog could not be created safely on Windows") from exc
+        return
     parent = path.parent
     if not parent.exists():
         parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -315,24 +356,52 @@ def _prepare_new_file(path: Path) -> None:
     os.close(fd)
 
 
-def _validate_sidecars(path: Path) -> None:
+def _validate_sidecars(path: Path) -> dict[str, tuple[int, int]]:
+    identities: dict[str, tuple[int, int]] = {}
     for suffix in ("-wal", "-shm"):
         sidecar = Path(f"{path}{suffix}")
         try:
-            _assert_private_file(
+            metadata = _assert_private_file(
                 sidecar,
                 label="Managed catalog sidecar",
                 allow_disappearing=True,
             )
         except FileNotFoundError:
             continue
-        except ManagedCatalogSecurityError:
-            if not (sidecar.exists() or sidecar.is_symlink()):
-                continue
-            raise
+        else:
+            identities[suffix] = _identity_key(metadata)
+    return identities
 
 
-def _validate_existing_path(path: Path) -> os.stat_result:
+def _harden_windows_sidecars(path: Path) -> None:
+    if os.name != "nt":
+        return
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{path}{suffix}")
+        try:
+            harden_private_file(sidecar)
+        except FileNotFoundError:
+            continue
+        except WindowsSecurityError as exc:
+            raise ManagedCatalogSecurityError("New managed catalog sidecar could not be secured on Windows") from exc
+
+
+def _reconcile_windows_sidecars(path: Path) -> None:
+    """Best-effort post-commit reconciliation; the next open still fails closed."""
+    if os.name != "nt":
+        return
+    try:
+        with _application_path_lock(path):
+            _harden_windows_sidecars(path)
+            _validate_sidecars(path)
+    except ManagedCatalogError:
+        # The transaction may already be committed. Do not invite an unsafe
+        # retry by reporting a lock/reconciliation race as an operation failure.
+        # Every subsequent open repeats strict pre-validation before SQLite.
+        logger.warning("Deferred Windows managed-catalog sidecar reconciliation")
+
+
+def _validate_existing_path(path: Path) -> SecurityMetadata:
     _assert_private_directory(path.parent)
     return _assert_private_file(path)
 
@@ -345,6 +414,15 @@ def _lock_path(path: Path) -> Path:
 def _application_path_lock(path: Path) -> Iterator[None]:
     """Serialize security-sensitive open/setup without following the lock path."""
     lock_path = _lock_path(path)
+    if os.name == "nt":
+        try:
+            with secure_file_lock(lock_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000):
+                yield
+        except WindowsSecurityError as exc:
+            if "busy" in str(exc).lower():
+                raise ManagedCatalogError("Managed catalog lock is busy") from exc
+            raise ManagedCatalogSecurityError("Managed catalog lock could not be opened safely") from exc
+        return
     if lock_path.exists() or lock_path.is_symlink():
         _assert_private_file(lock_path, label="Managed catalog lock")
     flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
@@ -355,7 +433,7 @@ def _application_path_lock(path: Path) -> Iterator[None]:
     try:
         opened = os.fstat(descriptor)
         checked = _assert_private_file(lock_path, label="Managed catalog lock")
-        if (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
+        if (opened.st_dev, opened.st_ino) != _identity_key(checked):
             raise ManagedCatalogSecurityError("Managed catalog lock changed while it was opened")
         import fcntl
 
@@ -406,10 +484,14 @@ def _connect(
     enable_wal: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     path = Path(os.path.abspath(path.expanduser()))
-    if require_exists and not (path.exists() or path.is_symlink()):
-        raise ManagedCatalogError("Selected managed catalog is missing")
+    if require_exists:
+        try:
+            _validate_existing_path(path)
+        except FileNotFoundError as exc:
+            raise ManagedCatalogError("Selected managed catalog is missing") from exc
 
     connection: sqlite3.Connection | None = None
+    sidecar_setup_started = False
     try:
         # Existing DB, WAL, SHM, and lock entries are inspected before SQLite is
         # allowed to open or enable WAL. The lock closes concurrent app setup races.
@@ -418,21 +500,23 @@ def _connect(
         with _application_path_lock(path):
             before = _validate_existing_path(path)
             _validate_sidecars(path)
+            sidecar_setup_started = True
             try:
                 connection = sqlite3.connect(path, timeout=5.0)
             except sqlite3.Error as exc:
                 raise ManagedCatalogError("Could not open managed catalog") from exc
             after = _assert_private_file(path)
-            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            if _identity_key(before) != _identity_key(after):
                 raise ManagedCatalogSecurityError("Managed catalog changed while it was being opened")
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             if enable_wal:
                 _enable_wal(connection)
+                _harden_windows_sidecars(path)
                 _validate_sidecars(path)
             final = _assert_private_file(path)
-            if (before.st_dev, before.st_ino) != (final.st_dev, final.st_ino):
+            if _identity_key(before) != _identity_key(final):
                 raise ManagedCatalogSecurityError("Managed catalog changed during SQLite setup")
         yield connection
     except sqlite3.DatabaseError as exc:
@@ -440,8 +524,11 @@ def _connect(
     finally:
         if connection is not None:
             connection.close()
-        if enable_wal:
-            _validate_sidecars(path)
+        if enable_wal and sidecar_setup_started:
+            # WAL/SHM may be created during the transaction after setup. Reconcile
+            # on Windows without turning an already committed mutation into a
+            # retryable-looking failure; the next open still prevalidates strictly.
+            _reconcile_windows_sidecars(path)
 
 
 _AUTHORITY_SCHEMA = """

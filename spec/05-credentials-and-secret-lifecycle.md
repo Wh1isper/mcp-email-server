@@ -4,11 +4,13 @@
 
 Managed secret values are owned only by a `SecretStore`. On Linux, the default
 store is the owner-only managed SQLite database and values reside only in its
-dedicated `managed_secret` table. On macOS and any other non-Linux platform that
-meets the managed catalog's required POSIX owner/no-follow/locking guarantees,
-the default store is the operating-system keyring; SQLite then stores
-only revisioned binding lifecycle and opaque internal references. Managed mode
-never falls back to TOML plaintext when its selected store is unavailable.
+dedicated `managed_secret` table. On Windows, macOS, and any other supported
+non-Linux platform that meets spec 08's platform filesystem-security contract,
+the default store is the operating-system keyring; SQLite then stores only
+revisioned binding lifecycle and opaque internal references. Windows uses the
+current user's Windows Credential Manager through the system-keyring adapter;
+it does not persist a `managed_secret` value in SQLite. Managed mode never falls
+back to TOML plaintext when its selected store is unavailable.
 
 ## Sensitive Data Classification
 
@@ -207,3 +209,7 @@ failures.
    input in legacy or managed mode; agent-integration scenarios never collect or
    relay credentials.
 8. Sentinel leakage tests cover every response and exceptional path.
+9. Native Windows tests prove Credential Manager binding lifecycle and late
+   resolution while catalog/bootstrap files remain under spec 08's NTFS and
+   DACL contract; unavailable keyring or unsupported storage leaves binding and
+   authority unchanged and never falls back to plaintext.

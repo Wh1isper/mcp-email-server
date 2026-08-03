@@ -19,8 +19,9 @@ newest published PyPI package without a permanent installation.
 This page documents the Local Email App V2 contract implemented by this source
 tree: the embedded React management UI, SQLite-backed managed catalogs, the
 `config` and `account` CLI commands, and a mail-only MCP catalog. Managed secrets
-use the same owner-only SQLite database by default on Linux and the system
-keyring by default on supported POSIX non-Linux platforms.
+use the same owner-only SQLite database by default on Linux, Windows Credential
+Manager on Windows, and the system keyring on other supported non-Linux
+platforms.
 
 PyPI 0.16.0 and earlier do not contain that contract. Those releases use the
 legacy Gradio/TOML editor and MCP still exposes `add_email_account`. For a newer
@@ -111,9 +112,10 @@ and bounded troubleshooting checks. Ordinary labels and errors use task language
 storage and concurrency terms are kept out of the primary workflow. Optional
 settings are loaded only when their disclosure
 is opened. On Linux, managed credentials default to the owner-only
-`managed_secret` table in the managed SQLite database. On macOS and other
-supported POSIX non-Linux platforms, they default to the operating-system keyring.
-Managed mode never falls back to TOML plaintext. The interface is not a mail
+`managed_secret` table in the managed SQLite database. Windows uses Windows
+Credential Manager; macOS and other supported non-Linux platforms use the
+operating-system keyring. Managed mode never falls back to TOML plaintext. The
+interface is not a mail
 client and never exposes message content. The same cleanup and headless
 operations remain available through the managed CLI below.
 
@@ -135,11 +137,11 @@ mcp-email-server account test work incoming
 The account command reads the password through user-controlled terminal input
 without placing it in argv. `account test` is the retained low-level,
 agent-readable connectivity diagnostic; running it does not authorize any other
-management operation. Managed mode requires the POSIX owner/no-follow/locking primitives described in
-[Security](security.md). Linux uses the owner-only managed SQLite secret store by
-default; supported POSIX non-Linux platforms additionally require a working system
-keyring. Managed mode does not fall back to plaintext or weaker filesystem
-checks. Fresh initialization selects managed immediately unless existing v1
+management operation. Managed mode requires the platform filesystem-security profile described in
+[Security](security.md). POSIX uses owner/mode, no-follow, identity, and locking
+primitives. Windows requires an ordinary local fixed NTFS drive-letter path and
+uses handle-bound reparse/identity/DACL checks plus Windows Credential Manager.
+Managed mode does not fall back to plaintext or weaker filesystem checks. Fresh initialization selects managed immediately unless existing v1
 configuration needs reviewed import. Restart the MCP client when `config status`
 reports that it is required. See
 [Managed CLI setup](configuration.md#managed-cli-setup) for SMTP, stdin,
@@ -218,7 +220,11 @@ If the executable is not on the client's `PATH`, replace
 which mcp-email-server
 ```
 
-On Windows, use `where mcp-email-server` instead.
+On Windows, use `where mcp-email-server` instead. Managed storage must remain on
+a local fixed NTFS drive under a validated parent directory; do not place the
+catalog or configuration authority directly in the volume root or on a UNC path,
+mapped network drive, FAT/exFAT volume, device namespace, or alternate data
+stream.
 
 ## Configure without the UI
 

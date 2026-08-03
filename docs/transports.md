@@ -71,8 +71,9 @@ cancellation, and cancels in-flight work before cleanup on EOF.
 The process resolves the bootstrap mode at startup. An explicitly selected
 managed mode loads only the exact supported catalog schema and its active secret
 bindings. Linux resolves those bindings from the owner-only managed SQLite
-secret store; non-Linux platforms that satisfy the managed catalog's required
-POSIX filesystem guarantees use the system keyring. A missing, corrupt,
+secret store. Windows uses Windows Credential Manager after local fixed NTFS
+security validation; other supported non-Linux platforms use the system keyring.
+A missing, corrupt,
 incompatible, or insecure selected catalog fails closed and never falls back to
 preserved legacy TOML accounts. Restart stdio after every `config select`
 command.

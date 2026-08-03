@@ -16,6 +16,10 @@ IMAP and SMTP.
 > would like to use the new managed storage, you can review and import those
 > settings whenever it is convenient.
 
+`mcp-email-server` supports Windows, macOS, and Linux. See
+[Security](docs/security.md) for platform-specific filesystem and credential
+storage details.
+
 ## Optional migration for existing installations
 
 An `@latest` release that includes Local Email App V2 offers a preview-first
@@ -90,9 +94,10 @@ Ask the client to list the configured email accounts or recent messages.
 
 ## Other configuration methods
 
-For the SQLite-backed managed CLI workflow, headless environments, containers,
-multiple accounts, custom TLS settings, and environment-variable configuration,
-see the [documentation](https://mcp-email-server.wh1isper.top/).
+For the SQLite-backed managed CLI workflow, Windows and POSIX storage boundaries,
+headless environments, containers, multiple accounts, custom TLS settings, and
+environment-variable configuration, see the
+[documentation](https://mcp-email-server.wh1isper.top/).
 
 ## Documentation
 

@@ -45,8 +45,10 @@ secret-binding authority.
 A managed catalog has a stable identifier, exact schema version, and monotonic
 catalog revision. It has no `STAGING`/`ACTIVE` lifecycle and no catalog activation
 operation. On Linux it also contains the owner-only `managed_secret` store; on
-macOS and other supported non-Linux platforms bindings resolve through the system
-keyring, as specified in spec 05.
+Windows, macOS, and other supported non-Linux platforms bindings resolve through
+the operating-system keyring, as specified in spec 05. Windows catalog and
+bootstrap authority is available only on a local fixed NTFS volume after the
+handle-bound DACL, owner, reparse-point, identity, and locking checks in spec 08.
 
 - **initialize** creates a secure catalog idempotently or reports a typed conflict
   with an existing incompatible target. Idempotent adoption is limited to the
@@ -183,11 +185,15 @@ Legacy mode preserves established TOML and environment composition. New managed
 catalog semantics MUST NOT reinterpret legacy precedence. An absent or empty
 role-specific environment password falls back to the required non-empty shared
 password. Managed bootstrap authority remains unavailable without the required
-POSIX owner/no-follow/lock primitives, but legacy-only store, reset, and
-credential migration retain their historical platform writer under process-local
-serialization. A fresh reset has no filesystem effect; a newly created POSIX
-legacy configuration parent is `0700`, and an existing parent is not silently
-changed.
+platform security primitives. POSIX requires owner/no-follow/directory-descriptor
+and advisory-lock guarantees; Windows requires the local fixed NTFS,
+handle-bound DACL/owner/reparse/identity, and hardened cross-process lock
+contract in spec 08. No path-based weaker fallback is used. Legacy-only store,
+reset, and credential migration retain their historical compatibility writer
+under process-local serialization where managed/bootstrap authority is not
+involved. A fresh reset has no filesystem effect; newly created private
+configuration storage uses `0700`/`0600` on POSIX and a protected private DACL
+on Windows, while an existing parent is not silently re-permissioned.
 
 MCP exposes no legacy or managed account writer. The historical
 `add_email_account` tool is removed because its credential-bearing arguments
@@ -335,3 +341,8 @@ SQL, raw provider responses, or reusable locators.
     intentional: provider connectivity tests remain CLI diagnostics and have no
     Web UI route or control; neither interface edits legacy TOML as its normal
     management model.
+11. On native Windows NTFS, fresh initialization, selection, selected-catalog
+    reopen, CLI startup, and UI startup use the system keyring and satisfy spec
+    08's reparse, ACL, identity, lock, WAL/SHM, replacement, and crash-recovery
+    contract; unsupported Windows path/filesystem classes fail before authority
+    or keyring effects.

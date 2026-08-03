@@ -101,9 +101,10 @@ backend is platform-specific:
 
 - Linux stores values in the dedicated `managed_secret` table inside the same
   owner-only managed SQLite database as the catalog;
-- macOS and any other non-Linux platform that satisfies the managed catalog's
-  required POSIX owner/no-follow/locking guarantees use the operating-system
-  keyring. Platforms without those filesystem guarantees are not currently
+- Windows stores values in the current user's Windows Credential Manager after
+  the catalog passes the local fixed NTFS security profile below;
+- macOS and other supported non-Linux platforms use the operating-system
+  keyring. Platforms without the complete filesystem-security profile are not
   supported for managed catalogs.
 
 Only the `SecretStore` adapter reads or writes these values. Catalog queries,
@@ -149,36 +150,72 @@ single result document and remain user-operated; JSON does not make an agent a
 safe credential channel. A missing or unreadable active secret fails closed
 rather than selecting a legacy account or plaintext fallback.
 
-Managed bootstrap/catalog support requires POSIX ownership, no-follow,
-directory-descriptor, and advisory-lock primitives. Selection authority lives in
-an owner-only sibling sidecar (`config.bootstrap.toml` for `config.toml`), not in
-the legacy source. Bootstrap sidecars, their immediate parent directory, the
-SQLite database, SQLite sidecars, and locks must be owned by the current user and
-must not grant group or world access. Symlinked,
-hard-linked where forbidden, or non-regular paths are rejected. New directories
-and files are created with `0700` and `0600` permissions respectively. On Linux,
-these controls protect both catalog state and the `managed_secret` table.
+Managed bootstrap/catalog support requires the complete platform profile.
+Selection authority lives in a private sibling sidecar
+(`config.bootstrap.toml` for `config.toml`), not in the legacy source. Bootstrap
+sidecars, their immediate parent, SQLite database and WAL/SHM sidecars, and locks
+must remain private regular non-link objects with stable identity.
+
+On POSIX, the profile uses current-owner checks, `0700` directories, `0600`
+files, component no-follow/directory-descriptor traversal, single-link checks,
+and bounded `fcntl` locking. On Linux, these controls protect both catalog state
+and the `managed_secret` table.
+
+### Windows filesystem boundary
+
+On Windows, managed/bootstrap authority, attachment materialization, and
+oversized-result spill support only an ordinary drive-letter path on a local
+fixed NTFS volume with at least one validated directory below the volume root.
+Direct `C:\\file`-style volume-root storage is unsupported. UNC and mapped network paths, remote drives, `\\?\\`/`\\.\\`
+device namespaces, alternate data streams, FAT/exFAT, and unknown filesystem
+types fail before parent creation, SQLite/provider work, or credential effects.
+
+Every existing component is opened with reparse traversal disabled and held
+without delete sharing while sensitive checks run. File and directory symlinks,
+junctions, mount points, and provider-defined reparse tags are rejected. Identity
+is the volume serial plus file index read from the held handle; exact files must
+be regular and single-link. Private objects are current-user-owned and use a
+protected DACL granting only the current user, LocalSystem, and built-in
+Administrators. Unknown/NULL DACLs, unsupported allow ACEs, foreign owners, or
+any allow access granted to another SID fail closed, including raw generic ACE
+masks. Existing safe private parents may be normalized to the protected DACL
+only during an explicit managed creation operation; validation-only reads never
+rewrite a DACL, and an unsafe parent is never silently made acceptable.
+
+Windows cross-process locks use the maintained `filelock` `NtCreateFile` and
+`LockFileEx` path after parent-chain validation. Lock handles reject final
+reparse points, deny delete sharing, use a fixed byte range, time out in a bounded
+period, and are released by process termination. SQLite DB/WAL/SHM/lock objects
+are validated before open and again after WAL setup. Every current SQLite
+sidecar is rehardened and revalidated because another connection's final close
+may delete and recreate WAL/SHM under a new identity. Post-commit reconciliation
+contention is logged and deferred rather than misreporting a committed mutation
+as failed; the next open still performs strict prevalidation before SQLite.
+
+Private Windows replacement creates a random same-directory file with
+`CREATE_NEW` and the private DACL, writes through its held handle, calls
+`FlushFileBuffers`, then uses
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`. It never sets
+`MOVEFILE_COPY_ALLOWED`, so a cross-volume copy/delete fallback is impossible.
+The final target is reopened without following reparse points and must match the
+temporary object's identity and expected size. A pre-replace failure preserves
+the old file; after replacement, an observer sees complete old or complete new
+bytes, never a partial file.
+
 Selection changes compare the expected monotonic bootstrap revision while
 holding the private sibling lock, preventing concurrent last-writer-wins
 authority changes. Historical `db_location` remains the legacy metadata index;
-managed selection is stored separately as `managed_db_location`, so migration
-preparation cannot redirect legacy metadata writes into a managed catalog.
-Recording that selection creates management authority even while legacy mail
-mode remains active, so the bootstrap sidecar and parent receive the same security
-validation in either mode. Selection writes atomically replace only that sidecar;
-initialization and import cutover never reserialize the independent legacy source.
-On supported POSIX platforms, one cross-process sidecar lock covers each complete
-legacy store, reset, or credential migration: source load, keyring effects, source
-commit, and checked cleanup. A newly created legacy configuration parent is
-`0700`; an existing legacy parent is not silently changed, and a fresh reset with
-neither source nor sidecar creates no filesystem artifact.
+managed selection is stored separately as `managed_db_location`. Selection
+writes atomically replace only the sidecar; initialization and import cutover
+never reserialize the legacy source. A newly created POSIX legacy parent is
+`0700`; existing legacy-only sources retain their compatibility writer and a
+fresh reset with neither source nor sidecar creates no artifact.
 
-A platform without these filesystem guarantees fails before creating managed
-targets or changing bootstrap authority rather than using a weaker fallback. On
-a supported POSIX non-Linux platform, an unavailable system keyring fails the managed
-credential operation without changing its binding. Legacy-only store, reset,
-and credential migration retain their historical platform behavior; they remain
-valid legacy compatibility and import sources.
+A platform without its complete profile fails before managed target, provider,
+or bootstrap effects instead of using a weaker fallback. An unavailable Windows
+Credential Manager or other selected system keyring fails the credential
+operation without changing binding authority. Legacy-only store, reset, and
+credential migration retain their historical compatibility behavior.
 
 The managed secret service is separate from legacy account-name-based entries.
 Its opaque handles are intentionally not a diagnostic or user-facing contract.
@@ -243,16 +280,23 @@ reads neither create nor depend on temporary spill storage. The local server
 stores the canonical JSON in a randomly named process-private temporary
 directory and returns its
 exact local path, byte count, SHA-256 digest, media type, and lifetime notice.
-The directory and files are owner-only; creation is exclusive and no-follow,
-and file type, identity, link count, mode, size, and digest inputs are checked
-around the write. This spill variant is available only when the required POSIX
-primitives exist. Otherwise bounded inline results still work, while a result
-that would require spill fails with a bounded error.
+The directory and files are private; creation is exclusive and no-follow, and
+file type, identity, link count, mode or DACL, size, and digest inputs are checked
+around the write. POSIX uses owner-only modes. Windows uses a dedicated
+protected-DACL temporary container with a random per-process root on local fixed
+NTFS and handle-bound identity. Without the complete
+active platform profile, bounded inline results still work while a result that
+requires spill fails with a bounded error.
 
 These artifacts contain private message content. They are not credentials, are
-never placed in SQLite or configuration, and are removed on graceful server
-shutdown. A crash can leave an OS temporary artifact, so normal host temporary
-storage protections and cleanup still apply. No HTTP route, generic MCP file
+never placed in SQLite or configuration, and are removed by identity on graceful
+shutdown. A killed process may leave a remnant. Each Windows root holds an
+owner-marker `LockFileEx` range for its lifetime; cleanup must first acquire that
+range non-blocking, so age never makes a live long-running process eligible. The
+next writer then performs bounded prefix/age/type/owner/DACL/link/identity
+validation and removes only a fully verified stale root; reparse or substituted
+entries are left untouched.
+No HTTP route, generic MCP file
 reader, directory listing, remote URL, or arbitrary path lookup is exposed by
 this feature. Only connect a local MCP client whose own filesystem tools may
 legitimately inspect paths returned by the server.
@@ -521,21 +565,26 @@ unambiguous. The implementation also accepts relative paths and resolves them
 against the server process's working directory. The application fetches at most
 a 50 MiB raw message, accepts at most 25 MiB of decoded attachment bytes, and
 passes bytes rather than a path to the artifact writer. The writer operates only
-on the exact requested target. On POSIX it creates and traverses parent
-components through pinned no-follow directory descriptors, rejects unsafe
-ownership or writable non-sticky parents, and validates an existing target as a
-single-link, owner-only regular file. It writes a random exclusive sibling with
-`0600` mode, fsyncs and verifies identity/type/owner/link-count/mode/size, then
-atomically replaces the exact destination through the pinned parent descriptor
-and verifies the final identity again. A failed pre-replace write preserves an
-existing file and removes only a temporary name whose identity is proven. A
-platform without the required POSIX no-follow and directory-descriptor primitives
-rejects attachment materialization before creating a parent or file; no weaker
-path-based fallback is used. An existing private regular file at the exact
-requested path can be replaced.
+on the exact requested target. Filesystem capability preflight occurs before
+credential resolution, provider construction, download, or MIME decoding.
 
-The POSIX descriptor traversal prevents provider-controlled filenames and common
-symlink/FIFO/device races from redirecting the write; these checks are not a
+On POSIX, the writer traverses parent components through pinned no-follow
+directory descriptors, rejects unsafe ownership or writable non-sticky parents,
+and validates an existing target as a single-link owner-only regular file. It
+writes a random `0600` sibling, fsyncs, atomically replaces through the pinned
+parent descriptor, and verifies final identity and size.
+
+On Windows, the writer applies the [local fixed NTFS boundary](#windows-filesystem-boundary),
+rejects every reparse point and hard-linked/permissive target, creates a private
+same-directory sibling, flushes it, performs same-volume write-through replace,
+and verifies final volume/file identity and size. Pre-replace failure preserves
+an existing target. The next operation removes only old prefix-matching temporary
+files that still pass owner, DACL, type, link, age, and identity checks. No
+platform uses a weaker path-based fallback. An existing private regular file at
+the exact requested path can be replaced.
+
+These traversals prevent provider-controlled filenames and common
+symlink/junction/FIFO/device races from redirecting the write; they are not a
 sandbox around arbitrary paths a trusted MCP caller can request. Run the server
 with filesystem permissions
 that limit where it can write, and do not assume attachments are safe to open or

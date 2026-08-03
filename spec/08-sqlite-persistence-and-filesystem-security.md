@@ -74,8 +74,13 @@ owned by the current user. Network filesystems and platforms that cannot provide
 the required ownership/no-follow semantics fail with remediation.
 
 Concurrent initialization and catalog access use an application lock with bounded
-wait. SQLite busy timeout is finite and maps to a typed busy error. Locks are not
-held while contacting providers or the system keyring. A Linux
+wait. SQLite busy timeout is finite and maps to a typed busy error. POSIX retains
+the existing owner-only no-follow `fcntl` lock. Windows uses the maintained
+`filelock` Windows implementation only after project-owned validation of the
+lock's parent chain; the acquired lock object is then revalidated from its held
+non-reparse handle. The Windows lock has a fixed bounded timeout, denies delete
+sharing while held, and relies on `LockFileEx` process-termination release.
+Locks are not held while contacting providers or the system keyring. A Linux
 `managed_secret` insert is local database work and occurs under the same bounded
 transaction as binding activation.
 
@@ -84,9 +89,45 @@ entries, unsafe permissions, links, and untrusted lower-privilege filesystem
 content, but it does not claim containment from a malicious process already
 running as the same OS user. Such a process can replace user-owned paths and can
 usually inspect the user's process and keyring state. Same-UID hostile path
-replacement is therefore outside the supported threat model; multi-user or
-hostile-same-UID operation requires a separately designed privileged broker or
-sandbox rather than stronger wording around path preflight.
+replacement is therefore outside the supported threat model; on Windows the
+same statement applies to another process running under the same user SID.
+Multi-user or hostile-same-principal operation requires a separately designed
+privileged broker or sandbox rather than stronger wording around path preflight.
+
+## Platform Security Profiles
+
+POSIX storage retains the existing owner UID, `0700` directory, `0600` regular
+file, directory-descriptor, no-follow, single-link, identity, and advisory-lock
+contract.
+
+Windows support is deliberately limited to an ordinary drive-letter path on a
+local fixed NTFS volume with a validated parent below the volume root. Direct
+volume-root storage, UNC/network paths, mapped or remote drives, device and
+extended device namespaces, alternate data streams, FAT/exFAT, and unknown
+filesystem types fail closed before creating a parent, opening SQLite, fetching
+an attachment, or performing a keyring/authority effect. A path containing a
+colon outside its drive designator is rejected.
+
+Each existing Windows component is opened with
+`FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS` as appropriate and
+kept open without delete sharing for the sensitive operation. Any reparse-point
+attribute or tag is rejected, including file/directory symlinks, junctions,
+mount points, and provider-defined reparse points. Security and identity checks
+are made from these handles, not from pathname metadata alone. Object identity
+is the volume serial number and file index returned by
+`GetFileInformationByHandle`; expected type, regular-disk status, size, and link
+count are checked with it. An existing exact file target must have one hard link.
+
+The current user SID owns private objects. Their DACL is protected and grants
+only the current user, LocalSystem, and built-in Administrators. No other SID
+may have an allow ACE with any access mask; this includes raw generic masks
+before Windows maps them to file or directory rights. Existing
+traversed ancestors may grant ordinary read/traverse and unrelated sibling
+creation, but no untrusted SID may replace/delete the traversed component,
+modify its ACL/owner, or create a reparse substitution at the sensitive parent.
+A null or invalid DACL, unknown allow-ACE form, unresolved ownership, or an owner
+outside the trusted set fails closed. Private immediate parents use the stricter
+private-object policy.
 
 ## Mandatory Pre-open Sequence
 
@@ -107,15 +148,55 @@ canonicalize intended paths without following final symlinks
 Preflight rejects any existing symlink, non-regular file, wrong owner, unsafe
 mode, unexpected hard-link condition where detectable, insecure parent, or path
 identity replacement. It MUST happen before connect and before enabling WAL.
-Post-create validation closes the race for newly created sidecars. Failure closes
-the connection and fails closed.
+Post-create validation closes the race for newly created sidecars. Because a
+last SQLite close may delete and a later connection may recreate WAL/SHM under
+new identities, setup rehardens and revalidates every current sidecar rather
+than relying only on its pre-open name. Pre-open or setup failure closes the
+connection and fails closed. A post-commit reconciliation lock race is warning-
+only and deferred so a committed mutation is not reported as failed; the next
+open still repeats strict validation before SQLite.
 
-Files are owner-only (`0600`); private parent directories are owner-only
-(`0700`). Creation uses restrictive mode, no-follow/exclusive primitives, and
-POSIX advisory locking. Platforms without the required POSIX ownership,
-no-follow, directory-descriptor, and locking guarantees reject managed catalog
-and bootstrap effects before creating their target or parent; no weaker fallback
-is used.
+On POSIX, files are owner-only (`0600`) and private parent directories are
+owner-only (`0700`); creation uses restrictive mode, no-follow/exclusive
+primitives, and advisory locking. On Windows, files and directories use the
+protected private DACL above, exclusive non-reparse creation, handle identity,
+and the hardened lock contract. Platforms and filesystems without their complete
+profile reject managed catalog and bootstrap effects before creating their
+target or parent; no weaker path-based fallback is used.
+
+The application lock remains held through SQLite connect, WAL enablement, and
+post-create validation. Existing and newly created DB, `-wal`, and `-shm`
+objects must be private, non-reparse, regular, single-link files whose
+handle-bound identities remain stable across setup. A failed post-check closes
+the connection and all pinned handles before returning a typed bounded error.
+
+## Durable Replacement and Crash Cleanup
+
+Windows authority, attachment, and spill writers create a cryptographically
+random same-directory temporary sibling with `CREATE_NEW`, the protected private
+DACL, and no delete sharing. They write through the held handle and call
+`FlushFileBuffers` before replacement. An overwrite uses
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` on the same
+volume; `MOVEFILE_COPY_ALLOWED` is never set. No-clobber uses an equivalent
+exclusive final transition rather than a check-then-rename sequence. The final
+target is reopened without following reparse points and must have the temporary
+object's recorded identity, expected type, size, owner, DACL, and link count.
+Failure before replacement preserves an existing target; after replacement,
+observers may see complete old or complete new content, never a partial write.
+POSIX retains its existing same-directory durable atomic-write contract.
+
+Cleanup never deletes by name alone. In-operation cleanup removes only the
+created object after matching its recorded held/reopened identity. Bootstrap
+and attachment temporaries have distinct exact prefix-plus-random-token name
+shapes and a bounded matching-candidate/age scope. Windows spill roots live in a
+dedicated private temporary container, so unrelated shared-temp entries cannot
+starve or inflate their bounded cleanup scan. On next operation or startup, a remnant is eligible
+only after non-follow open proves the expected local volume, regular
+file/directory type, trusted owner, private mode/DACL, single-link condition
+where applicable, and a stable identity immediately before deletion. Reparse,
+foreign, permissive, renamed/substituted, excessive, or otherwise unknown
+entries are left untouched and produce a bounded warning. Graceful and killed-
+process cleanup follow the same rule.
 
 ## Connection and Transaction Rules
 
@@ -177,12 +258,15 @@ remain separate operator procedures outside this delivery.
    from catalog/projection/body/UI-session columns.
 2. Soft-removed account names remain unique, and logical mailbox rows have no
    unsupported business revision contract.
-3. Pre-existing DB/WAL/SHM/lock symlinks, non-regular files, wrong ownership,
-   unsafe modes, insecure parents, and detected identity replacement fail
-   closed within the stated local single-user trust boundary.
-4. Newly created WAL/SHM files are post-validated and owner-only.
-5. Concurrent initialization/open and busy timeout behavior is deterministic and
-   bounded.
+3. Pre-existing DB/WAL/SHM/lock symlinks or Windows reparse points,
+   non-regular files, unexpected hard links, wrong ownership, unsafe modes/DACLs,
+   insecure parents, and detected identity replacement fail closed within the
+   stated local single-user trust boundary.
+4. Newly created WAL/SHM files are post-validated and owner-only/private under
+   the active platform profile.
+5. Concurrent initialization/open, application-lock timeout, crash release, and
+   SQLite busy timeout behavior is deterministic and bounded on POSIX and native
+   Windows.
 6. Unsupported pre-release schema versions are rejected without mutation; future crash and migration tests never advertise a partially migrated schema.
 7. External network, system-keyring, and large filesystem work is absent from
    SQLite transaction scopes; Linux secret insertion and binding activation are
@@ -193,3 +277,12 @@ remain separate operator procedures outside this delivery.
 10. Corrupt, incompatible, busy, insecure, and unsupported-platform states
     produce bounded typed errors with no automatic legacy fallback, partial
     parent creation, or destructive repair.
+11. Native Windows NTFS tests cover symlinks, junctions, arbitrary reparse
+    rejection where constructible, foreign/permissive DACLs, hard links, held
+    identity, lock contention and killed-owner release, concurrent replacement,
+    pre/post-replace process termination, complete-old-or-new atomicity, and
+    bounded stale-artifact cleanup including substitution attempts.
+12. Windows UNC, remote/non-NTFS, device namespace, and alternate-stream inputs
+    fail before authority, provider, or secret-store effects; Windows writers
+    use flush plus same-volume write-through replacement and never enable copy
+    fallback.

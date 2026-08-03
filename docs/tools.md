@@ -203,9 +203,13 @@ a process-private temporary directory. The bounded response then has
 `output_lifetime` fields. A local MCP host can inspect that exact path with its
 own filesystem tool. The file is available only until the email-server process
 exits; copy needed content before restarting. The server does not add a generic
-file-download tool or remote URL. Spill requires owner/no-follow POSIX
-primitives; without them bounded inline results remain available, while a batch
-that requires spill returns a bounded error.
+file-download tool or remote URL. Spill requires the complete POSIX owner/no-follow
+profile or the local fixed NTFS Windows DACL/reparse/identity profile. Windows
+crash remnants are removed only after bounded prefix, type, owner, DACL, and
+identity validation. Spill never falls back to a broadly accessible temporary
+file. Without the required profile, bounded inline results remain available,
+while a batch that requires spill returns a bounded error. The process-lifetime
+notice still applies.
 
 Body retrieval always uses IMAP PEEK. When requested, successfully retrieved IDs
 are deduplicated and marked through the same application mutation workflow as
@@ -362,18 +366,21 @@ raises a permission error. Enable it explicitly with:
 enable_attachment_download = true
 ```
 
-The application checks the current account and feature policy before fetching,
-checks them again when opening provider access, and resolves authority once more
-after fetch immediately before the filesystem write. Revocation during a slow
-fetch therefore discards the payload without creating a file. It rejects raw
-messages above 50 MiB and decoded attachment content above 25 MiB. The mail adapter
-returns bytes only; it cannot choose or write a filesystem path. The local
-artifact adapter writes only the exact requested destination through pinned
-POSIX directory descriptors, creates files with owner-only mode, and rejects
-symlinked/non-directory parents plus symlinked, linked, permissive, or
-non-regular final targets. Existing private regular files at the exact path may
-be replaced. Platforms without the required POSIX no-follow/directory-descriptor
-primitives reject the write; there is no weaker fallback.
+The application checks current account and feature policy, then preflights the
+local destination before provider construction, credential resolution, download,
+or MIME decoding. It checks authority again after fetch immediately before the
+write, so revocation during a slow fetch discards the payload. Raw messages above
+50 MiB and decoded attachments above 25 MiB are rejected. The mail adapter
+returns bytes only and never receives the path.
+
+The artifact adapter writes only the exact destination. POSIX uses pinned
+no-follow directory descriptors and owner-only files. Windows supports only a
+local fixed NTFS drive-letter path and uses held non-reparse handles, protected
+DACLs, hard-link/identity checks, `FlushFileBuffers`, and same-volume
+write-through replacement. Symlinked or junction parents, linked/permissive or
+non-regular targets, UNC/network/device/alternate-stream/non-NTFS paths, and
+replacement races fail closed. Existing private regular files may be replaced;
+there is no weaker fallback.
 
 Review [Attachment access](security.md#attachment-access) before enabling this
 operation.

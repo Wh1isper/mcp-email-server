@@ -27,6 +27,12 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     MailboxInfo,
 )
+from mcp_email_server.windows_security import (
+    WindowsSecurityError,
+    preflight_artifact_destination,
+    windows_security_supported,
+    write_attachment,
+)
 
 
 class ClassicReadProvider:
@@ -155,11 +161,11 @@ _SECURE_ATTACHMENT_WRITES_SUPPORTED = (
     and hasattr(os, "geteuid")
     and all(operation in os.supports_dir_fd for operation in (os.mkdir, os.open, os.rename, os.stat, os.unlink))
     and os.stat in os.supports_follow_symlinks
-)
+) or (os.name == "nt" and windows_security_supported())
 
 
 class LocalArtifactWriter:
-    """Write an exact caller path only when pinned POSIX traversal is available."""
+    """Write an exact caller path through the platform filesystem-security adapter."""
 
     @staticmethod
     def _validate_directory(descriptor: int) -> None:
@@ -286,6 +292,30 @@ class LocalArtifactWriter:
             os.close(parent_descriptor)
 
     @staticmethod
+    def _preflight(save_path: str) -> None:
+        path = Path(os.path.abspath(Path(save_path).expanduser()))
+        if not _SECURE_ATTACHMENT_WRITES_SUPPORTED:
+            raise PermissionError(
+                "Attachment download is unavailable because this platform cannot enforce secure destination traversal"
+            )
+        try:
+            if os.name == "nt":
+                preflight_artifact_destination(path)
+                return
+            parent_descriptor = LocalArtifactWriter._open_posix_parent(path)
+            try:
+                LocalArtifactWriter._validate_existing_target(parent_descriptor, path.name)
+            finally:
+                os.close(parent_descriptor)
+        except PermissionError:
+            raise
+        except (OSError, WindowsSecurityError) as exc:
+            raise PermissionError("Attachment destination parent is unsafe") from exc
+
+    async def preflight(self, save_path: str) -> None:
+        await asyncio.to_thread(self._preflight, save_path)
+
+    @staticmethod
     def _write(save_path: str, payload: AttachmentPayload) -> str:
         path = Path(os.path.abspath(Path(save_path).expanduser()))
         if not _SECURE_ATTACHMENT_WRITES_SUPPORTED:
@@ -293,11 +323,14 @@ class LocalArtifactWriter:
                 "Attachment download is unavailable because this platform cannot enforce secure destination traversal"
             )
         try:
-            LocalArtifactWriter._write_posix(path, payload.content)
+            if os.name == "nt":
+                write_attachment(path, payload.content)
+            else:
+                LocalArtifactWriter._write_posix(path, payload.content)
         except PermissionError:
             raise
-        except OSError as exc:
-            if exc.errno in {errno.EISDIR, errno.ELOOP, errno.ENODEV, errno.ENXIO}:
+        except (OSError, WindowsSecurityError) as exc:
+            if isinstance(exc, OSError) and exc.errno in {errno.EISDIR, errno.ELOOP, errno.ENODEV, errno.ENXIO}:
                 raise PermissionError("Attachment destination must be a regular file") from exc
             raise PermissionError("Attachment destination could not be written") from exc
         return path.as_posix()

@@ -88,10 +88,11 @@ branch on `schema_version`, `ok`, `command`, typed `error.code`, and stable data
 rather than matching fixed safe message prose. JSON output grants no authority to
 run another command. Managed startup requires all of the following:
 
-- a parseable owner-only bootstrap sidecar with `bootstrap_version = 1`,
+- a parseable private bootstrap sidecar with `bootstrap_version = 1`,
   `managed_selection = true`, `mode = "managed"`, and
   `managed_db_location`;
-- a present, regular, non-symlink SQLite file in an owner-only immediate parent;
+- a present, regular, non-link SQLite file in a private immediate parent under
+  the active POSIX or Windows profile;
 - the exact supported managed schema.
 
 The server deliberately does not fall back to TOML accounts when a bootstrap or
@@ -132,7 +133,8 @@ mcp-email-server account set-secret ACCOUNT incoming
 Use `outgoing` for an SMTP credential. A failed save leaves no intermediate
 binding and does not change the current binding authority. On Linux, secret
 insertion and active binding/revision commit in one managed SQLite transaction.
-On supported POSIX non-Linux platforms, restore system-keyring access before retrying.
+On Windows, restore access to Windows Credential Manager; on other supported
+non-Linux platforms, restore system-keyring access before retrying.
 Provider connectivity is diagnosed with `mcp-email-server account test ACCOUNT
 incoming|outgoing [--json]`; this agent-facing low-level CLI diagnostic has no
 Web UI route or Test connection action. Connectivity checks report only bounded
@@ -228,10 +230,10 @@ Provider connectivity testing is CLI-only. Empty-workspace and settled-ready
 banners with no next action are hidden; actionable import, selection, restart,
 or conflict states remain visible. There is no catalog activation step, and a
 saved account is not a provider-connectivity certification.
-There is no supported remote, wildcard, CORS, or shared-link mode. Managed
-catalog/bootstrap operations, attachment writes, and oversized spill require
-the documented POSIX filesystem primitives. An unsupported-platform error is a
-fail-closed boundary, not a permissions setting that can be bypassed.
+There is no supported remote, wildcard, CORS, or shared-link mode. Managed catalog/bootstrap operations, attachment writes, and oversized spill
+require the documented POSIX profile or a local fixed NTFS Windows path. An
+unsupported-platform/filesystem error is a fail-closed boundary, not a
+permissions setting that can be bypassed.
 
 If **Import existing settings** reports that the managed catalog parent must be
 owner-only, an existing legacy configuration directory grants group or world
@@ -256,9 +258,11 @@ mcp-email-server config doctor
 ```
 
 A storage failure prevents credential installation but leaves the current
-binding authority unchanged. On Linux, check managed database access; on a
-supported POSIX non-Linux platform, restore system-keyring access. Return to **Email
-accounts**, open **Password** for the affected account, and submit a new value.
+binding authority unchanged. On Linux, check managed database access. On
+Windows, restore Credential Manager access and verify the catalog is on local
+fixed NTFS; on another supported non-Linux platform, restore system-keyring
+access. Return to **Email accounts**, open **Password** for the affected account,
+and submit a new value.
 `CLEANUP_REQUIRED` means the active result is known but an old superseded value
 remains. **Email accounts** shows a bounded password-data cleanup action whenever
 doctor reports such leftovers, including after the last active account was
@@ -397,10 +401,18 @@ MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 
 Use an absolute `save_path` when possible and ensure the server process can
 write to its parent directory. A relative path is resolved against the server
-process's working directory. The destination fails closed if any existing parent
-is a symlink or not a directory, or if the final target is a symlink, FIFO,
-device, or other non-regular file. Choose a real directory and an exact regular
-file path; do not work around this check with links.
+process's working directory. Filesystem support is checked before provider
+fetch. The destination fails closed if any parent is a symlink/reparse point or
+not a directory, or if the target is linked, permissive, a FIFO/device, or other
+non-regular object.
+
+On Windows, use an ordinary local fixed NTFS drive-letter path with a parent
+directory below the volume root; direct `C:\\file`-style storage is unsupported.
+Junctions and all reparse tags are rejected along with UNC/mapped network paths, `\\?\\`/`\\.\\`
+device paths, alternate streams such as `file:stream`, and FAT/exFAT. Move the
+destination to local NTFS rather than bypassing the check. Old application temp
+files are deleted only after bounded owner/DACL/type/link/identity validation;
+a substituted or unverified entry is deliberately left untouched.
 
 ## A message mutation reports success but nothing changed
 

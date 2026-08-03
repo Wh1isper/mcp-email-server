@@ -112,7 +112,7 @@ so one-time launch material cannot enter browser artifacts.
 ## Continuous integration
 
 The main GitHub Actions workflow runs quality checks, a strict documentation
-build, the Python version matrix, the locked frontend build with staged-asset
+build, the Python version matrix, a dedicated native `windows-latest` job, the locked frontend build with staged-asset
 drift rejection, locked-Chromium browser E2E, and GreenMail once on
 `ubuntu-latest` for every pull request and push to `main`. A dedicated artifact
 job runs the same authoritative `make build` then `make verify-dist` sequence as
@@ -120,7 +120,18 @@ the release workflow, so CI validates one exact wheel/sdist pair rather than
 independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
-repeated for every interpreter version. The release workflow verifies the exact
+repeated for every interpreter version. The Windows job installs the conditional
+`pywin32` dependency, runs the full Python suite and type checker, then reruns
+`tests/test_windows_security.py` with explicit reporting on the runner's real
+local NTFS workspace. Native cases cover file/directory symlinks, a Developer-
+Mode-independent junction, hard links, owner/DACL policy, lock contention and
+killed-owner release, concurrent and crash-boundary replacement, complete-old-
+or-new atomicity, validated stale cleanup, managed bootstrap/catalog plus
+Windows Credential Manager, attachment preflight, and spill lifecycle. A missing
+symlink privilege fails the native gate distinctly; symlink, junction, DACL,
+lock, crash, and atomic-write coverage may not be replaced by mocks.
+
+The release workflow verifies the exact
 peeled tag commit, validates canonical `X.Y.Z` with an optional `v` prefix, and
 deterministically stamps the normalized value into only the isolated release jobs'
 Python package metadata and
@@ -225,7 +236,9 @@ The Compose definition:
 - never forwards messages to external mail servers.
 
 The application configuration lives in a pytest-managed temporary directory
-and contains only the fixed synthetic credentials above. Managed Linux
+and contains only the fixed synthetic credentials above. Windows native tests
+use only the ephemeral runner account, local NTFS, synthetic Credential Manager
+entries removed in `finally`, and bounded identity-validated cleanup. Managed Linux
 credentials remain in the temporary owner-only catalog SQLite database. The
 suite also injects a test-only, process-persistent keyring backend for legacy
 keyring and import scenarios; its file is confined to the same directory.

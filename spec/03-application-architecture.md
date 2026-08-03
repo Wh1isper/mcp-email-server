@@ -205,16 +205,22 @@ is an explicit result variant, not an exception to provider/request limits:
   bounded before spill;
 - the artifact directory is allocated lazily on the first spill write, randomly
   named, owner-only, process-scoped, and outside the
-  repository/configuration/catalog trees;
-- files are created no-follow and exclusive with owner-only permissions, have a
-  bounded byte size and integrity digest, and are revalidated after write;
+  repository/configuration/catalog trees; on Windows it must reside on local
+  fixed NTFS and have a protected private DACL;
+- files are created no-follow and exclusive with owner-only permissions or a
+  protected private Windows DACL, have a bounded byte size and integrity digest,
+  and are revalidated by held-object identity after write;
 - the inline DTO contains only a bounded preview/status, exact artifact path,
   media type, byte count, digest, and process-lifetime notice;
 - no generic file-read, file-listing, download route, or remote URL is added;
   an already-authorized local MCP host may inspect the returned path through its
   own filesystem capability;
-- graceful shutdown removes artifacts and their private directory; startup MAY
-  perform bounded, ownership-verified cleanup of stale crash remnants;
+- graceful shutdown removes only identity-verified artifacts and their private
+  directory; each Windows root holds a process-lifetime owner-marker byte-range
+  lock, and startup cleanup must acquire it non-blocking before age can qualify a
+  candidate, so a live long-running process is never treated as stale; cleanup
+  remains bounded and prefix-, type-, ownership/DACL-, and identity-verified and
+  never follows POSIX links or Windows reparse points;
 - secret values are never eligible for spill, while message content retains the
   same local sensitivity classification as an inline result.
 
@@ -251,5 +257,7 @@ protocol evidence and reports unknown when cancellation prevents certainty.
 8. Architecture and catalog tests prove no MCP adapter or service registration
    path exposes account or credential management in either mode.
 9. Oversized-result tests prove bounded inline output, private no-follow
-   artifacts, digest/size integrity, process cleanup, spill-failure behavior, and
-   absence of a generic file or remote-download surface.
+   artifacts, digest/size and held identity integrity, process and killed-process
+   stale cleanup, spill-failure behavior, and absence of a generic file or
+   remote-download surface. Native Windows cases run on local NTFS and cover
+   DACLs, reparse points, and cleanup substitution attempts.

@@ -138,6 +138,26 @@ anycap feedback --type bug -m "describe the issue" --request-id <id>
 anycap feedback --type feature -m "describe the use case"
 ```
 
+## Windows Compatibility and Filesystem Security
+
+- Windows is a first-class supported platform. New runtime, CLI, UI, persistence,
+  attachment, spill, packaging, and documentation changes must preserve Windows
+  compatibility rather than assume POSIX APIs.
+- Keep platform differences behind a small typed filesystem-security compatibility
+  layer. Application/domain code stays platform-neutral; do not scatter Win32,
+  `fcntl`, UID, mode-bit, or no-follow branches through business workflows.
+- POSIX retains owner/mode, directory-descriptor, no-follow, identity, and `fcntl`
+  guarantees. Windows uses local fixed NTFS, handle-bound reparse/identity checks,
+  protected DACLs, hardened `LockFileEx` locking, and write-through same-volume
+  replacement. Never restore a weaker path-based fallback.
+- Any filesystem-security change requires native `windows-latest` coverage on real
+  NTFS for applicable symlink/junction, ACL/owner, hard-link, lock, concurrent
+  replacement, crash cleanup, and atomic-write behavior; mocks alone are not proof.
+- Explicitly document unsupported Windows storage such as direct volume-root
+  targets, UNC/network paths, device namespaces, alternate data streams, and
+  non-NTFS volumes, and fail before
+  provider, authority, or secret-store effects.
+
 ## Testing Expectations
 
 - Add or update tests for every behavior change and regression fix.

@@ -134,10 +134,21 @@ to loopback, and removes it after the test. See the
 [validation guide](https://mcp-email-server.wh1isper.top/validation/) for the
 covered flows and limitations.
 
+Windows is a first-class runtime target. Keep Win32 filesystem details behind
+`mcp_email_server/windows_security.py`; application and domain workflows remain
+platform-neutral. Changes to bootstrap/catalog storage, SQLite WAL/SHM,
+attachments, large-result spill, locks, replacement, or cleanup must add the
+applicable native cases to `tests/test_windows_security.py`. The
+`windows-latest` job runs these on real local NTFS. Mocks alone do not satisfy
+junction/symlink, DACL/owner, lock, concurrent replacement, crash-cleanup, or
+atomic-write coverage. Do not add a weaker path-only fallback for Windows;
+UNC/network/device/alternate-stream and non-NTFS storage remain explicit
+fail-closed boundaries.
+
 The CI pipeline runs quality and strict documentation checks, the unit test
-suite against every supported Python version, the locked frontend and
-real-browser management E2E, and the GreenMail baseline once for pull requests
-and pushes to `main`. It also builds one release-format wheel/sdist pair and runs
+suite against every supported Python version, a full native Windows suite, the
+locked frontend and real-browser management E2E, and the GreenMail baseline once
+for pull requests and pushes to `main`. It also builds one release-format wheel/sdist pair and runs
 `make verify-dist` against those exact bytes, including the Node-free from-sdist
 rebuild and installed/`uvx` UI smokes. Relevant changes should still run
 `make test-browser` and `make test-e2e` locally before they are pushed so

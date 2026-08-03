@@ -133,14 +133,29 @@ The effect is permitted only when:
 2. account authority and policy are freshly revalidated;
 3. account, mailbox, message, and MIME part identifiers are valid and bounded;
 4. declared and actual bytes fit per-attachment and aggregate ceilings;
-5. the provider never receives or interprets the local path;
-6. every existing path component and final target passes no-follow checks;
-7. symlink, non-regular target, unsafe ownership/permissions, directory
+5. filesystem capability preflight succeeds before provider fetch, so an
+   unsupported destination cannot trigger download or decode work;
+6. the provider never receives or interprets the local path;
+7. every existing path component and final target passes platform no-follow
+   checks while pinned against deletion/replacement where the platform permits;
+8. symlink, Windows junction/mount/provider reparse point, non-regular target,
+   unsafe ownership/permissions or DACL, unexpected hard link, directory
    substitution, and replacement races are rejected;
-8. bytes are written with owner-only permissions using an atomic/no-clobber
+9. bytes are written with private owner access using an atomic/no-clobber
    strategy consistent with the declared overwrite contract;
-9. final identity, type, owner, permissions, and size are revalidated before
-   success is returned.
+10. final identity, type, owner, permissions or DACL, link count, and size are
+    revalidated before success is returned.
+
+On Windows this effect is supported only on local fixed NTFS storage under spec 08. It creates a random same-directory sibling exclusively with a protected
+private DACL, writes through a held non-reparse handle, calls
+`FlushFileBuffers`, and replaces with
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` when overwrite
+is allowed. `MOVEFILE_COPY_ALLOWED` is forbidden. The target is reopened with
+reparse traversal disabled and must have the temporary object's recorded volume
+serial/file-index identity and expected size. Failure before replacement
+preserves an existing target. Cleanup deletes only a verified object created by
+the operation; a crash remnant is eligible only for the bounded prefix-, owner-,
+DACL-, type-, and identity-validated cleanup in spec 08.
 
 The result reports the exact requested destination in a bounded local-only
 response. Logs and remote/provider errors do not include it. Partial files are
@@ -175,7 +190,11 @@ catalog authority or secret binding state.
    tests cover present, absent, whitespace-only, folded, duplicate, malformed,
    per-field, and aggregate `In-Reply-To`/`References` behavior.
 6. Attachment tests cover explicit enablement, exact path preservation, size
-   limits, symlinks, non-regular targets, permissions, no-clobber/overwrite,
-   replacement races, partial cleanup, and absence of path leakage to provider.
+   limits, capability preflight before provider work, symlinks, Windows
+   junctions and other reparse points, hard links, non-regular targets,
+   permissions/DACLs, no-clobber/overwrite, concurrent and crash-boundary
+   replacement, validated partial/stale cleanup, final identity, and absence of
+   path leakage to provider. Windows filesystem cases run on real NTFS rather
+   than mocks alone.
 7. Projection failure cannot turn known provider read evidence into a false mail
    failure, and rebuild cannot alter catalog or credential state.

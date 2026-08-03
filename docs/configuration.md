@@ -8,11 +8,12 @@ mcp-email-server supports two explicitly selectable configuration modes:
 
 - `legacy` keeps account configuration in TOML and composes documented
   environment overlays;
-- `managed` keeps account authority in owner-only SQLite. On Linux, credentials
-  default to its dedicated `managed_secret` table; on macOS and other non-Linux
-  platforms that satisfy the required POSIX owner/no-follow/locking guarantees,
-  credentials default to the operating-system keyring. Managed catalogs are not
-  currently supported without those filesystem guarantees.
+- `managed` keeps account authority in private SQLite. On Linux, credentials
+  default to its dedicated `managed_secret` table. Windows uses Windows
+  Credential Manager and a local fixed NTFS catalog protected by handle-bound
+  DACL, reparse, identity, and locking checks. macOS and other supported
+  non-Linux platforms use the operating-system keyring. Managed catalogs are not
+  supported without the complete platform filesystem-security profile.
 
 A missing configuration file or a v1 TOML source without separate bootstrap
 authority remains `legacy` for backward compatibility. Historical `db_location`
@@ -64,8 +65,8 @@ After authentication and status inspection, a truly empty installation issues
 one CSRF-protected POST that prepares `managed.sqlite3` in the same private
 directory as the active source and bootstrap sidecar. The POST rechecks the
 effective legacy source, then binds
-both the zero revision and absent-file proof under the same supported-POSIX lock
-used by legacy settings writes. No GET mutates state.
+both the zero revision and absent-file proof under the same secure cross-process
+platform lock used by legacy settings writes. No GET mutates state.
 If effective TOML/environment legacy content exists, the UI does not initialize
 automatically; **Import existing settings** is an explicit preparation and
 review action. A fresh installation creates the catalog and selects managed mode
@@ -116,9 +117,9 @@ editor.
 The browser process is only an adapter over shared management application
 services. It has no provider-connectivity route, mail, generic RPC, filesystem
 browser, OpenAPI, or MCP App surface. Managed catalog and attachment effects,
-plus oversized-result spill, require the documented POSIX filesystem primitives
-and fail closed when those
-primitives are unavailable. See [Security](security.md#local-management-ui-security)
+plus oversized-result spill, require the documented POSIX or Windows
+filesystem-security profile and fail closed when that complete profile is
+unavailable. See [Security](security.md#local-management-ui-security)
 for its one-time bootstrap, platform, and session boundaries.
 
 ## Managed CLI setup
@@ -289,7 +290,7 @@ IMAP/SMTP authentication and timeout failures retain the correct category.
 
 On Linux, `account add` and `account set-secret` insert the new value into the
 owner-only `managed_secret` table and activate its binding/revision in one SQLite
-transaction. On macOS and other supported POSIX non-Linux platforms, the system keyring
+transaction. On Windows, macOS, and other supported non-Linux platforms, the system keyring
 write precedes one compare-and-swap activation transaction. Any failure before
 activation returns an error without persisting an intermediate binding or
 changing current binding authority. During rotation, activation first marks the
