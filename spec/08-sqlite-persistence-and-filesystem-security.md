@@ -6,7 +6,7 @@ Managed mode uses one owner-only SQLite file for up to three ownership classes:
 
 - authoritative non-secret catalog state: accounts, endpoints, policy, revisions,
   secret-binding lifecycle, and import state;
-- on Linux, authoritative managed secret values in the dedicated
+- on Linux and Windows, authoritative managed secret values in the dedicated
   `managed_secret` table owned by the `SecretStore` adapter;
 - rebuildable metadata projection: logical mailboxes, placement metadata,
   coverage, freshness, stale markers, and bounded maintenance state.
@@ -26,8 +26,8 @@ logical model includes:
 - catalog defaults and account policy overrides;
 - role binding state: revision, opaque internal handles, active/superseded and
   cleanup status;
-- on Linux, `managed_secret` rows keyed by opaque handle, with the secret value
-  isolated from all catalog and projection queries;
+- on Linux and Windows, `managed_secret` rows keyed by opaque handle, with the
+  secret value isolated from all catalog and projection queries;
 - import plan/application state needed for safe bounded continuation;
 - logical mailbox projection keyed by account and canonical mailbox;
 - observed placement rows keyed by account, mailbox, UIDVALIDITY, and UID;
@@ -38,10 +38,10 @@ soft-removed tombstones. Logical mailboxes do not have a fictional business
 revision; their provider epoch and coverage fields qualify observations.
 
 Raw credentials and provider access tokens MUST NOT be stored outside the Linux
-`managed_secret` table or the selected non-Linux system keyring. Linux catalog
-copies, snapshots, and backups therefore contain plaintext secret values and
-MUST retain owner-only protection equivalent to the original; they are never
-classified as non-secret databases. Bodies, raw MIME,
+or Windows `managed_secret` table or the selected macOS system keyring. Linux and
+Windows catalog copies, snapshots, and backups therefore contain plaintext
+secret values and MUST retain private protection equivalent to the original;
+they are never classified as non-secret databases. Bodies, raw MIME,
 attachment bytes, UI bootstrap/session/CSRF state, and browser view state MUST
 NOT be stored in managed SQLite.
 
@@ -80,8 +80,9 @@ the existing owner-only no-follow `fcntl` lock. Windows uses the maintained
 lock's parent chain; the acquired lock object is then revalidated from its held
 non-reparse handle. The Windows lock has a fixed bounded timeout, denies delete
 sharing while held, and relies on `LockFileEx` process-termination release.
-Locks are not held while contacting providers or the system keyring. A Linux
-`managed_secret` insert is local database work and occurs under the same bounded
+Locks are not held while contacting providers or the system keyring. A Linux or
+Windows `managed_secret` insert is local database work and occurs under the same
+bounded
 transaction as binding activation.
 
 This is a local single-user boundary. The implementation defends against stale
@@ -209,8 +210,8 @@ process cleanup follow the same rule.
   return conflict when zero rows match.
 - Network, system-keyring, browser-launch, and attachment I/O never run inside a
   transaction.
-- On Linux, insertion into `managed_secret`, activation of its binding, the
-  binding/account revision update, and transition of the superseded value to
+- On Linux and Windows, insertion into `managed_secret`, activation of its
+  binding, the binding/account revision update, and transition of the superseded value to
   cleanup-required are one transaction; rollback leaves binding authority and
   secret rows unchanged.
 - Repository methods return domain/application values and typed errors, not raw
@@ -254,7 +255,7 @@ remain separate operator procedures outside this delivery.
 ## Acceptance Criteria
 
 1. Schema tests assert exact version, required constraints, foreign keys, the
-   Linux-only dedicated `managed_secret` boundary, and absence of secret values
+   Linux/Windows dedicated `managed_secret` boundary, and absence of secret values
    from catalog/projection/body/UI-session columns.
 2. Soft-removed account names remain unique, and logical mailbox rows have no
    unsupported business revision contract.

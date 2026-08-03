@@ -40,8 +40,8 @@ The revised Local Email App architecture under `spec/` is the normative target
 currently being implemented. MCP stdio provides bounded mail workflows; CLI and
 the embedded loopback-only React UI provide the managed management plane.
 SQLite owns managed configuration and a rebuildable metadata projection. On
-Linux, its owner-only `managed_secret` table is the default `SecretStore`;
-other supported platforms use the operating-system keyring. Application
+Linux and Windows, its private `managed_secret` table is the default
+`SecretStore`; macOS uses the operating-system keyring. Application
 services resolve only the selected account/role secret immediately before
 provider construction. Legacy TOML/environment/keyring behavior remains an
 explicit compatibility mode and import source, but MCP exposes no account or

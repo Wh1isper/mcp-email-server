@@ -5,8 +5,21 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 
 import os
+import shutil
+import tempfile
+import uuid
 
-os.environ["MCP_EMAIL_SERVER_CONFIG_PATH"] = (_HERE / "config.toml").as_posix()
+_WINDOWS_TEST_CONFIG_ROOT: Path | None = None
+if os.name == "nt" and "MCP_EMAIL_SERVER_CONFIG_PATH" not in os.environ:
+    from mcp_email_server.windows_security import ensure_private_parent
+
+    _WINDOWS_TEST_CONFIG_ROOT = Path(tempfile.gettempdir()) / f"mcp-email-server-tests-{uuid.uuid4().hex}"
+    _TEST_CONFIG_PATH = _WINDOWS_TEST_CONFIG_ROOT / "config.toml"
+    ensure_private_parent(_TEST_CONFIG_PATH)
+else:
+    _TEST_CONFIG_PATH = Path(os.environ.get("MCP_EMAIL_SERVER_CONFIG_PATH", _HERE / "config.toml"))
+
+os.environ.setdefault("MCP_EMAIL_SERVER_CONFIG_PATH", _TEST_CONFIG_PATH.as_posix())
 os.environ["MCP_EMAIL_SERVER_LOG_LEVEL"] = "DEBUG"
 # Guardrail: no test may reach a real OS keyring or hang CI waiting on D-Bus. Set at
 # *import time* (not via an autouse fixture) because the existing autouse patch_env
@@ -33,7 +46,13 @@ from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
 def patch_env(monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory):
     delete_settings()
     yield
-    (_HERE / "config.bootstrap.toml.lock").unlink(missing_ok=True)
+    _TEST_CONFIG_PATH.with_name("config.bootstrap.toml.lock").unlink(missing_ok=True)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    del session, exitstatus
+    if _WINDOWS_TEST_CONFIG_ROOT is not None:
+        shutil.rmtree(_WINDOWS_TEST_CONFIG_ROOT, ignore_errors=True)
 
 
 @pytest.fixture

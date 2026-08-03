@@ -79,9 +79,9 @@ defense.
 ### Infrastructure and security
 
 Cover concrete SQLite schema/migrations, DB/WAL/SHM/lock preflight, permissions
-or DACLs, links/reparse points and replacement races, Linux `managed_secret`
-transaction atomicity, Windows Credential Manager and other
-system-keyring/SecretStore failures, unchanged binding authority after failed
+or DACLs, links/reparse points and replacement races, Linux/Windows
+`managed_secret` transaction atomicity, macOS system-keyring/SecretStore
+failures, unchanged binding authority after failed
 saves, provider protocol edge cases, attachment no-follow behavior, bounded
 parser/provider payloads, and redaction on unexpected failures. Windows
 filesystem-security evidence runs on a real local NTFS volume and is not
@@ -119,9 +119,9 @@ management workflows, refresh/logout/stale tabs, conflict, and shutdown.
 
 E2E must not use a developer keyring or real user config. Test fixtures have
 bounded cleanup and never print sentinel secrets. A dedicated native Windows
-E2E path covers managed bootstrap/catalog selection, Credential Manager binding,
-stdio startup, local UI startup, attachment materialization, and oversized-result
-spill on the runner's local NTFS workspace.
+E2E path covers managed bootstrap/catalog selection, private SQLite secret
+binding, stdio startup, local UI startup, attachment materialization, and
+oversized-result spill on the runner's local NTFS workspace.
 
 ## Required Release Gates
 

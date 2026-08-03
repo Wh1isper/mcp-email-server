@@ -99,27 +99,24 @@ does not enable a message-content dump.
 Managed mode never falls back to TOML plaintext. Its default managed secret
 backend is platform-specific:
 
-- Linux stores values in the dedicated `managed_secret` table inside the same
-  owner-only managed SQLite database as the catalog;
-- Windows stores values in the current user's Windows Credential Manager after
-  the catalog passes the local fixed NTFS security profile below;
-- macOS and other supported non-Linux platforms use the operating-system
-  keyring. Platforms without the complete filesystem-security profile are not
-  supported for managed catalogs.
+- Linux and Windows store values in the dedicated `managed_secret` table inside
+  the same private managed SQLite database as the catalog;
+- macOS uses the operating-system keyring. Platforms without the complete
+  filesystem-security profile are not supported for managed catalogs.
 
 Only the `SecretStore` adapter reads or writes these values. Catalog queries,
 projections, CLI/UI responses, diagnostics, and logs never select or expose the
-`managed_secret.secret_value` column or a keyring value. On Linux, however, the
-managed catalog is a secret-bearing database: file copies, snapshots, and backups
-include plaintext `managed_secret.secret_value` values. Keep every copy under
-protection equivalent to the owner-only original; do not upload, share, or treat
-it as a non-secret account database.
+`managed_secret.secret_value` column or a keyring value. On Linux and Windows,
+the managed catalog is a secret-bearing database: file copies, snapshots, and
+backups include plaintext `managed_secret.secret_value` values. Keep every copy
+under protection equivalent to the private original; do not upload, share, or
+treat it as a non-secret account database.
 
 A create or rotation stores a new immutable value and commits it as active only
-if the reviewed account revision still matches. On Linux, inserting
+if the reviewed account revision still matches. On Linux and Windows, inserting
 `managed_secret`, activating its binding, incrementing the binding/account
 revision, and marking any old active value `CLEANUP_REQUIRED` are one SQLite
-transaction. On a keyring-backed platform, the new value is written before one
+transaction. On macOS, the new keyring value is written before one
 compare-and-swap activation transaction. A conflict or failure before activation
 returns an error, best-effort deletes any unreferenced keyring value, persists no
 provisional binding, and leaves the current binding authority unchanged.
@@ -191,6 +188,8 @@ sidecar is rehardened and revalidated because another connection's final close
 may delete and recreate WAL/SHM under a new identity. Post-commit reconciliation
 contention is logged and deferred rather than misreporting a committed mutation
 as failed; the next open still performs strict prevalidation before SQLite.
+These NTFS identity and DACL controls protect both catalog state and the
+`managed_secret` table, so the Windows catalog and every backup are sensitive.
 
 Private Windows replacement creates a random same-directory file with
 `CREATE_NEW` and the private DACL, writes through its held handle, calls
@@ -212,10 +211,10 @@ never reserialize the legacy source. A newly created POSIX legacy parent is
 fresh reset with neither source nor sidecar creates no artifact.
 
 A platform without its complete profile fails before managed target, provider,
-or bootstrap effects instead of using a weaker fallback. An unavailable Windows
-Credential Manager or other selected system keyring fails the credential
-operation without changing binding authority. Legacy-only store, reset, and
-credential migration retain their historical compatibility behavior.
+or bootstrap effects instead of using a weaker fallback. An unavailable macOS
+system keyring fails the credential operation without changing binding
+authority. Legacy-only store, reset, and credential migration retain their
+historical compatibility behavior.
 
 The managed secret service is separate from legacy account-name-based entries.
 Its opaque handles are intentionally not a diagnostic or user-facing contract.

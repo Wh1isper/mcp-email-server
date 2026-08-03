@@ -8,11 +8,11 @@ mcp-email-server supports two explicitly selectable configuration modes:
 
 - `legacy` keeps account configuration in TOML and composes documented
   environment overlays;
-- `managed` keeps account authority in private SQLite. On Linux, credentials
-  default to its dedicated `managed_secret` table. Windows uses Windows
-  Credential Manager and a local fixed NTFS catalog protected by handle-bound
-  DACL, reparse, identity, and locking checks. macOS and other supported
-  non-Linux platforms use the operating-system keyring. Managed catalogs are not
+- `managed` keeps account authority in private SQLite. On Linux and Windows,
+  credentials default to its dedicated `managed_secret` table. Windows requires
+  a local fixed NTFS catalog protected by handle-bound DACL, reparse, identity,
+  and locking checks. macOS uses the operating-system keyring. Managed catalogs
+  are not
   supported without the complete platform filesystem-security profile.
 
 A missing configuration file or a v1 TOML source without separate bootstrap
@@ -288,10 +288,10 @@ IMAP/SMTP authentication and timeout failures retain the correct category.
 
 ### Managed account lifecycle
 
-On Linux, `account add` and `account set-secret` insert the new value into the
-owner-only `managed_secret` table and activate its binding/revision in one SQLite
-transaction. On Windows, macOS, and other supported non-Linux platforms, the system keyring
-write precedes one compare-and-swap activation transaction. Any failure before
+On Linux and Windows, `account add` and `account set-secret` insert the new value
+into the private `managed_secret` table and activate its binding/revision in one
+SQLite transaction. On macOS, the system keyring write precedes one
+compare-and-swap activation transaction. Any failure before
 activation returns an error without persisting an intermediate binding or
 changing current binding authority. During rotation, activation first marks the
 old active value `CLEANUP_REQUIRED`; confirmed deletion clears that state, while
@@ -417,9 +417,9 @@ headers needed by the public metadata result. Removing the operational database
 only discards rebuildable observations; it does not remove accounts or mail.
 
 Managed storage uses one exact current schema for account authority, the
-platform-selected secret binding, and the operational projection. On Linux, any
-copy, snapshot, or backup of this database includes plaintext values from
-`managed_secret`; protect every copy with owner-only access equivalent to the
+platform-selected secret binding, and the operational projection. On Linux and
+Windows, any copy, snapshot, or backup of this database includes plaintext values
+from `managed_secret`; protect every copy with private access equivalent to the
 original and never treat the catalog as a non-secret database. There are no
 released managed-catalog users, so pre-release development schemas receive no
 compatibility or automatic-migration promise. Legacy TOML, environment, and

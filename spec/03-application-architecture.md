@@ -100,7 +100,7 @@ Required abstract capabilities include:
 - managed catalog queries and compare-and-swap mutations;
 - legacy effective configuration and legacy-only writer;
 - `SecretStore` immutable store/read/delete, including transactional insertion
-  for the Linux managed SQLite implementation;
+  for the Linux and Windows managed SQLite implementations;
 - IMAP mailbox, metadata, body, attachment, append, move, and flag operations;
 - SMTP delivery;
 - metadata projection queries and writes;
@@ -165,7 +165,8 @@ reverse order.
 
 SQLite transactions contain only bounded local database work. Network, system
 keyring, browser opening, and potentially large filesystem effects happen outside
-them. The Linux managed `SecretStore` is the deliberate exception: inserting a
+them. The Linux/Windows managed `SecretStore` is the deliberate exception:
+inserting a
 row into the same database's dedicated `managed_secret` table and activating its
 binding/revision are one bounded SQLite transaction. Workflows spanning an
 external keyring boundary use explicit phases and typed cleanup states rather
@@ -177,7 +178,8 @@ A credential mutation follows:
 2. read current revision and plan bounded work;
 3. for a keyring-backed store, write the immutable new value outside SQLite;
 4. compare-and-swap activation and mark any superseded active value
-   cleanup-required; on Linux, insert the secret in this same transaction;
+   cleanup-required; on Linux and Windows, insert the secret in this same
+   transaction;
 5. on any pre-activation failure, return an error with binding authority
    unchanged and retain no provisional binding;
 6. delete the superseded value outside the activation transaction and clear its
@@ -250,8 +252,8 @@ protocol evidence and reports unknown when cancellation prevents certainty.
 5. Direct application calls and all three adapters enforce the same limits and
    validation semantics.
 6. Network, system-keyring, and attachment writes do not execute inside SQLite
-   transactions; the Linux `managed_secret` insert is atomic with binding
-   activation and revision.
+   transactions; the Linux/Windows `managed_secret` insert is atomic with
+   binding activation and revision.
 7. Lazy composition, startup unwind, operation scopes, and repeated shutdown are
    covered without claiming nonexistent long-lived ownership.
 8. Architecture and catalog tests prove no MCP adapter or service registration

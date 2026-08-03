@@ -188,4 +188,4 @@ branch = true
 parallel = true
 patch = ["subprocess"]
 source = ["mcp_email_server"]
-omit = ["mcp_email_server/ui.py"]
+omit = ["*/mcp_email_server/ui.py", "*/mcp_email_server/windows_security.py"]

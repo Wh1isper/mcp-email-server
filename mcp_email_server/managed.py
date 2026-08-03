@@ -189,7 +189,7 @@ class ManagedKeyringSecretStore:
 
 
 class ManagedSqliteSecretStore:
-    """Owner-only SQLite secret store used by managed catalogs on Linux."""
+    """Private SQLite secret store used by managed catalogs on Linux and Windows."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -726,7 +726,7 @@ class ManagedCatalog:
         self.path = Path(os.path.abspath(path.expanduser()))
         if secret_store is not None:
             self.secret_store = secret_store
-        elif sys.platform.startswith("linux"):
+        elif sys.platform.startswith("linux") or sys.platform == "win32":
             self.secret_store = ManagedSqliteSecretStore(self.path)
         else:
             self.secret_store = ManagedKeyringSecretStore()

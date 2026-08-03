@@ -99,8 +99,8 @@ The server deliberately does not fall back to TOML accounts when a bootstrap or
 catalog check fails. An incomplete enabled account is omitted individually and
 reported by `config doctor`; it does not block other complete accounts. Active
 credentials are resolved only immediately before constructing that account's
-provider, from the owner-only managed SQLite secret store on Linux or the same
-system-keyring session on a supported non-Linux platform. An unreadable secret
+provider, from the private managed SQLite secret store on Linux and Windows or
+the same macOS system-keyring session. An unreadable secret
 therefore fails that account operation and is reported by `config doctor`, rather
 than blocking unrelated complete accounts at startup. `config status` still
 returns bounded bootstrap state and
@@ -121,7 +121,8 @@ fresh owner-only path with `mcp-email-server config init --database NEW_PATH`.
 Then re-enter accounts or use the reviewed legacy import flow. Fresh setup
 selects managed immediately; an existing v1 source remains selected until a
 complete import succeeds. Remove the obsolete development catalog only after verifying the
-replacement; on Linux, treat every old catalog copy as secret-bearing.
+replacement; on Linux and Windows, treat every old catalog copy as
+secret-bearing.
 
 If a managed password save fails, correct the reported storage or revision
 problem and submit a new value with:
@@ -131,10 +132,10 @@ mcp-email-server account set-secret ACCOUNT incoming
 ```
 
 Use `outgoing` for an SMTP credential. A failed save leaves no intermediate
-binding and does not change the current binding authority. On Linux, secret
-insertion and active binding/revision commit in one managed SQLite transaction.
-On Windows, restore access to Windows Credential Manager; on other supported
-non-Linux platforms, restore system-keyring access before retrying.
+binding and does not change the current binding authority. On Linux and Windows,
+secret insertion and active binding/revision commit in one managed SQLite
+transaction. Check private catalog access and, on Windows, verify local fixed
+NTFS and DACL security; on macOS, restore system-keyring access before retrying.
 Provider connectivity is diagnosed with `mcp-email-server account test ACCOUNT
 incoming|outgoing [--json]`; this agent-facing low-level CLI diagnostic has no
 Web UI route or Test connection action. Connectivity checks report only bounded
@@ -184,9 +185,10 @@ parent directory and database to owner-only access, or remove a disposable
 operational database while the server is stopped so it can be rebuilt.
 
 Managed mode is different because the selected database also owns account
-authority and, on Linux, contains plaintext managed values in `managed_secret`.
-A copied or backed-up Linux catalog must retain owner-only protection equivalent
-to the original and must not be shared as a non-secret diagnostic artifact. An
+authority and, on Linux and Windows, contains plaintext managed values in
+`managed_secret`. A copied or backed-up catalog on either platform must retain
+private protection equivalent to the original and must not be shared as a
+non-secret diagnostic artifact. An
 open, security, corruption, schema, or projection-write failure
 therefore fails closed rather than returning a result or falling back to TOML.
 In legacy mode, a projection write failure after a validated bounded provider
@@ -258,10 +260,10 @@ mcp-email-server config doctor
 ```
 
 A storage failure prevents credential installation but leaves the current
-binding authority unchanged. On Linux, check managed database access. On
-Windows, restore Credential Manager access and verify the catalog is on local
-fixed NTFS; on another supported non-Linux platform, restore system-keyring
-access. Return to **Email accounts**, open **Password** for the affected account,
+binding authority unchanged. On Linux and Windows, check managed database
+access; on Windows also verify that the catalog is on local fixed NTFS with its
+private DACL intact. On macOS, restore system-keyring access. Return to **Email
+accounts**, open **Password** for the affected account,
 and submit a new value.
 `CLEANUP_REQUIRED` means the active result is known but an old superseded value
 remains. **Email accounts** shows a bounded password-data cleanup action whenever

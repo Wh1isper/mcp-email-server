@@ -121,13 +121,17 @@ independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
 repeated for every interpreter version. The Windows job installs the conditional
-`pywin32` dependency, runs the full Python suite and type checker, then reruns
-`tests/test_windows_security.py` with explicit reporting on the runner's real
-local NTFS workspace. Native cases cover file/directory symlinks, a Developer-
+`pywin32` dependency, creates a protected-DACL test workspace, runs the full
+Python suite without coverage instrumentation and runs the type checker, then
+reruns `tests/test_windows_security.py` with explicit reporting on the runner's
+real local NTFS workspace. The portable Python matrix owns coverage reporting;
+the Windows job is an uncompromised native-behavior gate. Native cases cover
+file/directory symlinks, a Developer-
 Mode-independent junction, hard links, owner/DACL policy, lock contention and
 killed-owner release, concurrent and crash-boundary replacement, complete-old-
 or-new atomicity, validated stale cleanup, managed bootstrap/catalog plus
-Windows Credential Manager, attachment preflight, and spill lifecycle. A missing
+the private SQLite secret store, attachment preflight, and spill lifecycle. A
+missing
 symlink privilege fails the native gate distinctly; symlink, junction, DACL,
 lock, crash, and atomic-write coverage may not be replaced by mocks.
 
@@ -203,7 +207,7 @@ seeder and observer, so the system is not solely verifying itself.
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | MCP lifecycle | stdio subprocess starts, `initialize` succeeds, and expected tools are visible                                       |
 | Configuration | v1 TOML compatibility, direct fresh init, reviewed import cutover, explicit recovery selection, and restart          |
-| Managed mode  | a Linux SQLite-secret managed account reaches live IMAP; a missing selected database fails without fallback          |
+| Managed mode  | a Linux/Windows SQLite-secret managed account reaches live IMAP; a missing selected database fails without fallback  |
 | SMTP          | authenticated Alice-to-Bob delivery succeeds through `send_email`                                                    |
 | IMAP read     | Bob can list paged metadata with exact totals and retrieve full content by UID                                       |
 | Attachments   | source bytes arrive in Bob's MIME message, appear in full content, download to disk, and match exactly               |
@@ -237,9 +241,10 @@ The Compose definition:
 
 The application configuration lives in a pytest-managed temporary directory
 and contains only the fixed synthetic credentials above. Windows native tests
-use only the ephemeral runner account, local NTFS, synthetic Credential Manager
-entries removed in `finally`, and bounded identity-validated cleanup. Managed Linux
-credentials remain in the temporary owner-only catalog SQLite database. The
+use only the ephemeral runner account, a protected local NTFS test container,
+private SQLite synthetic credentials, and bounded identity-validated cleanup.
+Managed Linux credentials remain in the temporary owner-only catalog SQLite
+database. The
 suite also injects a test-only, process-persistent keyring backend for legacy
 keyring and import scenarios; its file is confined to the same directory.
 Production managed mode has no TOML plaintext fallback. Do not replace the

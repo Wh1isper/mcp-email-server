@@ -448,8 +448,13 @@ def test_locked_keyring_write_is_typed_without_catalog_binding(monkeypatch: pyte
     assert catalog.show_account("alice").incoming_binding == "MISSING"
 
 
-def test_linux_default_store_uses_catalog_sqlite_transaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(managed_module.sys, "platform", "linux")
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_file_backed_platform_default_store_uses_catalog_sqlite_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    platform: str,
+) -> None:
+    monkeypatch.setattr(managed_module.sys, "platform", platform)
     catalog = _catalog(tmp_path)
     assert isinstance(catalog.secret_store, ManagedSqliteSecretStore)
     assert catalog.secret_store.path == catalog.path

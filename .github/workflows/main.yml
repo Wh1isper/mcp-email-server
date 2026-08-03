@@ -153,14 +153,34 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Run the full Python suite on Windows
-        run: uv run --python 3.13 python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+      - name: Prepare a protected Windows test workspace
+        run: |
+          uv run --python 3.13 python - <<'PY'
+          import os
+          from pathlib import Path
 
-      - name: Upload native Windows coverage
-        uses: codecov/codecov-action@v4
+          from mcp_email_server.windows_security import ensure_private_parent
+
+          container = Path(os.environ["RUNNER_TEMP"]) / "mcp-email-server-tests"
+          ensure_private_parent(container / "placeholder")
+          values = {
+              "MCP_EMAIL_SERVER_CONFIG_PATH": (container / "config.toml").as_posix(),
+              "MCP_EMAIL_SERVER_WINDOWS_PYTEST_ROOT": (container / "pytest").as_posix(),
+          }
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as environment:
+              for key, value in values.items():
+                  environment.write(f"{key}={value}\n")
+          PY
+
+      - name: Run the full Python suite on Windows
+        run: >-
+          uv run --python 3.13 python -m pytest --no-cov
+          --basetemp "$MCP_EMAIL_SERVER_WINDOWS_PYTEST_ROOT" tests
 
       - name: Re-run native NTFS security cases with explicit reporting
-        run: uv run --python 3.13 python -m pytest -vv tests/test_windows_security.py
+        run: >-
+          uv run --python 3.13 python -m pytest --no-cov -vv
+          --basetemp "$MCP_EMAIL_SERVER_WINDOWS_PYTEST_ROOT" tests/test_windows_security.py
 
       - name: Check typing with Windows-only dependencies installed
         run: uv run --python 3.13 python -m pyright

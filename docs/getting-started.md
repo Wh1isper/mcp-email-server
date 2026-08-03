@@ -19,9 +19,8 @@ newest published PyPI package without a permanent installation.
 This page documents the Local Email App V2 contract implemented by this source
 tree: the embedded React management UI, SQLite-backed managed catalogs, the
 `config` and `account` CLI commands, and a mail-only MCP catalog. Managed secrets
-use the same owner-only SQLite database by default on Linux, Windows Credential
-Manager on Windows, and the system keyring on other supported non-Linux
-platforms.
+use the same private SQLite database by default on Linux and Windows; macOS uses
+the system keyring.
 
 PyPI 0.16.0 and earlier do not contain that contract. Those releases use the
 legacy Gradio/TOML editor and MCP still exposes `add_email_account`. For a newer
@@ -111,9 +110,8 @@ and **Settings & help** for importing earlier settings, sending/attachment safet
 and bounded troubleshooting checks. Ordinary labels and errors use task language;
 storage and concurrency terms are kept out of the primary workflow. Optional
 settings are loaded only when their disclosure
-is opened. On Linux, managed credentials default to the owner-only
-`managed_secret` table in the managed SQLite database. Windows uses Windows
-Credential Manager; macOS and other supported non-Linux platforms use the
+is opened. On Linux and Windows, managed credentials default to the private
+`managed_secret` table in the managed SQLite database. macOS uses the
 operating-system keyring. Managed mode never falls back to TOML plaintext. The
 interface is not a mail
 client and never exposes message content. The same cleanup and headless
@@ -140,8 +138,9 @@ agent-readable connectivity diagnostic; running it does not authorize any other
 management operation. Managed mode requires the platform filesystem-security profile described in
 [Security](security.md). POSIX uses owner/mode, no-follow, identity, and locking
 primitives. Windows requires an ordinary local fixed NTFS drive-letter path and
-uses handle-bound reparse/identity/DACL checks plus Windows Credential Manager.
-Managed mode does not fall back to plaintext or weaker filesystem checks. Fresh initialization selects managed immediately unless existing v1
+uses handle-bound reparse/identity/DACL checks to protect both catalog state and
+managed secrets. Managed mode does not fall back to legacy TOML plaintext or
+weaker filesystem checks. Fresh initialization selects managed immediately unless existing v1
 configuration needs reviewed import. Restart the MCP client when `config status`
 reports that it is required. See
 [Managed CLI setup](configuration.md#managed-cli-setup) for SMTP, stdin,

@@ -20,7 +20,7 @@ from mcp_email_server.managed import (
     ManagedCatalog,
     ManagedCatalogError,
     ManagedCatalogSecurityError,
-    ManagedKeyringSecretStore,
+    ManagedSqliteSecretStore,
 )
 from mcp_email_server.windows_security import (
     _ATTACHMENT_TEMP_PREFIX,
@@ -85,7 +85,7 @@ def _python_process(script: str, *arguments: Path | str) -> subprocess.Popen[str
     )
 
 
-def test_windows_managed_bootstrap_catalog_and_credential_manager_round_trip(tmp_path: Path) -> None:
+def test_windows_managed_bootstrap_catalog_and_private_sqlite_secret_round_trip(tmp_path: Path) -> None:
     root = _private_root(tmp_path)
     catalog = ManagedCatalog.initialize(root / "catalog.sqlite3")
     config = root / "config.toml"
@@ -95,14 +95,12 @@ def test_windows_managed_bootstrap_catalog_and_credential_manager_round_trip(tmp
     assert read_bootstrap(config).db_path == catalog.path
     assert catalog.catalog_revision() == 1
 
-    store = ManagedKeyringSecretStore()
+    assert isinstance(catalog.secret_store, ManagedSqliteSecretStore)
     locator = f"windows-native-{time.time_ns()}"
     sentinel = f"windows-credential-{time.time_ns()}"
-    try:
-        store.put(locator, sentinel)
-        assert store.get(locator) == sentinel
-    finally:
-        store.delete(locator)
+    catalog.secret_store.put(locator, sentinel)
+    assert catalog.secret_store.get(locator) == sentinel
+    assert catalog.secret_store.delete(locator)
 
 
 def test_windows_wal_sidecars_are_rehardened_after_last_connection_recreates_them(

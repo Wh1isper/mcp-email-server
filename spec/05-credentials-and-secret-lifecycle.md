@@ -2,15 +2,13 @@
 
 ## Security Objective
 
-Managed secret values are owned only by a `SecretStore`. On Linux, the default
-store is the owner-only managed SQLite database and values reside only in its
-dedicated `managed_secret` table. On Windows, macOS, and any other supported
-non-Linux platform that meets spec 08's platform filesystem-security contract,
-the default store is the operating-system keyring; SQLite then stores only
-revisioned binding lifecycle and opaque internal references. Windows uses the
-current user's Windows Credential Manager through the system-keyring adapter;
-it does not persist a `managed_secret` value in SQLite. Managed mode never falls
-back to TOML plaintext when its selected store is unavailable.
+Managed secret values are owned only by a `SecretStore`. On Linux and Windows,
+the default store is the private managed SQLite database and values reside only
+in its dedicated `managed_secret` table. Windows requires spec 08's local fixed
+NTFS identity and protected-DACL profile. On macOS, the default store is the
+operating-system keyring; SQLite then stores only revisioned binding lifecycle
+and opaque internal references. Managed mode never falls back to legacy TOML
+plaintext when its selected store is unavailable.
 
 ## Sensitive Data Classification
 
@@ -24,7 +22,7 @@ The following are sensitive:
 
 Sensitive data MUST NOT appear in:
 
-- managed SQLite columns other than the dedicated Linux
+- managed SQLite columns other than the dedicated Linux/Windows
   `managed_secret.secret_value` column, migration files, or projection rows;
 - MCP schemas, arguments, results, resources, or protocol logs;
 - CLI argv, shell history guidance, stdout, or ordinary logs;
@@ -61,7 +59,8 @@ The port provides bounded operations to:
 - delete a specific value;
 - report typed unavailable, missing, denied, malformed, and transient failures.
 
-The Linux SQLite implementation additionally participates in the catalog write
+The Linux/Windows SQLite implementation additionally participates in the
+catalog write
 transaction so inserting `managed_secret` and activating its binding/revision
 are one atomic commit. Implementations MUST avoid value enumeration and broad
 lookup. Application code MUST NOT infer success from backend-specific exception
@@ -105,7 +104,7 @@ sequenceDiagram
     participant C as Catalog
     participant S as SecretStore
     A->>C: read binding revision and account snapshot
-    alt Linux managed SQLite store
+    alt Linux/Windows managed SQLite store
       A->>C: CAS insert secret and activate binding
       C-->>A: committed active + old cleanup-required
     else system keyring store
@@ -123,7 +122,8 @@ sequenceDiagram
     end
 ```
 
-For Linux, insertion into `managed_secret`, activation of the new binding, the
+For Linux and Windows, insertion into `managed_secret`, activation of the new
+binding, the
 account/binding revision increment, and transition of any old active value to
 `CLEANUP_REQUIRED` occur in one SQLite transaction. No external keyring or
 network call occurs in that transaction. For a keyring-backed store, the value
@@ -182,8 +182,9 @@ error, timeout, cancellation, and unexpected-exception paths.
 
 Tests use sentinel secrets and recursively scan CLI output, HTTP bodies, logs,
 exceptions, snapshots, non-secret SQLite surfaces, and built frontend assets.
-Dedicated Linux `managed_secret` persistence tests instead prove transaction
-atomicity, owner-only storage, and absence from every output/projection surface.
+Dedicated Linux/Windows `managed_secret` persistence tests instead prove
+transaction atomicity, private storage, and absence from every output/projection
+surface.
 Test fakes must model missing, denied, transient, cleanup, and crash-boundary
 failures.
 
@@ -191,7 +192,8 @@ failures.
 
 1. Managed secret values never persist outside `SecretStore` and are absent from
    all public interfaces, logs, DTOs, errors, browser storage, and every SQLite
-   location except the Linux store's dedicated `managed_secret.secret_value`
+   location except the Linux/Windows store's dedicated
+   `managed_secret.secret_value`
    column.
 2. Startup and normal operations do not resolve unrelated account secrets; one
    broken binding is isolated to the selected account/role or explicit doctor
@@ -209,7 +211,7 @@ failures.
    input in legacy or managed mode; agent-integration scenarios never collect or
    relay credentials.
 8. Sentinel leakage tests cover every response and exceptional path.
-9. Native Windows tests prove Credential Manager binding lifecycle and late
+9. Native Windows tests prove private SQLite binding lifecycle and late
    resolution while catalog/bootstrap files remain under spec 08's NTFS and
-   DACL contract; unavailable keyring or unsupported storage leaves binding and
-   authority unchanged and never falls back to plaintext.
+   DACL contract; unavailable or unsupported storage leaves binding and
+   authority unchanged and never falls back to legacy TOML plaintext.

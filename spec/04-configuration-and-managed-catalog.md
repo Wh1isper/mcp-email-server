@@ -44,9 +44,9 @@ secret-binding authority.
 
 A managed catalog has a stable identifier, exact schema version, and monotonic
 catalog revision. It has no `STAGING`/`ACTIVE` lifecycle and no catalog activation
-operation. On Linux it also contains the owner-only `managed_secret` store; on
-Windows, macOS, and other supported non-Linux platforms bindings resolve through
-the operating-system keyring, as specified in spec 05. Windows catalog and
+operation. On Linux and Windows it also contains the private `managed_secret`
+store; on macOS bindings resolve through the operating-system keyring, as
+specified in spec 05. Windows catalog and
 bootstrap authority is available only on a local fixed NTFS volume after the
 handle-bound DACL, owner, reparse-point, identity, and locking checks in spec 08.
 
@@ -335,14 +335,14 @@ SQL, raw provider responses, or reusable locators.
    catalog, or account drift through the final fenced cutover before creating a
    mixed endpoint/credential result or selecting managed mode.
 9. Partial import and external cleanup failures return recoverable durable state;
-   failed credential saves preserve prior binding authority, and only Linux
-   managed-SQLite insertion claims atomicity with activation.
+   failed credential saves preserve prior binding authority, and only
+   Linux/Windows managed-SQLite insertion claims atomicity with activation.
 10. CLI and UI share management application semantics, but adapter scope is
     intentional: provider connectivity tests remain CLI diagnostics and have no
     Web UI route or control; neither interface edits legacy TOML as its normal
     management model.
 11. On native Windows NTFS, fresh initialization, selection, selected-catalog
-    reopen, CLI startup, and UI startup use the system keyring and satisfy spec
-    08's reparse, ACL, identity, lock, WAL/SHM, replacement, and crash-recovery
-    contract; unsupported Windows path/filesystem classes fail before authority
-    or keyring effects.
+    reopen, CLI startup, and UI startup use the private SQLite secret store and
+    satisfy spec 08's reparse, ACL, identity, lock, WAL/SHM, replacement, and
+    crash-recovery contract; unsupported Windows path/filesystem classes fail
+    before authority or secret effects.
