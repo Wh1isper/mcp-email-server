@@ -245,8 +245,11 @@ def _validate_untrusted_aces(dacl: Any, trusted: set[str], prohibited: int) -> N
         if ace_type != allowed_type:
             raise WindowsSecurityError("Windows DACL contains an unsupported ACE form")
         sid_text = win32security.ConvertSidToStringSid(ace[-1])
-        if sid_text not in trusted and int(ace[1]) & prohibited:
-            raise WindowsSecurityError("Windows DACL grants unsafe access to another principal")
+        mask = int(ace[1])
+        if sid_text not in trusted and mask & prohibited:
+            raise WindowsSecurityError(
+                f"Windows DACL grants unsafe access to another principal (SID {sid_text}, mask {mask:#x})"
+            )
 
 
 def _apply_private_security(handle: Any) -> None:
