@@ -6,3 +6,7 @@
 /frontend/**/*.md text eol=lf
 /frontend/**/*.ts text eol=lf
 /frontend/**/*.tsx text eol=lf
+/mcp_email_server/web_ui/static/**/*.css text eol=lf
+/mcp_email_server/web_ui/static/**/*.html text eol=lf
+/mcp_email_server/web_ui/static/**/*.js text eol=lf
+/mcp_email_server/web_ui/static/**/*.md text eol=lf
