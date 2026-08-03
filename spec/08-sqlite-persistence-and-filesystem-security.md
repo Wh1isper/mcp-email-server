@@ -120,9 +120,11 @@ is the volume serial number and file index returned by
 count are checked with it. An existing exact file target must have one hard link.
 
 The current user SID owns private objects. Their DACL is protected and grants
-only the current user, LocalSystem, and built-in Administrators. No other SID
-may have an allow ACE with any access mask; this includes raw generic masks
-before Windows maps them to file or directory rights. Existing traversed ancestors may grant broader shared-runner or temporary-root
+only the current user, LocalSystem, and built-in Administrators. OWNER RIGHTS and
+CREATOR OWNER well-known SIDs resolve to the already validated object owner and
+are not independent principals. No other SID may have an allow ACE with any
+access mask; this includes raw generic masks before Windows maps them to file or
+directory rights. Existing traversed ancestors may grant broader shared-runner or temporary-root
 rights because every traversed component is pinned by a no-delete-share handle;
 those rights cannot retarget the held chain. The exact file and any non-private
 sensitive immediate parent still reject untrusted write/delete/ACL-owner access

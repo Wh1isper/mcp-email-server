@@ -314,6 +314,36 @@ def test_windows_hard_link_and_permissive_dacl_are_rejected(tmp_path: Path) -> N
         validate_private_file(target)
 
 
+def test_windows_owner_rights_ace_resolves_to_the_validated_private_owner(tmp_path: Path) -> None:
+    root = _private_root(tmp_path)
+    target = root / "owner-rights.txt"
+    atomic_write_private(target, b"private")
+    descriptor = win32security.GetNamedSecurityInfo(
+        os.fspath(target),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+    )
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    owner_rights = win32security.CreateWellKnownSid(win32security.WinCreatorOwnerRightsSid, None)
+    dacl.AddAccessAllowedAceEx(
+        win32security.ACL_REVISION,
+        0,
+        ntsecuritycon.FILE_ALL_ACCESS,
+        owner_rights,
+    )
+    win32security.SetNamedSecurityInfo(
+        os.fspath(target),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        dacl,
+        None,
+    )
+
+    assert validate_private_file(target).size == len(b"private")
+
+
 def test_windows_pinned_shared_ancestor_can_contain_a_private_managed_parent(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     shared.mkdir()

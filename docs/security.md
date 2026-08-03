@@ -173,7 +173,9 @@ junctions, mount points, and provider-defined reparse tags are rejected. Identit
 is the volume serial plus file index read from the held handle; exact files must
 be regular and single-link. Private objects are current-user-owned and use a
 protected DACL granting only the current user, LocalSystem, and built-in
-Administrators. Unknown/NULL DACLs, unsupported allow ACEs, foreign owners, or
+Administrators. A Windows OWNER RIGHTS/CREATOR OWNER ACE is treated as that
+already validated owner, not as an independent principal. Unknown/NULL DACLs,
+unsupported allow ACEs, foreign owners, or
 any allow access granted to another SID fail closed, including raw generic ACE
 masks. Existing safe private parents may be normalized to the protected DACL
 only during an explicit managed creation operation; validation-only reads never

@@ -160,11 +160,17 @@ def _current_user_sid() -> Any:
 
 
 def _trusted_sid_strings() -> set[str]:
+    trusted_types = (
+        win32security.WinLocalSystemSid,
+        win32security.WinBuiltinAdministratorsSid,
+        win32security.WinCreatorOwnerSid,
+        win32security.WinCreatorOwnerRightsSid,
+    )
     return {
         win32security.ConvertSidToStringSid(_current_user_sid()),
-        win32security.ConvertSidToStringSid(win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)),
-        win32security.ConvertSidToStringSid(
-            win32security.CreateWellKnownSid(win32security.WinBuiltinAdministratorsSid, None)
+        *(
+            win32security.ConvertSidToStringSid(win32security.CreateWellKnownSid(sid_type, None))
+            for sid_type in trusted_types
         ),
     }
 
