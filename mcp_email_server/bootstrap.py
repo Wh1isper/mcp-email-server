@@ -11,7 +11,7 @@ import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import tomli_w
 
@@ -25,6 +25,9 @@ from mcp_email_server.windows_security import (
     validate_private_file,
     windows_security_supported,
 )
+
+# POSIX-only flags are absent from Windows typeshed stubs.
+_posix_os: Any = os
 
 BOOTSTRAP_VERSION = 1
 BOOTSTRAP_LOCK_TIMEOUT_SECONDS = 5.0
@@ -294,10 +297,13 @@ def _windows_bootstrap_lock(lock_path: Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def _posix_bootstrap_lock(lock_path: Path) -> Iterator[None]:
+    import fcntl as fcntl_module
+
+    posix_fcntl: Any = fcntl_module
     if lock_path.exists() or lock_path.is_symlink():
         _assert_owner_only_file(lock_path, label="Bootstrap lock")
     try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | _posix_os.O_NOFOLLOW, 0o600)
     except OSError as exc:
         raise BootstrapError("Bootstrap lock could not be opened safely") from exc
     try:
@@ -306,12 +312,10 @@ def _posix_bootstrap_lock(lock_path: Path) -> Iterator[None]:
         _assert_owner_only_file(lock_path, label="Bootstrap lock")
         if (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
             raise BootstrapError("Bootstrap lock changed while it was opened")
-        import fcntl
-
         deadline = time.monotonic() + BOOTSTRAP_LOCK_TIMEOUT_SECONDS
         while True:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                posix_fcntl.flock(descriptor, posix_fcntl.LOCK_EX | posix_fcntl.LOCK_NB)
                 break
             except BlockingIOError as exc:
                 if time.monotonic() >= deadline:
@@ -319,9 +323,7 @@ def _posix_bootstrap_lock(lock_path: Path) -> Iterator[None]:
                 time.sleep(0.05)
         yield
     finally:
-        import fcntl
-
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        posix_fcntl.flock(descriptor, posix_fcntl.LOCK_UN)
         os.close(descriptor)
 
 

@@ -11,6 +11,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+from typing import Any
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.reads import LargeResultReference
@@ -48,6 +49,10 @@ def _metadata_key(metadata: SecurityMetadata | object) -> tuple[int, int]:
 def local_large_results_supported() -> bool:
     """Return whether owner-only no-follow spill storage can be enforced."""
     return _SECURE_LOCAL_RESULTS_SUPPORTED
+
+
+# POSIX-only flags are absent from Windows typeshed stubs.
+_posix_os: Any = os
 
 
 class LocalLargeResultWriter:
@@ -137,7 +142,7 @@ class LocalLargeResultWriter:
 
     @staticmethod
     def _write_posix_artifact(path: Path, content: bytes) -> os.stat_result:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _posix_os.O_NOFOLLOW
         descriptor = os.open(path, flags, 0o600)
         try:
             os.fchmod(descriptor, 0o600)
