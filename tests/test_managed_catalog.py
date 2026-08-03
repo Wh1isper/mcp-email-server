@@ -27,6 +27,7 @@ from mcp_email_server.managed import (
     ManagedSqliteSecretStore,
     _enable_wal,
 )
+from mcp_email_server.windows_security import ensure_private_parent, harden_private_file
 
 
 class FakeSecretStore:
@@ -85,11 +86,24 @@ def _server(*, host: str = "imap.example.test") -> EmailServer:
     )
 
 
+def _private_directory(path: Path) -> Path:
+    if os.name == "nt":
+        ensure_private_parent(path / "placeholder")
+    else:
+        path.mkdir(mode=0o700)
+        path.chmod(0o700)
+    return path
+
+
+def _harden_private_test_file(path: Path) -> None:
+    if os.name == "nt":
+        harden_private_file(path)
+    else:
+        path.chmod(0o600)
+
+
 def _catalog(tmp_path: Path, store: FakeSecretStore | None = None) -> ManagedCatalog:
-    parent = tmp_path / "managed"
-    parent.mkdir(mode=0o700)
-    if os.name == "posix":
-        parent.chmod(0o700)
+    parent = _private_directory(tmp_path / "managed")
     initialized = ManagedCatalog.initialize(parent / "catalog.sqlite3")
     return ManagedCatalog(initialized.path, secret_store=store) if store is not None else initialized
 
@@ -194,12 +208,11 @@ def test_initialize_adopts_configured_catalog_without_modifying_it(tmp_path: Pat
 
 
 def test_initialize_rejects_foreign_existing_file_without_modifying_it(tmp_path: Path) -> None:
-    parent = tmp_path / "foreign"
-    parent.mkdir(mode=0o700)
+    parent = _private_directory(tmp_path / "foreign")
     path = parent / "catalog.sqlite3"
     original = b"not a managed sqlite catalog"
     path.write_bytes(original)
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     with pytest.raises(ManagedCatalogInitializationConflictError, match="not a compatible managed catalog"):
         ManagedCatalog.initialize(path)
@@ -1081,6 +1094,7 @@ def test_managed_catalog_fails_closed_without_secure_filesystem_primitives(monke
     assert not parent.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink and ancestor-permission contract")
 def test_managed_catalog_rejects_symlinked_and_writable_ancestor_chain(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir(mode=0o700)
@@ -1114,6 +1128,7 @@ def test_insecure_database_permissions_are_rejected(tmp_path):
         catalog.catalog_revision()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink error contract")
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
 def test_catalog_sidecar_and_lock_symlinks_are_rejected(tmp_path: Path, suffix: str) -> None:
     catalog = _catalog(tmp_path)
@@ -1133,6 +1148,7 @@ def test_catalog_sidecar_and_lock_symlinks_are_rejected(tmp_path: Path, suffix: 
     assert target.read_bytes() == b"preserve"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
 def test_catalog_sidecar_and_lock_permissions_are_rejected(tmp_path: Path, suffix: str) -> None:
     catalog = _catalog(tmp_path)
@@ -1145,6 +1161,7 @@ def test_catalog_sidecar_and_lock_permissions_are_rejected(tmp_path: Path, suffi
         catalog.catalog_revision()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX hard-link error contract")
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
 def test_catalog_sidecar_and_lock_hard_links_are_rejected(tmp_path: Path, suffix: str) -> None:
     catalog = _catalog(tmp_path)
@@ -1162,6 +1179,7 @@ def test_catalog_sidecar_and_lock_hard_links_are_rejected(tmp_path: Path, suffix
         catalog.catalog_revision()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX object-type error contract")
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
 def test_catalog_sidecar_and_lock_non_regular_entries_are_rejected(tmp_path: Path, suffix: str) -> None:
     catalog = _catalog(tmp_path)
@@ -1173,6 +1191,7 @@ def test_catalog_sidecar_and_lock_non_regular_entries_are_rejected(tmp_path: Pat
         catalog.catalog_revision()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink error contract")
 def test_database_symlink_is_rejected(tmp_path):
     catalog = _catalog(tmp_path)
     link = catalog.path.parent / "link.sqlite3"
@@ -1231,25 +1250,23 @@ def test_wal_retry_uses_one_wall_clock_busy_deadline() -> None:
 
 
 def test_corrupt_database_is_rejected_with_bounded_error(tmp_path):
-    parent = tmp_path / "managed"
-    parent.mkdir(mode=0o700)
+    parent = _private_directory(tmp_path / "managed")
     path = parent / "catalog.sqlite3"
     path.write_bytes(b"not a sqlite database")
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     with pytest.raises(ManagedCatalogError, match=r"corrupt|unavailable"):
         ManagedCatalog(path).catalog_revision()
 
 
 def test_unrelated_managed_database_is_rejected_before_enabling_wal(tmp_path: Path) -> None:
-    parent = tmp_path / "managed"
-    parent.mkdir(mode=0o700)
+    parent = _private_directory(tmp_path / "managed")
     path = parent / "unrelated.sqlite3"
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("CREATE TABLE unrelated(value TEXT)")
         connection.commit()
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
-    path.chmod(0o600)
+    _harden_private_test_file(path)
     original_bytes = path.read_bytes()
 
     with pytest.raises(ManagedCatalogError, match="schema"):

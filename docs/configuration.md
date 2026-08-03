@@ -46,8 +46,10 @@ the TOML suffix: `/path/work.toml` uses `/path/work.bootstrap.toml`.
 
 On first use, if the current file does not exist and a legacy file exists at
 `~/.config/zerolib/mcp_email_server/config.toml`, the legacy file is copied to
-the current location automatically. An explicitly managed file at the old path
-is not copied as an import-time side effect.
+the current location automatically. The destination is created owner-only on
+POSIX and with the protected private DACL on Windows; concurrent destination
+creation is never overwritten. An explicitly managed file at the old path is
+not copied as an import-time side effect.
 
 ## Local management UI
 

@@ -4,8 +4,7 @@ import platform
 import shutil
 import sys
 from pathlib import Path
-
-from jinja2 import Template
+from typing import Any
 
 _HERE = Path(__file__).parent
 CLAUDE_DESKTOP_CONFIG_TEMPLATE = _HERE / "claude_desktop_config.json"
@@ -50,17 +49,20 @@ def get_endpoint_path() -> str:
     return "mcp-email-server"
 
 
+def _load_template_config() -> dict[str, Any]:
+    template_config = json.loads(CLAUDE_DESKTOP_CONFIG_TEMPLATE.read_text(encoding="utf-8"))
+    template_config["mcpServers"][SERVER_NAME]["command"] = get_endpoint_path()
+    return template_config
+
+
 def install_claude_desktop():
-    # Read the template config
-    template_content = CLAUDE_DESKTOP_CONFIG_TEMPLATE.read_text()
-    rendered_content = Template(template_content).render(ENTRYPOINT=get_endpoint_path())
-    template_config = json.loads(rendered_content)
     if not CLAUDE_DESKTOP_CONFIG_PATH:
         raise NotImplementedError
+    template_config = _load_template_config()
 
     # Read the existing config file or create an empty JSON object
     try:
-        with open(CLAUDE_DESKTOP_CONFIG_PATH) as f:
+        with open(CLAUDE_DESKTOP_CONFIG_PATH, encoding="utf-8") as f:
             existing_config = json.load(f)
     except FileNotFoundError:
         existing_config = {}
@@ -74,7 +76,7 @@ def install_claude_desktop():
 
     # Write the merged config back to the Claude config file
     os.makedirs(os.path.dirname(CLAUDE_DESKTOP_CONFIG_PATH), exist_ok=True)
-    with open(CLAUDE_DESKTOP_CONFIG_PATH, "w") as f:
+    with open(CLAUDE_DESKTOP_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(existing_config, f, indent=4)
 
 
@@ -82,7 +84,7 @@ def uninstall_claude_desktop():
     if not CLAUDE_DESKTOP_CONFIG_PATH:
         raise NotImplementedError
     try:
-        with open(CLAUDE_DESKTOP_CONFIG_PATH) as f:
+        with open(CLAUDE_DESKTOP_CONFIG_PATH, encoding="utf-8") as f:
             existing_config = json.load(f)
     except FileNotFoundError:
         return
@@ -93,7 +95,7 @@ def uninstall_claude_desktop():
     for server_name in (SERVER_NAME, *LEGACY_SERVER_NAMES):
         existing_config["mcpServers"].pop(server_name, None)
 
-    with open(CLAUDE_DESKTOP_CONFIG_PATH, "w") as f:
+    with open(CLAUDE_DESKTOP_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(existing_config, f, indent=4)
 
 
@@ -108,7 +110,7 @@ def is_installed() -> bool:
         return False
 
     try:
-        with open(CLAUDE_DESKTOP_CONFIG_PATH) as f:
+        with open(CLAUDE_DESKTOP_CONFIG_PATH, encoding="utf-8") as f:
             config = json.load(f)
 
         return "mcpServers" in config and any(
@@ -134,12 +136,10 @@ def need_update() -> bool:
 
     try:
         # Get the template config
-        template_content = CLAUDE_DESKTOP_CONFIG_TEMPLATE.read_text()
-        rendered_content = Template(template_content).render(ENTRYPOINT=get_endpoint_path())
-        template_config = json.loads(rendered_content)
+        template_config = _load_template_config()
 
         # Get the installed config
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             installed_config = json.load(f)
 
         # Compare the relevant parts of the configs
@@ -164,5 +164,5 @@ def get_claude_desktop_config() -> str:
     if not CLAUDE_DESKTOP_CONFIG_PATH:
         raise NotImplementedError
 
-    with open(CLAUDE_DESKTOP_CONFIG_PATH) as f:
+    with open(CLAUDE_DESKTOP_CONFIG_PATH, encoding="utf-8") as f:
         return f.read()

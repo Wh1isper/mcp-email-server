@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from mcp_email_server.config import (
     get_settings,
 )
 from mcp_email_server.managed import ManagedCatalog
+from mcp_email_server.windows_security import ensure_private_parent, harden_private_file
 
 
 def test_transport_adapters_do_not_import_legacy_provider_or_catalog_bypasses() -> None:
@@ -56,10 +58,19 @@ def test_transport_adapters_do_not_import_legacy_provider_or_catalog_bypasses() 
 
 
 def _private_directory(path: Path) -> Path:
-    path.mkdir(mode=0o700)
-    if os.name == "posix":
+    if os.name == "nt":
+        ensure_private_parent(path / "placeholder")
+    else:
+        path.mkdir(mode=0o700)
         path.chmod(0o700)
     return path
+
+
+def _harden_private_test_file(path: Path) -> None:
+    if os.name == "nt":
+        harden_private_file(path)
+    else:
+        path.chmod(0o600)
 
 
 def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, complete: bool = True):
@@ -88,7 +99,7 @@ def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, complete: bool
         'credential_storage = "plaintext"\n'
         '[[emails]]\naccount_name = "legacy-tripwire"\n'
     )
-    config_path.chmod(0o600)
+    _harden_private_test_file(config_path)
     monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
     monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
     clear_settings_cache()
@@ -133,7 +144,7 @@ def test_linux_managed_store_is_independent_of_unavailable_keyring(monkeypatch, 
 
     assert result.status == "active"
     assert result.cleanup_required == 0
-    with sqlite3.connect(catalog.path) as connection:
+    with closing(sqlite3.connect(catalog.path)) as connection:
         assert connection.execute("SELECT secret_value FROM managed_secret").fetchone()[0] == "managed-sqlite-secret"
     assert catalog.doctor().cleanup_required_bindings == 0
 
@@ -210,7 +221,7 @@ def test_managed_missing_database_does_not_fall_back_to_legacy(monkeypatch, tmp_
         f'db_location = "{(parent / "missing.sqlite3").as_posix()}"\n'
         '[[emails]]\naccount_name = "legacy-tripwire"\n'
     )
-    config_path.chmod(0o600)
+    _harden_private_test_file(config_path)
     monkeypatch.setenv("MCP_EMAIL_SERVER_CONFIG_PATH", str(config_path))
     monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
     clear_settings_cache()
@@ -283,7 +294,7 @@ def test_managed_default_path_skips_legacy_migration(monkeypatch, tmp_path):
     old_parent = _private_directory(tmp_path / "old")
     legacy = old_parent / "config.toml"
     legacy.write_text(f'bootstrap_version = {BOOTSTRAP_VERSION}\nmode = "managed"\ndb_location = "catalog.sqlite3"\n')
-    legacy.chmod(0o600)
+    _harden_private_test_file(legacy)
     monkeypatch.delenv("MCP_EMAIL_SERVER_CONFIG_PATH", raising=False)
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", str(current))
     monkeypatch.setattr(config_module, "LEGACY_CONFIG_PATH", str(legacy))

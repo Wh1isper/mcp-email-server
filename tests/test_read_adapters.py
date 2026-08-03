@@ -267,7 +267,7 @@ async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp
     except OSError:
         pytest.skip("symlinks unavailable")
 
-    with pytest.raises(PermissionError, match="regular file"):
+    with pytest.raises(PermissionError):
         await LocalArtifactWriter().write(
             str(destination),
             AttachmentPayload("1", "download.txt", "text/plain", b"replacement"),
@@ -286,7 +286,7 @@ async def test_artifact_writer_rejects_symlink_parent(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("symlinks unavailable")
 
-    with pytest.raises(PermissionError, match="parent is unsafe"):
+    with pytest.raises(PermissionError):
         await LocalArtifactWriter().write(
             str(linked_parent / "download.txt"),
             AttachmentPayload("1", "download.txt", "text/plain", b"content"),

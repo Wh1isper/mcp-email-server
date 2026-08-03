@@ -15,6 +15,7 @@ import pytest
 import mcp_email_server.managed as managed_module
 import mcp_email_server.windows_security as windows_security_module
 from mcp_email_server.bootstrap import BootstrapError, read_bootstrap, write_bootstrap
+from mcp_email_server.config import EmailServer, EmailSettings, Settings
 from mcp_email_server.large_results import LocalLargeResultWriter
 from mcp_email_server.managed import (
     ManagedCatalog,
@@ -83,6 +84,115 @@ def _python_process(script: str, *arguments: Path | str) -> subprocess.Popen[str
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def _read_with_delete_sharing(path: Path) -> bytes:
+    handle = windows_security_module.win32file.CreateFile(
+        os.fspath(path),
+        windows_security_module.ntsecuritycon.GENERIC_READ,
+        windows_security_module.win32con.FILE_SHARE_READ
+        | windows_security_module.win32con.FILE_SHARE_WRITE
+        | windows_security_module.win32con.FILE_SHARE_DELETE,
+        None,
+        windows_security_module.win32con.OPEN_EXISTING,
+        windows_security_module.win32con.FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    try:
+        size = windows_security_module.win32file.GetFileSize(handle)
+        return windows_security_module.win32file.ReadFile(handle, size)[1]
+    finally:
+        handle.Close()
+
+
+def test_windows_legacy_store_and_migration_replace_readable_compatibility_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _private_root(tmp_path)
+    config_path = root / "legacy.toml"
+    settings = Settings(
+        credential_storage="plaintext",
+        emails=[
+            EmailSettings(
+                account_name="alice",
+                full_name="Alice",
+                email_address="alice@example.test",
+                incoming=EmailServer(
+                    user_name="alice@example.test",
+                    password="plaintext-secret",
+                    host="imap.example.test",
+                    port=993,
+                ),
+            )
+        ],
+    )
+    config_path.write_text(settings._to_toml(credential_storage="plaintext"), encoding="utf-8")
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+
+    def grant_world_read() -> None:
+        descriptor = win32security.GetNamedSecurityInfo(
+            os.fspath(config_path),
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION,
+        )
+        dacl = descriptor.GetSecurityDescriptorDacl()
+        everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid, None)
+        dacl.AddAccessAllowedAceEx(
+            win32security.ACL_REVISION,
+            0,
+            ntsecuritycon.FILE_GENERIC_READ,
+            everyone,
+        )
+        win32security.SetNamedSecurityInfo(
+            os.fspath(config_path),
+            win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            dacl,
+            None,
+        )
+
+    grant_world_read()
+    with pytest.raises(WindowsSecurityError, match="another principal"):
+        validate_private_file(config_path)
+    settings.store()
+    stored = validate_private_file(config_path)
+    assert "plaintext-secret" in config_path.read_text(encoding="utf-8")
+
+    grant_world_read()
+    with pytest.raises(WindowsSecurityError, match="another principal"):
+        validate_private_file(config_path)
+    Settings.migrate_credentials("plaintext")
+    migrated = validate_private_file(config_path)
+
+    assert stored.key != migrated.key
+    assert "plaintext-secret" in config_path.read_text(encoding="utf-8")
+
+
+def test_windows_private_atomic_create_never_overwrites_concurrent_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _private_root(tmp_path)
+    target = root / "no-clobber.toml"
+    original_move = windows_security_module.win32file.MoveFileEx
+    observed_flags: list[int] = []
+
+    def create_destination_then_move(source: str, destination: str, flags: int) -> None:
+        observed_flags.append(flags)
+        write_private_new(target, b"current")
+        original_move(source, destination, flags)
+
+    monkeypatch.setattr(windows_security_module.win32file, "MoveFileEx", create_destination_then_move)
+    with pytest.raises(FileExistsError):
+        atomic_write_private(target, b"legacy", replace_existing=False)
+
+    assert observed_flags
+    assert not observed_flags[0] & windows_security_module.win32file.MOVEFILE_REPLACE_EXISTING
+    assert target.read_bytes() == b"current"
+    assert not list(root.glob(".mcp-email-bootstrap-*.tmp"))
 
 
 def test_windows_managed_bootstrap_catalog_and_private_sqlite_secret_round_trip(tmp_path: Path) -> None:
@@ -512,12 +622,14 @@ def test_windows_concurrent_replacement_is_complete_and_identity_checked(tmp_pat
 
 
 def _run_crash_replace(target: Path, checkpoint: Path, stage: str, payload: bytes) -> subprocess.Popen[str]:
+    payload_path = checkpoint.with_suffix(".payload")
+    payload_path.write_bytes(payload)
     script = """
 import sys, time
 from pathlib import Path
 import mcp_email_server.windows_security as ws
 path, marker, stage = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-payload = bytes.fromhex(sys.argv[4])
+payload = Path(sys.argv[4]).read_bytes()
 original = ws.win32file.MoveFileEx
 def controlled(source, destination, flags):
     if stage == 'pre':
@@ -531,7 +643,7 @@ def controlled(source, destination, flags):
 ws.win32file.MoveFileEx = controlled
 ws.atomic_write_private(path, payload)
 """
-    return _python_process(script, target, checkpoint, stage, payload.hex())
+    return _python_process(script, target, checkpoint, stage, payload_path)
 
 
 @pytest.mark.parametrize("stage", ["pre", "post"])
@@ -551,6 +663,7 @@ def test_windows_crash_boundary_preserves_complete_old_or_new_and_cleans_stale_t
     finally:
         process.kill()
         process.wait(timeout=10)
+        checkpoint.with_suffix(".payload").unlink(missing_ok=True)
 
     assert target.read_bytes() == (old if stage == "pre" else new)
     assert validate_private_file(target).size == len(old if stage == "pre" else new)
@@ -586,7 +699,7 @@ def test_windows_write_failures_are_typed_and_remove_partial_temporaries(
     atomic_write_private(target, b"old")
 
     def fail(*_args: object, **_kwargs: object) -> None:
-        raise OSError(5, "injected Win32 failure")
+        raise OSError(87, "injected Win32 failure")
 
     monkeypatch.setattr(windows_security_module.win32file, api_name, fail)
     with pytest.raises(WindowsSecurityError, match=expected_message):
@@ -607,7 +720,7 @@ def test_windows_atomic_observers_never_see_partial_content(tmp_path: Path) -> N
 
     def reader() -> None:
         while not stop.is_set():
-            observed.append(target.read_bytes())
+            observed.append(_read_with_delete_sharing(target))
 
     thread = threading.Thread(target=reader)
     thread.start()

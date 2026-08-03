@@ -161,9 +161,10 @@ open still repeats strict validation before SQLite.
 
 On POSIX, files are owner-only (`0600`) and private parent directories are
 owner-only (`0700`); creation uses restrictive mode, no-follow/exclusive
-primitives, and advisory locking. On Windows, files and directories use the
-protected private DACL above, exclusive non-reparse creation, handle identity,
-and the hardened lock contract. Platforms and filesystems without their complete
+primitives, and advisory locking. On Windows, files and newly created private
+directories use the protected private DACL above, exclusive non-reparse creation,
+handle identity, and the hardened lock contract. This includes legacy TOML before
+any plaintext credential bytes are written. Platforms and filesystems without their complete
 profile reject managed catalog and bootstrap effects before creating their
 target or parent; no weaker path-based fallback is used.
 
@@ -175,9 +176,9 @@ the connection and all pinned handles before returning a typed bounded error.
 
 ## Durable Replacement and Crash Cleanup
 
-Windows authority, attachment, and spill writers create a cryptographically
-random same-directory temporary sibling with `CREATE_NEW`, the protected private
-DACL, and no delete sharing. They write through the held handle and call
+Windows authority, legacy TOML, attachment, and spill writers create a
+cryptographically random same-directory temporary sibling with `CREATE_NEW`, the
+protected private DACL, and no delete sharing. They write through the held handle and call
 `FlushFileBuffers` before replacement. An overwrite uses
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` on the same
 volume; `MOVEFILE_COPY_ALLOWED` is never set. No-clobber uses an equivalent

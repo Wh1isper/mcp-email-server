@@ -193,11 +193,14 @@ as failed; the next open still performs strict prevalidation before SQLite.
 These NTFS identity and DACL controls protect both catalog state and the
 `managed_secret` table, so the Windows catalog and every backup are sensitive.
 
-Private Windows replacement creates a random same-directory file with
-`CREATE_NEW` and the private DACL, writes through its held handle, calls
-`FlushFileBuffers`, then uses
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`. It never sets
-`MOVEFILE_COPY_ALLOWED`, so a cross-volume copy/delete fallback is impossible.
+Private Windows replacement for bootstrap authority, legacy TOML, attachments,
+and spill output creates a random same-directory file with `CREATE_NEW` and the
+private DACL, writes through its held handle, and calls `FlushFileBuffers`. An
+overwrite then uses
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`; no-clobber
+legacy migration omits `MOVEFILE_REPLACE_EXISTING`, so a concurrent destination
+wins without being overwritten. Neither path sets `MOVEFILE_COPY_ALLOWED`, so a
+cross-volume copy/delete fallback is impossible.
 The final target is reopened without following reparse points and must match the
 temporary object's identity and expected size. A pre-replace failure preserves
 the old file; after replacement, an observer sees complete old or complete new
@@ -209,8 +212,10 @@ authority changes. Historical `db_location` remains the legacy metadata index;
 managed selection is stored separately as `managed_db_location`. Selection
 writes atomically replace only the sidecar; initialization and import cutover
 never reserialize the legacy source. A newly created POSIX legacy parent is
-`0700`; existing legacy-only sources retain their compatibility writer and a
-fresh reset with neither source nor sidecar creates no artifact.
+`0700`; a newly created Windows legacy parent and every new or replaced Windows
+legacy TOML file receive the protected private DACL before any credential bytes
+are written. Existing legacy-only parent directories retain their compatibility
+boundary, and a fresh reset with neither source nor sidecar creates no artifact.
 
 A platform without its complete profile fails before managed target, provider,
 or bootstrap effects instead of using a weaker fallback. An unavailable macOS

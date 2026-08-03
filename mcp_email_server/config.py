@@ -34,6 +34,11 @@ from mcp_email_server.bootstrap import (
     read_bootstrap,
 )
 from mcp_email_server.log import logger
+from mcp_email_server.windows_security import (
+    atomic_write_private,
+    ensure_private_parent,
+    windows_security_supported,
+)
 
 DEFAULT_CONFIG_PATH = "~/.config/mcp-email-server/config.toml"
 LEGACY_CONFIG_PATH = "~/.config/zerolib/mcp_email_server/config.toml"
@@ -149,6 +154,56 @@ def _reject_sentinel_secret(secret: SecretStr, label: str) -> None:
         )
 
 
+def _stage_legacy_config_copy(legacy_path: Path, config_path: Path) -> Path:
+    config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with (
+            legacy_path.open("rb") as source,
+            tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{config_path.name}.",
+                dir=config_path.parent,
+                delete=False,
+            ) as destination,
+        ):
+            temporary_path = Path(destination.name)
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+            return temporary_path
+    except BaseException:
+        if temporary_path is not None:
+            with contextlib.suppress(OSError):
+                temporary_path.unlink()
+        raise
+
+
+def _copy_legacy_config_no_clobber(legacy_path: Path, config_path: Path) -> bool:
+    if os.name == "nt" and windows_security_supported():  # pragma: no cover - native Windows CI
+        try:
+            atomic_write_private(
+                config_path,
+                legacy_path.read_bytes(),
+                private_parent=False,
+                replace_existing=False,
+            )
+        except FileExistsError:
+            return False
+        return True
+
+    temporary_path = _stage_legacy_config_copy(legacy_path, config_path)
+    try:
+        try:
+            os.link(temporary_path, config_path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+
+
 def _resolve_config_path() -> Path:
     """Resolve config and migrate the old legacy default without managed side effects."""
     configured_path = os.getenv("MCP_EMAIL_SERVER_CONFIG_PATH")
@@ -172,36 +227,14 @@ def _resolve_config_path() -> Path:
     if legacy_bootstrap.mode == "managed":
         return legacy_path
 
-    temporary_path: Path | None = None
     try:
-        config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with (
-            legacy_path.open("rb") as source,
-            tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{config_path.name}.",
-                dir=config_path.parent,
-                delete=False,
-            ) as destination,
-        ):
-            temporary_path = Path(destination.name)
-            shutil.copyfileobj(source, destination)
-            destination.flush()
-            os.fsync(destination.fileno())
-
-        try:
-            os.link(temporary_path, config_path)
-        except FileExistsError:
+        if not _copy_legacy_config_no_clobber(legacy_path, config_path):
             return config_path
     except OSError as exc:
         if config_path.exists():
             return config_path
         logger.warning(f"Could not migrate config from {legacy_path} to {config_path}: {exc}")
         return legacy_path
-    finally:
-        if temporary_path is not None:
-            with contextlib.suppress(OSError):
-                temporary_path.unlink()
 
     logger.info(f"Migrated config from {legacy_path} to {config_path}")
     return config_path
@@ -710,6 +743,14 @@ class Settings(BaseSettings):
     @staticmethod
     def _write_toml(toml_file: Path, content: str) -> None:
         assert_legacy_writable("write legacy settings", toml_file)
+        if os.name == "nt" and windows_security_supported():  # pragma: no cover - native Windows CI
+            atomic_write_private(
+                toml_file,
+                content.encode("utf-8"),
+                private_parent=False,
+                existing_private=False,
+            )
+            return
         if os.name != "posix":
             toml_file.write_text(content)
             return
@@ -827,7 +868,12 @@ class Settings(BaseSettings):
         """Load, persist, and clean one stored legacy credential migration under one lock."""
         toml_file = cls._configured_toml_file()
         assert_legacy_writable("migrate legacy credentials", toml_file)
-        toml_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if (  # pragma: no cover - native Windows CI
+            os.name == "nt" and windows_security_supported() and not toml_file.parent.exists()
+        ):
+            ensure_private_parent(toml_file)
+        else:
+            toml_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with bootstrap_file_lock(toml_file, require_secure_parent=False):
             durable_bootstrap = _materialize_bootstrap_locked(read_bootstrap(toml_file))
             try:
@@ -852,7 +898,12 @@ class Settings(BaseSettings):
         assert_legacy_writable("write legacy settings", toml_file)
         # Keep a newly created immediate parent suitable for a later managed
         # catalog without changing permissions on an existing legacy directory.
-        toml_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if (  # pragma: no cover - native Windows CI
+            os.name == "nt" and windows_security_supported() and not toml_file.parent.exists()
+        ):
+            ensure_private_parent(toml_file)
+        else:
+            toml_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         # The shared source/sidecar lock covers keyring effects, the legacy TOML
         # commit, and any migration cleanup as one logical operation. Re-read durable

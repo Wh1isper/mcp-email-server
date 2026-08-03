@@ -74,7 +74,7 @@ def _details(*, outgoing: EndpointSummary | None = None) -> AccountDetails:
 
 
 def test_catalog_initialization_selects_managed_and_records_database() -> None:
-    database = Path("/private/catalog.sqlite3")
+    database = Path.cwd() / "private" / "catalog.sqlite3"
     backend = Mock()
     backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=None)
     backend.load_legacy_source.return_value = _empty_legacy_source()
@@ -122,11 +122,11 @@ def test_catalog_initialization_preserves_legacy_until_existing_settings_are_imp
 
 
 def test_catalog_initialization_can_retry_after_bootstrap_cas_loss() -> None:
-    database = Path("/private/catalog.sqlite3")
+    database = Path.cwd() / "private" / "catalog.sqlite3"
     backend = Mock()
     backend.read_bootstrap.side_effect = [
         BootstrapSnapshot(mode="legacy", db_path=None, revision=3),
-        BootstrapSnapshot(mode="legacy", db_path=Path("/private/other.sqlite3"), revision=4),
+        BootstrapSnapshot(mode="legacy", db_path=Path.cwd() / "private" / "other.sqlite3", revision=4),
     ]
     backend.load_legacy_source.return_value = _empty_legacy_source()
     catalog = Mock(path=database)

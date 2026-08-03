@@ -19,6 +19,7 @@ from mcp_email_server.bootstrap import (
     read_bootstrap,
     write_bootstrap,
 )
+from mcp_email_server.windows_security import harden_private_file
 
 
 def _private_directory(path: Path) -> Path:
@@ -26,6 +27,13 @@ def _private_directory(path: Path) -> Path:
     if os.name == "posix":
         path.chmod(0o700)
     return path
+
+
+def _harden_private_test_file(path: Path) -> None:
+    if os.name == "nt":
+        harden_private_file(path)
+    else:
+        path.chmod(0o600)
 
 
 def test_missing_bootstrap_defaults_to_legacy_without_writing(tmp_path):
@@ -77,7 +85,7 @@ def test_managed_relative_database_is_resolved_from_bootstrap_parent(tmp_path):
         f"bootstrap_version = {BOOTSTRAP_VERSION}\nbootstrap_revision = 1\n"
         'mode = "managed"\nmanaged_selection = true\nmanaged_db_location = "state/catalog.sqlite3"\n'
     )
-    authority.chmod(0o600)
+    _harden_private_test_file(authority)
 
     bootstrap = read_bootstrap(path)
 
@@ -136,7 +144,7 @@ def test_revisioned_pre_release_db_location_fallback_remains_compatible(tmp_path
         f"bootstrap_version = {BOOTSTRAP_VERSION}\nbootstrap_revision = 2\n"
         f'mode = "legacy"\ndb_location = "{database.as_posix()}"\n'
     )
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     assert read_bootstrap(path).db_path == database
 
@@ -266,6 +274,7 @@ def test_managed_bootstrap_requires_private_parent(tmp_path):
             read_bootstrap(path)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ancestor-permission contract")
 def test_bootstrap_write_rejects_unsafe_ancestor_before_file_creation(tmp_path: Path) -> None:
     unsafe = tmp_path / "unsafe"
     unsafe.mkdir(mode=0o777)
@@ -296,7 +305,7 @@ def test_legacy_writer_fence_rejects_managed_before_effect(tmp_path):
     parent = _private_directory(tmp_path / "private")
     path = parent / "config.toml"
     path.write_text(f'bootstrap_version = {BOOTSTRAP_VERSION}\nmode = "managed"\ndb_location = "catalog.sqlite3"\n')
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     with pytest.raises(ManagedModeWriteError, match="config select legacy"):
         assert_legacy_writable("write legacy data", path)

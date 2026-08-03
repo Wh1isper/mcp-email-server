@@ -13,8 +13,24 @@ from pydantic import SecretStr
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.managed import SCHEMA_VERSION, ManagedCatalog, ManagedCatalogError
 from mcp_email_server.metadata_index import MetadataIndex, MetadataIndexError
+from mcp_email_server.windows_security import ensure_private_parent, harden_private_file
 
 NOW = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
+
+
+def _prepare_private_directory(path: Path) -> None:
+    if os.name == "nt":
+        ensure_private_parent(path / "placeholder")
+    else:
+        path.mkdir(mode=0o700)
+        path.chmod(0o700)
+
+
+def _harden_private_test_file(path: Path) -> None:
+    if os.name == "nt":
+        harden_private_file(path)
+    else:
+        path.chmod(0o600)
 
 
 def _account(password: str | None = None) -> EmailSettings:
@@ -274,13 +290,13 @@ def test_operational_index_rejects_insecure_parent_before_creation(tmp_path: Pat
 
 def test_unmarked_unrelated_database_is_not_claimed_or_mutated(tmp_path: Path) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
+    _prepare_private_directory(parent)
     path = parent / "unrelated.sqlite3"
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("CREATE TABLE operational_account (unrelated TEXT)")
         connection.commit()
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
-    path.chmod(0o600)
+    _harden_private_test_file(path)
     original_bytes = path.read_bytes()
     index = MetadataIndex(path, "legacy")
 
@@ -298,11 +314,11 @@ def test_unmarked_unrelated_database_is_not_claimed_or_mutated(tmp_path: Path) -
 
 def test_managed_mode_never_claims_an_empty_database_without_catalog_authority(tmp_path: Path) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
+    _prepare_private_directory(parent)
     path = parent / "empty.sqlite3"
     with closing(sqlite3.connect(path)):
         pass
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     with pytest.raises(MetadataIndexError, match="missing or incompatible"):
         MetadataIndex(path, "managed").ensure_ready()
@@ -317,12 +333,12 @@ def test_managed_mode_never_claims_an_empty_database_without_catalog_authority(t
 
 def test_unmarked_view_only_database_is_not_claimed_or_mutated(tmp_path: Path) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
+    _prepare_private_directory(parent)
     path = parent / "unrelated.sqlite3"
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("CREATE VIEW unrelated AS SELECT 1 AS value")
         connection.commit()
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     with pytest.raises(MetadataIndexError, match="missing or incompatible"):
         MetadataIndex(path, "legacy").ensure_ready()
@@ -366,14 +382,14 @@ def test_legacy_operational_database_rejects_unsupported_version_before_wal(tmp_
 
 def test_coincidental_baseline_version_does_not_claim_unrelated_schema(tmp_path: Path) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
+    _prepare_private_directory(parent)
     path = parent / "unrelated.sqlite3"
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER NOT NULL)")
         connection.execute("INSERT INTO schema_metadata VALUES (1, 1)")
         connection.execute("CREATE TABLE catalog(id TEXT PRIMARY KEY)")
         connection.commit()
-    path.chmod(0o600)
+    _harden_private_test_file(path)
 
     with pytest.raises(MetadataIndexError, match="incomplete or incompatible"):
         MetadataIndex(path, "legacy").ensure_ready()
@@ -408,10 +424,10 @@ def test_legacy_operational_database_rejects_extra_schema_objects(
 
 def test_corrupt_legacy_operational_database_is_rejected_without_replacement(tmp_path: Path) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
+    _prepare_private_directory(parent)
     path = parent / "operational.sqlite3"
     path.write_bytes(b"not a sqlite database")
-    path.chmod(0o600)
+    _harden_private_test_file(path)
     index = MetadataIndex(path, "legacy")
 
     with pytest.raises(MetadataIndexError, match="unavailable"):

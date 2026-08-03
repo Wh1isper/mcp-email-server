@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +12,7 @@ from typer.main import get_command
 from typer.testing import CliRunner
 
 from mcp_email_server import config as config_module
+from mcp_email_server import managed as managed_module
 from mcp_email_server.adapters.management import LocalManagementBackend
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.management import (
@@ -340,7 +340,7 @@ def test_select_managed_validates_binding_metadata_without_resolving_secret(monk
     assert runner.invoke(app, ["config", "init", "--database", str(database)]).exit_code == 0
     assert runner.invoke(app, _base_account_args(), input="incoming-secret\n").exit_code == 0
     catalog = ManagedCatalog(database)
-    with sqlite3.connect(database) as connection:
+    with managed_module._connect(database) as connection:
         locator = connection.execute("SELECT opaque_locator FROM secret_binding WHERE status = 'ACTIVE'").fetchone()[0]
         if isinstance(catalog.secret_store, ManagedSqliteSecretStore):
             connection.execute("DELETE FROM managed_secret")

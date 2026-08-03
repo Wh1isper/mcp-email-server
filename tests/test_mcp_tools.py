@@ -376,7 +376,7 @@ class TestMcpTools:
                 prompt.model_dump(mode="json", exclude_none=True) for prompt in await app_module.mcp.list_prompts()
             ],
         }
-        expected = json.loads((Path(__file__).parent / "fixtures" / "mcp_catalog.json").read_text())
+        expected = json.loads((Path(__file__).parent / "fixtures" / "mcp_catalog.json").read_text(encoding="utf-8"))
 
         assert actual == expected
         assert "add_email_account" not in {tool["name"] for tool in actual["tools"]}

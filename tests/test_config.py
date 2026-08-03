@@ -22,6 +22,22 @@ from mcp_email_server.config import (
     sender_allowed,
     store_settings,
 )
+from mcp_email_server.windows_security import ensure_private_parent, harden_private_file, validate_private_file
+
+
+def _prepare_private_test_file(path: Path) -> None:
+    if os.name == "nt":
+        ensure_private_parent(path)
+    else:
+        path.parent.mkdir(mode=0o700)
+        path.parent.chmod(0o700)
+
+
+def _harden_private_test_file(path: Path) -> None:
+    if os.name == "nt":
+        harden_private_file(path)
+    else:
+        path.chmod(0o600)
 
 
 def test_settings_rejects_policy_cardinality_above_application_limit(monkeypatch) -> None:
@@ -68,7 +84,8 @@ def test_resolve_config_path_migrates_legacy_default(monkeypatch, tmp_path):
     original_copyfileobj = config_module.shutil.copyfileobj
 
     def assert_private_copy(source, destination):
-        assert stat.S_IMODE(os.fstat(destination.fileno()).st_mode) == 0o600
+        if os.name == "posix":
+            assert stat.S_IMODE(os.fstat(destination.fileno()).st_mode) == 0o600
         original_copyfileobj(source, destination)
 
     monkeypatch.setattr(config_module.shutil, "copyfileobj", assert_private_copy)
@@ -76,7 +93,9 @@ def test_resolve_config_path_migrates_legacy_default(monkeypatch, tmp_path):
     assert config_module._resolve_config_path() == config_path
     assert config_path.read_text() == legacy_path.read_text()
     assert legacy_path.exists()
-    if sys.platform != "win32":
+    if sys.platform == "win32":
+        validate_private_file(config_path, private_parent=False)
+    else:
         assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
 
 
@@ -108,7 +127,17 @@ def test_resolve_config_path_preserves_concurrent_current_config(monkeypatch, tm
         config_path.write_text('source = "current"\n')
         original_link(source, destination)
 
-    monkeypatch.setattr(config_module.os, "link", create_current_then_link)
+    def create_current_then_windows_write(_path, _content, *, private_parent, replace_existing):
+        assert private_parent is False
+        assert replace_existing is False
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text('source = "current"\n')
+        raise FileExistsError
+
+    if os.name == "nt":
+        monkeypatch.setattr(config_module, "atomic_write_private", create_current_then_windows_write)
+    else:
+        monkeypatch.setattr(config_module.os, "link", create_current_then_link)
 
     assert config_module._resolve_config_path() == config_path
     assert config_path.read_text() == 'source = "current"\n'
@@ -142,7 +171,17 @@ def test_resolve_config_path_falls_back_when_copy_fails(monkeypatch, tmp_path):
         config_path.write_text('source = "current"\n')
         raise PermissionError
 
-    monkeypatch.setattr(config_module.shutil, "copyfileobj", fail_copy)
+    def fail_windows_copy(_path, _content, *, private_parent, replace_existing):
+        assert private_parent is False
+        assert replace_existing is False
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text('source = "current"\n')
+        raise PermissionError
+
+    if os.name == "nt":
+        monkeypatch.setattr(config_module, "atomic_write_private", fail_windows_copy)
+    else:
+        monkeypatch.setattr(config_module.shutil, "copyfileobj", fail_copy)
 
     assert config_module._resolve_config_path() == config_path
     assert config_path.read_text() == 'source = "current"\n'
@@ -372,9 +411,8 @@ def test_legacy_reset_preserves_recorded_managed_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
-    parent.chmod(0o700)
     config_path = parent / "config.toml"
+    _prepare_private_test_file(config_path)
     monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
     monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
     config_path.write_text(
@@ -386,7 +424,7 @@ def test_legacy_reset_preserves_recorded_managed_selection(
         '[emails.incoming]\nuser_name = "alice@example.test"\npassword = "secret"\n'
         'host = "imap.example.test"\nport = 993\nuse_ssl = true\n'
     )
-    config_path.chmod(0o600)
+    _harden_private_test_file(config_path)
 
     config_module.delete_settings()
 
@@ -405,9 +443,8 @@ def test_combined_bootstrap_fields_migrate_to_sidecar_on_legacy_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     parent = tmp_path / "private"
-    parent.mkdir(mode=0o700)
-    parent.chmod(0o700)
     config_path = parent / "config.toml"
+    _prepare_private_test_file(config_path)
     monkeypatch.setattr(config_module, "CONFIG_PATH", config_path)
     monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
     config_path.write_text(
@@ -416,7 +453,7 @@ def test_combined_bootstrap_fields_migrate_to_sidecar_on_legacy_store(
         'db_location = "/private/legacy-index.sqlite3"\n'
         'credential_storage = "plaintext"\n'
     )
-    config_path.chmod(0o600)
+    _harden_private_test_file(config_path)
     config_module._settings = None
 
     settings = config_module.get_settings(reload=True)
@@ -847,7 +884,8 @@ def test_legacy_store_and_reset_remain_available_without_secure_bootstrap_primit
 
     assert config_path.exists()
     assert "report_blocked_mutations" in tomllib.loads(config_path.read_text())
-    assert stat.S_IMODE(config_path.parent.stat().st_mode) == 0o700
+    if os.name == "posix":
+        assert stat.S_IMODE(config_path.parent.stat().st_mode) == 0o700
     assert not Path(f"{config_path}.lock").exists()
 
     config_module.delete_settings()

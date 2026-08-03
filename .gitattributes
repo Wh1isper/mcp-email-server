@@ -1,0 +1,8 @@
+/dev/build_frontend.py text eol=lf
+/frontend/**/*.css text eol=lf
+/frontend/**/*.html text eol=lf
+/frontend/**/*.js text eol=lf
+/frontend/**/*.json text eol=lf
+/frontend/**/*.md text eol=lf
+/frontend/**/*.ts text eol=lf
+/frontend/**/*.tsx text eol=lf

@@ -658,24 +658,39 @@ def _delete_if_identity(path: Path, identity: WindowsFileIdentity, *, private_pa
     return True
 
 
-def _validate_optional_target(path: Path, *, private_parent: bool) -> WindowsFileIdentity | None:
+def _validate_optional_target(
+    path: Path,
+    *,
+    private_parent: bool,
+    private: bool = True,
+) -> WindowsFileIdentity | None:
     try:
-        return validate_private_file(path, private_parent=private_parent)
+        handle, identity = _open_validated_file(
+            path,
+            private_parent=private_parent,
+            private=private,
+        )
     except Exception as exc:
         if _missing_error(exc) or isinstance(exc, FileNotFoundError):
             return None
         raise
+    _close(handle)
+    return identity
 
 
-def _move_replace(source: Path, destination: Path) -> None:
-    flags = win32file.MOVEFILE_REPLACE_EXISTING | win32file.MOVEFILE_WRITE_THROUGH
+def _move_replace(source: Path, destination: Path, *, replace_existing: bool) -> None:
+    flags = win32file.MOVEFILE_WRITE_THROUGH
+    if replace_existing:
+        flags |= win32file.MOVEFILE_REPLACE_EXISTING
     deadline = time.monotonic() + _MOVE_RETRY_SECONDS
     while True:
         try:
             win32file.MoveFileEx(os.fspath(source), os.fspath(destination), flags)
             return
         except Exception as exc:
-            if _error_code(exc) != 32 or time.monotonic() >= deadline:
+            if not replace_existing and _exists_error(exc):
+                raise FileExistsError(os.fspath(destination)) from exc
+            if _error_code(exc) not in {5, 32} or time.monotonic() >= deadline:
                 raise WindowsSecurityError("Windows write-through replacement failed") from exc
             time.sleep(_MOVE_RETRY_INTERVAL_SECONDS)
 
@@ -686,9 +701,16 @@ def atomic_write_private(
     *,
     prefix: str = _BOOTSTRAP_TEMP_PREFIX,
     private_parent: bool = True,
+    replace_existing: bool = True,
+    existing_private: bool = True,
 ) -> WindowsFileIdentity:
     with pinned_parent(path, create=True, private=private_parent) as normalized:
-        _validate_optional_target(normalized, private_parent=private_parent)
+        if replace_existing:
+            _validate_optional_target(
+                normalized,
+                private_parent=private_parent,
+                private=existing_private,
+            )
         cleanup_stale_files(normalized.parent, prefix=prefix, private_parent=private_parent)
         temporary = normalized.with_name(f"{prefix}{secrets.token_hex(16)}.tmp")
         try:
@@ -711,8 +733,13 @@ def atomic_write_private(
         else:
             _close(handle)
         try:
-            _validate_optional_target(normalized, private_parent=private_parent)
-            _move_replace(temporary, normalized)
+            if replace_existing:
+                _validate_optional_target(
+                    normalized,
+                    private_parent=private_parent,
+                    private=existing_private,
+                )
+            _move_replace(temporary, normalized, replace_existing=replace_existing)
             final = validate_private_file(
                 normalized,
                 expected_size=len(content),

@@ -7,6 +7,7 @@ ambient backend (see conftest.py's guardrail comment).
 
 from __future__ import annotations
 
+import os
 from threading import Event, Thread
 
 import pytest
@@ -22,6 +23,7 @@ from mcp_email_server.bootstrap import BootstrapError, bootstrap_path
 from mcp_email_server.cli import app as cli_app
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings, Settings, delete_settings
 from mcp_email_server.keyring_store import SENTINEL, SERVICE
+from mcp_email_server.windows_security import harden_private_file
 
 
 def _bind(tmp_path, monkeypatch, *, also_config_path: bool = False):
@@ -932,7 +934,10 @@ def test_reset_unparseable_bootstrap_fails_closed_without_unlink(tmp_path, monke
     monkeypatch.setattr(config_module, "CONFIG_PATH", cfg)
     source = 'credential_storage = "plaintext"\n'
     cfg.write_text(source)
-    bootstrap_path(cfg).write_text("this is not [ valid toml =::")
+    authority = bootstrap_path(cfg)
+    authority.write_text("this is not [ valid toml =::")
+    if os.name == "nt":
+        harden_private_file(authority)
 
     # The private sidecar owns explicit mode selection. Reset must not guess
     # legacy and destroy the independent source when that authority is invalid.
