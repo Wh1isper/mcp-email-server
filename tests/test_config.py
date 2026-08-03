@@ -434,7 +434,7 @@ def test_legacy_reset_preserves_recorded_managed_selection(
         "bootstrap_revision": 3,
         "mode": "legacy",
         "managed_selection": True,
-        "managed_db_location": "/private/managed.sqlite3",
+        "managed_db_location": Path(os.path.abspath("/private/managed.sqlite3")).as_posix(),
     }
 
 
@@ -470,7 +470,7 @@ def test_combined_bootstrap_fields_migrate_to_sidecar_on_legacy_store(
     assert reloaded.db_location == "/private/legacy-index.sqlite3"
     durable = read_bootstrap(config_path)
     assert durable.revision == 3
-    assert durable.db_path == Path("/private/managed.sqlite3")
+    assert durable.db_path == Path(os.path.abspath("/private/managed.sqlite3"))
 
 
 def test_settings_store_preserves_explicit_revisioned_no_selection(

@@ -185,8 +185,11 @@ Windows cross-process locks use the maintained `filelock` `NtCreateFile` and
 `LockFileEx` path after parent-chain validation. Lock handles reject final
 reparse points, deny delete sharing, use a fixed byte range, time out in a bounded
 period, and are released by process termination. SQLite DB/WAL/SHM/lock objects
-are validated before open and again after WAL setup. Every current SQLite
-sidecar is rehardened and revalidated because another connection's final close
+are validated before open and again after WAL setup. On Windows, sidecar
+validation runs under the setup lock because SQLite creates an inherited-DACL
+sidecar before the adapter can harden it; concurrent local opens wait rather than
+rejecting that bounded intermediate state. Every current SQLite sidecar is
+rehardened and revalidated because another connection's final close
 may delete and recreate WAL/SHM under a new identity. Post-commit reconciliation
 contention is logged and deferred rather than misreporting a committed mutation
 as failed; the next open still performs strict prevalidation before SQLite.

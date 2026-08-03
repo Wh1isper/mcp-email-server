@@ -373,6 +373,14 @@ def _validate_sidecars(path: Path) -> dict[str, tuple[int, int]]:
     return identities
 
 
+def _prevalidate_sidecars_before_lock(path: Path) -> None:
+    # SQLite creates inherited-DACL sidecars before this adapter hardens them.
+    # On Windows, another local connection must wait on the setup lock rather
+    # than reject that bounded intermediate state outside the lock.
+    if os.name != "nt":  # pragma: no branch - native Windows CI
+        _validate_sidecars(path)
+
+
 def _harden_windows_sidecars(path: Path) -> None:
     if os.name != "nt":
         return
@@ -496,7 +504,7 @@ def _connect(
         # Existing DB, WAL, SHM, and lock entries are inspected before SQLite is
         # allowed to open or enable WAL. The lock closes concurrent app setup races.
         _assert_private_directory(path.parent)
-        _validate_sidecars(path)
+        _prevalidate_sidecars_before_lock(path)
         with _application_path_lock(path):
             before = _validate_existing_path(path)
             _validate_sidecars(path)

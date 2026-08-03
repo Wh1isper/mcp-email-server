@@ -75,7 +75,10 @@ the required ownership/no-follow semantics fail with remediation.
 
 Concurrent initialization and catalog access use an application lock with bounded
 wait. SQLite busy timeout is finite and maps to a typed busy error. POSIX retains
-the existing owner-only no-follow `fcntl` lock. Windows uses the maintained
+the existing owner-only no-follow `fcntl` lock. Windows validates WAL/SHM under
+the setup lock so another controlled open waits while SQLite's newly created
+inherited-DACL sidecar is hardened, rather than rejecting that bounded
+intermediate state. Windows uses the maintained
 `filelock` Windows implementation only after project-owned validation of the
 lock's parent chain; the acquired lock object is then revalidated from its held
 non-reparse handle. The Windows lock has a fixed bounded timeout, denies delete

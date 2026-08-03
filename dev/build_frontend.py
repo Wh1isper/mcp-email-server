@@ -16,6 +16,7 @@ STATIC = REPOSITORY / "mcp_email_server" / "web_ui" / "static"
 MANIFEST = FRONTEND / "embedded-assets.json"
 ASSET_REFERENCE = re.compile(r"(?:src|href)=[\"']\./([^\"']+)[\"']")
 _GENERATED_DIRECTORIES = {"coverage", "dist", "node_modules", "playwright-report", "test-results"}
+_TEXT_SOURCE_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".py", ".ts", ".tsx"}
 _MANIFEST_VERSION = 1
 
 
@@ -59,6 +60,11 @@ def _validated_static() -> dict[str, bytes]:
     return _validate_assets(_files(STATIC), packaged=True)
 
 
+def _portable_source_bytes(path: Path) -> bytes:
+    content = path.read_bytes()
+    return content.replace(b"\r\n", b"\n") if path.suffix.lower() in _TEXT_SOURCE_SUFFIXES else content
+
+
 def _frontend_sources() -> dict[str, bytes]:
     sources: dict[str, bytes] = {}
     for path in sorted(FRONTEND.rglob("*")):
@@ -69,8 +75,8 @@ def _frontend_sources() -> dict[str, bytes]:
             continue
         if relative.parts[0] in _GENERATED_DIRECTORIES or path.name.endswith(".tsbuildinfo"):
             continue
-        sources[f"frontend/{relative.as_posix()}"] = path.read_bytes()
-    sources["dev/build_frontend.py"] = Path(__file__).read_bytes()
+        sources[f"frontend/{relative.as_posix()}"] = _portable_source_bytes(path)
+    sources["dev/build_frontend.py"] = _portable_source_bytes(Path(__file__))
     return sources
 
 

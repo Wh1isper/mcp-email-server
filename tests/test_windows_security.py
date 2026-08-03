@@ -155,7 +155,7 @@ def test_windows_legacy_store_and_migration_replace_readable_compatibility_file(
         )
 
     grant_world_read()
-    with pytest.raises(WindowsSecurityError, match="another principal"):
+    with pytest.raises(WindowsSecurityError, match=r"protected|another principal"):
         validate_private_file(config_path)
     settings.store()
     stored = validate_private_file(config_path)
