@@ -253,9 +253,13 @@ def test_default_attachment_filename_is_bounded_and_preserves_short_extension(
     monkeypatch.setattr(reads_adapter.secrets, "token_hex", lambda _length: "0123456789abcdef" * 2)
 
     filename = reads_adapter._safe_default_filename(f"{'é' * 2000}.pdf")
+    fallback_name = reads_adapter._safe_default_filename("...")
+    long_suffix_name = reads_adapter._safe_default_filename(f"report.{'x' * 25}")
 
     assert len(filename.encode("utf-8")) <= 217
     assert filename.endswith("-0123456789abcdef0123456789abcdef.pdf")
+    assert fallback_name == "attachment-0123456789abcdef0123456789abcdef"
+    assert long_suffix_name == f"report.{'x' * 25}-0123456789abcdef0123456789abcdef"
 
 
 def test_default_attachment_filename_removes_unicode_format_controls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,6 +295,29 @@ def test_windows_downloads_registry_lookup_is_bounded_and_handles_access_errors(
 
     registry.OpenKey.side_effect = OSError("access denied")
     assert reads_adapter._windows_downloads_registry_value() is None
+
+    registry.OpenKey.side_effect = None
+    registry.QueryValueEx.return_value = "malformed"
+    assert reads_adapter._windows_downloads_registry_value() is None
+
+    monkeypatch.setattr(reads_adapter, "winreg", None)
+    assert reads_adapter._windows_downloads_registry_value() is None
+
+
+def test_default_downloads_directory_falls_back_without_windows_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(reads_adapter, "winreg", None)
+
+    assert reads_adapter._default_downloads_directory() == Path.home() / "Downloads"
+
+
+def test_default_artifact_destination_sanitizes_resolution_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_resolution() -> Path:
+        raise OSError("home directory unavailable")
+
+    monkeypatch.setattr(reads_adapter, "_default_downloads_directory", fail_resolution)
+
+    with pytest.raises(PermissionError, match="could not be resolved"):
+        reads_adapter._resolve_artifact_destination(None, "document.pdf")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows Known Folder contract")
