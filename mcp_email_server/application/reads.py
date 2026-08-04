@@ -111,7 +111,7 @@ class DownloadAttachmentCommand:
     account_name: str
     email_id: str
     attachment_name: str
-    save_path: str
+    save_path: str | None = None
     mailbox: str = "INBOX"
 
     def validate(self) -> None:
@@ -123,11 +123,12 @@ class DownloadAttachmentCommand:
             field_name="attachment_name",
             maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
         )
-        validate_controlled_string(
-            self.save_path,
-            field_name="save_path",
-            maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
-        )
+        if self.save_path is not None:
+            validate_controlled_string(
+                self.save_path,
+                field_name="save_path",
+                maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
+            )
 
 
 class ReadAccountAuthority(Protocol):
@@ -166,7 +167,7 @@ class ReadProviderFactory(Protocol):
 
 
 class ArtifactWriter(Protocol):
-    async def preflight(self, save_path: str) -> None: ...
+    async def preflight(self, save_path: str | None, attachment_name: str) -> str: ...
 
     async def write(self, save_path: str, payload: AttachmentPayload) -> str: ...
 
@@ -378,9 +379,9 @@ class AttachmentDownloadService:
             raise PermissionError(
                 "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
             )
-        # Reject unsupported or unsafe local storage before credential resolution,
-        # provider construction, download, or MIME decoding.
-        await self._artifacts.preflight(command.save_path)
+        # Resolve and reject unsupported or unsafe local storage before credential
+        # resolution, provider construction, download, or MIME decoding.
+        resolved_path = await self._artifacts.preflight(command.save_path, command.attachment_name)
         access = self._providers.open(account.account_name, expected_mode=account.mode)
         if not access.account.enable_attachment_download:
             raise PermissionError(
@@ -394,7 +395,7 @@ class AttachmentDownloadService:
             raise PermissionError(
                 "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
             )
-        saved_path = await self._artifacts.write(command.save_path, payload)
+        saved_path = await self._artifacts.write(resolved_path, payload)
         response = AttachmentDownloadResponse(
             email_id=payload.email_id,
             attachment_name=payload.attachment_name,

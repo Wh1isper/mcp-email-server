@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import os
+import re
 import secrets
 import stat
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -169,9 +172,86 @@ _SECURE_ATTACHMENT_WRITES_SUPPORTED = (
     and os.stat in os.supports_follow_symlinks
 ) or (os.name == "nt" and windows_security_supported())
 
+_DEFAULT_ATTACHMENT_DIRECTORY = "mcp-email-server"
+_DEFAULT_FILENAME_INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
+_WINDOWS_DOWNLOADS_FOLDER_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
+
+if os.name == "nt":  # pragma: win32 cover
+    import winreg as _winreg
+else:
+    _winreg = None
+winreg: Any = _winreg
+
+
+def _truncate_utf8(value: str, maximum_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum_bytes:
+        return value
+    return encoded[:maximum_bytes].decode("utf-8", errors="ignore")
+
+
+def _safe_default_filename(attachment_name: str) -> str:
+    normalized = unicodedata.normalize("NFC", attachment_name)
+    without_controls = "".join(
+        "_" if unicodedata.category(character) in {"Cc", "Cf", "Cs"} else character for character in normalized
+    )
+    cleaned = _DEFAULT_FILENAME_INVALID.sub("_", without_controls).strip(" .")
+    if not cleaned:
+        cleaned = "attachment"
+    suffix = Path(cleaned).suffix
+    if len(suffix.encode("utf-8")) > 24:
+        suffix = ""
+    stem = cleaned[: -len(suffix)] if suffix else cleaned
+    stem = _truncate_utf8(stem.rstrip(" ."), 160).rstrip(" .") or "attachment"
+    return f"{stem}-{secrets.token_hex(16)}{suffix}"
+
+
+def _windows_downloads_registry_value() -> tuple[object, int] | None:
+    if winreg is None:
+        return None
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            result = winreg.QueryValueEx(key, _WINDOWS_DOWNLOADS_FOLDER_ID)
+    except OSError:
+        return None
+    if not isinstance(result, tuple) or len(result) != 2 or not isinstance(result[1], int):
+        return None
+    return result
+
+
+def _default_downloads_directory() -> Path:
+    if os.name == "nt" and winreg is not None:  # pragma: no cover - native Windows CI
+        entry = _windows_downloads_registry_value()
+        if entry is not None:
+            value, value_type = entry
+            if isinstance(value, str) and value_type in {winreg.REG_SZ, winreg.REG_EXPAND_SZ}:
+                try:
+                    expanded = Path(os.path.expandvars(value)).expanduser()
+                except (OSError, ValueError):
+                    pass
+                else:
+                    if expanded.is_absolute():
+                        return expanded
+    return Path.home() / "Downloads"
+
+
+def _resolve_artifact_destination(save_path: str | None, attachment_name: str) -> Path:
+    try:
+        requested = (
+            Path(save_path).expanduser()
+            if save_path is not None
+            else _default_downloads_directory()
+            / _DEFAULT_ATTACHMENT_DIRECTORY
+            / _safe_default_filename(attachment_name)
+        )
+        return Path(os.path.abspath(requested))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise PermissionError("Attachment destination could not be resolved") from exc
+
 
 class LocalArtifactWriter:
-    """Write an exact caller path through the platform filesystem-security adapter."""
+    """Resolve and securely write an explicit or default local artifact path."""
 
     @staticmethod
     def _validate_directory(descriptor: int) -> None:
@@ -203,7 +283,11 @@ class LocalArtifactWriter:
                             dir_fd=directory_descriptor,
                         )
                     except FileNotFoundError:
-                        os.mkdir(component, mode=0o700, dir_fd=directory_descriptor)
+                        # Another preflight may create the same component first.
+                        # Reopen it through the pinned no-follow descriptor and
+                        # apply the full validation below.
+                        with contextlib.suppress(FileExistsError):
+                            os.mkdir(component, mode=0o700, dir_fd=directory_descriptor)
                         child_descriptor = os.open(
                             component,
                             directory_flags,
@@ -298,8 +382,8 @@ class LocalArtifactWriter:
             os.close(parent_descriptor)
 
     @staticmethod
-    def _preflight(save_path: str) -> None:
-        path = Path(os.path.abspath(Path(save_path).expanduser()))
+    def _preflight(save_path: str | None, attachment_name: str) -> str:
+        path = _resolve_artifact_destination(save_path, attachment_name)
         if not _SECURE_ATTACHMENT_WRITES_SUPPORTED:
             raise PermissionError(
                 "Attachment download is unavailable because this platform cannot enforce secure destination traversal"
@@ -307,19 +391,20 @@ class LocalArtifactWriter:
         try:
             if os.name == "nt":  # pragma: no cover - native Windows CI
                 preflight_artifact_destination(path)
-                return
+                return path.as_posix()
             parent_descriptor = LocalArtifactWriter._open_posix_parent(path)
             try:
                 LocalArtifactWriter._validate_existing_target(parent_descriptor, path.name)
             finally:
                 os.close(parent_descriptor)
+            return path.as_posix()
         except PermissionError:
             raise
         except (OSError, WindowsSecurityError) as exc:
             raise PermissionError("Attachment destination parent is unsafe") from exc
 
-    async def preflight(self, save_path: str) -> None:
-        await asyncio.to_thread(self._preflight, save_path)
+    async def preflight(self, save_path: str | None, attachment_name: str) -> str:
+        return await asyncio.to_thread(self._preflight, save_path, attachment_name)
 
     @staticmethod
     def _write(save_path: str, payload: AttachmentPayload) -> str:

@@ -130,8 +130,9 @@ file/directory symlinks, a Developer-
 Mode-independent junction, hard links, owner/DACL policy, lock contention and
 killed-owner release, concurrent and crash-boundary replacement, complete-old-
 or-new atomicity, validated stale cleanup, managed bootstrap/catalog plus
-the private SQLite secret store, attachment preflight, and spill lifecycle. A
-missing
+the private SQLite secret store, explicit attachment preflight, default private
+attachment-directory creation below a shared Downloads ancestor, and spill
+lifecycle. A missing
 symlink privilege fails the native gate distinctly; symlink, junction, DACL,
 lock, crash, and atomic-write coverage may not be replaced by mocks.
 

@@ -95,18 +95,19 @@ their identity and coverage tokens provide projection qualification.
 
 ## Authority Matrix
 
-| Concept                                      | Authority                                | Consequence                                          |
-| -------------------------------------------- | ---------------------------------------- | ---------------------------------------------------- |
-| process mode and selected catalog path       | bootstrap snapshot                       | frozen until restart                                 |
-| managed account, policy, lifecycle, revision | selected managed catalog                 | no environment or TOML override                      |
-| managed secret value                         | `SecretStore`                            | never copied to catalog or ordinary cache            |
-| managed binding lifecycle                    | selected catalog                         | value operations coordinate through revisioned state |
-| legacy effective account                     | TOML plus environment composition        | available only in legacy mode                        |
-| provider capability                          | current provider session evidence        | rechecked when safety depends on it                  |
-| mailbox/message state                        | IMAP                                     | index absence cannot delete provider truth           |
-| SMTP delivery                                | SMTP response evidence                   | not inferred from sent-copy state                    |
-| sent-copy placement                          | IMAP APPEND evidence                     | independent from SMTP delivery                       |
-| attachment destination                       | caller request plus current local policy | exact path, no implicit rewrite                      |
+| Concept                                      | Authority                                | Consequence                                                  |
+| -------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| process mode and selected catalog path       | bootstrap snapshot                       | frozen until restart                                         |
+| managed account, policy, lifecycle, revision | selected managed catalog                 | no environment or TOML override                              |
+| managed secret value                         | `SecretStore`                            | never copied to catalog or ordinary cache                    |
+| managed binding lifecycle                    | selected catalog                         | value operations coordinate through revisioned state         |
+| legacy effective account                     | TOML plus environment composition        | available only in legacy mode                                |
+| provider capability                          | current provider session evidence        | rechecked when safety depends on it                          |
+| mailbox/message state                        | IMAP                                     | index absence cannot delete provider truth                   |
+| SMTP delivery                                | SMTP response evidence                   | not inferred from sent-copy state                            |
+| sent-copy placement                          | IMAP APPEND evidence                     | independent from SMTP delivery                               |
+| explicit attachment destination              | caller request plus current local policy | exact path, no implicit rewrite                              |
+| default attachment destination               | local artifact adapter                   | resolved before provider work under validated download child |
 
 ## Provider Outcomes
 

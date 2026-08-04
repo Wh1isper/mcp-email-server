@@ -133,7 +133,12 @@ those rights cannot retarget the held chain. The exact file and any non-private
 sensitive immediate parent still reject untrusted write/delete/ACL-owner access
 and reparse substitution. A null DACL, unresolved ownership, or an owner outside
 the trusted set fails closed throughout the chain. Private immediate parents use
-the stricter private-object policy and reject every untrusted allow ACE.
+the stricter private-object policy and reject every untrusted allow ACE. The
+default attachment destination therefore uses a newly created private
+`mcp-email-server` directory below the user's Downloads location rather than
+requiring the Downloads directory itself to satisfy the sensitive-parent DACL
+profile. The Downloads ancestors remain subject to volume, ownership, reparse,
+and held-handle identity validation and are never automatically rehardened.
 
 ## Mandatory Pre-open Sequence
 

@@ -168,7 +168,7 @@ async def test_attachment_service_preflights_filesystem_before_provider_or_crede
     with pytest.raises(PermissionError, match="unsupported local storage"):
         await AttachmentDownloadService(authority, factory, artifacts).execute(command)
 
-    artifacts.preflight.assert_awaited_once_with(command.save_path)
+    artifacts.preflight.assert_awaited_once_with(command.save_path, command.attachment_name)
     factory.open.assert_not_called()
     provider.fetch_attachment.assert_not_awaited()
     artifacts.write.assert_not_awaited()
@@ -214,7 +214,7 @@ async def test_attachment_service_writes_only_bounded_provider_payload_through_a
     payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"content")
     provider.fetch_attachment = AsyncMock(return_value=payload)
     artifacts = Mock()
-    artifacts.preflight = AsyncMock()
+    artifacts.preflight = AsyncMock(return_value="/approved/document.pdf")
     artifacts.write = AsyncMock(return_value="/approved/document.pdf")
     command = DownloadAttachmentCommand("work", "1", "document.pdf", "downloads/document.pdf")
 
@@ -222,7 +222,26 @@ async def test_attachment_service_writes_only_bounded_provider_payload_through_a
 
     assert response.size == len(payload.content)
     assert response.saved_path == "/approved/document.pdf"
-    artifacts.write.assert_awaited_once_with(command.save_path, payload)
+    artifacts.preflight.assert_awaited_once_with(command.save_path, command.attachment_name)
+    artifacts.write.assert_awaited_once_with("/approved/document.pdf", payload)
+
+
+@pytest.mark.asyncio
+async def test_attachment_service_uses_resolved_default_path_without_exposing_it_to_provider() -> None:
+    authority, factory, provider = _ports(initial=_account(downloads=True), fresh=_account(downloads=True))
+    payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"content")
+    provider.fetch_attachment = AsyncMock(return_value=payload)
+    artifacts = Mock()
+    artifacts.preflight = AsyncMock(return_value="/home/user/Downloads/mcp-email-server/document-abcd.pdf")
+    artifacts.write = AsyncMock(return_value="/home/user/Downloads/mcp-email-server/document-abcd.pdf")
+    command = DownloadAttachmentCommand("work", "1", "document.pdf")
+
+    response = await AttachmentDownloadService(authority, factory, artifacts).execute(command)
+
+    assert response.saved_path == "/home/user/Downloads/mcp-email-server/document-abcd.pdf"
+    artifacts.preflight.assert_awaited_once_with(None, "document.pdf")
+    provider.fetch_attachment.assert_awaited_once_with(command, factory.open.return_value.account)
+    artifacts.write.assert_awaited_once_with(response.saved_path, payload)
 
 
 @pytest.mark.asyncio

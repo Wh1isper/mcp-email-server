@@ -355,9 +355,16 @@ blocked IDs.
 
 ### `download_attachment`
 
-Downloads one named attachment from a message and writes it to a path on the
-server host. Use an absolute path when possible. A relative path is resolved
-against the server process's working directory.
+Downloads one named attachment from a message to the server host. By default,
+the server creates a safe randomized filename under the current user's
+`Downloads/mcp-email-server` directory. On Windows, it uses a valid Downloads
+Known Folder registry value and otherwise falls back to the profile's `~/Downloads`; on
+other platforms it uses `~/Downloads`. The returned
+`saved_path` reports the resolved absolute destination.
+
+`save_path` is optional. When supplied, it remains an exact destination: use an
+absolute path when possible. A relative explicit path is resolved against the
+server process's working directory.
 
 The tool is registered even when downloading is disabled, but calling it then
 raises a permission error. Enable it explicitly with:
@@ -366,16 +373,21 @@ raises a permission error. Enable it explicitly with:
 enable_attachment_download = true
 ```
 
-The application checks current account and feature policy, then preflights the
-local destination before provider construction, credential resolution, download,
-or MIME decoding. It checks authority again after fetch immediately before the
-write, so revocation during a slow fetch discards the payload. Raw messages above
-50 MiB and decoded attachments above 25 MiB are rejected. The mail adapter
-returns bytes only and never receives the path.
+The application checks current account and feature policy, resolves and
+preflights the local destination before provider construction, credential
+resolution, download, or MIME decoding. For a default destination, it sanitizes
+the attachment name, removes path/device syntax, adds a cryptographically random
+suffix, and creates the application subdirectory with private permissions. It
+checks authority again after fetch immediately before the write, so revocation
+during a slow fetch discards the payload. Raw messages above 50 MiB and decoded
+attachments above 25 MiB are rejected. The mail adapter returns bytes only and
+never receives the resolved path.
 
-The artifact adapter writes only the exact destination. POSIX uses pinned
-no-follow directory descriptors and owner-only files. Windows supports only a
-local fixed NTFS drive-letter path and uses held non-reparse handles, protected
+The artifact adapter writes only the explicit or preflight-resolved destination.
+It never falls back to the process working directory when default resolution
+fails. POSIX uses pinned no-follow directory descriptors and owner-only files.
+Windows supports only a local fixed NTFS drive-letter path and uses held
+non-reparse handles, protected
 DACLs, hard-link/identity checks, `FlushFileBuffers`, and same-volume
 write-through replacement. Symlinked or junction parents, linked/permissive or
 non-regular targets, UNC/network/device/alternate-stream/non-NTFS paths, and

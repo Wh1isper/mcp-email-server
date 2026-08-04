@@ -569,13 +569,27 @@ Or:
 MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 ```
 
-Use an absolute destination path with `download_attachment` so the target is
-unambiguous. The implementation also accepts relative paths and resolves them
-against the server process's working directory. The application fetches at most
-a 50 MiB raw message, accepts at most 25 MiB of decoded attachment bytes, and
-passes bytes rather than a path to the artifact writer. The writer operates only
-on the exact requested target. Filesystem capability preflight occurs before
-credential resolution, provider construction, download, or MIME decoding.
+Omit `save_path` to use the default application download area. The adapter resolves
+the current user's Downloads location, creates an `mcp-email-server` child, and
+uses a bounded sanitized attachment basename plus a cryptographically random
+suffix. On Windows, the adapter uses a recognized absolute Downloads Known
+Folder registry value and otherwise falls back to the profile's `~/Downloads`;
+other platforms use `~/Downloads`. Missing components are created through the secure
+traversal. A redirected Windows location is accepted when it remains on safe
+local fixed NTFS storage; unsupported or unsafe redirection fails closed. The
+application child, not the general Downloads directory, is the sensitive
+immediate parent and receives the platform private profile when created. The
+adapter never falls back to the process working directory or changes the
+Downloads parent's permissions.
+
+An explicit `save_path` remains supported for compatibility. Prefer an absolute
+path so the target is unambiguous; relative explicit paths resolve against the
+server process's working directory and are never silently rewritten. The
+application fetches at most a 50 MiB raw message, accepts at most 25 MiB of
+decoded attachment bytes, and passes bytes rather than a path to the artifact
+writer. The writer operates only on the explicit or preflight-resolved target.
+Filesystem capability preflight occurs before credential resolution, provider
+construction, download, or MIME decoding.
 
 On POSIX, the writer traverses parent components through pinned no-follow
 directory descriptors, rejects unsafe ownership or writable non-sticky parents,
@@ -586,11 +600,13 @@ parent descriptor, and verifies final identity and size.
 On Windows, the writer applies the [local fixed NTFS boundary](#windows-filesystem-boundary),
 rejects every reparse point and hard-linked/permissive target, creates a private
 same-directory sibling, flushes it, performs same-volume write-through replace,
-and verifies final volume/file identity and size. Pre-replace failure preserves
-an existing target. The next operation removes only old prefix-matching temporary
-files that still pass owner, DACL, type, link, age, and identity checks. No
-platform uses a weaker path-based fallback. An existing private regular file at
-the exact requested path can be replaced.
+and verifies final volume/file identity and size. Broader permissions on held
+Downloads ancestors do not need to be removed; only the application child is the
+sensitive immediate parent. Pre-replace failure preserves an existing target.
+The next operation removes only old prefix-matching temporary files that still
+pass owner, DACL, type, link, age, and identity checks. No platform uses a weaker
+path-based fallback. An existing private regular file at the exact explicit or
+resolved path can be replaced.
 
 These traversals prevent provider-controlled filenames and common
 symlink/junction/FIFO/device races from redirecting the write; they are not a

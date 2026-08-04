@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 
@@ -235,7 +236,8 @@ async def test_artifact_writer_writes_only_explicit_regular_file(tmp_path: Path)
     destination = tmp_path / "downloads" / "document.pdf"
     payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"document")
 
-    await LocalArtifactWriter().preflight(str(destination))
+    resolved = await LocalArtifactWriter().preflight(str(destination), payload.attachment_name)
+    assert resolved == destination.as_posix()
     assert not destination.exists()
     saved_path = await LocalArtifactWriter().write(str(destination), payload)
 
@@ -245,13 +247,183 @@ async def test_artifact_writer_writes_only_explicit_regular_file(tmp_path: Path)
         assert stat.S_IMODE(destination.stat().st_mode) == 0o600
 
 
+def test_default_attachment_filename_is_bounded_and_preserves_short_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reads_adapter.secrets, "token_hex", lambda _length: "0123456789abcdef" * 2)
+
+    filename = reads_adapter._safe_default_filename(f"{'é' * 2000}.pdf")
+
+    assert len(filename.encode("utf-8")) <= 217
+    assert filename.endswith("-0123456789abcdef0123456789abcdef.pdf")
+
+
+def test_default_attachment_filename_removes_unicode_format_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(reads_adapter.secrets, "token_hex", lambda _length: "0123456789abcdef" * 2)
+
+    filename = reads_adapter._safe_default_filename("invoice\u202efdp.exe")
+
+    assert "\u202e" not in filename
+    assert filename == "invoice_fdp-0123456789abcdef0123456789abcdef.exe"
+
+
+def test_windows_downloads_registry_lookup_is_bounded_and_handles_access_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RegistryKey:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    registry = Mock(
+        HKEY_CURRENT_USER=object(),
+        REG_SZ=1,
+        REG_EXPAND_SZ=2,
+        OpenKey=Mock(return_value=RegistryKey()),
+        QueryValueEx=Mock(return_value=(r"%USERPROFILE%\Downloads", 2)),
+    )
+    monkeypatch.setattr(reads_adapter, "winreg", registry)
+
+    assert reads_adapter._windows_downloads_registry_value() == (r"%USERPROFILE%\Downloads", 2)
+    registry.QueryValueEx.assert_called_once_with(ANY, reads_adapter._WINDOWS_DOWNLOADS_FOLDER_ID)
+
+    registry.OpenKey.side_effect = OSError("access denied")
+    assert reads_adapter._windows_downloads_registry_value() is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows Known Folder contract")
+def test_windows_default_downloads_directory_expands_and_validates_registry_value(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    assert reads_adapter.winreg is not None
+    monkeypatch.setenv("MCP_EMAIL_TEST_DOWNLOADS", os.fspath(tmp_path))
+    monkeypatch.setattr(
+        reads_adapter,
+        "_windows_downloads_registry_value",
+        lambda: (r"%MCP_EMAIL_TEST_DOWNLOADS%\Relocated", reads_adapter.winreg.REG_EXPAND_SZ),
+    )
+
+    assert reads_adapter._default_downloads_directory() == tmp_path / "Relocated"
+
+    monkeypatch.setattr(
+        reads_adapter,
+        "_windows_downloads_registry_value",
+        lambda: ("relative", reads_adapter.winreg.REG_SZ),
+    )
+    assert reads_adapter._default_downloads_directory() == Path.home() / "Downloads"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX concurrent directory creation contract")
+async def test_artifact_writer_concurrent_default_first_use_reopens_created_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(reads_adapter, "_default_downloads_directory", lambda: downloads)
+    real_mkdir = os.mkdir
+    creation_barrier = threading.Barrier(2)
+
+    def concurrent_mkdir(path: str, *args: object, **kwargs: object) -> None:
+        if path == "mcp-email-server":
+            creation_barrier.wait(timeout=5)
+        real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "mkdir", concurrent_mkdir)
+    writer = LocalArtifactWriter()
+
+    destinations = await asyncio.gather(
+        writer.preflight(None, "first.pdf"),
+        writer.preflight(None, "second.pdf"),
+    )
+
+    assert len(destinations) == 2
+    assert {Path(destination).parent for destination in destinations} == {downloads / "mcp-email-server"}
+
+
+@pytest.mark.asyncio
+async def test_artifact_writer_uses_private_default_download_subdirectory_and_safe_randomized_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloads = tmp_path / "Downloads"
+    monkeypatch.setattr(reads_adapter, "_default_downloads_directory", lambda: downloads)
+    monkeypatch.setattr(reads_adapter.secrets, "token_hex", lambda _length: "0123456789abcdef0123456789abcdef")
+    payload = AttachmentPayload("1", "../CON?.pdf", "application/pdf", b"document")
+
+    resolved = await LocalArtifactWriter().preflight(None, payload.attachment_name)
+    expected = downloads / "mcp-email-server" / "_CON_-0123456789abcdef0123456789abcdef.pdf"
+    saved_path = await LocalArtifactWriter().write(resolved, payload)
+
+    assert resolved == expected.as_posix()
+    assert saved_path == expected.as_posix()
+    assert expected.read_bytes() == b"document"
+    assert not (tmp_path / "CON?.pdf").exists()
+    if os.name == "posix":
+        assert stat.S_IMODE(expected.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(expected.stat().st_mode) == 0o600
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="native Windows DACL contract")
+async def test_artifact_writer_default_private_child_allows_shared_downloads_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import ntsecuritycon
+    import win32con
+    import win32security
+
+    from mcp_email_server.windows_security import validate_private_directory
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    descriptor = win32security.GetNamedSecurityInfo(
+        os.fspath(downloads),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+    )
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid, None)
+    rights = ntsecuritycon.FILE_ADD_SUBDIRECTORY | ntsecuritycon.FILE_DELETE_CHILD | ntsecuritycon.GENERIC_WRITE
+    dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, rights, everyone)
+    win32security.SetNamedSecurityInfo(
+        os.fspath(downloads),
+        win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        dacl,
+        None,
+    )
+    monkeypatch.setattr(reads_adapter, "_default_downloads_directory", lambda: downloads)
+    monkeypatch.setattr(reads_adapter.secrets, "token_hex", lambda _length: "0123456789abcdef0123456789abcdef")
+    payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"document")
+
+    with pytest.raises(PermissionError, match="parent is unsafe"):
+        await LocalArtifactWriter().preflight(str(downloads / "direct.pdf"), payload.attachment_name)
+
+    resolved = await LocalArtifactWriter().preflight(None, payload.attachment_name)
+    saved_path = await LocalArtifactWriter().write(resolved, payload)
+
+    expected = downloads / "mcp-email-server" / "document-0123456789abcdef0123456789abcdef.pdf"
+    assert saved_path == expected.as_posix()
+    assert expected.read_bytes() == b"document"
+    identity = validate_private_directory(expected.parent)
+    assert identity.attributes & win32con.FILE_ATTRIBUTE_DIRECTORY
+
+
 @pytest.mark.asyncio
 async def test_artifact_writer_fails_closed_without_pinned_traversal(monkeypatch, tmp_path: Path) -> None:
     destination = tmp_path / "download.txt"
     monkeypatch.setattr("mcp_email_server.adapters.reads._SECURE_ATTACHMENT_WRITES_SUPPORTED", False)
 
     with pytest.raises(PermissionError, match="platform cannot enforce"):
-        await LocalArtifactWriter().preflight(str(destination))
+        await LocalArtifactWriter().preflight(str(destination), "download.txt")
     with pytest.raises(PermissionError, match="platform cannot enforce"):
         await LocalArtifactWriter().write(
             str(destination),
@@ -272,7 +444,7 @@ async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp
         pytest.skip("symlinks unavailable")
 
     with pytest.raises(PermissionError):
-        await LocalArtifactWriter().preflight(str(destination))
+        await LocalArtifactWriter().preflight(str(destination), "download.txt")
     with pytest.raises(PermissionError):
         await LocalArtifactWriter().write(
             str(destination),

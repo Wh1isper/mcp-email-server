@@ -401,17 +401,31 @@ Or:
 MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD=true
 ```
 
-Use an absolute `save_path` when possible and ensure the server process can
-write to its parent directory. A relative path is resolved against the server
-process's working directory. Filesystem support is checked before provider
-fetch. The destination fails closed if any parent is a symlink/reparse point or
-not a directory, or if the target is linked, permissive, a FIFO/device, or other
-non-regular object.
+Normally omit `save_path`. The server then creates a safe randomized file under the
+current user's `Downloads/mcp-email-server` directory and returns its absolute
+path. It securely creates missing components and gives the application child
+private permissions; it does not change permissions on the general Downloads
+directory. Windows accepts a redirected Downloads Known Folder when it remains
+on safe local fixed NTFS storage and falls back to the profile's `~/Downloads`
+when the registry value is unavailable, malformed, or non-absolute. If the resolved location
+fails the platform security profile, use an explicit safe local destination
+instead.
+
+For an explicit destination, use an absolute `save_path` when possible and
+ensure the server process can write to its parent directory. A relative path is
+resolved against the server process's working directory. Filesystem support is
+checked before provider fetch. The destination fails closed if any parent is a
+symlink/reparse point or not a directory, or if the target is linked,
+permissive, a FIFO/device, or another non-regular object.
 
 On Windows, use an ordinary local fixed NTFS drive-letter path with a parent
 directory below the volume root; direct `C:\\file`-style storage is unsupported.
-Junctions and all reparse tags are rejected along with UNC/mapped network paths, `\\?\\`/`\\.\\`
-device paths, alternate streams such as `file:stream`, and FAT/exFAT. Move the
+For an explicit path, the immediate parent must not grant another SID permission
+to create, modify, delete, or change security on entries. Read-only ACEs do not
+need to be removed. The default application child avoids requiring the Downloads
+folder itself to satisfy this sensitive-parent rule. Junctions and all reparse
+tags are rejected along with UNC/mapped network paths, `\\?\\`/`\\.\\` device
+paths, alternate streams such as `file:stream`, and FAT/exFAT. Move the
 destination to local NTFS rather than bypassing the check. Old application temp
 files are deleted only after bounded owner/DACL/type/link/identity validation;
 a substituted or unverified entry is deliberately left untouched.

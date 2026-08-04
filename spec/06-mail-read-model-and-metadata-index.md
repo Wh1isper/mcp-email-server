@@ -120,12 +120,24 @@ Body reads:
 
 Marking read is a separate mutation under spec 07.
 
-## Attachment Retrieval and Exact Destination
+## Attachment Retrieval and Destination Selection
 
 Attachment materialization is an explicit local filesystem effect. The caller
-supplies the exact destination path. Compatibility requires preserving that
-path; the service MUST NOT silently rewrite it into an approved workspace,
-rename it, or append a provider filename.
+may supply an exact destination path. Compatibility requires preserving an
+explicit path; the service MUST NOT silently rewrite it into an approved
+workspace, rename it, or append a provider filename.
+
+When the caller omits the destination, the local artifact adapter resolves the
+current user's Downloads location and uses an `mcp-email-server` subdirectory
+beneath it, creating that child with private permissions when absent. It
+derives a bounded safe leaf name from the selected attachment name and adds a
+cryptographically random suffix before filesystem
+preflight. Provider-controlled path components, traversal, device names, and
+platform-invalid characters are never used verbatim. The resolved absolute path
+is fixed before provider construction and is used unchanged for the later write.
+Failure to resolve or validate the default directory fails before provider work;
+the adapter never weakens its platform profile or falls back to the process
+working directory.
 
 The effect is permitted only when:
 
@@ -146,8 +158,10 @@ The effect is permitted only when:
 10. final identity, type, owner, permissions or DACL, link count, and size are
     revalidated before success is returned.
 
-On Windows this effect is supported only on local fixed NTFS storage under spec 08. It creates a random same-directory sibling exclusively with a protected
-private DACL, writes through a held non-reparse handle, calls
+On Windows this effect is supported only on local fixed NTFS storage under spec 08.
+
+It creates a random same-directory sibling exclusively with a protected private
+DACL, writes through a held non-reparse handle, calls
 `FlushFileBuffers`, and replaces with
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` when overwrite
 is allowed. `MOVEFILE_COPY_ALLOWED` is forbidden. The target is reopened with
@@ -157,10 +171,10 @@ preserves an existing target. Cleanup deletes only a verified object created by
 the operation; a crash remnant is eligible only for the bounded prefix-, owner-,
 DACL-, type-, and identity-validated cleanup in spec 08.
 
-The result reports the exact requested destination in a bounded local-only
-response. Logs and remote/provider errors do not include it. Partial files are
-removed when their identity can be proven; otherwise the operation returns a
-bounded cleanup warning without deleting an unverified path.
+The result reports the exact explicit or resolved destination in a bounded
+local-only response. Logs and remote/provider errors do not include it. Partial
+files are removed when their identity can be proven; otherwise the operation
+returns a bounded cleanup warning without deleting an unverified path.
 
 ## Index Writes and Failures
 
@@ -189,12 +203,13 @@ catalog authority or secret binding state.
    to the documented limit without persisting content or reply-thread headers;
    tests cover present, absent, whitespace-only, folded, duplicate, malformed,
    per-field, and aggregate `In-Reply-To`/`References` behavior.
-6. Attachment tests cover explicit enablement, exact path preservation, size
-   limits, capability preflight before provider work, symlinks, Windows
-   junctions and other reparse points, hard links, non-regular targets,
-   permissions/DACLs, no-clobber/overwrite, concurrent and crash-boundary
-   replacement, validated partial/stale cleanup, final identity, and absence of
-   path leakage to provider. Windows filesystem cases run on real NTFS rather
-   than mocks alone.
+6. Attachment tests cover explicit enablement, exact explicit-path
+   preservation, default Downloads/application-child resolution, safe
+   randomized leaf naming, size limits, capability preflight before provider
+   work, symlinks, Windows junctions and other reparse points, hard links,
+   non-regular targets, permissions/DACLs, no-clobber/overwrite, concurrent and
+   crash-boundary replacement, validated partial/stale cleanup, final identity,
+   and absence of path leakage to provider. Windows filesystem cases run on real
+   NTFS rather than mocks alone.
 7. Projection failure cannot turn known provider read evidence into a false mail
    failure, and rebuild cannot alter catalog or credential state.

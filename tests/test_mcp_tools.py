@@ -519,6 +519,29 @@ class TestMcpTools:
         assert command.mailbox == "INBOX"
 
     @pytest.mark.asyncio
+    async def test_download_attachment_allows_default_destination(self):
+        attachment_response = AttachmentDownloadResponse(
+            email_id="12345",
+            attachment_name="document.pdf",
+            mime_type="application/pdf",
+            size=1024,
+            saved_path="/home/user/Downloads/mcp-email-server/document-abcd.pdf",
+        )
+        command_handler = AsyncMock(return_value=attachment_response)
+
+        with patch("mcp_email_server.app.download_attachment_command", command_handler):
+            result = await download_attachment(
+                account_name="test_account",
+                email_id="12345",
+                attachment_name="document.pdf",
+            )
+
+        assert result == attachment_response
+        command = command_handler.await_args.args[0]
+        assert command.save_path is None
+        assert command.mailbox == "INBOX"
+
+    @pytest.mark.asyncio
     async def test_send_email_with_reply_headers(self):
         command_handler = AsyncMock(
             return_value=SendMutationOutcome(

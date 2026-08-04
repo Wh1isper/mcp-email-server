@@ -879,7 +879,7 @@ async def list_mailboxes(
 
 
 @mcp.tool(
-    description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+    description="Download an email attachment. By default it is saved with a safe randomized name under the current user's Downloads/mcp-email-server directory; an explicit destination path remains supported. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
     annotations=_FILESYSTEM_WRITE,
 )
 async def download_attachment(
@@ -901,12 +901,12 @@ async def download_attachment(
         ),
     ],
     save_path: Annotated[
-        str,
+        str | None,
         Field(
             max_length=APPLICATION_LIMITS.attachment_path_bytes,
-            description="The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
+            description="Optional exact destination path. Omit it to use a safe randomized filename under the current user's Downloads/mcp-email-server directory. Relative explicit paths are resolved against the server process working directory.",
         ),
-    ],
+    ] = None,
     mailbox: Annotated[
         str,
         Field(

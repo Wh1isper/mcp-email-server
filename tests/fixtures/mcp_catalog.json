@@ -1438,7 +1438,7 @@
         },
         {
             "name": "download_attachment",
-            "description": "Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+            "description": "Download an email attachment. By default it is saved with a safe randomized name under the current user's Downloads/mcp-email-server directory; an explicit destination path remains supported. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -1460,10 +1460,18 @@
                         "type": "string"
                     },
                     "save_path": {
-                        "description": "The destination path. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
-                        "maxLength": 4096,
-                        "title": "Save Path",
-                        "type": "string"
+                        "anyOf": [
+                            {
+                                "maxLength": 4096,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Optional exact destination path. Omit it to use a safe randomized filename under the current user's Downloads/mcp-email-server directory. Relative explicit paths are resolved against the server process working directory.",
+                        "title": "Save Path"
                     },
                     "mailbox": {
                         "default": "INBOX",
@@ -1473,12 +1481,7 @@
                         "type": "string"
                     }
                 },
-                "required": [
-                    "account_name",
-                    "email_id",
-                    "attachment_name",
-                    "save_path"
-                ],
+                "required": ["account_name", "email_id", "attachment_name"],
                 "title": "download_attachmentArguments",
                 "type": "object"
             },
