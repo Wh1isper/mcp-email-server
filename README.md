@@ -1,5 +1,7 @@
 # mcp-email-server
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FWh1isper%2Fmcp-email-server.svg)](https://mcptoplist.com/server/glama%2FWh1isper%2Fmcp-email-server)
+
 [![Release](https://img.shields.io/github/v/release/Wh1isper/mcp-email-server)](https://github.com/Wh1isper/mcp-email-server/releases)
 [![Build status](https://img.shields.io/github/actions/workflow/status/Wh1isper/mcp-email-server/main.yml?branch=main)](https://github.com/Wh1isper/mcp-email-server/actions/workflows/main.yml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/Wh1isper/mcp-email-server/graph/badge.svg?token=0mToRybKx8)](https://codecov.io/gh/Wh1isper/mcp-email-server)
