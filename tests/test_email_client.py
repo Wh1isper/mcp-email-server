@@ -180,6 +180,53 @@ async def test_low_level_mutation_uid_sinks_reject_before_imap_io(email_client: 
     connect.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload_type", [bytes, bytearray])
+async def test_get_email_body_accepts_short_fetch_literal(
+    email_client: EmailClient,
+    mock_imap: AsyncMock,
+    payload_type: type[bytes] | type[bytearray],
+) -> None:
+    raw_email = b"Date: Thu, 1 Jan 2026 00:00:00 +0000\r\nFrom: a@example.test\r\nSubject: Hi\r\n\r\nOK\r\n"
+    assert len(raw_email) == 79
+    fetch_data = [b"1 FETCH (UID 1 BODY[] {79}", payload_type(raw_email), b")"]
+    mock_imap.uid = AsyncMock(return_value=("OK", fetch_data))
+
+    with patch.object(email_client, "_connect_imap", AsyncMock(return_value=mock_imap)):
+        result = await email_client.get_email_body_by_id("1")
+
+    assert result is not None
+    assert result["email_id"] == "1"
+    assert result["subject"] == "Hi"
+    assert result["body"] == "OK\r\n"
+    mock_imap.uid.assert_awaited_once_with("fetch", "1", "BODY.PEEK[]")
+
+
+@pytest.mark.parametrize("payload_type", [bytes, bytearray])
+def test_extract_raw_email_rejects_literal_length_mismatch(
+    email_client: EmailClient,
+    payload_type: type[bytes] | type[bytearray],
+) -> None:
+    payload = payload_type(b"short")
+    data = [b"1 FETCH (UID 1 BODY[] {6}", payload, b")"]
+
+    assert email_client._extract_raw_email(data) is None
+    assert email_client._check_email_content(data) is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_email_rejects_protocol_metadata_without_literal(email_client: EmailClient) -> None:
+    metadata = [b"1 FETCH (UID 1 FLAGS (" + b"custom-flag " * 10 + b") RFC822.SIZE 123456)"]
+    assert len(metadata[0]) > 100
+    imap = AsyncMock()
+    imap.uid = AsyncMock(return_value=("OK", metadata))
+
+    result = await email_client._fetch_email_with_formats(imap, "1")
+
+    assert result is None
+    assert imap.uid.await_count == 2
+
+
 class TestEmailClient:
     def test_init(self, email_server):
         """Test initialization of EmailClient."""

@@ -169,9 +169,11 @@ If a body extends beyond the requested window, the returned body ends with
 `max_body_length`.
 
 The batch response reports requested and retrieved counts and includes
-`failed_ids` for messages that could not be fetched. Each returned email also
-includes nullable `in_reply_to` and `references` values from the corresponding
-RFC headers. `references` is returned as one decoded, unfolded string with
+`failed_ids` for messages that could not be fetched. A full-message literal from
+a successful IMAP FETCH is parsed regardless of its byte length; protocol
+metadata without a message literal is not treated as content. Each returned
+email also includes nullable `in_reply_to` and `references` values from the
+corresponding RFC headers. `references` is returned as one decoded, unfolded string with
 folding spaces and tabs normalized. Missing and whitespace-only values become
 `null`; if an invalid message repeats either header, the parser's first observed
 value is returned. This is untrusted observational header data, not a validated

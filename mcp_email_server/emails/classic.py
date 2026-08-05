@@ -19,6 +19,7 @@ from email.parser import BytesParser
 from email.policy import SMTP as SMTP_POLICY
 from email.policy import SMTPUTF8 as SMTPUTF8_POLICY
 from email.policy import default
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -1486,30 +1487,34 @@ class EmailClient:
                 logger.info("IMAP logout failed")
 
     def _check_email_content(self, data: list) -> bool:
-        """Check if the fetched data contains actual email content."""
-        for item in data:
-            if isinstance(item, bytes) and b"FETCH (" in item and b"RFC822" not in item and b"BODY" not in item:
-                # This is just metadata, not actual content
-                continue
-            elif isinstance(item, bytes | bytearray) and len(item) > 100:
-                # This looks like email content
-                return True
-        return False
+        """Check whether a FETCH response contains a full-message literal."""
+        return self._extract_raw_email(data) is not None
 
     def _extract_raw_email(self, data: list) -> bytes | None:
-        """Extract raw email bytes from IMAP response data."""
-        # The email content is typically at index 1 as a bytearray
-        if len(data) > 1 and isinstance(data[1], bytearray):
-            return bytes(data[1])
+        """Extract the full-message literal that follows its FETCH marker."""
+        for marker, payload in pairwise(data):
+            if (
+                not isinstance(marker, bytes)
+                or re.match(
+                    rb"(?:\d+\s+)?FETCH\b.*(?:BODY(?:\.PEEK)?\[\]|RFC822)(?=$|[\s<{])",
+                    marker,
+                    flags=re.IGNORECASE,
+                )
+                is None
+            ):
+                continue
+            if not isinstance(payload, bytes | bytearray):
+                continue
 
-        # Search through all items for email content
-        for item in data:
-            if isinstance(item, bytes | bytearray) and len(item) > 100:
-                # Skip IMAP protocol responses
-                if isinstance(item, bytes) and b"FETCH" in item:
-                    continue
-                # This is likely the email content
-                return bytes(item) if isinstance(item, bytearray) else item
+            literal_size = re.search(rb"\{(\d+)\}\s*$", marker)
+            if literal_size is not None and len(payload) != int(literal_size.group(1)):
+                continue
+            # aioimaplib represents parsed literals as bytearray. Plain bytes are
+            # accepted only when the wire marker supplies the literal length.
+            if isinstance(payload, bytearray):
+                return bytes(payload)
+            if literal_size is not None:
+                return payload
         return None
 
     async def _fetch_email_with_formats(self, imap, email_id: str) -> list | None:
