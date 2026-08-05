@@ -1,10 +1,10 @@
 [project]
 name = "mcp-email-server"
 version = "0.0.1"
-description = "IMAP and SMTP via MCP Server"
+description = "Full-featured, multi-account MCP email server for Windows, macOS, and Linux—read, search, organize, and send email via IMAP and SMTP."
 authors = [{ name = "wh1isper", email = "jizhongsheng957@gmail.com" }]
 readme = "README.md"
-keywords = ["MCP", "IMAP", "SMTP", "email"]
+keywords = ["MCP", "MCP server", "Model Context Protocol", "email", "email server", "IMAP", "SMTP", "multi-account"]
 requires-python = ">=3.11,<4.0"
 classifiers = [
     "Intended Audience :: Developers",
