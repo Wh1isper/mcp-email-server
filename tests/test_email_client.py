@@ -214,6 +214,24 @@ def test_extract_raw_email_rejects_literal_length_mismatch(
     assert email_client._check_email_content(data) is False
 
 
+@pytest.mark.parametrize(
+    ("marker", "payload"),
+    [
+        (b"FETCH BODY[]", None),
+        (b"FETCH BODY[]", b"raw email without a literal declaration"),
+    ],
+)
+def test_extract_raw_email_rejects_non_literal_payload(
+    email_client: EmailClient,
+    marker: bytes,
+    payload: bytes | None,
+) -> None:
+    data = [marker, payload]
+
+    assert email_client._extract_raw_email(data) is None
+    assert email_client._check_email_content(data) is False
+
+
 @pytest.mark.asyncio
 async def test_fetch_email_rejects_protocol_metadata_without_literal(email_client: EmailClient) -> None:
     metadata = [b"1 FETCH (UID 1 FLAGS (" + b"custom-flag " * 10 + b") RFC822.SIZE 123456)"]
