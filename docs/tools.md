@@ -237,11 +237,17 @@ rejected before SMTP access.
 
 If a recipient allowlist is configured, every To, CC, and BCC address must be
 allowed. SMTP delivery reports accepted, rejected, and unknown recipients
-separately when the result is partial or ambiguous. Saving the Sent copy is a
-second IMAP effect and is reported in its own `sent-copy` section; a failed or
-unknown copy never changes an accepted delivery into a failure. Do not retry the
-whole send to repair a Sent copy. Sent-copy APPEND payloads use CRLF line
-endings for compatibility with strict IMAP providers.
+separately when the result is partial or ambiguous. Failed and unknown targets
+include reviewed fixed diagnostics when available, for example
+`smtp-mail-rejected`, `smtp-recipient-rejected`, `smtp-data-rejected`,
+`smtp-data-unknown`, or `provider-timeout`. Unrecognized detail and raw provider
+response text are omitted.
+
+Saving the Sent copy is a second IMAP effect and is reported in its own
+`sent-copy` section; a failed or unknown copy never changes an accepted delivery
+into a failure. Do not retry the whole send to repair a Sent copy. Sent-copy
+APPEND payloads use CRLF line endings for compatibility with strict IMAP
+providers.
 
 ### `save_to_mailbox`
 

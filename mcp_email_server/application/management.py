@@ -1533,7 +1533,8 @@ class ConnectivityValidationService(_ConfiguredCatalogService):
                 message="Connection test failed before provider access; inspect account and credential state",
                 category="credential_unavailable",
             )
-        return ConnectivityResult(role=role, status="ok", message="Connection succeeded")
+        message = "Connection succeeded" if role == "incoming" else "SMTP authentication and envelope sender accepted"
+        return ConnectivityResult(role=role, status="ok", message=message)
 
 
 class IndexHealthService(_ConfiguredCatalogService):

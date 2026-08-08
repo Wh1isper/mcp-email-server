@@ -110,9 +110,26 @@ def effective_configuration() -> EffectiveConfiguration:
     return get_application_runtime().configuration.execute()
 
 
+_PUBLIC_SEND_DETAILS = frozenset({
+    "not-attempted",
+    "provider-timeout",
+    "smtp-cancelled-before-data",
+    "smtp-data-rejected",
+    "smtp-data-unknown",
+    "smtp-mail-cancelled",
+    "smtp-mail-rejected",
+    "smtp-mail-unavailable",
+    "smtp-recipient-rejected",
+    "smtp-session-lost-before-data",
+    "smtp-utf8-unsupported",
+})
+
+
 def _ordered_target_sections(
     outcomes: tuple[TargetMutationOutcome, ...],
     *,
+    detail_allowlist: frozenset[str] | None = None,
+    include_failed_detail: bool = False,
     include_unknown_detail: bool,
 ) -> list[str]:
     """Format contiguous statuses without reordering input-aligned outcomes."""
@@ -125,7 +142,11 @@ def _ordered_target_sections(
             current_targets = []
         current_status = item.status
         target = item.target
-        if include_unknown_detail and item.status == "unknown" and item.detail is not None:
+        include_detail = (include_failed_detail and item.status == "failed") or (
+            include_unknown_detail and item.status == "unknown"
+        )
+        detail_is_allowed = detail_allowlist is None or item.detail in detail_allowlist
+        if include_detail and item.detail is not None and detail_is_allowed:
             target = f"{target} ({item.detail})"
         current_targets.append(target)
     if current_targets:
@@ -141,7 +162,12 @@ def _tagged_batch_result(outcome: BatchMutationOutcome) -> str:
 
 
 def _tagged_send_result(outcome: SendMutationOutcome) -> str:
-    sections = _ordered_target_sections(outcome.delivery, include_unknown_detail=False)
+    sections = _ordered_target_sections(
+        outcome.delivery,
+        detail_allowlist=_PUBLIC_SEND_DETAILS,
+        include_failed_detail=True,
+        include_unknown_detail=True,
+    )
     sent_copy = outcome.sent_copy.status
     if outcome.sent_copy.mailbox:
         sent_copy = f"{sent_copy} ({outcome.sent_copy.mailbox})"

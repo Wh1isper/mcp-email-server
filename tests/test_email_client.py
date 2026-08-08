@@ -2,10 +2,14 @@ import asyncio
 import email
 import ssl
 from datetime import UTC, datetime
+from email import policy
+from email.message import EmailMessage
 from email.mime.text import MIMEText
+from email.parser import Parser
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from aiosmtplib.email import flatten_message
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.classic import (
@@ -865,6 +869,7 @@ class TestEmailClient:
             msg = call_args[0][0]
             recipients = call_args[1]["recipients"]
 
+            assert call_args[1]["sender"] == "test@example.com"
             assert msg["Subject"] == "Test Subject"
             assert msg["From"] == email_client.sender
             assert msg["To"] == "recipient@example.com"
@@ -875,6 +880,31 @@ class TestEmailClient:
             assert "recipient@example.com" in recipients
             assert "cc@example.com" in recipients
             assert "bcc@example.com" in recipients
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_email_preserves_smtputf8_from_header_on_wire(email_server: EmailServer) -> None:
+    address = "用户@example.test"
+    client = EmailClient(email_server, sender_name="Alice", sender_address=address)
+    smtp = AsyncMock()
+    smtp.__aenter__.return_value = smtp
+    smtp.__aexit__.return_value = None
+
+    with patch("aiosmtplib.SMTP", return_value=smtp):
+        await client.send_email(
+            recipients=["recipient@example.test"],
+            subject="SMTPUTF8 sender",
+            body="Body",
+        )
+
+    submitted = smtp.send_message.await_args.args[0]
+    assert isinstance(submitted, EmailMessage)
+    wire = flatten_message(submitted, utf8=True)
+    parsed = Parser(policy=policy.SMTPUTF8).parsestr(wire.decode("utf-8"))
+    sender = parsed["From"]
+    assert sender is not None
+    assert [(mailbox.display_name, mailbox.addr_spec) for mailbox in sender.addresses] == [("Alice", address)]
+    assert address.encode("utf-8") in wire
 
 
 class TestSendEmailMessageIdAndDate:

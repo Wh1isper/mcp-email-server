@@ -617,7 +617,24 @@ async def test_connectivity_service_delegates_to_provider_adapter() -> None:
     result = await services.connectivity.execute("alice", "incoming")
 
     assert result.status == "ok"
+    assert result.message == "Connection succeeded"
     backend.test_connection.assert_awaited_once_with(catalog, "alice", "incoming")
+
+
+@pytest.mark.asyncio
+async def test_outgoing_connectivity_success_reports_envelope_sender_check() -> None:
+    backend = Mock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="legacy", db_path=Path("catalog.sqlite3"))
+    catalog = Mock()
+    backend.open_catalog.return_value = catalog
+    backend.test_connection = AsyncMock()
+    services = ManagementServices.compose(backend)
+
+    result = await services.connectivity.execute("alice", "outgoing")
+
+    assert result.status == "ok"
+    assert result.message == "SMTP authentication and envelope sender accepted"
+    backend.test_connection.assert_awaited_once_with(catalog, "alice", "outgoing")
 
 
 def _legacy_source(*, full_name: str = "Alice") -> LegacySourceSnapshot:

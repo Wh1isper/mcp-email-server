@@ -327,7 +327,18 @@ account supplied solely through environment variables.
 for one account, confirm that the selected account is enabled and has a complete
 SMTP endpoint and active outgoing credential. In managed mode, inspect it with
 `account show`; disable it before changing or removing credentials, then
-re-enable it with the latest revision.
+re-enable it with the latest revision. Run `account test ACCOUNT outgoing` to
+authenticate and verify that the provider accepts the configured account email
+address in `MAIL FROM`; the command then issues `RSET` without a recipient or
+message body. A successful check does not prove later `RCPT TO` or `DATA`
+acceptance.
+
+The configured full name is a display name, not an envelope address. Values that
+contain `@`, commas, quotes, or non-ASCII text are quoted or encoded in the
+message `From` header, while SMTP uses only the separate account email address.
+A partial or failed `send_email` result includes reviewed fixed tags such as
+`smtp-mail-rejected`, `smtp-recipient-rejected`, or `smtp-data-rejected` when
+available. It never includes the provider's free-form response text.
 
 For delivery diagnostics, enable `DEBUG` and inspect the bounded SMTP records.
 `phase=connect` and `phase=authenticate` cover session setup; `phase=mail`,

@@ -279,14 +279,19 @@ revalidate them for every caller.
 
 A failed `account set-secret` returns a typed error and does not persist an
 intermediate binding or change the current binding authority. `config
-index-health` prints bounded rebuildable-projection status and problems. `account test ACCOUNT [incoming|outgoing]` is the retained low-level,
-agent-facing connectivity diagnostic (not a Web UI capability) and exits nonzero for a typed
+index-health` prints bounded rebuildable-projection status and problems. `account
+test ACCOUNT [incoming|outgoing]` is the retained low-level, agent-facing
+connectivity diagnostic (not a Web UI capability) and exits nonzero for a typed
 connection failure and never prints a success sentence in that case. JSON
 failures use one of `timeout`, `endpoint_unavailable`, `credential_unavailable`,
 `authentication_or_provider_rejected`, or `tls_or_connection_failed`; messages
 contain bounded remediation rather than provider exception text. An outgoing test
-checks for a configured SMTP endpoint before resolving its credential, and typed
-IMAP/SMTP authentication and timeout failures retain the correct category.
+checks for a configured SMTP endpoint before resolving its credential, authenticates,
+submits `MAIL FROM` with the configured account email address, and resets the
+transaction without issuing `RCPT TO` or `DATA`. Success therefore proves that
+the server accepted the envelope sender, but not that it would accept a recipient
+or message body. Typed IMAP/SMTP authentication, sender rejection, and timeout
+failures retain the correct category.
 
 ### Managed account lifecycle
 
@@ -618,7 +623,13 @@ environment equivalents are `MCP_EMAIL_SERVER_SAVE_TO_SENT` and
 ## Outgoing message headers
 
 Every outgoing MIME message carries a single top-level `MIME-Version: 1.0`
-header. The server also adds `User-Agent: mcp-email-server` and
+header. The configured full name is an RFC 5322 display name: punctuation such as
+`@`, commas, and quotes is safely quoted, while non-ASCII text is encoded without
+encoding the address itself. SMTP `MAIL FROM` always uses the separate configured
+account email address as its RFC 5321 reverse-path. Drafts and Sent copies use the
+same correctly formatted `From` header.
+
+The server also adds `User-Agent: mcp-email-server` and
 `X-Mailer: mcp-email-server` as de-facto application identifiers for
 compatibility with providers that inspect sender-software identification. These
 identifiers are fixed and contain no account-specific information.

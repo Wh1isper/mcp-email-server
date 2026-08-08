@@ -44,7 +44,7 @@ allowed_recipients = ["bob@example.test"]
 
 [[emails]]
 account_name = "alice"
-full_name = "Alice Example"
+full_name = "alice@example.test"
 email_address = "alice@example.test"
 save_to_sent = true
 sent_folder_name = "Sent"
@@ -134,6 +134,13 @@ def _ensure_empty_mailboxes(credentials: tuple[str, str], mailboxes: list[str]) 
                 assert status == "OK"
             status, _ = client.expunge()
             assert status == "OK"
+
+
+def _message_count(credentials: tuple[str, str], mailbox: str) -> int:
+    with _imap_session(credentials) as client:
+        status, data = client.select(mailbox, readonly=True)
+        assert status == "OK"
+        return int(data[0])
 
 
 def _find_message(credentials: tuple[str, str], mailbox: str, subject: str) -> ObservedMessage | None:
@@ -293,13 +300,28 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
         "--imap-user",
         ALICE[0],
         "--no-imap-ssl",
+        "--smtp-host",
+        SMTP_HOST,
+        "--smtp-port",
+        str(SMTP_PORT),
+        "--smtp-user",
+        ALICE[0],
+        "--no-smtp-ssl",
         "--password-stdin",
     ]
     assert ALICE[1] not in add_arguments
-    add_output = _run_cli(console_script, server_env, add_arguments, stdin=f"{ALICE[1]}\n")
+    add_output = _run_cli(console_script, server_env, add_arguments, stdin=f"{ALICE[1]}\n{ALICE[1]}\n")
     assert ALICE[1] not in add_output
     test_output = _run_cli(console_script, server_env, ["account", "test", "alice-managed"])
     assert "connectivity test passed" in test_output
+    counts_before = (_message_count(ALICE, "INBOX"), _message_count(BOB, "INBOX"))
+    outgoing_test_output = _run_cli(
+        console_script,
+        server_env,
+        ["account", "test", "alice-managed", "outgoing"],
+    )
+    assert "Outgoing connectivity test passed" in outgoing_test_output
+    assert (_message_count(ALICE, "INBOX"), _message_count(BOB, "INBOX")) == counts_before
     assert read_bootstrap(config_path).mode == "managed"
     assert not config_path.exists()
 
@@ -442,7 +464,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             _run_cli(
                 console_script,
                 server_env,
-                ["account", "disable", "alice-managed", "--expected-revision", "2"],
+                ["account", "disable", "alice-managed", "--expected-revision", "3"],
             )
             denied = await session.call_tool("list_mailboxes", arguments={"account_name": "alice-managed"})
             assert denied.isError is True
@@ -471,7 +493,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
                     "alice-managed",
                     "incoming",
                     "--expected-revision",
-                    "3",
+                    "4",
                 ],
             )
             _run_cli(
@@ -483,7 +505,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             _run_cli(
                 console_script,
                 server_env,
-                ["account", "enable", "alice-managed", "--expected-revision", "5"],
+                ["account", "enable", "alice-managed", "--expected-revision", "6"],
             )
             restored = await _call_tool(session, "list_mailboxes", {"account_name": "alice-managed"})
             assert "INBOX" in {mailbox["name"] for mailbox in restored["result"]}
@@ -495,7 +517,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
                     "update",
                     "alice-managed",
                     "--expected-revision",
-                    "6",
+                    "7",
                     "--name",
                     "alice-managed-updated",
                 ],
@@ -505,7 +527,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
             _run_cli(
                 console_script,
                 server_env,
-                ["account", "disable", "alice-managed-updated", "--expected-revision", "7"],
+                ["account", "disable", "alice-managed-updated", "--expected-revision", "8"],
             )
             _run_cli(
                 console_script,
@@ -515,7 +537,7 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
                     "remove",
                     "alice-managed-updated",
                     "--expected-revision",
-                    "8",
+                    "9",
                     "--confirm",
                     "alice-managed-updated",
                 ],
@@ -854,6 +876,11 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
 
             delivered = _wait_for_message(BOB, "INBOX", sent_subject)
             assert sent_body in (delivered.message.get_body(preferencelist=("plain",)).get_content())
+            delivered_from = delivered.message["From"]
+            assert delivered_from is not None
+            assert [(address.display_name, address.addr_spec) for address in delivered_from.addresses] == [
+                ("alice@example.test", "alice@example.test")
+            ]
             assert str(delivered.message["In-Reply-To"]) == parent_message_id
             assert str(delivered.message["References"]) == references
             delivered_attachments = list(delivered.message.iter_attachments())
@@ -863,6 +890,11 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
 
             sent_copy = _wait_for_message(ALICE, "Sent", sent_subject)
             assert sent_body in sent_copy.message.get_body(preferencelist=("plain",)).get_content()
+            sent_copy_from = sent_copy.message["From"]
+            assert sent_copy_from is not None
+            assert [(address.display_name, address.addr_spec) for address in sent_copy_from.addresses] == [
+                ("alice@example.test", "alice@example.test")
+            ]
             sent_copy_metadata = await _metadata_for_subject_in_mailbox(session, "alice", "Sent", sent_subject)
             sent_copy_content = await _call_tool(
                 session,

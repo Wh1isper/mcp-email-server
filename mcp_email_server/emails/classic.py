@@ -11,7 +11,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from email import encoders
 from email.header import Header
-from email.message import Message
+from email.message import EmailMessage, Message
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -83,6 +83,14 @@ MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
 def _serialize_message_for_imap_append(message: Message) -> bytes:
     """Serialize one IMAP APPEND payload with RFC-compliant CRLF line endings."""
     return message.as_bytes(policy=message.policy.clone(linesep="\r\n"))
+
+
+def _as_modern_smtp_message(message: Message) -> EmailMessage:
+    """Convert legacy MIME classes so aiosmtplib can serialize RFC 6532."""
+    parsed = BytesParser(policy=SMTPUTF8_POLICY).parsebytes(message.as_bytes(policy=SMTPUTF8_POLICY))
+    if not isinstance(parsed, EmailMessage):  # pragma: no cover - policy invariant
+        raise TypeError("SMTPUTF8 parser did not produce an EmailMessage")
+    return parsed
 
 
 def _first_thread_header(message: Message, name: str) -> str | None:
@@ -682,15 +690,48 @@ def _smtp_error_category(error: Exception) -> str:
 
 
 class EmailClient:
-    def __init__(self, email_server: EmailServer, sender: str | None = None):
+    def __init__(
+        self,
+        email_server: EmailServer,
+        sender: str | None = None,
+        *,
+        sender_name: str | None = None,
+        sender_address: str | None = None,
+    ):
         self.email_server = email_server
-        self.sender = sender or email_server.user_name
+        raw_sender = sender or email_server.user_name
+        if sender_name is not None and sender_address is not None:
+            self.sender_name = sender_name
+            self.sender_address = sender_address
+        else:
+            parsed_sender_name, parsed_sender_address = email.utils.parseaddr(raw_sender)
+            self.sender_name = sender_name if sender_name is not None else parsed_sender_name
+            self.sender_address = sender_address or parsed_sender_address or None
+        if self.sender_address is None:
+            self.sender = raw_sender
+        else:
+            try:
+                self.sender_address.encode("ascii")
+            except UnicodeEncodeError:
+                # ``formataddr`` requires an ASCII addr-spec. RFC 6532 permits
+                # this UTF-8 mailbox when SMTPUTF8 is negotiated at submission.
+                quoted_name = email.utils.quote(self.sender_name)
+                self.sender = f'"{quoted_name}" <{self.sender_address}>' if quoted_name else self.sender_address
+            else:
+                self.sender = email.utils.formataddr((str(Header(self.sender_name, "utf-8")), self.sender_address))
 
         self.imap_class = aioimaplib.IMAP4_SSL if self.email_server.use_ssl else aioimaplib.IMAP4
 
         self.smtp_use_tls = self.email_server.use_ssl
         self.smtp_start_tls = self.email_server.start_ssl
         self.smtp_verify_ssl = self.email_server.verify_ssl
+
+    @property
+    def envelope_sender(self) -> str:
+        """Return the RFC 5321 reverse-path address for outbound operations."""
+        if self.sender_address is None:
+            raise ValueError("sender must contain one email address")
+        return self.sender_address
 
     def _imap_connect(self) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
         """Create a new IMAP connection with the configured SSL context."""
@@ -1802,6 +1843,8 @@ class EmailClient:
         sending), the Bcc header is omitted — BCC recipients are delivered
         via the SMTP envelope only.
         """
+        envelope_sender = self.envelope_sender
+
         if attachments:
             msg = self._create_message_with_attachments(body, html, attachments)
         else:
@@ -1814,17 +1857,14 @@ class EmailClient:
         else:
             msg["Subject"] = subject
 
-        sender_name, sender_address = email.utils.parseaddr(self.sender)
-
-        # Encode only the display name. RFC 2047 encoded-words must not cover the
-        # addr-spec, otherwise strict clients may show the raw encoded blob.
-        if sender_address:
-            msg["From"] = email.utils.formataddr((str(Header(sender_name, "utf-8")), sender_address))
-        elif any(ord(c) > 127 for c in self.sender):
-            msg["From"] = str(Header(self.sender, "utf-8"))
-        else:
-            msg["From"] = self.sender
-
+        # The sender mailbox was formatted from structured identity fields at
+        # construction time; do not parse the RFC 5322 header to recover them.
+        # Preserve RFC 6532 headers for IMAP APPEND as well as SMTP submission.
+        try:
+            envelope_sender.encode("ascii")
+        except UnicodeEncodeError:
+            msg.policy = SMTPUTF8_POLICY
+        msg["From"] = self.sender
         msg["To"] = ", ".join(recipients)
 
         # Add CC header if provided (visible to recipients)
@@ -1843,10 +1883,10 @@ class EmailClient:
         if reply_to:
             msg["Reply-To"] = reply_to
 
-        # Set Date and Message-Id headers
+        # Set Date and Message-Id headers. The domain comes from the structured
+        # sender address, never from the formatted RFC 5322 From header.
         msg["Date"] = email.utils.formatdate(localtime=True)
-        sender_for_domain = sender_address or self.sender
-        sender_domain = sender_for_domain.rsplit("@", 1)[-1].rstrip(">")
+        sender_domain = envelope_sender.rsplit("@", 1)[-1]
         msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
 
         # De-facto sender identification headers improve compatibility with
@@ -1875,7 +1915,8 @@ class EmailClient:
         )
         all_recipients = [*recipients, *(cc or []), *(bcc or [])]
         envelope_recipients = [email.utils.parseaddr(recipient)[1] for recipient in all_recipients]
-        envelope_sender = email.utils.parseaddr(self.sender)[1] or self.sender
+        # RFC 5321 reverse-path is an addr-spec, not an RFC 5322 name-addr.
+        envelope_sender = self.envelope_sender
 
         async def submit(smtp: aiosmtplib.SMTP) -> DeliveryMutationOutcome:  # noqa: C901
             utf8_required = False
@@ -2091,7 +2132,11 @@ class EmailClient:
                 logger.debug("SMTP phase=authenticate outcome=succeeded")
                 session_phase = "send"
                 logger.debug("SMTP phase=send outcome=started")
-                await smtp.send_message(msg, recipients=all_recipients)
+                await smtp.send_message(
+                    _as_modern_smtp_message(msg),
+                    sender=self.envelope_sender,
+                    recipients=all_recipients,
+                )
                 logger.debug("SMTP phase=send outcome=succeeded")
                 session_phase = "cleanup"
         except SMTPResponseException as error:
@@ -2910,9 +2955,22 @@ class EmailClient:
 class ClassicEmailHandler(EmailHandler):
     def __init__(self, email_settings: EmailSettings):
         self.email_settings = email_settings
-        sender = f"{email_settings.full_name} <{email_settings.email_address}>"
-        self.incoming_client = EmailClient(email_settings.incoming, sender=sender)
-        self.outgoing_client = EmailClient(email_settings.outgoing, sender=sender) if email_settings.outgoing else None
+        # RFC 5322 display names may contain specials such as "@" when the
+        # formatter quotes them. Keep the RFC 5321 envelope address separate.
+        self.incoming_client = EmailClient(
+            email_settings.incoming,
+            sender_name=email_settings.full_name,
+            sender_address=email_settings.email_address,
+        )
+        self.outgoing_client = (
+            EmailClient(
+                email_settings.outgoing,
+                sender_name=email_settings.full_name,
+                sender_address=email_settings.email_address,
+            )
+            if email_settings.outgoing
+            else None
+        )
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
 

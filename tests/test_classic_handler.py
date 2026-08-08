@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
+from email import policy
 from email.message import EmailMessage
+from email.parser import Parser
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,6 +43,46 @@ def email_settings():
 @pytest.fixture
 def classic_handler(email_settings):
     return ClassicEmailHandler(email_settings)
+
+
+def test_sender_identity_quotes_rfc5322_display_name_and_keeps_envelope_address(
+    email_settings: EmailSettings,
+) -> None:
+    address = "test@example.com"
+    settings = email_settings.model_copy(update={"full_name": address, "email_address": address})
+
+    handler = ClassicEmailHandler(settings)
+
+    assert handler.incoming_client.sender == '"test@example.com" <test@example.com>'
+    assert handler.incoming_client.sender_address == address
+    assert handler.outgoing_client is not None
+    assert handler.outgoing_client.sender == '"test@example.com" <test@example.com>'
+    assert handler.outgoing_client.sender_address == address
+
+
+def test_sender_identity_preserves_smtputf8_address_in_rfc6532_header(
+    email_settings: EmailSettings,
+) -> None:
+    address = "用户@example.test"
+    settings = email_settings.model_copy(update={"email_address": address})
+
+    handler = ClassicEmailHandler(settings)
+
+    assert handler.outgoing_client is not None
+    assert handler.outgoing_client.envelope_sender == address
+    message = handler.outgoing_client.compose_message(
+        recipients=["recipient@example.test"],
+        subject="SMTPUTF8 sender",
+        body="Body",
+    )
+    encoded = message.as_bytes(policy=policy.SMTPUTF8)
+    parsed = Parser(policy=policy.SMTPUTF8).parsestr(encoded.decode("utf-8"))
+    sender = parsed["From"]
+    assert sender is not None
+    assert [(mailbox.display_name, mailbox.addr_spec) for mailbox in sender.addresses] == [
+        (email_settings.full_name, address)
+    ]
+    assert message.policy.utf8 is True
 
 
 class TestClassicEmailHandler:

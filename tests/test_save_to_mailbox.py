@@ -57,6 +57,19 @@ def email_settings():
     )
 
 
+def test_saved_message_quotes_sender_display_name_that_contains_at_sign(
+    email_settings: EmailSettings,
+) -> None:
+    address = "test@example.com"
+    settings = email_settings.model_copy(update={"full_name": address, "email_address": address})
+    client = ClassicEmailHandler(settings).incoming_client
+
+    message = client.compose_message(["recipient@example.com"], "Draft", "body", include_bcc_header=True)
+
+    assert message["From"] == '"test@example.com" <test@example.com>'
+    assert b'From: "test@example.com" <test@example.com>' in message.as_bytes(policy=SMTP)
+
+
 @pytest.fixture
 def mock_imap(completed_awaitable):
     mock = AsyncMock()

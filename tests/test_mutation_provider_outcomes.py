@@ -358,6 +358,24 @@ def _smtp() -> AsyncMock:
 
 
 @pytest.mark.asyncio
+async def test_smtp_uses_addr_spec_for_envelope_and_quoted_display_name_for_header(email_server) -> None:
+    client = EmailClient(
+        email_server,
+        sender='"sender@example.test" <sender@example.test>',
+        sender_address="sender@example.test",
+    )
+    smtp = _smtp()
+
+    with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+        result = await client.send_email_with_outcome(["recipient@example.test"], "Subject", "body")
+
+    assert [(item.status, item.detail) for item in result.outcomes] == [("succeeded", None)]
+    smtp.mail.assert_awaited_once_with("sender@example.test", options=[], encoding="ascii")
+    message_bytes = smtp.data.await_args.args[0]
+    assert b'From: "sender@example.test" <sender@example.test>' in message_bytes
+
+
+@pytest.mark.asyncio
 async def test_smtp_partial_recipient_rejection_is_preserved(email_server) -> None:
     client = EmailClient(email_server, sender="Sender <sender@example.test>")
     smtp = _smtp()

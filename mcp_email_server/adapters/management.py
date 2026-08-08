@@ -5,7 +5,8 @@ import os
 import tomllib
 from pathlib import Path
 
-from aiosmtplib.errors import SMTPAuthenticationError
+import aiosmtplib
+from aiosmtplib.errors import SMTPAuthenticationError, SMTPNotSupported, SMTPResponseException
 from pydantic import ValidationError
 
 from mcp_email_server import keyring_store
@@ -53,6 +54,21 @@ from mcp_email_server.emails.classic import ClassicEmailHandler, ImapAuthenticat
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
 
 _PREVIEW_REDACTED = "preview-redacted"
+
+
+async def _verify_smtp_envelope_sender(smtp: aiosmtplib.SMTP, sender: str) -> None:
+    """Verify one SMTP reverse-path without submitting a recipient or message."""
+    mail_options: list[str] = []
+    mail_encoding = "ascii"
+    try:
+        sender.encode("ascii")
+    except UnicodeEncodeError:
+        if not smtp.supports_extension("smtputf8"):
+            raise SMTPNotSupported("SMTPUTF8 is required for the configured sender") from None
+        mail_options.append("SMTPUTF8")
+        mail_encoding = "utf-8"
+    await smtp.mail(sender, options=mail_options, encoding=mail_encoding)
+    await smtp.rset()
 
 
 class LocalManagementBackend:
@@ -591,8 +607,6 @@ class LocalManagementBackend:
                     "Outgoing endpoint is unavailable; configure SMTP before testing",
                 )
 
-            import aiosmtplib
-
             client = handler.outgoing_client
             async with aiosmtplib.SMTP(
                 hostname=outgoing.host,
@@ -602,6 +616,7 @@ class LocalManagementBackend:
                 tls_context=client._get_smtp_ssl_context(),
             ) as smtp:
                 await smtp.login(outgoing.user_name, outgoing.password.get_secret_value())
+                await _verify_smtp_envelope_sender(smtp, client.envelope_sender)
         except asyncio.CancelledError:
             raise
         except ConnectivityCheckError:
@@ -617,10 +632,13 @@ class LocalManagementBackend:
                     "credential_unavailable",
                     "Credential is unavailable; save the account password again",
                 ) from None
-            if isinstance(exc, ImapAuthenticationError | SMTPAuthenticationError):
+            if isinstance(
+                exc,
+                ImapAuthenticationError | SMTPAuthenticationError | SMTPNotSupported | SMTPResponseException,
+            ):
                 raise ConnectivityCheckError(
                     "authentication_or_provider_rejected",
-                    "Authentication or provider policy rejected the connection",
+                    "Authentication or provider policy rejected the connection or sender",
                 ) from None
             raise ConnectivityCheckError(
                 "tls_or_connection_failed",

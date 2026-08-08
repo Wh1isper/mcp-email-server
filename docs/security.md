@@ -92,7 +92,9 @@ These records remain redacted at every log level. They never include account
 usernames, sender or recipient addresses (including BCC), endpoint hostnames,
 provider response text, exception text, subjects, bodies, raw MIME, attachment
 content, or secret values. Enabling `DEBUG` adds safe phase transitions only; it
-does not enable a message-content dump.
+does not enable a message-content dump. MCP send results may expose only reviewed
+fixed delivery tags; an unrecognized detail is omitted rather than copied from a
+provider response.
 
 ## Managed credential storage
 

@@ -179,9 +179,11 @@ After restarting the client:
    `list_emails_metadata`.
 3. If SMTP is configured through the managed workflow, make a non-destructive
    connectivity check with `mcp-email-server account test ACCOUNT outgoing`
-   before asking the client to send. This CLI diagnostic remains available even
-   though the Web UI has no Test connection action or route. Add the intended
-   address to the allowed-recipient policy first; an empty recipient collection
+   before asking the client to send. It authenticates, submits the configured
+   account email address in `MAIL FROM`, and resets the transaction without
+   `RCPT TO` or `DATA`; success does not prove final delivery. This CLI diagnostic
+   remains available even though the Web UI has no Test connection action or
+   route. Add the intended address to the allowed-recipient policy first; an empty recipient collection
    disables sending. `send_email` is always present in the static MCP tool
    catalog.
 

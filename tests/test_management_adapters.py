@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import aiosmtplib
 import pytest
+from aiosmtplib.errors import SMTPResponseException
 
 from mcp_email_server import keyring_store
 from mcp_email_server.adapters import management as management_module
@@ -233,6 +234,7 @@ async def test_connection_logs_in_to_outgoing_endpoint(
     handler = MagicMock()
     handler.outgoing_client.smtp_start_tls = False
     handler.outgoing_client.smtp_use_tls = True
+    handler.outgoing_client.envelope_sender = email_settings.email_address
     handler.outgoing_client._get_smtp_ssl_context.return_value = tls_context
     monkeypatch.setattr(management_module, "ClassicEmailHandler", Mock(return_value=handler))
     smtp = AsyncMock()
@@ -256,7 +258,100 @@ async def test_connection_logs_in_to_outgoing_endpoint(
         email_settings.outgoing.user_name,
         email_settings.outgoing.password.get_secret_value(),
     )
+    smtp.mail.assert_awaited_once_with(
+        email_settings.email_address,
+        options=[],
+        encoding="ascii",
+    )
+    smtp.rset.assert_awaited_once_with()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
     context.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_outgoing_connection_test_sanitizes_envelope_sender_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    email_settings: EmailSettings,
+) -> None:
+    catalog = Mock()
+    catalog.load_account.return_value = email_settings
+    handler = MagicMock()
+    handler.outgoing_client.smtp_start_tls = False
+    handler.outgoing_client.smtp_use_tls = True
+    handler.outgoing_client.envelope_sender = email_settings.email_address
+    handler.outgoing_client._get_smtp_ssl_context.return_value = None
+    monkeypatch.setattr(management_module, "ClassicEmailHandler", Mock(return_value=handler))
+    smtp = AsyncMock()
+    smtp.mail.side_effect = SMTPResponseException(501, b"private provider detail")
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=smtp)
+    context.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(aiosmtplib, "SMTP", Mock(return_value=context))
+
+    with pytest.raises(ConnectivityCheckError) as caught:
+        await LocalManagementBackend().test_connection(catalog, "test_account", "outgoing")
+
+    assert caught.value.category == "authentication_or_provider_rejected"
+    assert "private provider detail" not in str(caught.value)
+    smtp.rset.assert_not_awaited()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outgoing_connection_test_negotiates_smtputf8_for_sender(
+    monkeypatch: pytest.MonkeyPatch,
+    email_settings: EmailSettings,
+) -> None:
+    address = "用户@example.test"
+    settings = email_settings.model_copy(update={"email_address": address})
+    catalog = Mock()
+    catalog.load_account.return_value = settings
+    smtp = AsyncMock()
+    smtp.supports_extension = Mock(return_value=True)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=smtp)
+    context.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(aiosmtplib, "SMTP", Mock(return_value=context))
+
+    await LocalManagementBackend().test_connection(catalog, "test_account", "outgoing")
+
+    smtp.supports_extension.assert_called_once_with("smtputf8")
+    smtp.mail.assert_awaited_once_with(
+        address,
+        options=["SMTPUTF8"],
+        encoding="utf-8",
+    )
+    smtp.rset.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_outgoing_connection_test_rejects_unsupported_smtputf8_sender(
+    monkeypatch: pytest.MonkeyPatch,
+    email_settings: EmailSettings,
+) -> None:
+    catalog = Mock()
+    catalog.load_account.return_value = email_settings
+    handler = MagicMock()
+    handler.outgoing_client.smtp_start_tls = False
+    handler.outgoing_client.smtp_use_tls = True
+    handler.outgoing_client.envelope_sender = "用户@example.test"
+    handler.outgoing_client._get_smtp_ssl_context.return_value = None
+    monkeypatch.setattr(management_module, "ClassicEmailHandler", Mock(return_value=handler))
+    smtp = AsyncMock()
+    smtp.supports_extension = Mock(return_value=False)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=smtp)
+    context.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(aiosmtplib, "SMTP", Mock(return_value=context))
+
+    with pytest.raises(ConnectivityCheckError) as caught:
+        await LocalManagementBackend().test_connection(catalog, "test_account", "outgoing")
+
+    assert caught.value.category == "authentication_or_provider_rejected"
+    smtp.mail.assert_not_awaited()
+    smtp.rset.assert_not_awaited()
 
 
 @pytest.mark.asyncio

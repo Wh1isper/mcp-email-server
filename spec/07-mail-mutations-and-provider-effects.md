@@ -97,6 +97,14 @@ attempt an unsafe best effort.
 
 ## SMTP Delivery and Sent Copy
 
+The configured sender identity remains structured across protocol boundaries.
+The account email address is the RFC 5321 reverse-path used by `MAIL FROM`; the
+optional display name is formatted and quoted only in the RFC 5322 `From` header.
+A provider adapter MUST NOT recover an envelope sender by parsing a formatted
+header, and a parse failure MUST NOT fall back to sending that complete header as
+the reverse-path. The same correctly formatted `From` header is used for SMTP
+message data, drafts, and Sent copies.
+
 SMTP delivery and IMAP sent-copy APPEND are independent effects:
 
 ```mermaid
@@ -156,9 +164,12 @@ invalidation cannot clear provider ambiguity.
 
 Mutation requests bound target count, address count/bytes, headers, body, total
 encoded bytes, mailbox names, and batch size. Results bound per-target details,
-warnings, provider-code normalization, and aggregate serialization. Raw provider
-responses, message content, credentials, stack traces, and uncontrolled local
-paths do not enter public errors.
+warnings, provider-code normalization, and aggregate serialization. Public send
+results may include only reviewed fixed delivery-detail tags such as
+`smtp-mail-rejected`, `smtp-recipient-rejected`, or `provider-timeout` alongside
+the affected target. Unrecognized detail is omitted. Raw provider responses,
+message content, credentials, stack traces, and uncontrolled local paths do not
+enter public errors.
 
 ## Acceptance Criteria
 
@@ -173,7 +184,10 @@ paths do not enter public errors.
    capability.
 5. Provider success remains success when projection persistence fails.
 6. SMTP and sent-copy outcomes are independently represented, and sent-copy
-   failure/unknown never causes SMTP replay.
+   failure/unknown never causes SMTP replay. Tests prove display names are safely
+   formatted while the SMTP reverse-path uses only the configured account
+   address, including when the display name itself contains `@` and when the
+   account address requires SMTPUTF8/RFC 6532 serialization.
 7. Cancellation and timeout tests cover before-effect, known-after-effect, and
    ambiguous boundaries for IMAP and SMTP.
 8. Public numeric IDs are documented and tested as current-mailbox compatibility

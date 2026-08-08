@@ -949,9 +949,9 @@ async def test_send_tool_preserves_recipient_order_across_status_tags() -> None:
     command_handler = AsyncMock(
         return_value=SendMutationOutcome(
             (
-                TargetMutationOutcome("first@example.test", "failed"),
+                TargetMutationOutcome("first@example.test", "failed", "smtp-recipient-rejected"),
                 TargetMutationOutcome("second@example.test", "succeeded"),
-                TargetMutationOutcome("third@example.test", "unknown"),
+                TargetMutationOutcome("third@example.test", "unknown", "provider-timeout"),
             ),
             SentCopyMutationOutcome("skipped"),
         )
@@ -965,9 +965,25 @@ async def test_send_tool_preserves_recipient_order_across_status_tags() -> None:
         )
 
     assert result == (
-        "Email delivery [failed: first@example.test; succeeded: second@example.test; "
-        "unknown: third@example.test; sent-copy: skipped; warning: reconciliation needed]"
+        "Email delivery [failed: first@example.test (smtp-recipient-rejected); "
+        "succeeded: second@example.test; unknown: third@example.test (provider-timeout); "
+        "sent-copy: skipped; warning: reconciliation needed]"
     )
+
+
+@pytest.mark.asyncio
+async def test_send_tool_does_not_expose_unrecognized_provider_detail() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "failed", "private provider response"),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    with patch("mcp_email_server.app.send_email_command", command_handler):
+        result = await send_email("test", ["recipient@example.test"], "Subject", "body")
+
+    assert result == "Email delivery [failed: recipient@example.test; sent-copy: skipped]"
+    assert "private provider response" not in result
 
 
 @pytest.mark.asyncio
