@@ -350,7 +350,8 @@ async def test_artifact_writer_concurrent_default_first_use_reopens_created_dire
     tmp_path: Path,
 ) -> None:
     downloads = tmp_path / "Downloads"
-    downloads.mkdir()
+    downloads.mkdir(mode=0o700)
+    downloads.chmod(0o700)
     monkeypatch.setattr(reads_adapter, "_default_downloads_directory", lambda: downloads)
     real_mkdir = os.mkdir
     creation_barrier = threading.Barrier(2)

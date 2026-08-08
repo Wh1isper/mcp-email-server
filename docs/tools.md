@@ -117,8 +117,11 @@ Important parameters include:
 
 The response contains pagination metadata, a filtered `total`, and message
 metadata including `email_id`, `message_id`, subject, sender, recipients, and
-date. Because this operation fetches headers only, its `attachments` field is
-empty. `get_emails_content` populates attachment names from the full message.
+date. To and Cc are parsed as structured RFC 5322 address fields: a comma inside
+a quoted display name is preserved, while addresses inside a group are returned
+as individual recipient entries. Because this operation fetches headers only,
+its `attachments` field is empty. `get_emails_content` populates attachment names
+from the full message.
 
 `has_attachment` uses a `multipart/mixed` heuristic. It can miss inline content
 or report multipart messages that do not contain a conventional attachment.
@@ -131,7 +134,12 @@ pages. It uses that projection only after a small IMAP `STATUS` probe confirms
 the same UIDVALIDITY, UIDNEXT, and message count and the projection covers the
 whole mailbox. Text, date, address, flag, body, and attachment filters remain on
 the bounded IMAP path so provider-specific search semantics and mutable flags
-stay authoritative. A response normally omits `warnings`; if a validated IMAP
+stay authoritative. ASCII filter values retain their exact text through IMAP
+atom or quoted-string encoding. Non-ASCII filter values use synchronizing UTF-8
+literals with `CHARSET UTF-8`; a provider that rejects that charset returns a
+bounded search failure rather than receiving malformed raw UTF-8 command text.
+Date criteria always use the protocol's English month tokens regardless of the
+server process locale. A response normally omits `warnings`; if a validated IMAP
 result was returned but its rebuildable projection could not be persisted, the
 response includes `warnings: ["projection_write_failed"]`. It never includes the
 local exception detail.
@@ -182,6 +190,12 @@ but malformed values containing other control characters can be returned and
 will be rejected by compose validation. These fields are available only from
 full-content reads: they are not part of `list_emails_metadata` and are not
 persisted in the SQLite metadata projection.
+
+MIME body extraction does not descend into attachment subtrees. In particular,
+the body of an attached or forwarded `message/rfc822` message is never merged
+into the containing message body, even when that part has no filename. If one
+text part declares an unknown charset or contains invalid bytes, it falls back
+to UTF-8 replacement decoding without hiding the other readable parts.
 
 A request accepts 1 to 500 canonical positive decimal ASCII IMAP UIDs; zero,
 leading zero, non-ASCII digits, signs, ranges, sets, and values above the IMAP UID
@@ -243,11 +257,22 @@ include reviewed fixed diagnostics when available, for example
 `smtp-data-unknown`, or `provider-timeout`. Unrecognized detail and raw provider
 response text are omitted.
 
+Internationalized addr-specs in the envelope or From, Sender, To, Cc, Bcc, or
+Reply-To fields, and non-ASCII Message-ID, In-Reply-To, or References syntax,
+require the provider's SMTPUTF8 extension. The server requests `SMTPUTF8` and
+serializes the complete message with the matching policy. If the extension is
+unavailable, every target fails with `smtp-utf8-unsupported` before `MAIL FROM`,
+`RCPT TO`, or message data is sent. A non-ASCII display name with an ASCII
+addr-spec is encoded as an ordinary RFC 5322 display name and does not by itself
+require SMTPUTF8.
+
 Saving the Sent copy is a second IMAP effect and is reported in its own
 `sent-copy` section; a failed or unknown copy never changes an accepted delivery
 into a failure. Do not retry the whole send to repair a Sent copy. Sent-copy
 APPEND payloads use CRLF line endings for compatibility with strict IMAP
-providers.
+providers. An internationalized Sent copy additionally requires RFC 6855
+`ENABLE` plus `UTF8=ACCEPT` or `UTF8=ONLY`; unsupported negotiation is reported
+as `utf8-append-unsupported` without changing the successful SMTP outcome.
 
 ### `save_to_mailbox`
 
@@ -264,9 +289,22 @@ must be searched before a later operation can address the saved message.
 
 The same recipient allowlist used by `send_email` applies to this tool. The
 complete MIME payload is serialized with CRLF line endings before IMAP APPEND for
-compatibility with strict providers. A known APPEND success without `APPENDUID`
-returns `email_id: unknown`. A lost APPEND result is instead tagged `unknown`;
-the server does not replay it because that could create a duplicate draft.
+compatibility with strict providers. Saved-message flags may be system flags or
+provider keywords, but each must be one valid IMAP atom; legal values such as
+`$Forwarded`, `project.name`, and `123flag` are accepted, while whitespace,
+controls, and IMAP protocol specials are rejected.
+
+The server refreshes capabilities before mailbox selection. A message with
+internationalized address or thread-header syntax requires RFC 6855, and a
+`UTF8=ONLY` server requires `ENABLE UTF8=ACCEPT` even for an ordinary ASCII-header
+message. In an enabled session, LIST names retain their literal UTF-8 spelling
+and internationalized mailbox arguments use escaped UTF-8 rather than Modified
+UTF-7. Only a message whose headers require RFC 6532 uses the RFC 6855 UTF8
+literal form. Missing capability or incomplete ENABLE evidence fails before
+SELECT/APPEND with `utf8-append-unsupported`. A known APPEND success without
+`APPENDUID` returns `email_id: unknown`. A lost APPEND result is instead tagged
+`unknown`; the server does not replay it because that could create a duplicate
+draft.
 
 ## Mailbox and mutation tools
 
@@ -279,7 +317,10 @@ known.
 `pattern` defaults to `*`, and `reference` defaults to an empty string. The
 account name and both IMAP LIST values are validated before provider access;
 `pattern` must be non-empty and pattern/reference values are each limited to
-1,024 UTF-8 bytes.
+1,024 UTF-8 bytes. Literal mailbox names are reassembled at their declared byte
+length, tagged LIST completion text is not returned as a mailbox, and malformed
+literal framing fails the request. Special-use flags such as `\Sent` are matched
+case-insensitively for folder discovery.
 
 ### `set_email_flags`
 

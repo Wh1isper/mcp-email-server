@@ -123,6 +123,11 @@ _PUBLIC_SEND_DETAILS = frozenset({
     "smtp-session-lost-before-data",
     "smtp-utf8-unsupported",
 })
+_PUBLIC_APPEND_DETAILS = frozenset({
+    "append-unknown",
+    "provider-timeout",
+    "utf8-append-unsupported",
+})
 
 
 def _ordered_target_sections(
@@ -169,8 +174,13 @@ def _tagged_send_result(outcome: SendMutationOutcome) -> str:
         include_unknown_detail=True,
     )
     sent_copy = outcome.sent_copy.status
+    sent_copy_context: list[str] = []
     if outcome.sent_copy.mailbox:
-        sent_copy = f"{sent_copy} ({outcome.sent_copy.mailbox})"
+        sent_copy_context.append(outcome.sent_copy.mailbox)
+    if outcome.sent_copy.detail in _PUBLIC_APPEND_DETAILS:
+        sent_copy_context.append(outcome.sent_copy.detail)
+    if sent_copy_context:
+        sent_copy = f"{sent_copy} ({'; '.join(sent_copy_context)})"
     sections.append(f"sent-copy: {sent_copy}")
     if outcome.reconciliation_needed:
         sections.append("warning: reconciliation needed")
@@ -667,7 +677,7 @@ async def save_to_mailbox(
     if outcome.status == "succeeded" and not outcome.reconciliation_needed:
         email_id = outcome.uid or "unknown"
         return f"Email saved to '{mailbox}' successfully. Message-Id: {outcome.message_id}, email_id: {email_id}"
-    detail = f" ({outcome.detail})" if outcome.status == "unknown" and outcome.detail else ""
+    detail = f" ({outcome.detail})" if outcome.detail in _PUBLIC_APPEND_DETAILS else ""
     warning = "; warning: reconciliation needed" if outcome.reconciliation_needed else ""
     return f"Email save [{outcome.status}{detail}: {mailbox}; Message-Id: {outcome.message_id}{warning}]"
 

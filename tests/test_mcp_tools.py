@@ -1001,21 +1001,68 @@ async def test_send_tool_keeps_delivery_success_when_sent_copy_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_tool_reports_safe_internationalized_sent_copy_failure() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            SentCopyMutationOutcome("failed", detail="utf8-append-unsupported"),
+        )
+    )
+    with patch("mcp_email_server.app.send_email_command", command_handler):
+        result = await send_email("test", ["recipient@example.test"], "Subject", "body")
+
+    assert result == ("Email delivery [succeeded: recipient@example.test; sent-copy: failed (utf8-append-unsupported)]")
+
+
+@pytest.mark.asyncio
 async def test_save_tool_does_not_claim_success_for_ambiguous_append() -> None:
     command_handler = AsyncMock(
         return_value=AppendMutationOutcome(
             "unknown",
             "<draft@example.test>",
             mailbox="Drafts",
-            detail="append",
+            detail="append-unknown",
         )
     )
     with patch("mcp_email_server.app.save_to_mailbox_command", command_handler):
         result = await save_to_mailbox("test", ["recipient@example.test"], "Draft", "body")
 
     assert result == (
-        "Email save [unknown (append): Drafts; Message-Id: <draft@example.test>; warning: reconciliation needed]"
+        "Email save [unknown (append-unknown): Drafts; Message-Id: <draft@example.test>; warning: reconciliation needed]"
     )
+
+
+@pytest.mark.asyncio
+async def test_save_tool_hides_unrecognized_provider_detail() -> None:
+    command_handler = AsyncMock(
+        return_value=AppendMutationOutcome(
+            "unknown",
+            "<draft@example.test>",
+            mailbox="Drafts",
+            detail="private provider response",
+        )
+    )
+    with patch("mcp_email_server.app.save_to_mailbox_command", command_handler):
+        result = await save_to_mailbox("test", ["recipient@example.test"], "Draft", "body")
+
+    assert result == ("Email save [unknown: Drafts; Message-Id: <draft@example.test>; warning: reconciliation needed]")
+    assert "private provider response" not in result
+
+
+@pytest.mark.asyncio
+async def test_save_tool_reports_safe_internationalized_append_failure() -> None:
+    command_handler = AsyncMock(
+        return_value=AppendMutationOutcome(
+            "failed",
+            "<draft@example.test>",
+            mailbox="Drafts",
+            detail="utf8-append-unsupported",
+        )
+    )
+    with patch("mcp_email_server.app.save_to_mailbox_command", command_handler):
+        result = await save_to_mailbox("test", ["recipient@example.test"], "Draft", "body")
+
+    assert result == ("Email save [failed (utf8-append-unsupported): Drafts; Message-Id: <draft@example.test>]")
 
 
 @pytest.mark.asyncio

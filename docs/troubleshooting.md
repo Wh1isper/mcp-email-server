@@ -206,6 +206,13 @@ every requested UID. The request is rejected rather than expanding a UID range
 or returning an incorrect page; retry after the mailbox is stable or report the
 provider issue.
 
+Non-ASCII subject, body, text, sender, or recipient filters are sent as
+synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`. If a provider rejects the
+charset, the search fails without rewriting or dropping the filter. Use the
+provider's supported search syntax or an ASCII/narrower criterion; do not assume
+that changing the process locale will help, because IMAP date months are always
+protocol-defined English tokens.
+
 ## The UI cannot load or authenticate
 
 Run `mcp-email-server ui` in a visible terminal and keep that foreground process
@@ -338,7 +345,12 @@ contain `@`, commas, quotes, or non-ASCII text are quoted or encoded in the
 message `From` header, while SMTP uses only the separate account email address.
 A partial or failed `send_email` result includes reviewed fixed tags such as
 `smtp-mail-rejected`, `smtp-recipient-rejected`, or `smtp-data-rejected` when
-available. It never includes the provider's free-form response text.
+available. `smtp-utf8-unsupported` means an envelope addr-spec or an address or
+thread header requires internationalized syntax but the SMTP server did not
+advertise SMTPUTF8; the server rejects before issuing `MAIL FROM`, `RCPT TO`, or
+`DATA`. Use an ASCII addr-spec/header value or a provider with SMTPUTF8 support.
+A non-ASCII display name attached to an ASCII address does not trigger this
+requirement. Results never include the provider's free-form response text.
 
 For delivery diagnostics, enable `DEBUG` and inspect the bounded SMTP records.
 `phase=connect` and `phase=authenticate` cover session setup; `phase=mail`,
@@ -366,6 +378,13 @@ sent_folder_name = "INBOX.Sent"
 
 Set `save_to_sent = false` if the provider already stores sent messages and an
 additional append is unnecessary.
+
+For a message with an internationalized addr-spec or thread-header identifier,
+`utf8-append-unsupported` means the IMAP server did not advertise and positively
+enable the RFC 6855 UTF8 mode before mailbox selection. SMTP delivery may still
+have succeeded. Do not resend; inspect the provider-managed Sent folder, disable
+the extra copy when the provider already saves one, or use an IMAP endpoint that
+supports `ENABLE` with `UTF8=ACCEPT`/`UTF8=ONLY`.
 
 ## IMAP reports a malformed `ID` command
 

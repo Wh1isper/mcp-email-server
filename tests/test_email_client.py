@@ -450,41 +450,23 @@ class TestEmailClient:
         assert "Second & third" in result["body"]
 
     def test_parse_email_data_with_attachments(self):
-        """Test parsing email with attachments."""
-        # This would require creating a multipart email with attachments
-        # For simplicity, we'll mock the email parsing
-        with patch("email.parser.BytesParser.parsebytes") as mock_parse:
-            mock_email = MagicMock()
-            mock_email.get.side_effect = lambda x, default=None: {
-                "Subject": "Test Subject",
-                "From": "sender@example.com",
-                "Date": email.utils.formatdate(),
-            }.get(x, default)
-            mock_email.is_multipart.return_value = True
+        """Test parsing a real multipart message with an attachment."""
+        message = EmailMessage()
+        message["Subject"] = "Test Subject"
+        message["From"] = "sender@example.com"
+        message["To"] = "recipient@example.com"
+        message["Date"] = email.utils.formatdate()
+        message.set_content("This is the email body")
+        message.add_attachment(b"pdf", maintype="application", subtype="pdf", filename="test.pdf")
 
-            # Mock parts
-            text_part = MagicMock()
-            text_part.get_content_type.return_value = "text/plain"
-            text_part.get.return_value = ""  # Not an attachment
-            text_part.get_payload.return_value = b"This is the email body"
-            text_part.get_content_charset.return_value = "utf-8"
+        client = EmailClient(MagicMock())
+        result = client._parse_email_data(message.as_bytes())
 
-            attachment_part = MagicMock()
-            attachment_part.get_content_type.return_value = "application/pdf"
-            attachment_part.get.return_value = "attachment; filename=test.pdf"
-            attachment_part.get_filename.return_value = "test.pdf"
-
-            mock_email.walk.return_value = [text_part, attachment_part]
-            mock_parse.return_value = mock_email
-
-            client = EmailClient(MagicMock())
-            result = client._parse_email_data(b"dummy email content")
-
-            assert result["subject"] == "Test Subject"
-            assert result["from"] == "sender@example.com"
-            assert result["body"] == "This is the email body"
-            assert isinstance(result["date"], datetime)
-            assert result["attachments"] == ["test.pdf"]
+        assert result["subject"] == "Test Subject"
+        assert result["from"] == "sender@example.com"
+        assert result["body"].strip() == "This is the email body"
+        assert isinstance(result["date"], datetime)
+        assert result["attachments"] == ["test.pdf"]
 
     def test_build_search_criteria(self):
         """Test building search criteria for IMAP."""
@@ -606,9 +588,9 @@ class TestEmailClient:
         assert criteria == ["TO", '"Bob Smith"']
 
     def test_build_search_criteria_subject_with_embedded_quotes(self):
-        """Embedded double quotes must be stripped (invalid in IMAP quoted strings)."""
+        """Embedded quotes are escaped without changing the search text."""
         criteria = EmailClient._build_search_criteria(subject='He said "hello"')
-        assert criteria == ["SUBJECT", '"He said hello"']
+        assert criteria == ["SUBJECT", '"He said \\"hello\\""']
 
     @pytest.mark.asyncio
     async def test_get_emails_metadata(self, email_client):
@@ -742,21 +724,20 @@ class TestEmailClient:
         mock_imap.uid_search = AsyncMock(return_value=("OK", [b""]))
         mock_imap.logout = AsyncMock()
 
+        literal_search = AsyncMock(return_value=("OK", [b""]))
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            await email_client.get_emails_metadata(mailbox="INBOX", subject="会议")
+            with patch("mcp_email_server.emails.classic._uid_search", literal_search):
+                await email_client.get_emails_metadata(mailbox="INBOX", subject="会议")
 
-        mock_imap.uid_search.assert_called_once()
-        assert mock_imap.uid_search.call_args.kwargs.get("charset") == "utf-8"
-        assert "会议" in mock_imap.uid_search.call_args.args
+        literal_search.assert_awaited_once()
+        criteria = literal_search.await_args.args[1]
+        assert criteria[0] == "SUBJECT"
+        assert criteria[1].data == "会议".encode()
+        mock_imap.uid_search.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_get_emails_metadata_search_ignores_non_ascii_generated_criteria(self, email_client):
-        """Generated criteria must not trigger UTF-8 charset by themselves.
-
-        Date strings are generated internally and may be locale-dependent. They
-        should not cause charset='utf-8' for an otherwise ASCII-only user search,
-        because that would reintroduce the Exchange BADCHARSET failure.
-        """
+    async def test_get_emails_metadata_search_uses_ascii_generated_criteria_without_charset(self, email_client):
+        """Generated IMAP dates remain on the Exchange-compatible ASCII path."""
         mock_imap = AsyncMock()
         mock_imap._client_task = asyncio.Future()
         mock_imap._client_task.set_result(None)
@@ -767,12 +748,12 @@ class TestEmailClient:
         mock_imap.logout = AsyncMock()
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
-            with patch.object(EmailClient, "_build_search_criteria", return_value=["SINCE", "01-MÄR-2026"]):
+            with patch.object(EmailClient, "_build_search_criteria", return_value=["SINCE", "01-MAR-2026"]):
                 await email_client.get_emails_metadata(mailbox="INBOX")
 
         mock_imap.uid_search.assert_called_once()
         assert mock_imap.uid_search.call_args.kwargs.get("charset") is None
-        assert mock_imap.uid_search.call_args.args == ("SINCE", "01-MÄR-2026")
+        assert mock_imap.uid_search.call_args.args == ("SINCE", "01-MAR-2026")
 
     @pytest.mark.asyncio
     async def test_get_emails_metadata_rejects_missing_internaldate_ordering_evidence(self, email_client):

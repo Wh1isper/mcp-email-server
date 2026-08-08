@@ -65,9 +65,30 @@ ambiguous effect is not retried automatically.
 Saving a message to a mailbox is an IMAP APPEND effect. The request bounds
 headers, recipients, subject, body, encoded message bytes, attachments, and
 destination. File attachments preserve their inferred MIME main type and subtype
-rather than being coerced into `application/*`. Every APPEND path serializes the
-complete MIME message with CRLF line endings and does not emit bare LF or CR line
-breaks, including draft and sent-copy placement.
+rather than being coerced into `application/*`. APPEND flags accept system flags
+and provider keywords only when each is one complete IMAP atom; legal keyword
+forms such as `$Forwarded`, dotted names, and leading digits are not narrowed by
+a local identifier grammar, while controls and protocol specials are rejected.
+Every APPEND path serializes the complete MIME message with CRLF line endings and
+does not emit bare LF or CR line breaks, including draft and sent-copy placement.
+
+Message encoding and IMAP session mode are separate decisions. After
+authentication and before selecting a mailbox, every APPEND workflow refreshes
+capabilities. A message whose address-bearing or thread headers require RFC 6532
+syntax requires an enabled UTF-8 session; a `UTF8=ONLY` server requires that
+session even for an ASCII-header message. Negotiation requires `ENABLE` plus
+`UTF8=ACCEPT` or `UTF8=ONLY` and is accepted only after positive `ENABLED
+UTF8=ACCEPT` evidence.
+
+Once enabled, LIST mailbox names are interpreted as their literal UTF-8 spelling
+and SELECT/APPEND use escaped UTF-8 quoted syntax rather than Modified UTF-7. The
+message itself uses RFC 6855 `UTF8 (~{N}` literal8 framing only when its headers
+actually require RFC 6532; an ASCII-header message on `UTF8=ONLY` still uses the
+base message literal. Missing or incomplete required capability evidence returns
+the fixed `utf8-append-unsupported` failure before SELECT or APPEND. A
+cancellation, timeout, or transport failure after the synchronizing APPEND starts
+aborts the connection and is never replayed automatically.
+
 Success requires positive APPEND evidence. If APPEND succeeds but UID mapping or
 projection update is unavailable, the result remains success with an unknown
 placement/projection warning rather than resubmitting.
@@ -104,6 +125,15 @@ A provider adapter MUST NOT recover an envelope sender by parsing a formatted
 header, and a parse failure MUST NOT fall back to sending that complete header as
 the reverse-path. The same correctly formatted `From` header is used for SMTP
 message data, drafts, and Sent copies.
+
+SMTPUTF8 is required when any envelope sender or recipient addr-spec is
+non-ASCII, or when any From, Sender, To, Cc, Bcc, Reply-To, Message-ID,
+In-Reply-To, or References header requires RFC 6532 syntax. The complete message
+is serialized under the matching policy and `SMTPUTF8` is requested on `MAIL`;
+a provider without the extension returns the fixed `smtp-utf8-unsupported`
+failure before `MAIL`, `RCPT`, or `DATA`. A non-ASCII display name paired with an
+ASCII addr-spec remains an encoded RFC 5322 display name and does not alone
+require SMTPUTF8.
 
 SMTP delivery and IMAP sent-copy APPEND are independent effects:
 
@@ -195,3 +225,7 @@ enter public errors.
 9. No management UI route can invoke mail mutations in this delivery.
 10. Byte-level tests prove every IMAP APPEND path serializes MIME messages with
     CRLF line endings and emits no bare LF or CR line breaks.
+11. Interoperability tests prove complete IMAP atom validation, full-message
+    SMTPUTF8 detection and pre-effect rejection, display-name downgrade without
+    a false SMTPUTF8 requirement, pre-SELECT RFC 6855 negotiation, exact literal8
+    APPEND framing, and abort/no-replay behavior at ambiguous framing boundaries.

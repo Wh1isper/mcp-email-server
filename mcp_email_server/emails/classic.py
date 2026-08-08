@@ -7,10 +7,13 @@ import re
 import ssl
 import time
 import unicodedata
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email import encoders
 from email.header import Header
+from email.headerregistry import Address, AddressHeader
 from email.message import EmailMessage, Message
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -80,9 +83,39 @@ MAX_TOTAL_ATTACHMENT_BYTES = APPLICATION_LIMITS.total_attachment_bytes
 MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
 
 
-def _serialize_message_for_imap_append(message: Message) -> bytes:
+def _addresses_for_header(message: Message, field_name: str) -> list[Address]:
+    """Parse every instance of one RFC 5322 address field structurally."""
+    addresses: list[Address] = []
+    for raw_header in message.get_all(field_name, []):
+        header = raw_header
+        if not isinstance(header, AddressHeader):
+            parsed = EmailMessage(policy=default)
+            parsed[field_name] = str(raw_header)
+            header = parsed[field_name]
+        if isinstance(header, AddressHeader):
+            addresses.extend(header.addresses)
+    return addresses
+
+
+def _message_requires_smtputf8(message: Message) -> bool:
+    """Return whether message headers require RFC 6532 UTF-8 syntax."""
+    address_fields = ("From", "Sender", "To", "Cc", "Bcc", "Reply-To")
+    if any(
+        not address.addr_spec.isascii() for name in address_fields for address in _addresses_for_header(message, name)
+    ):
+        return True
+    return any(
+        any(ord(char) > 0x7F for char in str(value))
+        for name in ("Message-Id", "In-Reply-To", "References")
+        for value in message.get_all(name, [])
+    )
+
+
+def _serialize_message_for_imap_append(message: Message, *, utf8: bool | None = None) -> bytes:
     """Serialize one IMAP APPEND payload with RFC-compliant CRLF line endings."""
-    return message.as_bytes(policy=message.policy.clone(linesep="\r\n"))
+    requires_utf8 = _message_requires_smtputf8(message) if utf8 is None else utf8
+    policy = SMTPUTF8_POLICY if requires_utf8 else message.policy
+    return message.as_bytes(policy=policy.clone(linesep="\r\n"))
 
 
 def _as_modern_smtp_message(message: Message) -> EmailMessage:
@@ -102,6 +135,59 @@ def _first_thread_header(message: Message, name: str) -> str | None:
     return normalized or None
 
 
+class _LiteralSearchCommand(aioimaplib.Command):
+    """Drive one synchronizing UID SEARCH containing UTF-8 literals."""
+
+    def __init__(
+        self,
+        tag: str,
+        initial_line: bytes,
+        continuations: Sequence[tuple[bytes, bytes]],
+        *,
+        writer: Callable[[bytes], None],
+        on_write_failure: Callable[["_LiteralSearchCommand"], None],
+        timeout: float,
+    ) -> None:
+        super().__init__("SEARCH", tag, loop=asyncio.get_running_loop(), timeout=timeout)
+        self._initial_line = initial_line.decode("ascii")
+        self._continuations = iter(continuations)
+        self._writer = writer
+        self._on_write_failure = on_write_failure
+        self._continuations_ready = 0
+        self.write_error: Exception | None = None
+
+    def __repr__(self) -> str:
+        return self._initial_line
+
+    def append_to_resp(self, line: bytes, result: str = "Pending") -> None:
+        # aioimaplib normally stores continuation text in the response for a
+        # synchronous command. SEARCH callers expect the first line to be the
+        # untagged SEARCH payload, so continuation prompts are protocol-only.
+        if result == "Pending":
+            if line.startswith(b"+"):
+                self._continuations_ready += 1
+                return
+            command_name, separator, payload = line.partition(b" ")
+            if command_name.upper() == b"SEARCH":
+                line = payload if separator else b""
+        super().append_to_resp(line, result=result)
+
+    def flush(self) -> None:
+        # aioimaplib calls ``flush`` both from its continuation handler and once
+        # more when the same response buffer is exhausted. Consume at most one
+        # literal for each observed continuation prompt.
+        if self._continuations_ready == 0:
+            return
+        self._continuations_ready -= 1
+        try:
+            literal, suffix = next(self._continuations)
+            self._writer(literal)
+            self._writer(suffix + b"\r\n")
+        except Exception as exc:
+            self.write_error = exc
+            self._on_write_failure(self)
+
+
 class MetadataPayloadTooLargeError(ValueError):
     """Provider-controlled headers exceeded the bounded metadata budget."""
 
@@ -112,6 +198,10 @@ class ImapAuthenticationError(ConnectionError):
 
 class ImapTransportError(ConnectionError):
     """An IMAP login failed at the transport boundary."""
+
+
+class ImapUtf8UnsupportedError(RuntimeError):
+    """The server cannot safely store RFC 6532 headers through IMAP."""
 
 
 class _MetadataHeaderBudget:
@@ -133,8 +223,42 @@ _IMAP_CAPABILITY_TIMEOUT_SECONDS = 30.0
 _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
 
 
-# RFC 3501 system flags (except \Recent which is read-only) + custom keyword atoms
-_VALID_IMAP_FLAG = re.compile(r"^\\[A-Za-z]+$|^[A-Za-z][A-Za-z0-9_-]*$")
+# RFC 3501 atoms exclude controls and these protocol-special characters.
+_IMAP_ATOM_SPECIALS = frozenset('(){%*]\\"')
+_IMAP_MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+_IMAP_LITERAL_MARKER = re.compile(rb"(?P<prefix>.*?)(?:~)?\{(?P<size>[0-9]+)\}$")
+
+
+@dataclass(frozen=True)
+class _ImapSearchLiteral:
+    data: bytes
+
+
+@dataclass(frozen=True)
+class _ImapAppendMode:
+    message_requires_utf8: bool
+    session_utf8_enabled: bool
+
+
+ImapSearchToken = str | _ImapSearchLiteral
+
+
+def _is_imap_atom(value: str) -> bool:
+    """Return whether ``value`` is one non-empty RFC 3501 atom."""
+    return bool(value) and all(0x21 <= ord(char) <= 0x7E and char not in _IMAP_ATOM_SPECIALS for char in value)
+
+
+def _is_valid_imap_flag(flag: str) -> bool:
+    """Accept RFC 3501 flag-keyword and flag-extension atoms."""
+    atom = flag[1:] if flag.startswith("\\") else flag
+    return _is_imap_atom(atom)
+
+
+def _is_imap_astring(value: str) -> bool:
+    """Return whether ASCII text can use the unquoted ``astring`` form."""
+    return bool(value) and all(
+        0x21 <= ord(char) <= 0x7E and (char not in _IMAP_ATOM_SPECIALS or char == "]") for char in value
+    )
 
 
 def _validate_imap_uids(email_ids: list[str]) -> None:
@@ -152,7 +276,7 @@ def _validate_flags(flags: list[str]) -> str:
     characters.
     """
     for flag in flags:
-        if not _VALID_IMAP_FLAG.match(flag):
+        if not _is_valid_imap_flag(flag):
             msg = f"Invalid IMAP flag: {flag!r}"
             raise ValueError(msg)
     return "(" + " ".join(flags) + ")"
@@ -305,46 +429,70 @@ def _read_imap_list_token(value: str, start: int) -> tuple[str | None, int]:
     return _read_atom_imap_token(value, index)
 
 
-def _parse_list_response(item: bytes | str) -> MailboxInfo | None:
-    """Parse one IMAP LIST response into a MailboxInfo object."""
+def _parse_list_response(item: bytes | str, *, utf8: bool = False) -> MailboxInfo | None:
+    """Parse one complete LIST data record in the active mailbox-name mode."""
     item_str = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
     item_str = item_str.strip()
-    if not item_str:
+    # Every LIST data response starts with the mandatory parenthesized attribute
+    # list. Requiring it excludes aioimaplib's trailing tagged completion text.
+    if not item_str.startswith("("):
         return None
 
-    flags: list[str] = []
-    position = 0
-    if item_str.startswith("("):
-        flags_token, position = _read_imap_list_token(item_str, position)
-        flags = [flag.strip() for flag in (flags_token or "").split() if flag.strip()]
-
+    flags_token, position = _read_imap_list_token(item_str, 0)
+    flags = [flag.strip() for flag in (flags_token or "").split() if flag.strip()]
     delimiter_token, position = _read_imap_list_token(item_str, position)
     mailbox_token, _position = _read_imap_list_token(item_str, position)
     if delimiter_token is None or mailbox_token is None:
         return None
 
     delimiter = "" if delimiter_token.upper() == "NIL" else delimiter_token
-    return MailboxInfo(name=decode_mailbox_name(mailbox_token), delimiter=delimiter, flags=flags)
+    mailbox_name = mailbox_token if utf8 else decode_mailbox_name(mailbox_token)
+    return MailboxInfo(name=mailbox_name, delimiter=delimiter, flags=flags)
 
 
-def _quote_mailbox(mailbox: str) -> str:
-    """Quote mailbox name for IMAP compatibility.
+def _parse_list_responses(items: Sequence[Any], *, utf8: bool = False) -> list[MailboxInfo]:
+    """Reassemble aioimaplib LIST lines in the active mailbox-name mode."""
+    mailboxes: list[MailboxInfo] = []
+    index = 0
+    while index < len(items):
+        item = items[index]
+        raw = bytes(item) if isinstance(item, (bytes, bytearray)) else str(item).encode("utf-8")
+        marker = _IMAP_LITERAL_MARKER.fullmatch(raw.strip())
+        if marker is not None:
+            if index + 1 >= len(items) or not isinstance(items[index + 1], (bytes, bytearray)):
+                raise ValueError("Provider returned an incomplete LIST literal")
+            literal = bytes(items[index + 1])
+            expected_size = int(marker.group("size"))
+            if len(literal) != expected_size:
+                raise ValueError("Provider returned an invalid LIST literal size")
+            literal_text = literal.decode("utf-8", errors="replace")
+            escaped = literal_text.replace("\\", "\\\\").replace('"', r"\"")
+            raw = marker.group("prefix").rstrip() + b" " + f'"{escaped}"'.encode()
+            index += 2
+        else:
+            index += 1
+        mailbox = _parse_list_response(raw, utf8=utf8)
+        if mailbox is not None:
+            mailboxes.append(mailbox)
+    return mailboxes
+
+
+def _quote_mailbox(mailbox: str, *, utf8: bool = False) -> str:
+    """Quote a mailbox for the active RFC 3501 or RFC 6855 session mode.
 
     Some IMAP servers (notably Proton Mail Bridge) require mailbox names
-    to be quoted. This is valid per RFC 3501 and works with all IMAP servers.
+    to be quoted. Before UTF8=ACCEPT is enabled, non-ASCII names use Modified
+    UTF-7 as required by RFC 3501. An enabled RFC 6855 session uses the original
+    UTF-8 mailbox spelling, which is also required by UTF8=ONLY servers.
 
     Per RFC 3501 Section 9 (Formal Syntax), quoted strings must escape
     backslashes and double-quote characters with a preceding backslash.
-    Mailbox names with non-ASCII characters are encoded using Modified UTF-7
-    as required by RFC 3501 Section 5.1.3.
 
     See: https://github.com/Wh1isper/mcp-email-server/issues/87
     See: https://github.com/Wh1isper/mcp-email-server/issues/172
     See: https://www.rfc-editor.org/rfc/rfc3501#section-9
     """
-    encoded = encode_mailbox_name(mailbox)
-    # Per RFC 3501, literal double-quote characters in a quoted string must
-    # be escaped with a backslash. Backslashes themselves must also be escaped.
+    encoded = mailbox if utf8 else encode_mailbox_name(mailbox)
     escaped = encoded.replace("\\", "\\\\").replace('"', r"\"")
     return f'"{escaped}"'
 
@@ -469,6 +617,27 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
+def _discard_imap_after_sync_failure(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    command: aioimaplib.Command,
+) -> None:
+    """Abort a stream after a multi-step synchronous command loses framing."""
+    protocol = imap.protocol
+    if protocol is None:
+        return
+    transport = protocol.transport
+    if transport is not None:
+        with suppress(Exception):
+            if isinstance(transport, asyncio.WriteTransport):
+                transport.abort()
+            else:
+                transport.close()
+    if protocol.pending_sync_command is command:
+        protocol.pending_sync_command = None
+    imap.protocol = None
+    command.close(b"IMAP connection aborted", "KO")
+
+
 def _discard_imap_after_id_failure(
     imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
     command: aioimaplib.Command,
@@ -531,6 +700,72 @@ async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
         logger.warning("IMAP ID command failed")
 
 
+async def _uid_search_with_literals(  # noqa: C901 - explicit synchronizing-command ownership and abort states
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    criteria: Sequence[ImapSearchToken],
+) -> Any:
+    """Issue a UID SEARCH with RFC 3501 synchronizing UTF-8 literals."""
+    protocol = imap.protocol
+    if protocol is None or protocol.transport is None:
+        raise ImapTransportError("IMAP SEARCH failed: protocol is not connected")
+    if not isinstance(protocol.transport, asyncio.WriteTransport):
+        raise ImapTransportError("IMAP SEARCH failed: transport cannot write")
+
+    tag = protocol.new_tag()
+    current = f"{tag} UID SEARCH CHARSET UTF-8".encode("ascii")
+    segments: list[bytes] = []
+    literals: list[bytes] = []
+    for token in criteria:
+        if isinstance(token, _ImapSearchLiteral):
+            current += f" {{{len(token.data)}}}".encode("ascii")
+            segments.append(current)
+            literals.append(token.data)
+            current = b""
+        else:
+            current += b" " + token.encode("ascii")
+    segments.append(current)
+    continuations = [(literal, segments[index + 1]) for index, literal in enumerate(literals)]
+    command = _LiteralSearchCommand(
+        tag,
+        segments[0],
+        continuations,
+        writer=protocol.transport.write,
+        on_write_failure=lambda failed: _discard_imap_after_sync_failure(imap, failed),
+        timeout=imap.timeout,
+    )
+
+    try:
+        if protocol.pending_sync_command is not None:
+            await protocol.pending_sync_command.wait()
+        if protocol.pending_async_commands:
+            await protocol.wait_async_pending_commands()
+        protocol.pending_sync_command = command
+        protocol.send(str(command))
+        await command.wait()
+    except asyncio.CancelledError:
+        _discard_imap_after_sync_failure(imap, command)
+        raise
+    except aioimaplib.CommandTimeout:
+        _discard_imap_after_sync_failure(imap, command)
+        raise TimeoutError("IMAP SEARCH timed out") from None
+    except Exception:
+        _discard_imap_after_sync_failure(imap, command)
+        raise ImapTransportError("IMAP SEARCH failed (TRANSPORT)") from None
+    if command.write_error is not None:
+        raise ImapTransportError("IMAP SEARCH failed while writing a literal")
+    return command.response
+
+
+async def _uid_search(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    criteria: Sequence[ImapSearchToken],
+) -> Any:
+    """Use the convenience path for ASCII and literals for international text."""
+    if any(isinstance(token, _ImapSearchLiteral) for token in criteria):
+        return await _uid_search_with_literals(imap, criteria)
+    return await imap.uid_search(*(cast(str, token) for token in criteria), charset=None)
+
+
 async def _imap_login(
     imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
     user_name: str,
@@ -562,6 +797,16 @@ async def _imap_login(
     if status == "OK":
         return
     raise ImapAuthenticationError(f"IMAP login failed ({status})")
+
+
+def _smtp_utf8_mail_options(smtp: aiosmtplib.SMTP) -> list[str]:
+    """Return legacy-send ESMTP options or reject before MAIL."""
+    if not smtp.supports_extension("smtputf8"):
+        raise SMTPNotSupported("SMTPUTF8 is not supported by this server")
+    options = ["SMTPUTF8"]
+    if smtp.supports_extension("8bitmime"):
+        options.append("BODY=8BITMIME")
+    return options
 
 
 def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
@@ -616,9 +861,95 @@ async def _refresh_imap_capabilities(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_S
     return capabilities
 
 
+async def _enable_imap_utf8_accept(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    capabilities: set[str] | None = None,
+) -> None:
+    """Negotiate RFC 6855 before any mailbox is selected."""
+    capabilities = capabilities if capabilities is not None else await _refresh_imap_capabilities(imap)
+    if "ENABLE" not in capabilities or not ({"UTF8=ACCEPT", "UTF8=ONLY"} & capabilities):
+        raise ImapUtf8UnsupportedError("IMAP server does not support UTF8=ACCEPT")
+    response = await imap.enable("UTF8=ACCEPT")
+    enabled = False
+    if isinstance(response, tuple) and len(response) > 1:
+        lines = response[1]
+    else:
+        lines = response.lines if isinstance(response, aioimaplib.Response) else []
+    for line in lines:
+        text = line.decode("ascii", errors="replace") if isinstance(line, bytes | bytearray) else str(line)
+        tokens = text.upper().split()
+        if tokens and tokens[0] == "ENABLED" and "UTF8=ACCEPT" in tokens[1:]:
+            enabled = True
+            break
+    if _imap_status(response) != "OK" or not enabled:
+        raise ImapUtf8UnsupportedError("IMAP server did not enable UTF8=ACCEPT")
+
+
 def _supports_uid_expunge(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> bool:
     """Return whether RFC 4315 target-scoped expunge is available."""
     return "UIDPLUS" in _imap_capabilities(imap)
+
+
+async def _append_message(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    message: Message,
+    *,
+    mailbox: str,
+    flags: str,
+    mode: _ImapAppendMode,
+) -> Any:
+    """Append through base IMAP or the RFC 6855 UTF8 data extension."""
+    payload = _serialize_message_for_imap_append(message, utf8=mode.message_requires_utf8)
+    if not mode.message_requires_utf8:
+        return await imap.append(payload, mailbox=mailbox, flags=flags)
+    if not mode.session_utf8_enabled:
+        raise ImapUtf8UnsupportedError("UTF8=ACCEPT was not enabled")
+
+    protocol = imap.protocol
+    if protocol is None:
+        raise ImapTransportError("IMAP APPEND failed: protocol is not connected")
+    command = aioimaplib.Command(
+        "APPEND",
+        protocol.new_tag(),
+        mailbox,
+        flags,
+        f"UTF8 (~{{{len(payload)}}}",
+        loop=asyncio.get_running_loop(),
+        timeout=imap.timeout,
+    )
+    protocol.literal_data = payload + b")"
+    try:
+        response = await protocol.execute(command)
+    except asyncio.CancelledError:
+        protocol.literal_data = None
+        _discard_imap_after_sync_failure(imap, command)
+        raise
+    except aioimaplib.CommandTimeout:
+        protocol.literal_data = None
+        _discard_imap_after_sync_failure(imap, command)
+        raise TimeoutError("IMAP APPEND timed out") from None
+    except Exception:
+        protocol.literal_data = None
+        _discard_imap_after_sync_failure(imap, command)
+        raise ImapTransportError("IMAP APPEND failed (TRANSPORT)") from None
+    protocol.literal_data = None
+    return response
+
+
+async def _prepare_imap_append(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    message: Message,
+) -> _ImapAppendMode:
+    """Resolve message encoding and RFC 6855 session state before SELECT."""
+    message_requires_utf8 = _message_requires_smtputf8(message)
+    capabilities = await _refresh_imap_capabilities(imap)
+    session_utf8_required = message_requires_utf8 or "UTF8=ONLY" in capabilities
+    if session_utf8_required:
+        await _enable_imap_utf8_accept(imap, capabilities)
+    return _ImapAppendMode(
+        message_requires_utf8=message_requires_utf8,
+        session_utf8_enabled=session_utf8_required,
+    )
 
 
 async def _uid_expunge(
@@ -802,16 +1133,17 @@ class EmailClient:
         return _create_ssl_context(self.smtp_verify_ssl)
 
     @staticmethod
-    def _parse_recipients(email_message) -> list[str]:
-        """Extract recipient addresses from To and Cc headers."""
-        recipients = []
-        to_header = email_message.get("To", "")
-        if to_header:
-            recipients = [addr.strip() for addr in to_header.split(",")]
-        cc_header = email_message.get("Cc", "")
-        if cc_header:
-            recipients.extend([addr.strip() for addr in cc_header.split(",")])
-        return recipients
+    def _parse_recipients(email_message: Message) -> list[str]:
+        """Extract one canonical mailbox per To/Cc address.
+
+        Address headers are structured RFC 5322 fields: commas can occur inside
+        quoted display names and groups can contain multiple mailboxes.  Parsing
+        the header registry's ``Address`` objects avoids treating either form as
+        a raw comma-separated string.
+        """
+        return [
+            str(address) for field_name in ("To", "Cc") for address in _addresses_for_header(email_message, field_name)
+        ]
 
     @staticmethod
     def _parse_date(date_str: str) -> datetime:
@@ -842,19 +1174,46 @@ class EmailClient:
 
         Treat a part as an attachment when:
           - the disposition explicitly says ``attachment``, OR
-          - the part carries a filename (works for ``inline`` or no disposition).
+          - the part carries a filename (works for ``inline`` or no disposition), OR
+          - the part encapsulates another message as ``message/rfc822``.
 
-        Multipart container parts and bodyless text parts have no filename and an
-        empty disposition, so they are correctly excluded.
+        Encapsulated messages are isolated even without a filename so their child
+        text cannot be promoted into the outer message body.
         """
         content_disposition = str(part.get("Content-Disposition", "")).lower()
-        if "attachment" in content_disposition:
+        if "attachment" in content_disposition or part.get_content_type() == "message/rfc822":
             return True
         filename = part.get_filename()
         # Be defensive: only trust real string filenames. (Unconfigured MagicMock
         # instances in older tests return truthy MagicMock objects from
         # ``get_filename`` and would otherwise misclassify text parts.)
         return isinstance(filename, str) and bool(filename)
+
+    def _iter_content_parts(self, part: Message) -> Iterator[tuple[Message, bool]]:
+        """Yield body leaves and attachment roots without entering attachments."""
+        if self._is_attachment_part(part):
+            yield part, True
+            return
+        if part.is_multipart():
+            payload = part.get_payload()
+            if isinstance(payload, list):
+                for child in payload:
+                    if isinstance(child, Message):
+                        yield from self._iter_content_parts(child)
+            return
+        yield part, False
+
+    @staticmethod
+    def _decode_text_part(part: Message) -> str:
+        """Decode a MIME text part without losing the message on a bad charset."""
+        payload = _decoded_payload(part)
+        if not payload:
+            return ""
+        charset = part.get_content_charset("utf-8")
+        try:
+            return payload.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            return payload.decode("utf-8", errors="replace")
 
     def _parse_email_data(  # noqa: C901
         self,
@@ -888,50 +1247,20 @@ class EmailClient:
         html_body = ""  # Fallback if no text/plain
         attachments = []
 
-        if email_message.is_multipart():
-            for part in email_message.walk():
-                content_type = part.get_content_type()
+        for part, is_attachment in self._iter_content_parts(email_message):
+            content_type = part.get_content_type()
+            if is_attachment:
+                filename = part.get_filename()
+                if isinstance(filename, str) and filename:
+                    attachments.append(filename)
+            elif content_type == "text/plain":
+                body += self._decode_text_part(part)
+            elif content_type == "text/html" and not body:
+                html_body += self._decode_text_part(part)
 
-                # Handle attachments — including inline-disposition parts with a
-                # filename (Apple Mail commonly sends photos this way).
-                if self._is_attachment_part(part):
-                    filename = part.get_filename()
-                    if filename:
-                        attachments.append(filename)
-                # Handle text parts - prefer text/plain
-                elif content_type == "text/plain":
-                    body_part = _decoded_payload(part)
-                    if body_part:
-                        charset = part.get_content_charset("utf-8")
-                        try:
-                            body += body_part.decode(charset)
-                        except UnicodeDecodeError:
-                            body += body_part.decode("utf-8", errors="replace")
-                # Collect HTML as fallback
-                elif content_type == "text/html" and not body:
-                    html_part = _decoded_payload(part)
-                    if html_part:
-                        charset = part.get_content_charset("utf-8")
-                        try:
-                            html_body += html_part.decode(charset)
-                        except UnicodeDecodeError:
-                            html_body += html_part.decode("utf-8", errors="replace")
-
-            # Fall back to HTML if no plain text found
-            if not body and html_body:
-                body = _html_to_text(html_body)
-        else:
-            # Handle single-part emails
-            content_type = email_message.get_content_type()
-            payload = _decoded_payload(email_message)
-            if payload:
-                charset = email_message.get_content_charset("utf-8")
-                try:
-                    text = payload.decode(charset)
-                except UnicodeDecodeError:
-                    text = payload.decode("utf-8", errors="replace")
-
-                body = _html_to_text(text) if content_type == "text/html" else text
+        # Fall back to HTML if no plain text was found.
+        if not body and html_body:
+            body = _html_to_text(html_body)
         if body_offset < 0:
             raise ValueError("body_offset must be >= 0")
         if max_body_length < 1:
@@ -959,16 +1288,16 @@ class EmailClient:
         }
 
     @staticmethod
-    def _sanitize_imap_value(value: str) -> str:
-        """Sanitize a string value for IMAP search criteria.
-
-        For multi-word values, strips embedded double quotes (invalid per RFC 3501
-        Section 4.3) and wraps in double quotes. Single-word values pass through unchanged.
-        """
-        if " " not in value:
+    def _sanitize_imap_value(value: str) -> ImapSearchToken:
+        """Encode user text as an RFC 3501 ``astring`` or UTF-8 literal."""
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+            raise ValueError("IMAP search values must not contain control characters")
+        if not value.isascii():
+            return _ImapSearchLiteral(value.encode("utf-8"))
+        if _is_imap_astring(value):
             return value
-        sanitized = value.replace('"', "")
-        return f'"{sanitized}"'
+        escaped = value.replace("\\", "\\\\").replace('"', r"\"")
+        return f'"{escaped}"'
 
     @staticmethod
     def _build_search_criteria(
@@ -983,12 +1312,12 @@ class EmailClient:
         flagged: bool | None = None,
         answered: bool | None = None,
         has_attachment: bool | None = None,
-    ) -> list[str]:
-        search_criteria = []
+    ) -> list[ImapSearchToken]:
+        search_criteria: list[ImapSearchToken] = []
         if before:
-            search_criteria.extend(["BEFORE", before.strftime("%d-%b-%Y").upper()])
+            search_criteria.extend(["BEFORE", f"{before.day:02d}-{_IMAP_MONTHS[before.month - 1]}-{before.year:04d}"])
         if since:
-            search_criteria.extend(["SINCE", since.strftime("%d-%b-%Y").upper()])
+            search_criteria.extend(["SINCE", f"{since.day:02d}-{_IMAP_MONTHS[since.month - 1]}-{since.year:04d}"])
 
         # Substring-match fields (IMAP keyword, value)
         text_criteria = [
@@ -1326,9 +1655,8 @@ class EmailClient:
                 _quote_mailbox(mailbox),  # pyright: ignore[reportArgumentType]
             )
             if isinstance(list_response, tuple) and str(list_response[0]).upper() == "OK":
-                for item in list_response[1]:
-                    parsed = _parse_list_response(item)
-                    if parsed is not None and parsed.name == mailbox:
+                for parsed in _parse_list_responses(list_response[1]):
+                    if parsed.name == mailbox:
                         mailbox_info = parsed
                         break
             state = await self._status_mailbox(imap, mailbox)
@@ -1428,19 +1756,10 @@ class EmailClient:
             )
             logger.info(f"Get metadata: Search criteria: {search_criteria}")
 
-            # Search for messages - use UID SEARCH for better compatibility.
-            # charset handling: aioimaplib defaults to "CHARSET utf-8", which
-            # Microsoft Exchange rejects with `NO [BADCHARSET (US-ASCII)] The
-            # specified charset is not supported.`, breaking all search/list
-            # operations — so ASCII-only user searches omit the CHARSET token.
-            # However, RFC 3501 requires a charset declaration for non-ASCII
-            # search values: without it, servers such as Coremail interpret the
-            # raw UTF-8 bytes as US-ASCII and silently return zero matches. Base
-            # the decision only on user-supplied text fields, not on generated
-            # criteria such as locale-dependent date strings.
-            search_text_values = (subject, body, text, from_address, to_address)
-            charset = "utf-8" if any(value and not value.isascii() for value in search_text_values) else None
-            search_response = await imap.uid_search(*search_criteria, charset=charset)
+            # ASCII searches omit CHARSET for Exchange compatibility. Non-ASCII
+            # values use synchronizing UTF-8 literals because aioimaplib's
+            # convenience API otherwise emits invalid raw UTF-8 atoms.
+            search_response = await _uid_search(imap, search_criteria)
             _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
             _, messages = search_response
 
@@ -1858,12 +2177,7 @@ class EmailClient:
             msg["Subject"] = subject
 
         # The sender mailbox was formatted from structured identity fields at
-        # construction time; do not parse the RFC 5322 header to recover them.
-        # Preserve RFC 6532 headers for IMAP APPEND as well as SMTP submission.
-        try:
-            envelope_sender.encode("ascii")
-        except UnicodeEncodeError:
-            msg.policy = SMTPUTF8_POLICY
+        # construction time; do not parse the RFC 5322 header to recover it.
         msg["From"] = self.sender
         msg["To"] = ", ".join(recipients)
 
@@ -1894,6 +2208,13 @@ class EmailClient:
         msg["User-Agent"] = "mcp-email-server"
         msg["X-Mailer"] = "mcp-email-server"
 
+        # Policy must follow every address-bearing and threading header, not
+        # only the SMTP envelope sender. This also keeps later Sent/Draft
+        # serialization from downgrading an internationalized addr-spec into an
+        # illegal RFC 2047 encoded-word.
+        if _message_requires_smtputf8(msg):
+            msg.policy = SMTPUTF8_POLICY
+
         return msg
 
     async def send_email_with_outcome(  # noqa: C901 - explicit SMTP phase evidence
@@ -1919,12 +2240,11 @@ class EmailClient:
         envelope_sender = self.envelope_sender
 
         async def submit(smtp: aiosmtplib.SMTP) -> DeliveryMutationOutcome:  # noqa: C901
-            utf8_required = False
-            try:
-                envelope_sender.encode("ascii")
-                "".join(envelope_recipients).encode("ascii")
-            except UnicodeEncodeError:
-                utf8_required = True
+            utf8_required = (
+                _message_requires_smtputf8(msg)
+                or not envelope_sender.isascii()
+                or any(not recipient.isascii() for recipient in envelope_recipients)
+            )
 
             mail_options: list[str] = []
             if utf8_required:
@@ -2132,11 +2452,28 @@ class EmailClient:
                 logger.debug("SMTP phase=authenticate outcome=succeeded")
                 session_phase = "send"
                 logger.debug("SMTP phase=send outcome=started")
-                await smtp.send_message(
-                    _as_modern_smtp_message(msg),
-                    sender=self.envelope_sender,
-                    recipients=all_recipients,
+                envelope_recipients = [email.utils.parseaddr(recipient)[1] for recipient in all_recipients]
+                envelope_requires_utf8 = not self.envelope_sender.isascii() or any(
+                    not recipient.isascii() for recipient in envelope_recipients
                 )
+                message_requires_utf8 = _message_requires_smtputf8(msg)
+                if message_requires_utf8 and not envelope_requires_utf8:
+                    # aiosmtplib.send_message() selects its serialization policy
+                    # from only the envelope. Bypass that convenience path when
+                    # an address/thread header independently requires RFC 6532.
+                    mail_options = _smtp_utf8_mail_options(smtp)
+                    await smtp.sendmail(
+                        self.envelope_sender,
+                        envelope_recipients,
+                        msg.as_bytes(policy=SMTPUTF8_POLICY),
+                        mail_options=mail_options,
+                    )
+                else:
+                    await smtp.send_message(
+                        _as_modern_smtp_message(msg),
+                        sender=self.envelope_sender,
+                        recipients=all_recipients,
+                    )
                 logger.debug("SMTP phase=send outcome=succeeded")
                 session_phase = "cleanup"
         except SMTPResponseException as error:
@@ -2157,7 +2494,7 @@ class EmailClient:
         # Return the message for potential saving to Sent folder
         return msg
 
-    async def _find_sent_folder_by_flag(self, imap) -> str | None:
+    async def _find_sent_folder_by_flag(self, imap, *, utf8: bool = False) -> str | None:
         """Find the Sent folder by searching for the \\Sent IMAP flag.
 
         Args:
@@ -2170,10 +2507,9 @@ class EmailClient:
             # List all folders - aioimaplib requires reference_name and mailbox_pattern
             _, folders = await imap.list('""', "*")
 
-            # Search for folder with \Sent flag
-            for folder in folders:
-                mailbox = _parse_list_response(folder)
-                if mailbox and r"\Sent" in mailbox.flags:
+            # Search for folder with the case-insensitive \Sent attribute.
+            for mailbox in _parse_list_responses(folders, utf8=utf8):
+                if any(flag.casefold() == r"\sent" for flag in mailbox.flags):
                     logger.info(f"Found Sent folder by \\Sent flag: '{mailbox.name}'")
                     return mailbox.name
         except Exception as e:
@@ -2210,7 +2546,14 @@ class EmailClient:
         try:
             await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
-            flag_folder = await self._find_sent_folder_by_flag(imap)
+            try:
+                append_mode = await _prepare_imap_append(imap, msg)
+            except ImapUtf8UnsupportedError:
+                return SentCopyMutationOutcome("failed", detail="utf8-append-unsupported")
+            flag_folder = await self._find_sent_folder_by_flag(
+                imap,
+                utf8=append_mode.session_utf8_enabled,
+            )
             if flag_folder is not None and flag_folder not in folders:
                 try:
                     validate_mailbox_name(flag_folder)
@@ -2220,7 +2563,7 @@ class EmailClient:
                     folders.insert(0, flag_folder)
             for folder in folders:
                 try:
-                    select_result = await imap.select(_quote_mailbox(folder))
+                    select_result = await imap.select(_quote_mailbox(folder, utf8=append_mode.session_utf8_enabled))
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -2229,10 +2572,12 @@ class EmailClient:
                 if _imap_status(select_result) != "OK":
                     continue
                 try:
-                    append_result = await imap.append(
-                        _serialize_message_for_imap_append(msg),
-                        mailbox=_quote_mailbox(folder),
+                    append_result = await _append_message(
+                        imap,
+                        msg,
+                        mailbox=_quote_mailbox(folder, utf8=append_mode.session_utf8_enabled),
                         flags=r"(\Seen)",
+                        mode=append_mode,
                     )
                 except asyncio.CancelledError:
                     return SentCopyMutationOutcome("unknown", folder, "append-unknown")
@@ -2256,87 +2601,9 @@ class EmailClient:
         incoming_server: EmailServer,
         sent_folder_name: str | None = None,
     ) -> bool:
-        """Append a sent message to the IMAP Sent folder.
-
-        Args:
-            msg: The email message that was sent
-            incoming_server: IMAP server configuration for accessing Sent folder
-            sent_folder_name: Override folder name, or None for auto-detection
-
-        Returns:
-            True if successfully saved, False otherwise
-        """
-        imap = await self._connect_imap_server(incoming_server)
-
-        # Common Sent folder names across different providers
-        sent_folder_candidates = [
-            sent_folder_name,  # User-specified override (if provided)
-            "Sent",
-            "INBOX.Sent",
-            "Sent Items",
-            "Sent Mail",
-            "[Gmail]/Sent Mail",
-            "INBOX/Sent",
-        ]
-        # Filter out None values
-        sent_folder_candidates = [f for f in sent_folder_candidates if f]
-
-        try:
-            await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
-            await _send_imap_id(imap)
-
-            # Try to find Sent folder by IMAP \Sent flag first
-            flag_folder = await self._find_sent_folder_by_flag(imap)
-            if flag_folder and flag_folder not in sent_folder_candidates:
-                # Add it at the beginning (high priority)
-                sent_folder_candidates.insert(0, flag_folder)
-
-            # Try to find and use the Sent folder
-            for folder in sent_folder_candidates:
-                try:
-                    logger.debug(f"Trying Sent folder: '{folder}'")
-                    # Try to select the folder to verify it exists
-                    result = await imap.select(_quote_mailbox(folder))
-                    logger.debug(f"Select result for '{folder}': {result}")
-
-                    # aioimaplib returns (status, data) where status is a string like 'OK' or 'NO'
-                    status = result[0] if isinstance(result, tuple) else result
-                    if str(status).upper() == "OK":
-                        # Folder exists, append the message
-                        msg_bytes = _serialize_message_for_imap_append(msg)
-                        logger.debug(f"Appending message to '{folder}'")
-                        # aioimaplib.append signature: (message_bytes, mailbox, flags, date)
-                        append_result = await imap.append(
-                            msg_bytes,
-                            mailbox=_quote_mailbox(folder),
-                            flags=r"(\Seen)",
-                        )
-                        logger.debug(f"Append result: {append_result}")
-                        append_status = append_result[0] if isinstance(append_result, tuple) else append_result
-                        if str(append_status).upper() == "OK":
-                            logger.info(f"Saved sent email to '{folder}'")
-                            return True
-                        else:
-                            logger.warning(f"Failed to append to '{folder}': {append_status}")
-                    else:
-                        logger.debug(f"Folder '{folder}' select returned: {status}")
-                except Exception as e:
-                    logger.debug(f"Folder '{folder}' not available: {e}")
-                    continue
-
-            logger.warning("Could not find a valid Sent folder to save the message")
-            return False
-
-        except ConnectionError:
-            raise
-        except Exception as e:
-            logger.error(f"Error saving to Sent folder: {e}")
-            return False
-        finally:
-            try:
-                await imap.logout()
-            except Exception:
-                logger.debug("IMAP logout failed")
+        """Compatibility wrapper around the non-replaying Sent-copy workflow."""
+        outcome = await self.append_to_sent_with_outcome(msg, incoming_server, sent_folder_name)
+        return outcome.status == "succeeded"
 
     async def append_to_mailbox_with_outcome(
         self,
@@ -2351,14 +2618,20 @@ class EmailClient:
         try:
             await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
-            select_result = await imap.select(_quote_mailbox(mailbox))
+            try:
+                append_mode = await _prepare_imap_append(imap, msg)
+            except ImapUtf8UnsupportedError:
+                return AppendMutationOutcome("failed", message_id, mailbox=mailbox, detail="utf8-append-unsupported")
+            select_result = await imap.select(_quote_mailbox(mailbox, utf8=append_mode.session_utf8_enabled))
             if _imap_status(select_result) != "OK":
                 return AppendMutationOutcome("failed", message_id, mailbox=mailbox, detail="mailbox-unavailable")
             try:
-                append_result = await imap.append(
-                    _serialize_message_for_imap_append(msg),
-                    mailbox=_quote_mailbox(mailbox),
+                append_result = await _append_message(
+                    imap,
+                    msg,
+                    mailbox=_quote_mailbox(mailbox, utf8=append_mode.session_utf8_enabled),
                     flags=flags,
+                    mode=append_mode,
                 )
             except asyncio.CancelledError:
                 return AppendMutationOutcome("unknown", message_id, mailbox=mailbox, detail="append-unknown")
@@ -2407,18 +2680,24 @@ class EmailClient:
         try:
             await _imap_login(imap, incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
+            try:
+                append_mode = await _prepare_imap_append(imap, msg)
+            except ImapUtf8UnsupportedError:
+                logger.warning("IMAP server does not support internationalized mailbox APPEND")
+                return None
 
-            result = await imap.select(_quote_mailbox(mailbox))
+            result = await imap.select(_quote_mailbox(mailbox, utf8=append_mode.session_utf8_enabled))
             status = result[0] if isinstance(result, tuple) else result
             if str(status).upper() != "OK":
                 logger.warning(f"Mailbox '{mailbox}' not found or not selectable: {status}")
                 return None
 
-            msg_bytes = _serialize_message_for_imap_append(msg)
-            append_result = await imap.append(
-                msg_bytes,
-                mailbox=_quote_mailbox(mailbox),
+            append_result = await _append_message(
+                imap,
+                msg,
+                mailbox=_quote_mailbox(mailbox, utf8=append_mode.session_utf8_enabled),
                 flags=flags,
+                mode=append_mode,
             )
             append_status = append_result[0] if isinstance(append_result, tuple) else append_result
             if str(append_status).upper() == "OK":
@@ -2939,10 +3218,7 @@ class EmailClient:
             _raise_for_imap_error(response, f"LIST mailboxes with pattern {pattern}")
             _, data = response
 
-            for item in data:
-                mailbox = _parse_list_response(item)
-                if mailbox:
-                    mailboxes.append(mailbox)
+            mailboxes.extend(_parse_list_responses(data))
         finally:
             try:
                 await imap.logout()

@@ -594,21 +594,19 @@ class TestEmailClientListMailboxes:
         assert result[0].name == "INBOX"
 
     @pytest.mark.asyncio
-    async def test_list_mailboxes_no_flags(self, email_client):
-        """Items without parenthesized flags should produce an empty flags list."""
+    async def test_list_mailboxes_empty_flags(self, email_client):
+        """A mandatory but empty LIST attribute section produces no flags."""
         mock_imap = _make_mock_imap()
-        # Unusual but valid: no flags section
         mock_imap.list = AsyncMock(
             return_value=(
                 "OK",
-                [b'"/" "SomeFolder"'],
+                [b'() "/" "SomeFolder"'],
             )
         )
 
         with patch.object(email_client, "imap_class", return_value=mock_imap):
             result = await email_client.list_mailboxes()
 
-        # Should still parse delimiter and name from the quoted parts
         assert len(result) == 1
         assert result[0].name == "SomeFolder"
         assert result[0].delimiter == "/"

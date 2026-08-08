@@ -624,10 +624,13 @@ environment equivalents are `MCP_EMAIL_SERVER_SAVE_TO_SENT` and
 
 Every outgoing MIME message carries a single top-level `MIME-Version: 1.0`
 header. The configured full name is an RFC 5322 display name: punctuation such as
-`@`, commas, and quotes is safely quoted, while non-ASCII text is encoded without
-encoding the address itself. SMTP `MAIL FROM` always uses the separate configured
-account email address as its RFC 5321 reverse-path. Drafts and Sent copies use the
-same correctly formatted `From` header.
+`@`, commas, and quotes is safely quoted, while non-ASCII display text paired with
+an ASCII addr-spec is encoded without forcing SMTPUTF8. SMTP `MAIL FROM` always
+uses the separate configured account email address as its RFC 5321 reverse-path.
+An internationalized addr-spec or thread-header identifier requires SMTPUTF8 for
+delivery and RFC 6855 UTF8 support for Draft or Sent-copy APPEND. Drafts and Sent
+copies use the same correctly formatted `From` header and fail before APPEND when
+the provider cannot negotiate the required UTF8 mode.
 
 The server also adds `User-Agent: mcp-email-server` and
 `X-Mailer: mcp-email-server` as de-facto application identifiers for

@@ -184,7 +184,10 @@ await save_to_mailbox(
 ```
 
 Mailbox names vary by provider. Use `list_mailboxes` first when `Drafts` is not
-the correct name.
+the correct name. If any address or thread-header identifier requires
+internationalized syntax, the IMAP endpoint must support RFC 6855
+`ENABLE`/`UTF8=ACCEPT`; otherwise the save fails before mailbox selection with
+`utf8-append-unsupported` and is not retried.
 
 ## Reply with proper threading
 

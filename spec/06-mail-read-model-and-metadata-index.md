@@ -26,7 +26,11 @@ separate selected-mailbox metadata observation when explicitly queried.
 Mailbox discovery enforces both a count ceiling and aggregate normalized byte
 ceiling. A provider response exceeding either is rejected or explicitly
 truncated according to the public contract; it is never accumulated without
-bound. Mailbox names are treated as data and quoted safely for later commands.
+bound. LIST records are parsed as protocol-framed responses: tagged completion
+text is not a mailbox, `{N}` and `~{N}` mailbox literals are reassembled only at
+their exact declared byte length, and malformed or incomplete literals fail the
+request. Special-use attributes are matched case-insensitively. Mailbox names are
+treated as data and quoted safely for later commands.
 
 ## Durable Placement and Qualification
 
@@ -88,9 +92,21 @@ deadline and its complete UID response is size/count checked immediately before
 any further work.
 
 Headers, address lists, subjects, snippets, flags, provider errors, and aggregate
-serialized results each have limits. Oversized fields are rejected or truncated
-with an explicit marker according to their contract; silent unlimited copying is
-forbidden.
+serialized results each have limits. RFC 5322 To and Cc fields are parsed as
+structured address fields rather than split on commas, so quoted display names
+and group syntax preserve and flatten their actual mailbox entries. Oversized
+fields are rejected or truncated with an explicit marker according to their
+contract; silent unlimited copying is forbidden.
+
+Every IMAP SEARCH criterion preserves caller text without changing its semantics.
+ASCII values use an atom/astring only when permitted by the complete IMAP
+grammar and otherwise use a quoted string with exact quote and backslash
+escaping. Non-ASCII values use synchronizing UTF-8 literals with `CHARSET UTF-8`;
+each literal waits for its own continuation, and a definitive rejection sends no
+remaining literal bytes. Cancellation, timeout, or transport failure while a
+synchronizing command is in flight aborts the connection because its framing can
+no longer be reused safely. IMAP dates use fixed English month tokens and never
+depend on the process locale.
 
 ## Body Retrieval
 
@@ -115,6 +131,12 @@ Body reads:
   both toward the 4 MiB aggregate returned-header budget, enforcing the running
   budget before provider-adapter retention and revalidating it at the application
   response boundary;
+- prune an entire MIME attachment subtree, including every encapsulated
+  `message/rfc822` part, so a forwarded message body is never promoted into the
+  containing message body;
+- decode text parts independently and fall back to UTF-8 with replacement for an
+  unknown or invalid declared charset, so one bad part cannot hide the rest of a
+  readable message;
 - sanitize decode/parser errors and never persist bodies, thread headers from
   full-content reads, or raw MIME in SQLite.
 
@@ -213,3 +235,8 @@ catalog authority or secret binding state.
    NTFS rather than mocks alone.
 7. Projection failure cannot turn known provider read evidence into a false mail
    failure, and rebuild cannot alter catalog or credential state.
+8. Interoperability tests cover quoted and grouped address fields, attachment
+   subtree pruning, unknown MIME charsets, all English IMAP month tokens, exact
+   ASCII astring escaping, multi-literal UTF-8 SEARCH continuations and failure
+   framing, LIST completion filtering and literal lengths, and case-insensitive
+   special-use attributes.

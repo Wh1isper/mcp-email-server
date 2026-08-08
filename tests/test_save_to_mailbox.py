@@ -121,9 +121,8 @@ class TestValidateFlags:
         with pytest.raises(ValueError, match="Invalid IMAP flag"):
             _validate_flags([""])
 
-    def test_rejects_numeric_start(self):
-        with pytest.raises(ValueError, match="Invalid IMAP flag"):
-            _validate_flags(["123flag"])
+    def test_accepts_all_legal_keyword_atom_forms(self):
+        assert _validate_flags(["123flag", "$Forwarded", "project.name"]) == "(123flag $Forwarded project.name)"
 
 
 # ---------------------------------------------------------------------------
