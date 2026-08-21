@@ -47,8 +47,9 @@ Or configure one through environment variables without
 }
 ```
 
-`send_email` remains in the static MCP tool list, but calling it for this
-account fails its SMTP capability check before provider access. IMAP mutation
+`send_email` and `forward_email` remain in the static MCP tool list, but
+calling either for this account fails its SMTP capability check before provider
+access — for a forward, before the source message is read. IMAP mutation
 tools remain available, so this is not a strict read-only mode. To limit
 mutations, also constrain which MCP tools the client may call or run the server
 with an account whose provider permissions are read-only.
@@ -226,6 +227,39 @@ a thread or has a valid Message-ID. The server returns `references` as one
 whitespace-normalized string rather than guessing how to tokenize malformed or
 historical header syntax. Treat both values as untrusted observations: compose
 validation rejects malformed values containing control characters.
+
+## Forward a message with its attachments
+
+Locate the message with `list_emails_metadata`, then forward it by UID. The
+subject and the quoted content are derived from the source message, so the
+caller supplies only the note that goes above them:
+
+```python
+await forward_email(
+    account_name="work",
+    email_id="123",
+    source_mailbox="INBOX",
+    recipients=["alice@example.com"],
+    body="Forwarding this for your records; the signed contract is attached.",
+)
+```
+
+The delivered subject becomes `Fwd: <original subject>`, and the original's
+attachments are re-attached with their MIME types and parameters preserved. Pass
+`include_attachments=False` to forward only the text.
+
+The quoted block is rebuilt from the parsed plain-text body, so an HTML-heavy
+original arrives without its formatting. Nothing is silently truncated: the
+composed body, note included, is bounded at 1 MiB, and a forward that exceeds it
+is rejected rather than trimmed. When the recipient needs the message exactly as
+it was sent, save the parts with `download_attachment` and compose the message
+yourself with `send_email`.
+
+Forwarding requires SMTP, so it fails its capability check for an
+[IMAP-only account](#imap-only-accounts). If the source message cannot be read,
+including when a sender allowlist hides it, the call fails before any SMTP
+session is opened, so a forward is never sent without the attachments it was
+supposed to carry.
 
 ## Read a long message in chunks
 

@@ -1,5 +1,7 @@
 """Test email attachment functionality."""
 
+import asyncio
+import base64
 import re
 import unicodedata
 from email import encoders
@@ -7,13 +9,26 @@ from email.mime.application import MIMEApplication
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.parser import BytesParser
+from email.policy import SMTP as SMTP_POLICY
+from email.policy import SMTPUTF8 as SMTPUTF8_POLICY
+from email.policy import default
 from email.utils import make_msgid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiosmtplib.email import flatten_message
 
+from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.config import EmailServer
-from mcp_email_server.emails.classic import EmailClient
+from mcp_email_server.emails.classic import (
+    EmailClient,
+    _as_modern_smtp_message,
+    _format_forwarded_text,
+    _message_requires_smtputf8,
+    _serialize_message_for_imap_append,
+    normalize_forwarded_part,
+)
 
 
 @pytest.fixture
@@ -778,3 +793,721 @@ class TestDownloadAttachmentSenderAllowlist:
             )
         assert result["attachment_name"] == "ausflug.png"
         mock_senders.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# forward_email source fixtures
+# ---------------------------------------------------------------------------
+#
+# These are raw wire bytes rather than ``MIMEMultipart`` builders on purpose.
+# The RFC 2231 regression they guard only reproduces when the source header
+# arrives on ONE unfolded line long enough to need refolding; a pre-folded
+# fixture passes even against a broken implementation.
+
+_FORWARD_LONG_FILENAME = "Quartalsbericht Übersicht München Grüße 2026 Jahresabschluss Anlage.xlsx"
+
+_FORWARD_RFC2231_DISPOSITION = b"Content-Disposition: attachment; filename*=utf-8''" + _FORWARD_LONG_FILENAME.replace(
+    " ", "%20"
+).replace("Ü", "%C3%9C").replace("ü", "%C3%BC").replace("ß", "%C3%9F").encode("ascii")
+
+_FORWARD_INNER_MESSAGE = (
+    b"Message-ID: <inner-capsule@example.com>\r\n"
+    b"From: original@example.com\r\n"
+    b"To: nested@example.com\r\n"
+    b"Subject: Inner capsule\r\n"
+    b"Content-Type: text/plain; charset=us-ascii\r\n"
+    b"\r\n"
+    b"inner capsule body\r\n"
+)
+
+_FORWARD_INLINE_PNG = b"iVBORw0KGgoAAAANSUhEUg=="
+
+
+def _build_forward_source_email() -> bytes:
+    """Build a source message carrying all six forwardable part shapes."""
+    return (
+        b"MIME-Version: 1.0\r\n"
+        b"From: Sender Name <sender@example.com>\r\n"
+        b"To: rcpt@example.com\r\n"
+        b"Cc: cc@example.com\r\n"
+        b"Subject: Quarterly package\r\n"
+        b"Date: Fri, 8 May 2026 19:17:09 +0200\r\n"
+        b"Message-ID: <src@example.com>\r\n"
+        b'Content-Type: multipart/mixed; boundary="OUTER"\r\n'
+        b"\r\n"
+        # Body leaf, never re-attached.
+        b"--OUTER\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"SGFsbG8gV2VsdA==\r\n"
+        # 1. RFC 2231 filename on one unfolded line.
+        b"--OUTER\r\n"
+        b'Content-Type: application/vnd.ms-excel; name="sheet.xlsx"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n" + _FORWARD_RFC2231_DISPOSITION + b"\r\n"
+        b"\r\n"
+        b"c3ByZWFkc2hlZXQ=\r\n"
+        # 2. Zero-byte attachment.
+        b"--OUTER\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b'Content-Disposition: attachment; filename="empty.bin"\r\n'
+        b"\r\n"
+        b"\r\n"
+        # 3. Encapsulated message.
+        b"--OUTER\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b'Content-Disposition: attachment; filename="capsule.eml"\r\n'
+        b"\r\n" + _FORWARD_INNER_MESSAGE +
+        # 4. Nested multipart/related subtree carried as one attachment root.
+        b"--OUTER\r\n"
+        b'Content-Type: multipart/related; boundary="INNERREL"; type="text/html"\r\n'
+        b'Content-Disposition: attachment; filename="gallery.mhtml"\r\n'
+        b"\r\n"
+        b"--INNERREL\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"Content-Transfer-Encoding: 7bit\r\n"
+        b"\r\n"
+        b'<p><img src="cid:pic@example.com"></p>\r\n'
+        b"--INNERREL\r\n"
+        b'Content-Type: image/png; name="pic.png"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"Content-ID: <pic@example.com>\r\n"
+        b'Content-Disposition: inline; filename="pic.png"\r\n'
+        b"\r\n" + _FORWARD_INLINE_PNG + b"\r\n"
+        b"--INNERREL--\r\n"
+        # 5. Apple-Mail style inline image at the top level.
+        b"--OUTER\r\n"
+        b'Content-Type: image/png; name="inline.png"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"Content-ID: <inline-pic@example.com>\r\n"
+        b'Content-Disposition: inline; filename="inline.png"\r\n'
+        b"\r\n" + _FORWARD_INLINE_PNG + b"\r\n"
+        # 6. Ordinary explicit attachment.
+        b"--OUTER\r\n"
+        b'Content-Type: application/pdf; name="report.pdf"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b'Content-Disposition: attachment; filename="report.pdf"\r\n'
+        b"\r\n"
+        b"JVBERi0xLjQ=\r\n"
+        b"--OUTER--\r\n"
+    )
+
+
+def _build_malformed_forward_source() -> bytes:
+    """Build a source message whose parts are all non-conformant in some way."""
+    return (
+        b"MIME-Version: 1.0\r\n"
+        b"From: sender@example.com\r\n"
+        b"To: rcpt@example.com\r\n"
+        b"Subject: Malformed package\r\n"
+        b"Date: Fri, 8 May 2026 19:17:09 +0200\r\n"
+        b'Content-Type: multipart/mixed; boundary="M"\r\n'
+        b"\r\n"
+        b"--M\r\n"
+        b"Content-Type: text/plain; charset=us-ascii\r\n"
+        b"\r\n"
+        b"body\r\n"
+        # Raw latin-1 octets in an unencoded header plus a raw UTF-8 quoted filename.
+        b"--M\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"X-Legacy-Note: caf\xe9 r\xe9sum\xe9\r\n"
+        b'Content-Disposition: attachment; filename="Gr\xc3\xbc\xc3\x9fe.xlsx"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"YWJj\r\n"
+        # RFC 2047 encoded-word where RFC 2231 is required.
+        b"--M\r\n"
+        b"Content-Type: application/pdf\r\n"
+        b'Content-Disposition: attachment; filename="=?utf-8?B?w5xiZXJzaWNodC5wZGY=?="\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"JVBERg==\r\n"
+        # Continued RFC 2231 parameter.
+        b"--M\r\n"
+        b"Content-Type: application/zip\r\n"
+        b"Content-Disposition: attachment; filename*0*=utf-8''Sehr%20langer;\r\n"
+        b" filename*1*=%20Name%20mit%20Fortsetzung.zip\r\n"
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"UEsD\r\n"
+        # Corrupt base64 payload.
+        b"--M\r\n"
+        b"Content-Type: image/jpeg\r\n"
+        b'Content-Disposition: attachment; filename="broken.jpg"\r\n'
+        b"Content-Transfer-Encoding: base64\r\n"
+        b"\r\n"
+        b"!!!not base64!!!\r\n"
+        # No Content-Type at all.
+        b"--M\r\n"
+        b'Content-Disposition: attachment; filename="typeless.dat"\r\n'
+        b"\r\n"
+        b"plain octets\r\n"
+        b"--M--\r\n"
+    )
+
+
+def _forward_source_parts(email_client) -> tuple[list, list]:
+    """Return (source attachment roots, normalized copies) for the six-part fixture."""
+    source = BytesParser(policy=default).parsebytes(_build_forward_source_email())
+    roots = [part for part, is_attachment in email_client._iter_content_parts(source) if is_attachment]
+    return roots, [normalize_forwarded_part(part) for part in roots]
+
+
+def _content_disposition_lines(wire: bytes) -> list[bytes]:
+    """Return every Content-Disposition header of a flattened message, folds included."""
+    return re.findall(rb"Content-Disposition:[^\r\n]*(?:\r?\n[ \t][^\r\n]*)*", wire)
+
+
+def _serializations(message) -> dict[str, bytes]:
+    """Flatten one composed message through every send path the provider uses."""
+    return {
+        # send_email_with_outcome, ASCII envelope (classic.py:2262 policy selection)
+        "smtp": message.as_bytes(policy=SMTP_POLICY),
+        # send_email_with_outcome, RFC 6532 envelope
+        "smtputf8": message.as_bytes(policy=SMTPUTF8_POLICY),
+        # send_email -> aiosmtplib.send_message re-flatten (classic.py:2466)
+        "aiosmtplib": flatten_message(_as_modern_smtp_message(message), utf8=False, cte_type="8bit"),
+        # IMAP APPEND of the Sent copy
+        "imap_append": _serialize_message_for_imap_append(message),
+    }
+
+
+class TestNormalizeForwardedPart:
+    """One source part survives the compat32 round trip with its MIME identity intact."""
+
+    def test_all_six_part_shapes_round_trip(self, email_client):
+        """Type, params, CTE, Content-ID, disposition and filename all match the source."""
+        roots, normalized = _forward_source_parts(email_client)
+        assert [part.get_content_type() for part in roots] == [
+            "application/vnd.ms-excel",
+            "application/octet-stream",
+            "message/rfc822",
+            "multipart/related",
+            "image/png",
+            "application/pdf",
+        ]
+
+        for source_part, copied in zip(roots, normalized, strict=True):
+            assert copied.get_content_type() == source_part.get_content_type()
+            # Full parameter list, so charset/name/boundary loss is caught too.
+            assert copied.get_params() == source_part.get_params()
+            assert copied.get("Content-Transfer-Encoding") == source_part.get("Content-Transfer-Encoding")
+            assert copied.get("Content-ID") == source_part.get("Content-ID")
+            assert copied.get_content_disposition() == source_part.get_content_disposition()
+            assert copied.get_filename() == source_part.get_filename()
+
+    def test_zero_byte_attachment_is_carried_not_dropped(self, email_client):
+        """A zero-byte part decodes to b"" — a falsy value a truthiness check would drop."""
+        _, normalized = _forward_source_parts(email_client)
+        empty = normalized[1]
+        assert empty.get_filename() == "empty.bin"
+        assert empty.get_payload(decode=True) == b""
+
+    def test_message_rfc822_keeps_inner_message_and_gains_no_encoding(self, email_client):
+        """An encapsulated message decodes to None and must not be re-encoded."""
+        _, normalized = _forward_source_parts(email_client)
+        capsule = normalized[2]
+        assert capsule.get_content_type() == "message/rfc822"
+        assert capsule.get_payload(decode=True) is None
+        assert capsule.get("Content-Transfer-Encoding") is None
+
+        inner = capsule.get_payload(0)
+        assert inner["Message-ID"] == "<inner-capsule@example.com>"
+        assert inner.get_payload(decode=True) == b"inner capsule body"
+
+    def test_nested_multipart_related_subtree_is_preserved(self, email_client):
+        """The whole related subtree travels, not just its flattened leaves."""
+        _, normalized = _forward_source_parts(email_client)
+        gallery = normalized[3]
+        assert gallery.get_content_type() == "multipart/related"
+        assert gallery.get_param("type") == "text/html"
+
+        children = gallery.get_payload()
+        assert [child.get_content_type() for child in children] == ["text/html", "image/png"]
+        image = children[1]
+        assert image.get("Content-ID") == "<pic@example.com>"
+        assert image.get_payload(decode=True) == base64.b64decode(_FORWARD_INLINE_PNG)
+
+    def test_attachment_roots_exclude_body_leaves(self, email_client):
+        """The source's own text body is not re-attached as a part."""
+        _, normalized = _forward_source_parts(email_client)
+        assert all(part.get_content_type() != "text/plain" for part in normalized)
+
+
+class TestForwardedPartSerialization:
+    """Re-attached parts must reach the wire identically on every send path."""
+
+    def test_rfc2231_filename_bytes_are_identical_across_send_paths(self, email_client):
+        """The unfolded RFC 2231 disposition refolds the same way everywhere."""
+        # Guard the guard: a pre-folded fixture would pass even when broken.
+        assert len(_FORWARD_RFC2231_DISPOSITION) >= 86
+        assert b"\n" not in _FORWARD_RFC2231_DISPOSITION
+
+        _, normalized = _forward_source_parts(email_client)
+        message = email_client.compose_message(
+            ["dest@example.com"], "Fwd: Quarterly package", "note", extra_parts=normalized
+        )
+        wires = _serializations(message)
+
+        dispositions = {name: _content_disposition_lines(wire) for name, wire in wires.items()}
+        assert len({tuple(lines) for lines in dispositions.values()}) == 1, dispositions
+
+        for name, wire in wires.items():
+            # The source labelled the filename utf-8, so no path may relabel it.
+            assert b"unknown-8bit" not in wire, name
+            assert b"utf-8''Quartalsbericht" in wire, name
+
+    def test_smtputf8_requirement_is_unchanged_by_forwarded_parts(self, email_client):
+        """_message_requires_smtputf8 reads outer headers only."""
+        _, normalized = _forward_source_parts(email_client)
+        without = email_client.compose_message(["dest@example.com"], "Fwd: Quarterly package", "note")
+        with_parts = email_client.compose_message(
+            ["dest@example.com"], "Fwd: Quarterly package", "note", extra_parts=normalized
+        )
+        assert _message_requires_smtputf8(with_parts) == _message_requires_smtputf8(without)
+
+    def test_forwarded_payloads_survive_the_smtp_flatten(self, email_client):
+        """Every re-attached payload is byte-identical after a real serialization round trip."""
+        _, normalized = _forward_source_parts(email_client)
+        message = email_client.compose_message(
+            ["dest@example.com"], "Fwd: Quarterly package", "note", extra_parts=normalized
+        )
+        delivered = BytesParser(policy=default).parsebytes(message.as_bytes(policy=SMTP_POLICY))
+        delivered_parts = [part for part, is_attachment in email_client._iter_content_parts(delivered) if is_attachment]
+
+        assert [part.get_content_type() for part in delivered_parts] == [part.get_content_type() for part in normalized]
+        assert delivered_parts[1].get_payload(decode=True) == b""
+        assert delivered_parts[4].get("Content-ID") == "<inline-pic@example.com>"
+        assert delivered_parts[4].get_payload(decode=True) == base64.b64decode(_FORWARD_INLINE_PNG)
+        assert delivered_parts[5].get_payload(decode=True) == base64.b64decode(b"JVBERi0xLjQ=")
+
+
+class TestMalformedForwardSource:
+    """Non-conformant source parts must not raise and must not be silently rewritten."""
+
+    def test_malformed_parts_round_trip_without_raising(self, email_client):
+        source = BytesParser(policy=default).parsebytes(_build_malformed_forward_source())
+        roots = [part for part, is_attachment in email_client._iter_content_parts(source) if is_attachment]
+        normalized = [normalize_forwarded_part(part) for part in roots]
+
+        assert [part.get_content_type() for part in normalized] == [
+            "application/octet-stream",
+            "application/pdf",
+            "application/zip",
+            "image/jpeg",
+            "text/plain",
+        ]
+        for source_part, copied in zip(roots, normalized, strict=True):
+            assert copied.get_params() == source_part.get_params()
+            assert copied.get_content_disposition() == source_part.get_content_disposition()
+
+        # A corrupt base64 payload decodes to whatever the stdlib salvages, but it
+        # must not blow up the forward.
+        assert normalized[3].get_payload(decode=True) is not None
+        assert normalized[2].get_filename() == "Sehr langer Name mit Fortsetzung.zip"
+
+    def test_malformed_dispositions_agree_across_send_paths(self, email_client):
+        """An unlabelled 8-bit filename is relabelled consistently, not differently per path."""
+        source = BytesParser(policy=default).parsebytes(_build_malformed_forward_source())
+        normalized = [
+            normalize_forwarded_part(part)
+            for part, is_attachment in email_client._iter_content_parts(source)
+            if is_attachment
+        ]
+        message = email_client.compose_message(
+            ["dest@example.com"], "Fwd: Malformed package", "note", extra_parts=normalized
+        )
+        dispositions = {name: _content_disposition_lines(wire) for name, wire in _serializations(message).items()}
+        assert len({tuple(lines) for lines in dispositions.values()}) == 1, dispositions
+
+
+class TestFormatForwardedText:
+    """The quoted block reports the source headers with a neutral recipient label."""
+
+    def test_block_shape(self):
+        block = _format_forwarded_text(
+            "Sender Name <sender@example.com>",
+            ["rcpt@example.com", "cc@example.com"],
+            "Fri, 8 May 2026 19:17:09 +0200",
+            "Quarterly package",
+            "Hallo Welt",
+        )
+        assert block == (
+            "---------- Forwarded message ----------\n"
+            "From: Sender Name <sender@example.com>\n"
+            "Recipients: rcpt@example.com, cc@example.com\n"
+            "Date: Fri, 8 May 2026 19:17:09 +0200\n"
+            "Subject: Quarterly package\n"
+            "\n"
+            "Hallo Welt"
+        )
+
+    def test_recipients_label_is_used_because_the_list_folds_in_cc(self):
+        """ "To:" would misreport a list that already merged Cc entries."""
+        block = _format_forwarded_text("a@example.com", ["b@example.com"], "date", "subject", "body")
+        assert "Recipients: b@example.com" in block
+        assert "\nTo:" not in block
+
+    def test_empty_recipients_render_as_an_empty_field(self):
+        block = _format_forwarded_text("a@example.com", [], "date", "subject", "body")
+        assert "Recipients: \n" in block
+
+
+class TestFetchForwardSource:
+    """Reading a forward's source is single-session, allowlisted, and never degrades."""
+
+    @staticmethod
+    def _mock_imap():
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+        mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
+        mock_imap.logout = AsyncMock()
+        return mock_imap
+
+    @staticmethod
+    def _fetch(raw_email: bytes):
+        async def _fake_fetch(_imap, _email_id):
+            return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+        return _fake_fetch
+
+    async def _run(self, email_client, raw_email: bytes, **kwargs):
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch(raw_email)),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            return await email_client.fetch_forward_source("1", **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_returns_headers_body_and_parts(self, email_client):
+        result = await self._run(email_client, _build_forward_source_email())
+
+        assert set(result) == {"subject", "from", "recipients", "date", "body", "parts"}
+        assert result["subject"] == "Quarterly package"
+        assert result["from"] == "Sender Name <sender@example.com>"
+        assert result["recipients"] == ["rcpt@example.com", "cc@example.com"]
+        # The parsed Date header is re-rendered canonically ("8" -> "08") but keeps
+        # the source's own offset, unlike the UTC-normalized datetime in the parse result.
+        assert result["date"] == "Fri, 08 May 2026 19:17:09 +0200"
+        assert result["body"].startswith("---------- Forwarded message ----------\n")
+        assert "Recipients: rcpt@example.com, cc@example.com" in result["body"]
+        assert result["body"].endswith("Hallo Welt")
+        assert [part.get_content_type() for part in result["parts"]] == [
+            "application/vnd.ms-excel",
+            "application/octet-stream",
+            "message/rfc822",
+            "multipart/related",
+            "image/png",
+            "application/pdf",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_include_attachments_false_keeps_the_body(self, email_client):
+        result = await self._run(email_client, _build_forward_source_email(), include_attachments=False)
+
+        assert result["parts"] == []
+        assert "Recipients: rcpt@example.com, cc@example.com" in result["body"]
+        assert result["subject"] == "Quarterly package"
+
+    @pytest.mark.asyncio
+    async def test_long_body_is_returned_in_full_not_display_truncated(self, email_client):
+        """The read path's 20k display window must never decide what a forward carries."""
+        long_body = "x" * 30_000
+        raw_email = (
+            b"From: sender@example.com\r\n"
+            b"To: rcpt@example.com\r\n"
+            b"Subject: Long\r\n"
+            b"Date: Fri, 8 May 2026 19:17:09 +0200\r\n"
+            b"Content-Type: text/plain; charset=us-ascii\r\n"
+            b"\r\n" + long_body.encode("ascii")
+        )
+        result = await self._run(email_client, raw_email)
+
+        assert "...[TRUNCATED]" not in result["body"]
+        assert result["body"].endswith(long_body)
+
+    @pytest.mark.asyncio
+    async def test_parser_truncation_always_leaves_an_over_limit_body(self, email_client):
+        """A source body past the forward window must surface as over-limit, never shortened.
+
+        One character encodes to at least one UTF-8 byte, so the surviving window
+        still exceeds ``APPLICATION_LIMITS.body_bytes`` and application validation
+        rejects the forward instead of sending silently truncated content.
+        """
+        raw_email = (
+            b"From: sender@example.com\r\n"
+            b"Subject: Big\r\n"
+            b"Content-Type: text/plain; charset=us-ascii\r\n"
+            b"\r\n" + b"y" * (APPLICATION_LIMITS.body_bytes + 10)
+        )
+        result = await self._run(email_client, raw_email)
+
+        assert len(result["body"].encode("utf-8")) > APPLICATION_LIMITS.body_bytes
+
+    @pytest.mark.asyncio
+    async def test_missing_date_header_omits_the_date_line(self, email_client):
+        """No fabricated provenance: absent source Date means no Date line at all."""
+        raw_email = MIMEText("no date here", "plain", "utf-8").as_bytes()
+        result = await self._run(email_client, raw_email)
+
+        assert result["date"] == ""
+        assert "Date:" not in result["body"]
+
+    @pytest.mark.asyncio
+    async def test_root_attachment_is_stripped_to_content_headers(self, email_client):
+        """A single-part source whose root IS the attachment must not leak its envelope."""
+        raw_email = (
+            b"Received: from mx.example.com by mail.example.test; Fri, 8 May 2026 19:17:09 +0200\r\n"
+            b"From: sender@example.com\r\n"
+            b"To: rcpt@example.com\r\n"
+            b"Bcc: hidden@example.com\r\n"
+            b"Subject: Scan\r\n"
+            b"Date: Fri, 8 May 2026 19:17:09 +0200\r\n"
+            b"Message-ID: <root-attach@example.com>\r\n"
+            b"Content-Type: application/pdf\r\n"
+            b"Content-Transfer-Encoding: base64\r\n"
+            b'Content-Disposition: attachment; filename="scan.pdf"\r\n'
+            b"\r\n"
+            b"c2Nhbg==\r\n"
+        )
+        result = await self._run(email_client, raw_email)
+
+        assert len(result["parts"]) == 1
+        part_bytes = result["parts"][0].as_bytes()
+        for leaked in (b"Received:", b"From:", b"To:", b"Bcc:", b"Subject:", b"Message-ID:"):
+            assert leaked not in part_bytes
+        assert b'filename="scan.pdf"' in part_bytes
+        assert b"c2Nhbg==" in part_bytes
+
+    @pytest.mark.asyncio
+    async def test_blocked_sender_raises_before_the_body_is_fetched(self, email_client):
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(
+                email_client, "_batch_fetch_senders", AsyncMock(return_value={"1": "evil@blocked.com"})
+            ) as mock_senders,
+            patch.object(email_client, "_fetch_email_with_formats", AsyncMock()) as mock_fetch,
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match=re.escape("Failed to fetch email with UID 1")):
+                await email_client.fetch_forward_source("1", allowed_senders=["*@allowed.com"])
+
+        mock_senders.assert_awaited_once()
+        mock_fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_blocked_is_indistinguishable_from_missing(self, email_client):
+        async def _run(senders):
+            mock_imap = self._mock_imap()
+            with (
+                patch.object(email_client, "_batch_fetch_senders", AsyncMock(return_value=senders)),
+                patch.object(email_client, "_fetch_email_with_formats", AsyncMock(return_value=None)),
+                patch.object(email_client, "imap_class", return_value=mock_imap),
+            ):
+                with pytest.raises(ValueError) as exc:
+                    await email_client.fetch_forward_source("1", allowed_senders=["*@allowed.com"])
+            return str(exc.value)
+
+        assert await _run({"1": "evil@blocked.com"}) == await _run({}) == "Failed to fetch email with UID 1"
+
+    @pytest.mark.asyncio
+    async def test_missing_message_raises_instead_of_returning_empty_parts(self, email_client):
+        """A failed fetch must never look like "the source had no attachments"."""
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(email_client, "_fetch_email_with_formats", AsyncMock(return_value=None)),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match=re.escape("Failed to fetch email with UID 1")):
+                await email_client.fetch_forward_source("1")
+
+    @pytest.mark.asyncio
+    async def test_unreadable_literal_raises(self, email_client):
+        """A FETCH whose literal cannot be located is a failure, not an empty forward."""
+        mock_imap = self._mock_imap()
+        with (
+            patch.object(email_client, "_fetch_email_with_formats", AsyncMock(return_value=[b"1 FETCH (FLAGS ())"])),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match=re.escape("Could not find email data for email ID: 1")):
+                await email_client.fetch_forward_source("1")
+
+    @pytest.mark.asyncio
+    async def test_imap_select_failure_raises_and_never_fetches(self, email_client):
+        mock_imap = self._mock_imap()
+        mock_imap.select = AsyncMock(return_value=("NO", [b"no such mailbox"]))
+        with (
+            patch.object(email_client, "_fetch_email_with_formats", AsyncMock()) as mock_fetch,
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(RuntimeError, match="SELECT mailbox Archive failed"):
+                await email_client.fetch_forward_source("1", mailbox="Archive")
+
+        mock_fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parse_failure_raises(self, email_client):
+        mock_imap = self._mock_imap()
+        raw_email = _build_forward_source_email()
+        with (
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch(raw_email)),
+            patch.object(email_client, "_parse_email_data", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad")),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match="Could not parse email 1 for forwarding"):
+                await email_client.fetch_forward_source("1")
+
+    @pytest.mark.asyncio
+    async def test_oversized_source_raises(self, email_client):
+        mock_imap = self._mock_imap()
+        raw_email = _build_forward_source_email()
+        with (
+            patch("mcp_email_server.emails.classic.MAX_RAW_EMAIL_BYTES", 16),
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch(raw_email)),
+            patch.object(email_client, "imap_class", return_value=mock_imap),
+        ):
+            with pytest.raises(ValueError, match="Email exceeds the raw message size limit"):
+                await email_client.fetch_forward_source("1")
+
+    @pytest.mark.asyncio
+    async def test_malformed_uid_raises_before_connecting(self, email_client):
+        with patch.object(email_client, "imap_class") as mock_class:
+            with pytest.raises(ValueError, match="email_id must be a canonical positive decimal IMAP UID"):
+                await email_client.fetch_forward_source("1:*")
+        mock_class.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_source_is_read_in_one_session(self, email_client):
+        """Allowlist check and body fetch share one SELECTed session — no TOCTOU window."""
+        mock_imap = self._mock_imap()
+        raw_email = _build_forward_source_email()
+        with (
+            patch.object(email_client, "_batch_fetch_senders", AsyncMock(return_value={"1": "ok@allowed.com"})),
+            patch.object(email_client, "_fetch_email_with_formats", side_effect=self._fetch(raw_email)) as mock_fetch,
+            patch.object(email_client, "imap_class", return_value=mock_imap) as mock_class,
+        ):
+            await email_client.fetch_forward_source("1", allowed_senders=["*@allowed.com"])
+
+        assert mock_class.call_count == 1
+        assert mock_imap.select.await_count == 1
+        assert mock_fetch.await_args.args[0] is mock_imap
+        mock_imap.logout.assert_awaited_once()
+
+
+class TestComposeWithExtraParts:
+    """extra_parts is keyword-only and shares the container with file attachments."""
+
+    def test_extra_parts_alone_force_a_multipart_container(self, email_client):
+        _, normalized = _forward_source_parts(email_client)
+        message = email_client.compose_message(["dest@example.com"], "Fwd: t", "note", extra_parts=normalized[:1])
+
+        assert message.is_multipart()
+        payload = message.get_payload()
+        assert [item.get_content_type() for item in payload] == ["text/plain", "application/vnd.ms-excel"]
+
+    def test_extra_parts_follow_file_attachments(self, email_client, tmp_path):
+        upload = tmp_path / "note.txt"
+        upload.write_text("local file")
+        _, normalized = _forward_source_parts(email_client)
+        message = email_client.compose_message(
+            ["dest@example.com"], "Fwd: t", "note", attachments=[str(upload)], extra_parts=normalized[:1]
+        )
+
+        payload = message.get_payload()
+        assert [item.get_filename() for item in payload[1:]] == ["note.txt", _FORWARD_LONG_FILENAME]
+
+    def test_no_extra_parts_leaves_a_simple_message(self, email_client):
+        message = email_client.compose_message(["dest@example.com"], "Fwd: t", "note", extra_parts=[])
+        assert not message.is_multipart()
+
+
+class TestForwardEightBitTransport:
+    """A forwarded part is the only way raw 8-bit octets can reach compose output.
+
+    Transport classification itself is shared ``send_email_with_outcome`` behavior;
+    these tests pin how re-attached 8-bit parts interact with it: the composed
+    container is labeled ``8bit`` so a correctly labeled source part rides
+    ``BODY=8BITMIME`` instead of being refused as a mislabeled composite.
+    """
+
+    @staticmethod
+    def _smtp(*, extensions: tuple[str, ...] = ()):
+        smtp = AsyncMock()
+        smtp.__aenter__.return_value = smtp
+        smtp.__aexit__.return_value = False
+        smtp.login.return_value = None
+        smtp.supports_extension = MagicMock(side_effect=lambda name: name.lower() in extensions)
+        return smtp
+
+    @staticmethod
+    def _eight_bit_part():
+        raw = (
+            b"MIME-Version: 1.0\r\n"
+            b"From: sender@example.com\r\n"
+            b"To: rcpt@example.com\r\n"
+            b'Content-Type: multipart/mixed; boundary="B"\r\n'
+            b"\r\n"
+            b"--B\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Transfer-Encoding: 8bit\r\n"
+            b'Content-Disposition: attachment; filename="note.txt"\r\n'
+            b"\r\n"
+            b"Gr\xc3\xbc\xc3\x9fe aus M\xc3\xbcnchen\r\n"
+            b"--B--\r\n"
+        )
+        source = BytesParser(policy=default).parsebytes(raw)
+        return normalize_forwarded_part(next(iter(source.iter_parts())))
+
+    @pytest.mark.asyncio
+    async def test_raw_8bit_part_is_refused_without_8bitmime(self, email_client):
+        """Rejected before MAIL, so no 8-bit octets are offered on a 7-bit channel."""
+        smtp = self._smtp()
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            outcome = await email_client.send_email_with_outcome(
+                ["dest@example.com"], "Fwd: t", "note", extra_parts=[self._eight_bit_part()]
+            )
+
+        assert [(item.status, item.detail) for item in outcome.outcomes] == [("failed", "smtp-8bitmime-required")]
+        assert outcome.sent_message is None
+        smtp.mail.assert_not_called()
+        smtp.data.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_raw_8bit_part_is_delivered_when_8bitmime_is_advertised(self, email_client):
+        smtp = self._smtp(extensions=("8bitmime",))
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            outcome = await email_client.send_email_with_outcome(
+                ["dest@example.com"], "Fwd: t", "note", extra_parts=[self._eight_bit_part()]
+            )
+
+        assert [item.status for item in outcome.outcomes] == ["succeeded"]
+        assert "BODY=8BITMIME" in smtp.mail.await_args.kwargs["options"]
+        assert b"Gr\xc3\xbc\xc3\x9fe aus M\xc3\xbcnchen" in smtp.data.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_seven_bit_clean_forward_is_delivered_without_8bitmime(self, email_client):
+        """The six-part fixture is entirely base64/7bit, so no 8bit label or option appears."""
+        _, normalized = _forward_source_parts(email_client)
+        smtp = self._smtp()
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            outcome = await email_client.send_email_with_outcome(
+                ["dest@example.com"], "Fwd: Quarterly package", "note", extra_parts=normalized
+            )
+
+        assert [item.status for item in outcome.outcomes] == ["succeeded"]
+        assert smtp.data.await_args.args[0].isascii()
+
+    @pytest.mark.asyncio
+    async def test_ordinary_send_is_unaffected_by_forward_labeling(self, email_client):
+        """Without extra_parts everything composed is base64/QP, so nothing regresses."""
+        smtp = self._smtp()
+        with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+            outcome = await email_client.send_email_with_outcome(["dest@example.com"], "Grüße", "Grüße aus München")
+
+        assert [item.status for item in outcome.outcomes] == ["succeeded"]
+        smtp.data.assert_awaited_once()

@@ -191,6 +191,30 @@ def _seed_message_as(
         smtp.send_message(message)
 
 
+def _seed_message_with_attachment_as(
+    sender: tuple[str, str],
+    recipient: str,
+    subject: str,
+    body: str,
+    *,
+    filename: str,
+    payload: bytes,
+    maintype: str,
+    subtype: str,
+) -> None:
+    """Plant a real multipart source message so a forward has parts to carry."""
+    message = EmailMessage()
+    message["From"] = sender[0]
+    message["To"] = recipient
+    message["Subject"] = subject
+    message["Message-ID"] = make_msgid(domain="example.test")
+    message.set_content(body)
+    message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=5) as smtp:
+        smtp.login(*sender)
+        smtp.send_message(message)
+
+
 def _seed_message(subject: str, body: str) -> None:
     _seed_message_as(ALICE, BOB[0], subject, body)
 
@@ -846,6 +870,7 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                 "list_emails_metadata",
                 "get_emails_content",
                 "send_email",
+                "forward_email",
                 "save_to_mailbox",
                 "delete_emails",
                 "set_email_flags",
@@ -923,6 +948,83 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
             assert "not in allowlist" in _text_content(denied_send)
             assert _find_message(BOB, "INBOX", denied_subject) is None
             assert _find_message(ALICE, "Sent", denied_subject) is None
+
+            forward_source_subject = f"mcp-e2e-forward-source-{run_id}"
+            forward_source_body = f"Original content that must survive the forward {run_id}"
+            forwarded_attachment_bytes = b"forwarded attachment bytes \x00\xfe\n"
+            forwarded_attachment_name = "forwarded-report.pdf"
+            _seed_message_with_attachment_as(
+                BOB,
+                ALICE[0],
+                forward_source_subject,
+                forward_source_body,
+                filename=forwarded_attachment_name,
+                payload=forwarded_attachment_bytes,
+                maintype="application",
+                subtype="pdf",
+            )
+            _wait_for_message(ALICE, "INBOX", forward_source_subject)
+            forward_source_metadata = await _metadata_for_subject(session, "alice", forward_source_subject)
+            forward_note = f"Please review this {run_id}"
+            forward_result = await _call_tool(
+                session,
+                "forward_email",
+                {
+                    "account_name": "alice",
+                    "email_id": forward_source_metadata["email_id"],
+                    "recipients": [BOB[0]],
+                    "body": forward_note,
+                },
+            )
+            assert forward_result["result"] == f"Email forwarded successfully to {BOB[0]}"
+
+            # Read the delivered forward back over plain imaplib rather than trusting
+            # the server's own report of what it claims to have sent.
+            forwarded_subject = f"Fwd: {forward_source_subject}"
+            forwarded = _wait_for_message(BOB, "INBOX", forwarded_subject)
+            forwarded_text = forwarded.message.get_body(preferencelist=("plain",)).get_content()
+            assert forward_note in forwarded_text
+            assert "---------- Forwarded message ----------" in forwarded_text
+            assert f"From: {BOB[0]}" in forwarded_text
+            assert f"Recipients: {ALICE[0]}" in forwarded_text
+            assert f"Subject: {forward_source_subject}" in forwarded_text
+            assert forward_source_body in forwarded_text
+            forwarded_parts = list(forwarded.message.iter_attachments())
+            assert len(forwarded_parts) == 1
+            assert forwarded_parts[0].get_content_type() == "application/pdf"
+            assert forwarded_parts[0].get_filename() == forwarded_attachment_name
+            assert forwarded_parts[0].get_payload(decode=True) == forwarded_attachment_bytes
+
+            # The source read is a pure peek: forwarding must not mark the
+            # source message as read.
+            source_after_forward = _find_message(ALICE, "INBOX", forward_source_subject)
+            assert source_after_forward is not None
+            assert r"\Seen" not in source_after_forward.flags
+
+            forwarded_sent_copy = _wait_for_message(ALICE, "Sent", forwarded_subject)
+            forwarded_sent_text = forwarded_sent_copy.message.get_body(preferencelist=("plain",)).get_content()
+            assert forward_note in forwarded_sent_text
+            assert forward_source_body in forwarded_sent_text
+            assert [part.get_filename() for part in forwarded_sent_copy.message.iter_attachments()] == [
+                forwarded_attachment_name
+            ]
+
+            denied_forward_subject = f"mcp-e2e-forward-denied-{run_id}"
+            _seed_message_as(BOB, ALICE[0], denied_forward_subject, "This forward must never leave the process")
+            _wait_for_message(ALICE, "INBOX", denied_forward_subject)
+            denied_forward_metadata = await _metadata_for_subject(session, "alice", denied_forward_subject)
+            denied_forward = await session.call_tool(
+                "forward_email",
+                arguments={
+                    "account_name": "alice",
+                    "email_id": denied_forward_metadata["email_id"],
+                    "recipients": [denied_recipient],
+                },
+            )
+            assert denied_forward.isError is True
+            assert "not in allowlist" in _text_content(denied_forward)
+            assert _find_message(BOB, "INBOX", f"Fwd: {denied_forward_subject}") is None
+            assert _find_message(ALICE, "Sent", f"Fwd: {denied_forward_subject}") is None
 
             sent_metadata = await _metadata_for_subject(session, "bob", sent_subject)
             assert sent_metadata["sender"].endswith("<alice@example.test>") or sent_metadata["sender"] == ALICE[0]

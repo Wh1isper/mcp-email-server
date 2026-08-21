@@ -21,7 +21,7 @@ from email.mime.text import MIMEText
 from email.parser import BytesParser
 from email.policy import SMTP as SMTP_POLICY
 from email.policy import SMTPUTF8 as SMTPUTF8_POLICY
-from email.policy import default
+from email.policy import compat32, default
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -81,6 +81,10 @@ MAX_METADATA_UID_SEARCH_BYTES = MAX_METADATA_CANDIDATES * 11
 MAX_ATTACHMENT_BYTES = APPLICATION_LIMITS.attachment_bytes
 MAX_TOTAL_ATTACHMENT_BYTES = APPLICATION_LIMITS.total_attachment_bytes
 MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
+# One character encodes to at least one UTF-8 byte, so a parse window one wider than
+# the compose byte limit guarantees any truncated forward body already exceeds that
+# limit and is rejected by application validation instead of being sent shortened.
+FORWARD_SOURCE_BODY_WINDOW = APPLICATION_LIMITS.body_bytes + 1
 SmtpDataTransport = Literal["7bit", "8bit", "binary", "invalid"]
 _HIGH_BIT_OCTET = re.compile(rb"[\x80-\xff]")
 
@@ -209,6 +213,67 @@ def _first_thread_header(message: Message, name: str) -> str | None:
         return None
     normalized = re.sub(r"[ \t]+", " ", str(values[0])).strip()
     return normalized or None
+
+
+def normalize_forwarded_part(part: Message) -> Message:
+    """Return a compat32 copy of one source MIME part, safe to attach to a compat32 container.
+
+    ``forward_email`` parses the source message with ``BytesParser(policy=default)``,
+    which yields ``EmailMessage`` sub-parts whose headers are *structured* objects.
+    ``compose_message`` builds legacy ``MIMEMultipart``/``MIMEText`` containers, and the
+    send paths flatten them under several different policies (``SMTP``, ``SMTPUTF8``,
+    ``compat32`` for the IMAP Sent copy, plus aiosmtplib's own re-flatten). A structured
+    header re-serialized under ``SMTPUTF8`` emits raw UTF-8 parameter values; when that
+    output is re-parsed and flattened again under ``SMTP`` the original RFC 2231 charset
+    is lost and the parameter is re-encoded as ``unknown-8bit``. Round-tripping the part
+    through ``compat32`` freezes every header as an opaque string, so all send paths
+    emit byte-identical part headers.
+
+    Payload bytes are carried verbatim, including the two cases a naive truthiness check
+    drops: a zero-byte attachment (``get_payload(decode=True)`` returns ``b""``) and a
+    ``message/rfc822`` part (returns ``None``).
+
+    Known trade-off: the initial ``policy=default`` serialization re-folds any header
+    parameter a non-conformant source stored as raw 8-bit octets (an unencoded
+    ``filename="café.pdf"``) into RFC 2231 ``unknown-8bit`` form before the freeze.
+    That representation is standard-conformant and identical on every send path, but
+    it is not byte-identical to the source header; conformant RFC 2231/2047
+    parameters round-trip untouched.
+    """
+    return BytesParser(policy=compat32).parsebytes(part.as_bytes())
+
+
+def _strip_to_content_headers(part: Message) -> Message:
+    """Return a compat32 copy of one part carrying only its MIME content headers.
+
+    A single-part source whose top level IS the attachment (root Content-Disposition:
+    attachment) would otherwise be re-attached whole — envelope headers included —
+    leaking the source's Received/DKIM/Message-ID chain, and the Bcc header a Sent-copy
+    source carries, into the outgoing forward as a malformed body part.
+    """
+    clone = BytesParser(policy=compat32).parsebytes(part.as_bytes())
+    for name in list(clone.keys()):
+        if not name.lower().startswith("content-"):
+            del clone[name]
+    return clone
+
+
+def _format_forwarded_text(sender: str, recipients: Sequence[str], date: str, subject: str, body: str) -> str:
+    """Build the plain-text forwarded-message block quoted below the caller's note.
+
+    An empty ``date`` omits the line: a source without a Date header must not have
+    a composed-at timestamp fabricated as its provenance.
+    """
+    header = (
+        "---------- Forwarded message ----------\n"
+        f"From: {sender}\n"
+        # Neutral label: the parsed recipient list folds in Cc, so "To:" would mislead.
+        f"Recipients: {', '.join(recipients)}\n"
+    )
+    if date:
+        header += f"Date: {date}\n"
+    header += f"Subject: {subject}\n"
+    return f"{header}\n{body}"
 
 
 class _LiteralSearchCommand(aioimaplib.Command):
@@ -1296,10 +1361,14 @@ class EmailClient:
         email_id: str | None = None,
         body_offset: int = 0,
         max_body_length: int = MAX_BODY_LENGTH,
+        parsed: Message | None = None,
     ) -> dict[str, Any]:
-        """Parse raw email data into a structured dictionary."""
-        parser = BytesParser(policy=default)
-        email_message = parser.parsebytes(raw_email)
+        """Parse raw email data into a structured dictionary.
+
+        ``parsed`` lets a caller that already holds the ``policy=default`` parse of
+        ``raw_email`` share it instead of paying a second full parse.
+        """
+        email_message = parsed if parsed is not None else BytesParser(policy=default).parsebytes(raw_email)
 
         # Extract email parts
         subject = email_message.get("Subject", "")
@@ -2144,6 +2213,125 @@ class EmailClient:
             "saved_path": str(save_file.resolve()),
         }
 
+    async def fetch_forward_source(
+        self,
+        email_id: str,
+        mailbox: str = "INBOX",
+        allowed_senders: list[str] | None = None,
+        include_attachments: bool = True,
+    ) -> dict[str, Any]:
+        """Read one source message and return everything a forward needs to compose.
+
+        The whole read runs inside a single IMAP session: the sender allowlist is
+        checked against the same SELECTed mailbox view that the body is then fetched
+        from, so there is no second round trip and no window in which the message
+        could be replaced between the authority check and the read.
+
+        Every unreadable-source outcome raises instead of degrading to an empty or
+        partial result. A forward delivered without the parts it was supposed to carry
+        is silent content loss, not partial success, so the caller must never be able
+        to confuse "the source had no attachments" with "the source could not be read".
+        A blocked sender raises the identical not-found-shaped error as a missing UID,
+        keeping the allowlist from acting as an existence oracle.
+
+        Args:
+            email_id: UID of the source message to forward.
+            mailbox: Mailbox that holds the source message (default: "INBOX").
+            allowed_senders: Optional sender allowlist; a non-allowed sender's message
+                is treated as not found and its body is never fetched.
+            include_attachments: Re-attach the source's attachment parts when True.
+
+        Returns:
+            ``subject``, ``from``, ``recipients`` and ``date`` from the source headers,
+            ``body`` holding the complete composed forwarded-message block, and
+            ``parts`` holding the source's attachment parts normalized for
+            re-attachment (empty when ``include_attachments`` is False).
+
+        Raises:
+            ValueError: The UID is malformed, the message is missing or blocked, the
+                source exceeds the raw message size limit, or it cannot be parsed.
+            RuntimeError: An IMAP command returned a non-OK status.
+        """
+        validate_imap_uid(email_id)
+        imap = await self._connect_imap()
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+
+            # Read-path allowlist: check the From header before fetching the body, so a
+            # blocked sender's message is never read and never reaches a compose call.
+            await self._enforce_sender_allowlist(imap, email_id, allowed_senders)
+
+            data = await self._fetch_email_with_formats(imap, email_id)
+            if not data:
+                msg = f"Failed to fetch email with UID {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+
+            raw_email = self._extract_raw_email(data)
+            if not raw_email:
+                msg = f"Could not find email data for email ID: {email_id}"
+                logger.error(msg)
+                raise ValueError(msg)
+            if len(raw_email) > MAX_RAW_EMAIL_BYTES:
+                raise ValueError("Email exceeds the raw message size limit")
+
+            try:
+                email_message = BytesParser(policy=default).parsebytes(raw_email)
+                # The read-path 20k display window must not decide what a forward
+                # carries: parse past the compose byte limit so the application
+                # layer's body validation stays authoritative for oversize.
+                email_data = self._parse_email_data(
+                    raw_email,
+                    email_id,
+                    max_body_length=FORWARD_SOURCE_BODY_WINDOW,
+                    parsed=email_message,
+                )
+            except Exception as error:
+                # The public message stays fixed-shape: parser exception text can
+                # embed fragments of the offending header or payload.
+                logger.error(f"Could not parse email {email_id} for forwarding: {error}")
+                msg = f"Could not parse email {email_id} for forwarding"
+                raise ValueError(msg) from error
+
+            # Collect attachment roots without descending into them, so a nested
+            # subtree (a multipart/related gallery, a message/rfc822 capsule) is
+            # carried across whole instead of being flattened into its leaves.
+            parts: list[Message] = []
+            if include_attachments:
+                # A root that is itself the attachment is stripped to its content
+                # headers so the source's envelope block never rides along.
+                parts = [
+                    _strip_to_content_headers(part) if part is email_message else normalize_forwarded_part(part)
+                    for part, is_attachment in self._iter_content_parts(email_message)
+                    if is_attachment
+                ]
+
+            recipients = email_data["to"]
+            # No fabricated provenance: a source without a Date header yields an
+            # empty date and the quoting block omits the line entirely.
+            date = _first_thread_header(email_message, "Date") or ""
+            return {
+                # The policy=default Subject is a structured header object (a str
+                # subclass); coerce so both derived-subject branches downstream
+                # carry a plain str with uniform folding behavior.
+                "subject": str(email_data["subject"]),
+                "from": email_data["from"],
+                "recipients": recipients,
+                "date": date,
+                "body": _format_forwarded_text(
+                    email_data["from"], recipients, date, email_data["subject"], email_data["body"]
+                ),
+                "parts": parts,
+            }
+        finally:
+            try:
+                await imap.logout()
+            except Exception:
+                logger.info("IMAP logout failed")
+
     def _validate_attachment(self, file_path: str) -> Path:
         """Validate attachment file path."""
         path = Path(file_path)
@@ -2190,15 +2378,21 @@ class EmailClient:
         logger.info(f"Attached file: {path.name} ({mime_type})")
         return attachment_part
 
-    def _create_message_with_attachments(self, body: str, html: bool, attachments: list[str]) -> MIMEMultipart:
-        """Create multipart message with attachments."""
+    def _create_message_with_attachments(
+        self,
+        body: str,
+        html: bool,
+        attachments: list[str] | None,
+        extra_parts: list[Message] | None = None,
+    ) -> MIMEMultipart:
+        """Create multipart message with attachments and already-built MIME parts."""
         msg = MIMEMultipart()
         content_type = "html" if html else "plain"
         text_part = MIMEText(body, content_type, "utf-8")
         msg.attach(text_part)
 
         total_attachment_bytes = 0
-        for file_path in attachments:
+        for file_path in attachments or []:
             try:
                 path = self._validate_attachment(file_path)
                 file_data = self._read_attachment(path)
@@ -2209,6 +2403,21 @@ class EmailClient:
             except Exception as e:
                 logger.error(f"Failed to attach file {file_path}: {e}")
                 raise
+
+        # Forwarded parts arrive already bounded by the source-read size limit and
+        # already normalized for re-attachment, so they are attached verbatim after
+        # the caller's own files.
+        for part in extra_parts or []:
+            msg.attach(part)
+        if any(_classify_mime_entity_transport(part) == "8bit" for part in extra_parts or []):
+            # RFC 2045 §6.4: a composite entity whose contents include raw 8-bit
+            # octets must itself declare the 8bit domain. Everything composed here
+            # is base64/quoted-printable, so only a verbatim forwarded part can
+            # widen the domain; without this label the shared transport classifier
+            # would refuse the message as mislabeled instead of using BODY=8BITMIME.
+            # Deriving the label from that same classifier keeps the two rules
+            # from ever disagreeing, without re-serializing any part.
+            msg["Content-Transfer-Encoding"] = "8bit"
 
         return msg
 
@@ -2225,6 +2434,8 @@ class EmailClient:
         references: str | None = None,
         include_bcc_header: bool = False,
         reply_to: str | None = None,
+        *,
+        extra_parts: list[Message] | None = None,
     ) -> MIMEText | MIMEMultipart:
         """Compose an email message without sending it.
 
@@ -2236,11 +2447,15 @@ class EmailClient:
         can display the BCC recipients.  When False (default, used for SMTP
         sending), the Bcc header is omitted — BCC recipients are delivered
         via the SMTP envelope only.
+
+        ``extra_parts`` carries already-built MIME parts (a forward's re-attached
+        source parts) into the same multipart container as file attachments. It is
+        keyword-only so existing positional call sites keep their meaning.
         """
         envelope_sender = self.envelope_sender
 
-        if attachments:
-            msg = self._create_message_with_attachments(body, html, attachments)
+        if attachments or extra_parts:
+            msg = self._create_message_with_attachments(body, html, attachments, extra_parts)
         else:
             content_type = "html" if html else "plain"
             msg = MIMEText(body, content_type, "utf-8")
@@ -2304,10 +2519,23 @@ class EmailClient:
         in_reply_to: str | None = None,
         references: str | None = None,
         reply_to: str | None = None,
+        *,
+        extra_parts: list[Message] | None = None,
     ) -> DeliveryMutationOutcome:
         """Run one SMTP transaction and preserve phase-specific delivery evidence."""
         msg = self.compose_message(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references, False, reply_to
+            recipients,
+            subject,
+            body,
+            cc,
+            bcc,
+            html,
+            attachments,
+            in_reply_to,
+            references,
+            False,
+            reply_to,
+            extra_parts=extra_parts,
         )
         all_recipients = [*recipients, *(cc or []), *(bcc or [])]
         envelope_recipients = [email.utils.parseaddr(recipient)[1] for recipient in all_recipients]

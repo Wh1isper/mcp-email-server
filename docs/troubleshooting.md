@@ -328,10 +328,12 @@ The migration command prints a warning when the values conflict.
 Migration changes only persistent TOML accounts. It does not migrate an
 account supplied solely through environment variables.
 
-## `send_email` reports that SMTP is unavailable
+## `send_email` or `forward_email` reports that SMTP is unavailable
 
-`send_email` is always advertised in the static MCP catalog. If sending fails
-for one account, confirm that the selected account is enabled and has a complete
+`send_email` and `forward_email` are always advertised in the static MCP
+catalog, and both fail their SMTP capability check for an account without an
+outgoing endpoint — a forward is refused before its source message is even
+read. If sending fails for one account, confirm that the selected account is enabled and has a complete
 SMTP endpoint and active outgoing credential. In managed mode, inspect it with
 `account show`; disable it before changing or removing credentials, then
 re-enable it with the latest revision. Run `account test ACCOUNT outgoing` to

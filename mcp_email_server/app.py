@@ -20,6 +20,7 @@ from mcp_email_server.application.mutations import (
     BatchMutationOutcome,
     DeleteCommand,
     FlagOperation,
+    ForwardCommand,
     MarkReadCommand,
     MoveCommand,
     MutableEmailFlag,
@@ -68,6 +69,10 @@ async def list_email_metadata(query: ListEmailMetadataQuery) -> EmailMetadataPag
 
 async def send_email_command(command: SendCommand) -> SendMutationOutcome:
     return await get_application_runtime().mutations.send.execute(command)
+
+
+async def forward_email_command(command: ForwardCommand) -> SendMutationOutcome:
+    return await get_application_runtime().mutations.forward.execute(command)
 
 
 async def save_to_mailbox_command(command: SaveToMailboxCommand) -> AppendMutationOutcome:
@@ -169,6 +174,15 @@ def _tagged_batch_result(outcome: BatchMutationOutcome) -> str:
     return "; ".join(sections)
 
 
+def _send_outcome_is_clean(outcome: SendMutationOutcome) -> bool:
+    """One owner for "every effect succeeded" so send and forward cannot drift."""
+    return (
+        all(item.status == "succeeded" for item in outcome.delivery)
+        and outcome.sent_copy.status in ("succeeded", "skipped")
+        and not outcome.reconciliation_needed
+    )
+
+
 def _tagged_send_result(outcome: SendMutationOutcome) -> str:
     sections = _ordered_target_sections(
         outcome.delivery,
@@ -252,8 +266,9 @@ async def get_account(account_name: str) -> AvailableAccount | None:
 @mcp.tool(
     description=(
         "List configured accounts as stable non-secret capability records. Use only accounts with "
-        "can_receive=true for mail reads and can_send=true for send_email. If the result is empty, ask the "
-        "user to run `mcp-email-server ui` or the user-operated CLI; never ask for credentials in chat."
+        "can_receive=true for mail reads and can_send=true for send_email and forward_email. If the result is "
+        "empty, ask the user to run `mcp-email-server ui` or the user-operated CLI; never ask for credentials "
+        "in chat."
     ),
     annotations=_READ_ONLY_LOCAL,
 )
@@ -450,8 +465,9 @@ async def get_emails_content(
 
 @mcp.tool(
     description=(
-        "List the configured recipient allowlist — the addresses that send_email is permitted to "
-        "send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted."
+        "List the configured recipient allowlist — the addresses that send_email and forward_email are "
+        "permitted to send to and save_to_mailbox is permitted to address. Returns an empty list when "
+        "unrestricted."
     ),
     annotations=_READ_ONLY_LOCAL,
 )
@@ -463,7 +479,8 @@ async def list_allowed_recipients() -> PolicyDiscoveryResult:
     description=(
         "List the configured inbound sender allowlist — the address patterns whose mail the server "
         "will read or act on. When configured, only these senders' mail is visible to the read tools "
-        "(list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation "
+        "(list_emails_metadata, get_emails_content, download_attachment, and forward_email's source read) "
+        "and eligible for the mutation "
         "tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an "
         "empty list "
         "when unrestricted."
@@ -567,15 +584,91 @@ async def send_email(
         )
     except RecipientPolicyDeniedError as exc:
         raise ValueError("Recipient(s) not in allowlist") from exc
-    if (
-        all(item.status == "succeeded" for item in outcome.delivery)
-        and outcome.sent_copy.status in ("succeeded", "skipped")
-        and not outcome.reconciliation_needed
-    ):
+    if _send_outcome_is_clean(outcome):
         recipient_str = ", ".join(recipients)
         attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
         return f"Email sent successfully to {recipient_str}{attachment_info}"
     return f"Email delivery [{_tagged_send_result(outcome)}]"
+
+
+@mcp.tool(
+    description=(
+        "Forward an existing message to new recipients using the specified account. The source message is read "
+        "over IMAP first: if it cannot be read, the call fails before any SMTP session is opened, so a forward is "
+        "never delivered without the content it was supposed to carry. The subject is derived from the source as "
+        "'Fwd: <original subject>' without stacking a second prefix, the caller's note is placed above a "
+        "plain-text forwarded block re-composed from the source's parsed text body, and the source's attachments "
+        "are re-attached with their original MIME types unless include_attachments is false. Partial or ambiguous "
+        "SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent "
+        "Sent-copy outcome separately; ambiguous effects are not retried automatically."
+    ),
+    annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
+)
+async def forward_email(
+    account_name: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.account_name_bytes,
+            description="The name of the email account to forward from.",
+        ),
+    ],
+    email_id: Annotated[UidInput, Field(description="UID of the source message to forward.")],
+    recipients: Annotated[
+        list[AddressInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.recipients,
+            description="A list of addresses that receive the forwarded message.",
+        ),
+    ],
+    source_mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox that contains the source message.",
+        ),
+    ] = "INBOX",
+    body: Annotated[
+        str,
+        Field(
+            default="",
+            max_length=APPLICATION_LIMITS.body_bytes,
+            description="An optional note placed above the forwarded content.",
+        ),
+    ] = "",
+    cc: Annotated[
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of CC email addresses."),
+    ] = None,
+    bcc: Annotated[
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of BCC email addresses."),
+    ] = None,
+    include_attachments: Annotated[
+        bool,
+        Field(default=True, description="Whether to re-attach the source message's attachments."),
+    ] = True,
+) -> str:
+    try:
+        outcome = await forward_email_command(
+            ForwardCommand(
+                account_name=account_name,
+                recipients=tuple(recipients),
+                subject="",
+                body=body,
+                cc=tuple(cc or ()),
+                bcc=tuple(bcc or ()),
+                source_email_id=email_id,
+                source_mailbox=source_mailbox,
+                include_attachments=include_attachments,
+            )
+        )
+    except RecipientPolicyDeniedError as exc:
+        raise ValueError("Recipient(s) not in allowlist") from exc
+    if _send_outcome_is_clean(outcome):
+        return f"Email forwarded successfully to {', '.join(recipients)}"
+    return f"Email forward [{_tagged_send_result(outcome)}]"
 
 
 @mcp.tool(

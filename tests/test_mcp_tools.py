@@ -11,6 +11,7 @@ from mcp_email_server.app import (
     archive_emails,
     delete_emails,
     download_attachment,
+    forward_email,
     get_emails_content,
     list_allowed_recipients,
     list_allowed_senders,
@@ -410,6 +411,17 @@ class TestMcpTools:
         assert send["attachments"]["anyOf"][0]["items"]["maxLength"] == APPLICATION_LIMITS.attachment_path_bytes
         assert send["subject"]["maxLength"] == APPLICATION_LIMITS.subject_bytes
         assert send["body"]["maxLength"] == APPLICATION_LIMITS.body_bytes
+        forward = tools["forward_email"]
+        assert forward["email_id"]["maxLength"] == len(str(APPLICATION_LIMITS.maximum_imap_uid))
+        assert forward["recipients"]["maxItems"] == APPLICATION_LIMITS.recipients
+        assert forward["recipients"]["items"]["maxLength"] == APPLICATION_LIMITS.address_bytes
+        for addresses in ("cc", "bcc"):
+            assert forward[addresses]["anyOf"][0]["maxItems"] == APPLICATION_LIMITS.recipients
+            assert forward[addresses]["anyOf"][0]["items"]["maxLength"] == APPLICATION_LIMITS.address_bytes
+        assert forward["source_mailbox"]["maxLength"] == APPLICATION_LIMITS.mailbox_bytes
+        assert forward["body"]["maxLength"] == APPLICATION_LIMITS.body_bytes
+        # The subject is derived from the source message, so the tool exposes no subject input.
+        assert "subject" not in forward
         flags = tools["save_to_mailbox"]["flags"]["anyOf"][0]
         assert flags["maxItems"] == APPLICATION_LIMITS.flags
         assert flags["items"]["maxLength"] == APPLICATION_LIMITS.flag_bytes
@@ -990,6 +1002,131 @@ async def test_send_tool_reports_safe_transport_rejection(detail: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_forward_tool_dispatches_source_selection_and_reports_success() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (
+                TargetMutationOutcome("recipient@example.test", "succeeded"),
+                TargetMutationOutcome("cc@example.test", "succeeded"),
+            ),
+            SentCopyMutationOutcome("succeeded", "Sent", "append"),
+        )
+    )
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        result = await forward_email(
+            account_name="test_account",
+            email_id="12345",
+            recipients=["recipient@example.test"],
+            source_mailbox="Archive",
+            body="please review",
+            cc=["cc@example.test"],
+            include_attachments=False,
+        )
+
+    assert result == "Email forwarded successfully to recipient@example.test"
+    command = command_handler.await_args.args[0]
+    assert command.account_name == "test_account"
+    assert command.source_email_id == "12345"
+    assert command.source_mailbox == "Archive"
+    assert command.recipients == ("recipient@example.test",)
+    assert command.cc == ("cc@example.test",)
+    assert command.bcc == ()
+    assert command.body == "please review"
+    assert command.include_attachments is False
+    # The forwarded subject is derived from the source message by the application layer.
+    assert command.subject == ""
+
+
+@pytest.mark.asyncio
+async def test_forward_tool_defaults_to_inbox_with_no_note_and_attachments_retained() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        await forward_email("test_account", "12345", ["recipient@example.test"])
+
+    command = command_handler.await_args.args[0]
+    assert command.source_mailbox == "INBOX"
+    assert command.body == ""
+    assert command.include_attachments is True
+
+
+@pytest.mark.asyncio
+async def test_forward_tool_reports_partial_delivery_and_sent_copy_separately() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (
+                TargetMutationOutcome("first@example.test", "succeeded"),
+                TargetMutationOutcome("second@example.test", "failed", "smtp-recipient-rejected"),
+                TargetMutationOutcome("third@example.test", "unknown", "provider-timeout"),
+            ),
+            SentCopyMutationOutcome("failed", "Sent", "append"),
+        )
+    )
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        result = await forward_email(
+            "test_account",
+            "12345",
+            ["first@example.test", "second@example.test", "third@example.test"],
+        )
+
+    assert result == (
+        "Email forward [succeeded: first@example.test; failed: second@example.test (smtp-recipient-rejected); "
+        "unknown: third@example.test (provider-timeout); sent-copy: failed (Sent); "
+        "warning: reconciliation needed]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_forward_tool_maps_application_recipient_denial() -> None:
+    command_handler = AsyncMock(side_effect=RecipientPolicyDeniedError("recipient denied"))
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        with pytest.raises(ValueError, match="Recipient\\(s\\) not in allowlist"):
+            await forward_email("test_account", "12345", ["mallory@evil.test"])
+
+
+@pytest.mark.asyncio
+async def test_forward_tool_does_not_expose_unrecognized_provider_detail() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "failed", "private provider response"),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        result = await forward_email("test_account", "12345", ["recipient@example.test"])
+
+    assert result == "Email forward [failed: recipient@example.test; sent-copy: skipped]"
+    assert "private provider response" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", [send_email, forward_email])
+async def test_send_tools_surface_the_8bitmime_rejection_cause(tool) -> None:
+    """A forwarded 8-bit part refused before MAIL must not read as a causeless failure."""
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "failed", "smtp-8bitmime-required"),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    arguments = (
+        ("test_account", ["recipient@example.test"], "Subject", "body")
+        if tool is send_email
+        else ("test_account", "12345", ["recipient@example.test"])
+    )
+    command_name = "send_email_command" if tool is send_email else "forward_email_command"
+    with patch(f"mcp_email_server.app.{command_name}", command_handler):
+        result = await tool(*arguments)
+
+    assert "(smtp-8bitmime-required)" in result
+    assert result.endswith("failed: recipient@example.test (smtp-8bitmime-required); sent-copy: skipped]")
+
+
+@pytest.mark.asyncio
 async def test_send_tool_does_not_expose_unrecognized_provider_detail() -> None:
     command_handler = AsyncMock(
         return_value=SendMutationOutcome(
@@ -1123,6 +1260,13 @@ async def test_tool_annotations_expose_agent_safety_and_retry_hints() -> None:
     }
     assert tools["send_email"].annotations is not None
     assert tools["send_email"].annotations.model_dump(exclude_none=True) == {
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+    assert tools["forward_email"].annotations is not None
+    assert tools["forward_email"].annotations.model_dump(exclude_none=True) == {
         "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": False,

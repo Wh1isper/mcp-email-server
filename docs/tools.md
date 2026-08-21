@@ -43,8 +43,8 @@ capability records. Each record contains `account_name`, `account_type`,
 descriptions are limited to 4 KiB of UTF-8 data and expose the same structural
 bound in the output schema. In managed mode, disabled accounts are omitted before any credential lookup or provider
 access. Use only an account with `can_receive=true` for mail reads and
-`can_send=true` for `send_email`. Text content, structured content, and the output
-schema describe the same fields.
+`can_send=true` for `send_email` and `forward_email`. Text content, structured
+content, and the output schema describe the same fields.
 
 If the result is empty, account setup is unavailable over MCP. The agent should
 ask the user to run `mcp-email-server ui` or the documented interactive CLI in
@@ -75,16 +75,16 @@ Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 | `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders` | yes       | no          | yes        | no         |
 | `list_emails_metadata`, `list_mailboxes`                                     | yes       | no          | yes        | yes        |
 | `get_emails_content`                                                         | no        | no          | yes        | yes        |
-| `send_email`, `save_to_mailbox`                                              | no        | no          | no         | yes        |
+| `send_email`, `forward_email`, `save_to_mailbox`                             | no        | no          | no         | yes        |
 | `set_email_flags`, `mark_emails_as_read`                                     | no        | no          | yes        | yes        |
 | `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`      | no        | yes         | no         | yes        |
 
 `get_emails_content` is conservatively non-read-only because
 `mark_as_read=true` changes remote flags. Download is destructive because the
-caller-selected destination may be replaced. Send and append create externally
-meaningful effects but do not delete or replace an existing mailbox item, so
-their destructive hint is false while their read-only and idempotent hints are
-also false.
+caller-selected destination may be replaced. Send, forward, and append create
+externally meaningful effects but do not delete or replace an existing mailbox
+item, so their destructive hint is false while their read-only and idempotent
+hints are also false.
 
 Annotations are advisory host/agent planning hints, not authorization or a
 safe-retry guarantee. Tool descriptions, current policy, typed outcomes, and the
@@ -324,6 +324,88 @@ SELECT/APPEND with `utf8-append-unsupported`. A known APPEND success without
 `APPENDUID` returns `email_id: unknown`. A lost APPEND result is instead tagged
 `unknown`; the server does not replay it because that could create a duplicate
 draft.
+
+### `forward_email`
+
+Forwards an existing message to new recipients through the selected account's
+SMTP server. The server reads the source message over IMAP, composes a new
+message below an optional note from the caller, and re-attaches the original's
+attachments.
+
+| Parameter             | Default  | Description                                   |
+| --------------------- | -------- | --------------------------------------------- |
+| `account_name`        | Required | Configured account identifier.                |
+| `email_id`            | Required | UID of the source message to forward.         |
+| `recipients`          | Required | Addresses that receive the forwarded message. |
+| `source_mailbox`      | `INBOX`  | Mailbox that contains the source message.     |
+| `body`                | `""`     | Note placed above the forwarded content.      |
+| `cc`                  | None     | Additional CC recipients of the forward.      |
+| `bcc`                 | None     | Additional BCC recipients of the forward.     |
+| `include_attachments` | `true`   | Re-attach the source message's attachments.   |
+
+The subject is derived from the source message as `Fwd: <original subject>`. A
+source subject that already begins with `Fwd:` in any letter case is not
+prefixed a second time.
+
+The forwarded content is appended below the caller's note as a plain-text
+`Forwarded message` block reporting the original's From, Recipients, Date, and
+Subject. That block reports `Recipients:` rather than `To:` because the parsed
+recipient list folds in Cc entries.
+
+The block is re-composed from the parsed plain-text body, so the original's HTML
+formatting is not preserved in the quoted text. The forwarded content is never
+silently truncated: the composed body, including any note you supply, is bounded
+at 1 MiB and an oversized forward is rejected outright. Forward a message when
+the recipient needs its attachments and substance; when byte-exact rendering
+matters, save the parts with `download_attachment` and compose the message
+explicitly with `send_email`.
+
+Attachments carried into the forward keep the source part's MIME main type,
+subtype, and parameters instead of being coerced into `application/*`. Set
+`include_attachments=false` to forward only the text.
+
+Re-attached parts are bounded by the shared application limits: at most 20
+retained parts, 25 MiB per part, and 50 MiB in total, each measured on the
+serialized form the SMTP transaction actually carries. A source with more
+retained parts than the limit is rejected after the read; forward its text with
+`include_attachments=false` instead. Only parts the server classifies as
+attachments are re-attached — an inline part with no filename and no attachment
+disposition (for example a `Content-ID` image referenced by an HTML body) is
+not carried, matching what the metadata and content tools report as
+attachments. The quoting block reports the source's own Date header and omits
+the line entirely when the source has none.
+
+The tool is always present in the stable MCP catalog. The selected
+`account_name` must itself be enabled and send-capable; an IMAP-only account is
+rejected before the source message is read over IMAP and before any SMTP
+access, so a non-send-capable account never downloads or parses the source.
+
+The delivered forward passes through the same
+[SMTP transport classification](#send_email) as any send. A re-attached source
+part correctly labeled with an `8bit` transfer encoding rides `BODY=8BITMIME`
+when the provider advertises it (the composed container is labeled `8bit` to
+keep the message well formed) and fails with `smtp-8bitmime-required` when it
+does not; mislabeled or binary source parts fail with the shared
+`smtp-mime-transport-invalid` and `smtp-binarymime-unsupported` diagnostics
+before `MAIL FROM`.
+
+A forward performs three independent provider effects: the IMAP read of the
+source message, SMTP delivery, and the IMAP Sent copy. Current account authority
+and policy are revalidated before each one. If the source message cannot be
+read, the call fails before any SMTP session is opened, so a forward is never
+delivered without the content and attachments it was supposed to carry. Delivery
+and sent-copy outcomes are reported separately under the same rules as
+`send_email`, and an ambiguous SMTP outcome is reported `unknown` and is never
+replayed automatically.
+
+Reading the source message is a mail read. When a sender allowlist is
+configured, a message from a blocked sender is indistinguishable from a missing
+message, so the forward fails without revealing that the message exists. The
+recipient allowlist applies to the forward's To, CC, and BCC addresses exactly
+as it does for `send_email`.
+
+For a worked example, see
+[Forward a message with its attachments](guides.md#forward-a-message-with-its-attachments).
 
 ## Mailbox and mutation tools
 

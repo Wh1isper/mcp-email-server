@@ -2,7 +2,7 @@
     "tools": [
         {
             "name": "list_available_accounts",
-            "description": "List configured accounts as stable non-secret capability records. Use only accounts with can_receive=true for mail reads and can_send=true for send_email. If the result is empty, ask the user to run `mcp-email-server ui` or the user-operated CLI; never ask for credentials in chat.",
+            "description": "List configured accounts as stable non-secret capability records. Use only accounts with can_receive=true for mail reads and can_send=true for send_email and forward_email. If the result is empty, ask the user to run `mcp-email-server ui` or the user-operated CLI; never ask for credentials in chat.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_available_accountsArguments",
@@ -676,7 +676,7 @@
         },
         {
             "name": "list_allowed_recipients",
-            "description": "List the configured recipient allowlist — the addresses that send_email is permitted to send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted.",
+            "description": "List the configured recipient allowlist — the addresses that send_email and forward_email are permitted to send to and save_to_mailbox is permitted to address. Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_recipientsArguments",
@@ -706,7 +706,7 @@
         },
         {
             "name": "list_allowed_senders",
-            "description": "List the configured inbound sender allowlist — the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment) and eligible for the mutation tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an empty list when unrestricted.",
+            "description": "List the configured inbound sender allowlist — the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment, and forward_email's source read) and eligible for the mutation tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_sendersArguments",
@@ -884,6 +884,114 @@
                 },
                 "required": ["result"],
                 "title": "send_emailOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        },
+        {
+            "name": "forward_email",
+            "description": "Forward an existing message to new recipients using the specified account. The source message is read over IMAP first: if it cannot be read, the call fails before any SMTP session is opened, so a forward is never delivered without the content it was supposed to carry. The subject is derived from the source as 'Fwd: <original subject>' without stacking a second prefix, the caller's note is placed above a plain-text forwarded block re-composed from the source's parsed text body, and the source's attachments are re-attached with their original MIME types unless include_attachments is false. Partial or ambiguous SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy outcome separately; ambiguous effects are not retried automatically.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account to forward from.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_id": {
+                        "description": "UID of the source message to forward.",
+                        "maxLength": 10,
+                        "pattern": "^[1-9][0-9]*$",
+                        "title": "Email Id",
+                        "type": "string"
+                    },
+                    "recipients": {
+                        "description": "A list of addresses that receive the forwarded message.",
+                        "items": {
+                            "maxLength": 1024,
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Recipients",
+                        "type": "array"
+                    },
+                    "source_mailbox": {
+                        "default": "INBOX",
+                        "description": "The mailbox that contains the source message.",
+                        "maxLength": 1024,
+                        "title": "Source Mailbox",
+                        "type": "string"
+                    },
+                    "body": {
+                        "default": "",
+                        "description": "An optional note placed above the forwarded content.",
+                        "maxLength": 1048576,
+                        "title": "Body",
+                        "type": "string"
+                    },
+                    "cc": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of CC email addresses.",
+                        "title": "Cc"
+                    },
+                    "bcc": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of BCC email addresses.",
+                        "title": "Bcc"
+                    },
+                    "include_attachments": {
+                        "default": true,
+                        "description": "Whether to re-attach the source message's attachments.",
+                        "title": "Include Attachments",
+                        "type": "boolean"
+                    }
+                },
+                "required": ["account_name", "email_id", "recipients"],
+                "title": "forward_emailArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "forward_emailOutput",
                 "type": "object"
             },
             "annotations": {

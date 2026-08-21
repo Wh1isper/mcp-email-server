@@ -580,8 +580,12 @@ or an otherwise isolated network.
 ## IMAP-only accounts
 
 SMTP configuration is optional. The MCP tool catalog is static, so `send_email`
-is still advertised when every account omits SMTP; a call for an IMAP-only
-account fails its capability check before SMTP access.
+and `forward_email` are still advertised when every account omits SMTP; a call
+for an IMAP-only account fails its capability check before SMTP access.
+
+`forward_email` is a send even though it begins by reading a message over IMAP,
+so it also requires SMTP and cannot be used with an IMAP-only account. Its
+source read is attempted only after that capability check.
 
 IMAP-only does not mean read-only. These tools can still change mailbox state:
 

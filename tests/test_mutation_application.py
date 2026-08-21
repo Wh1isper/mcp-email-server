@@ -18,6 +18,9 @@ from mcp_email_server.application.mutations import (
     DeleteCommand,
     DeliveryMutationOutcome,
     FlagOperation,
+    ForwardCommand,
+    ForwardSource,
+    ForwardSourcePart,
     MarkReadCommand,
     MoveCommand,
     MutableEmailFlag,
@@ -26,6 +29,7 @@ from mcp_email_server.application.mutations import (
     MutationProviderAccess,
     MutationProviderError,
     MutationServices,
+    RecipientPolicyDeniedError,
     SaveToMailboxCommand,
     SendCommand,
     SendMutationOutcome,
@@ -43,6 +47,7 @@ def _account(**changes: object) -> MutationAccountSnapshot:
         allowed_senders=(),
         allowed_recipients=(),
         report_blocked_mutations=False,
+        can_send=True,
     )
     return replace(account, **changes)
 
@@ -682,3 +687,497 @@ async def test_sent_copy_timeout_preserves_delivery_and_is_unknown(monkeypatch) 
     assert result.reconciliation_needed is True
     provider.send.assert_awaited_once()
     provider.save_sent_copy.assert_awaited_once()
+
+
+def _forward_source(**changes: object) -> ForwardSource:
+    source = ForwardSource(
+        subject="Quarterly report",
+        body_text="---------- Forwarded message ----------\nFrom: author@example.test\n\noriginal body",
+        parts=(),
+    )
+    return replace(source, **changes)
+
+
+def _part(byte_size: int) -> ForwardSourcePart:
+    return ForwardSourcePart(byte_size=byte_size, raw_part=object())
+
+
+def _forward_command(**changes: object) -> ForwardCommand:
+    command = ForwardCommand(
+        account_name="primary",
+        recipients=("recipient@example.test",),
+        subject="",
+        body="",
+        source_email_id="42",
+    )
+    return replace(command, **changes)
+
+
+def _forward_provider(
+    *,
+    source: ForwardSource | None = None,
+    delivery: DeliveryMutationOutcome | None = None,
+    sent_copy: SentCopyMutationOutcome | None = None,
+) -> MagicMock:
+    provider = MagicMock()
+    provider.fetch_forward_source = AsyncMock(return_value=source if source is not None else _forward_source())
+    provider.forward = AsyncMock(
+        return_value=delivery
+        if delivery is not None
+        else DeliveryMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            object(),
+        )
+    )
+    provider.save_sent_copy = AsyncMock(
+        return_value=sent_copy if sent_copy is not None else SentCopyMutationOutcome("succeeded", "Sent")
+    )
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_forward_reopens_authority_between_retrieval_delivery_and_sent_copy() -> None:
+    provider = _forward_provider()
+    services, _, factory, projection = _services(provider=provider)
+
+    result = await services.forward.execute(_forward_command(body="please review"))
+
+    assert result.recipients("succeeded") == ["recipient@example.test"]
+    assert result.sent_copy.status == "succeeded"
+    assert result.reconciliation_needed is False
+    assert factory.open.call_count == 3
+    assert [call.kwargs["purpose"] for call in factory.open.call_args_list] == [
+        "incoming",
+        "outgoing",
+        "sent-copy",
+    ]
+    projection.invalidate.assert_awaited_once_with(("Sent",))
+
+
+@pytest.mark.asyncio
+async def test_forward_derives_subject_and_body_from_provider_source() -> None:
+    source = _forward_source()
+    provider = _forward_provider(source=source)
+    services, _, _, _ = _services(provider=provider)
+
+    await services.forward.execute(_forward_command(body="please review"))
+
+    provider.fetch_forward_source.assert_awaited_once()
+    assert provider.fetch_forward_source.await_args.args[0].source_email_id == "42"
+    forwarded = provider.forward.await_args.args[0]
+    assert forwarded.subject == "Fwd: Quarterly report"
+    assert forwarded.body == f"please review\n\n{source.body_text}"
+    assert forwarded.source_email_id == "42"
+    assert forwarded.source_mailbox == "INBOX"
+    # The unmodified provider evidence travels alongside the derived command.
+    assert provider.forward.await_args.args[1] is source
+
+
+@pytest.mark.asyncio
+async def test_forward_body_is_the_provider_block_when_no_note_is_supplied() -> None:
+    source = _forward_source()
+    provider = _forward_provider(source=source)
+    services, _, _, _ = _services(provider=provider)
+
+    await services.forward.execute(_forward_command())
+
+    assert provider.forward.await_args.args[0].body == source.body_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("original_subject", "expected"),
+    [
+        ("Quarterly report", "Fwd: Quarterly report"),
+        ("Fwd: Quarterly report", "Fwd: Quarterly report"),
+        ("fwd: quarterly report", "fwd: quarterly report"),
+        ("FWD: Quarterly report", "FWD: Quarterly report"),
+        ("FwD:Quarterly report", "FwD:Quarterly report"),
+        ("Re: Quarterly report", "Fwd: Re: Quarterly report"),
+        ("", "Fwd: "),
+    ],
+)
+async def test_forward_subject_is_never_double_prefixed(original_subject: str, expected: str) -> None:
+    provider = _forward_provider(source=_forward_source(subject=original_subject))
+    services, _, _, _ = _services(provider=provider)
+
+    await services.forward.execute(_forward_command())
+
+    assert provider.forward.await_args.args[0].subject == expected
+
+
+@pytest.mark.asyncio
+async def test_forward_source_failure_aborts_before_any_delivery() -> None:
+    provider = _forward_provider()
+    provider.fetch_forward_source = AsyncMock(side_effect=MutationProviderError("provider_failure: fetch failed"))
+    services, _, factory, projection = _services(provider=provider)
+
+    with pytest.raises(MutationProviderError, match="fetch failed"):
+        await services.forward.execute(_forward_command())
+
+    provider.forward.assert_not_awaited()
+    provider.save_sent_copy.assert_not_awaited()
+    assert factory.open.call_count == 1
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_source_not_found_aborts_before_any_delivery() -> None:
+    provider = _forward_provider()
+    provider.fetch_forward_source = AsyncMock(side_effect=ValueError("Email 42 not found in INBOX"))
+    services, _, _, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match="not found"):
+        await services.forward.execute(_forward_command())
+
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_source_timeout_raises_instead_of_producing_an_outcome(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    provider = _forward_provider()
+    provider.fetch_forward_source = AsyncMock(side_effect=_hang_provider)
+    services, _, _, projection = _services(provider=provider)
+
+    with pytest.raises(MutationProviderError, match="forward source retrieval timed out"):
+        await services.forward.execute(_forward_command())
+
+    provider.forward.assert_not_awaited()
+    provider.save_sent_copy.assert_not_awaited()
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parts", "message"),
+    [
+        (
+            tuple(_part(1) for index in range(APPLICATION_LIMITS.attachments + 1)),
+            "at most",
+        ),
+        ((_part(APPLICATION_LIMITS.attachment_bytes + 1),), "a forwarded part exceeds"),
+        (
+            (
+                _part(APPLICATION_LIMITS.attachment_bytes),
+                _part(APPLICATION_LIMITS.attachment_bytes),
+                _part(1),
+            ),
+            "bytes in total",
+        ),
+        ((_part(-1),), "non-negative integer"),
+    ],
+)
+async def test_forward_rejects_out_of_bound_parts_before_any_delivery(
+    parts: tuple[ForwardSourcePart, ...],
+    message: str,
+) -> None:
+    provider = _forward_provider(source=_forward_source(parts=parts))
+    services, _, factory, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match=message):
+        await services.forward.execute(_forward_command())
+
+    provider.forward.assert_not_awaited()
+    assert factory.open.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_forward_accepts_parts_at_the_aggregate_boundary() -> None:
+    parts = (
+        _part(APPLICATION_LIMITS.attachment_bytes),
+        _part(APPLICATION_LIMITS.total_attachment_bytes - APPLICATION_LIMITS.attachment_bytes),
+    )
+    provider = _forward_provider(source=_forward_source(parts=parts))
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.forward.execute(_forward_command())
+
+    assert result.recipients("succeeded") == ["recipient@example.test"]
+    provider.forward.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_changes", "message"),
+    [
+        ({"subject": "Quarterly\r\nBcc: other@example.test"}, "control characters"),
+        ({"subject": "é" * (APPLICATION_LIMITS.subject_bytes // 2)}, "exceeds"),
+        ({"body_text": "a" * (APPLICATION_LIMITS.body_bytes + 1)}, "body exceeds"),
+    ],
+)
+async def test_forward_rejects_out_of_bound_derived_content_before_any_delivery(
+    source_changes: dict[str, object],
+    message: str,
+) -> None:
+    provider = _forward_provider(source=_forward_source(**source_changes))
+    services, _, _, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match=message):
+        await services.forward.execute(_forward_command())
+
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_note_pushing_body_over_the_limit_fails_before_any_delivery() -> None:
+    # The source alone is within the ceiling; only the derived note + block exceeds it.
+    provider = _forward_provider(source=_forward_source(body_text="a" * APPLICATION_LIMITS.body_bytes))
+    services, _, _, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match="body exceeds"):
+        await services.forward.execute(_forward_command(body="note"))
+
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_rejects_invalid_source_uid_before_provider_access() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match="canonical positive decimal IMAP UID"):
+        await services.forward.execute(_forward_command(source_email_id="0"))
+
+    factory.open.assert_not_called()
+    provider.fetch_forward_source.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_rejects_source_mailbox_control_characters_before_provider_access() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match="control characters"):
+        await services.forward.execute(_forward_command(source_mailbox="INBOX\r\nEXPUNGE"))
+
+    factory.open.assert_not_called()
+    provider.fetch_forward_source.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_recipient_policy_denial_fails_before_provider_access() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(
+        account=_account(allowed_recipients=("allowed@example.test",)),
+        provider=provider,
+    )
+
+    with pytest.raises(RecipientPolicyDeniedError):
+        await services.forward.execute(_forward_command(recipients=("blocked@example.test",)))
+
+    factory.open.assert_not_called()
+    provider.fetch_forward_source.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_recipient_policy_denial_after_open_fails_before_retrieval() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+    factory.open.return_value = MutationProviderAccess(
+        _account(allowed_recipients=("allowed@example.test",)),
+        provider,
+    )
+
+    with pytest.raises(RecipientPolicyDeniedError):
+        await services.forward.execute(_forward_command(recipients=("blocked@example.test",)))
+
+    assert factory.open.call_count == 1
+    provider.fetch_forward_source.assert_not_awaited()
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"subject": "URGENT: contract"}, "forward subject is derived"),
+        ({"html": True}, "composed as plain text"),
+        ({"attachments": ("extra.pdf",)}, "does not accept caller attachments"),
+    ],
+)
+def test_forward_command_rejects_unsupported_compose_input(changes: dict[str, object], message: str) -> None:
+    """Locked fields fail loudly instead of being silently overwritten or mishandled."""
+    with pytest.raises(ValueError, match=message):
+        _forward_command(**changes).validate()
+
+
+@pytest.mark.asyncio
+async def test_send_incapable_account_is_rejected_before_the_outgoing_open() -> None:
+    provider = MagicMock()
+    provider.send = AsyncMock()
+    services, _, factory, _ = _services(account=_account(can_send=False), provider=provider)
+
+    with pytest.raises(MutationProviderError, match="SMTP is not configured"):
+        await services.send.execute(SendCommand("primary", ("a@example.test",), "s", "b"))
+
+    factory.open.assert_not_called()
+    provider.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_send_capability_loss_on_the_outgoing_open_fails_before_delivery() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+    factory.open.side_effect = [
+        factory.open.return_value,
+        MutationProviderAccess(_account(can_send=False), provider),
+    ]
+
+    with pytest.raises(MutationProviderError, match="SMTP is not configured"):
+        await services.forward.execute(_forward_command())
+
+    provider.fetch_forward_source.assert_awaited_once()
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_send_incapable_account_performs_no_provider_access() -> None:
+    # An IMAP-only account must be refused before the source message is logged
+    # into, downloaded, or parsed — not after a full source read.
+    provider = _forward_provider()
+    services, _, factory, _ = _services(account=_account(can_send=False), provider=provider)
+
+    with pytest.raises(MutationProviderError, match="SMTP is not configured"):
+        await services.forward.execute(_forward_command())
+
+    factory.open.assert_not_called()
+    provider.fetch_forward_source.assert_not_awaited()
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_send_capability_loss_after_open_fails_before_retrieval() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+    factory.open.return_value = MutationProviderAccess(_account(can_send=False), provider)
+
+    with pytest.raises(MutationProviderError, match="SMTP is not configured"):
+        await services.forward.execute(_forward_command())
+
+    assert factory.open.call_count == 1
+    provider.fetch_forward_source.assert_not_awaited()
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_recipient_policy_denial_before_delivery_fails_after_retrieval() -> None:
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+    factory.open.side_effect = [
+        factory.open.return_value,
+        MutationProviderAccess(_account(allowed_recipients=("allowed@example.test",)), provider),
+    ]
+
+    with pytest.raises(RecipientPolicyDeniedError):
+        await services.forward.execute(_forward_command(recipients=("blocked@example.test",)))
+
+    provider.fetch_forward_source.assert_awaited_once()
+    provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_delivery_timeout_is_unknown_and_never_replayed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    provider = _forward_provider()
+    provider.forward = AsyncMock(side_effect=_hang_provider)
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.forward.execute(
+        _forward_command(recipients=("recipient@example.test",), cc=("copied@example.test",))
+    )
+
+    assert result.recipients("unknown") == ["recipient@example.test", "copied@example.test"]
+    assert result.sent_copy.status == "skipped"
+    assert result.reconciliation_needed is True
+    provider.forward.assert_awaited_once()
+    provider.save_sent_copy.assert_not_awaited()
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_preserves_partial_delivery_and_skips_sent_copy_without_evidence() -> None:
+    provider = _forward_provider(
+        delivery=DeliveryMutationOutcome(
+            (
+                TargetMutationOutcome("accepted@example.test", "succeeded"),
+                TargetMutationOutcome("rejected@example.test", "failed", "smtp-recipient-rejected"),
+            ),
+            None,
+        )
+    )
+    services, _, factory, _ = _services(provider=provider)
+
+    result = await services.forward.execute(
+        _forward_command(recipients=("accepted@example.test", "rejected@example.test"))
+    )
+
+    assert result.recipients("succeeded") == ["accepted@example.test"]
+    assert result.recipients("failed") == ["rejected@example.test"]
+    assert result.sent_copy.status == "skipped"
+    assert result.reconciliation_needed is False
+    provider.save_sent_copy.assert_not_awaited()
+    assert factory.open.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_forward_sent_copy_failure_does_not_downgrade_delivery() -> None:
+    provider = _forward_provider()
+    provider.save_sent_copy = AsyncMock(side_effect=MutationProviderError("provider_failure: append failed"))
+    services, _, _, projection = _services(provider=provider)
+
+    result = await services.forward.execute(_forward_command())
+
+    assert result.recipients("succeeded") == ["recipient@example.test"]
+    assert result.sent_copy.status == "failed"
+    assert result.sent_copy.detail == "sent-copy-unavailable"
+    assert result.reconciliation_needed is False
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_sent_copy_timeout_preserves_delivery_and_is_unknown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    provider = _forward_provider()
+    provider.save_sent_copy = AsyncMock(side_effect=_hang_provider)
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.forward.execute(_forward_command())
+
+    assert result.recipients("succeeded") == ["recipient@example.test"]
+    assert result.sent_copy.status == "unknown"
+    assert result.sent_copy.detail == "provider-timeout"
+    assert result.reconciliation_needed is True
+
+
+@pytest.mark.asyncio
+async def test_forward_sends_bcc_only_to_the_sent_copy() -> None:
+    provider = _forward_provider()
+    services, _, _, _ = _services(provider=provider)
+
+    await services.forward.execute(_forward_command(bcc=("secret@example.test",)))
+
+    provider.save_sent_copy.assert_awaited_once()
+    assert provider.save_sent_copy.await_args.args[1] == ("secret@example.test",)
+
+
+@pytest.mark.asyncio
+async def test_forward_threads_include_attachments_to_the_provider() -> None:
+    provider = _forward_provider(source=_forward_source(parts=(_part(1024),)))
+    services, _, _, _ = _services(provider=provider)
+
+    await services.forward.execute(_forward_command(include_attachments=False))
+
+    assert provider.fetch_forward_source.await_args.args[0].include_attachments is False
+    assert provider.forward.await_args.args[0].include_attachments is False

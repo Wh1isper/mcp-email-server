@@ -193,6 +193,59 @@ forbidden; operator reconciliation is required.
 Message-ID or other local identifiers can aid reconciliation but do not create
 exactly-once guarantees.
 
+### Forward
+
+Forwarding an existing message is a send workflow with one additional preceding
+provider effect. It performs three independent effects, each preceded by a fresh
+resolution of current account authority. Send capability and recipient policy
+are revalidated before the source read and again before SMTP delivery; the
+sent copy follows the pre-existing authority-change rules below, which skip it
+on lifecycle loss while never erasing reported SMTP success:
+
+1. a bounded IMAP read of the source message in the requested source mailbox;
+2. SMTP delivery of the newly composed message;
+3. the IMAP sent-copy APPEND described above.
+
+A forward is a submission: the workflow MUST reject an account without send
+capability before the source read performs any provider I/O. That precondition
+uses non-secret authority evidence (outgoing endpoint presence) so the outgoing
+secret is still resolved only by the SMTP delivery effect itself; opening the
+outgoing provider remains the enforcing boundary.
+
+The source read MUST complete successfully before an SMTP session is opened. A
+failed, denied, cancelled, or ambiguous source read aborts the workflow with no
+delivery attempt, because a forward delivered without the parts it was supposed
+to carry is silent content loss rather than partial success. The service MUST
+NOT substitute an empty or partial body for an unreadable source.
+
+The composed subject derives from the source subject with one `Fwd:` prefix and
+is not prefixed again when the source subject already carries that prefix in any
+letter case. Forwarded content is re-composed as a bounded plain-text block
+carrying the original's originator, recipient, date, and subject headers; it does
+not reproduce the source's HTML rendering, and it is bounded by the same compose
+body limits as other send input. The source body MUST be parsed with a window
+wider than the compose byte limit so that display-oriented parser truncation can
+never yield a sendable value: an over-limit source body is rejected by compose
+validation, never silently shortened. Re-attached parts preserve their source
+MIME main type, subtype, and parameters rather than being coerced into
+`application/*`; a re-attached part carrying correctly labeled raw 8-bit
+content widens the composed container's declared transfer-encoding domain to
+`8bit`, and transport acceptability is then decided by the shared SMTP DATA
+transport classification owned by the send boundary above.
+
+The source read is a mail read and is subject to the sender allowlist under the
+same privacy rule as every other read path: a blocked source is not
+distinguishable from a missing one. A source whose top-level entity is itself
+the attachment is re-attached stripped to its MIME content headers, so the
+source's envelope header block (Received chain, Message-ID, and any Bcc a Sent
+copy carries) never rides into the outgoing message. The quoting block carries
+only provenance the source itself asserts; an absent Date header is omitted,
+never fabricated. The forward's own recipients are subject to
+the recipient allowlist before any provider effect. Delivery and sent-copy
+outcomes are represented independently under the rules above; an ambiguous SMTP
+outcome is `unknown`, sets `reconciliation_needed`, and is never automatically
+replayed.
+
 ## Authority Changes Between Effects
 
 Before sent-copy, destination creation, or another independent effect, the
@@ -263,3 +316,12 @@ enter public errors.
     transfer encoding, NUL, bare line endings, and overlong DATA lines fail
     before `MAIL`, `RCPT`, or `DATA` without MIME
     rewriting or automatic replay.
+13. Forward executes source read, SMTP delivery, and sent copy as three
+    independent effects with authority revalidated before each. Tests prove that a
+    send-incapable account performs no provider I/O, that a failed, denied, or
+    allowlist-blocked source read aborts before any SMTP session opens, that a
+    source body beyond the display parse window is forwarded in full or rejected
+    as over-limit rather than silently truncated, that a root-as-attachment
+    source is re-attached without its envelope headers, that re-attached parts
+    preserve source MIME type and parameters, and that an existing `Fwd:`
+    subject prefix is not duplicated.

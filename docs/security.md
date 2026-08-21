@@ -464,7 +464,8 @@ responsibility.
 ## Recipient allowlist
 
 Sending is disabled when the allowed-recipient collection is empty. Enable and
-restrict both `send_email` and `save_to_mailbox` by adding exact addresses:
+restrict `send_email`, `forward_email`, and `save_to_mailbox` by adding exact
+addresses:
 
 ```toml
 allowed_recipients = [
@@ -513,6 +514,8 @@ The allowlist protects:
 - Metadata listing and pagination.
 - Body retrieval and optional read marking.
 - Attachment download.
+- The `forward_email` source read (a blocked source is indistinguishable from a
+  missing message, so a forward never reveals that it exists).
 - Deletion and approved flag/read-state mutations.
 - Move and archive operations.
 
