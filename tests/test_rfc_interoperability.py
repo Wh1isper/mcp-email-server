@@ -415,6 +415,24 @@ async def test_legacy_send_rejects_message_smtputf8_before_mail_when_unsupported
 
 
 @pytest.mark.asyncio
+async def test_legacy_smtputf8_send_rejects_before_mail_when_8bitmime_is_missing(rfc_email_client):
+    smtp = _smtp_with_extensions("SMTPUTF8")
+
+    with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+        with pytest.raises(SMTPNotSupported, match="8BITMIME"):
+            await rfc_email_client.send_email(
+                ["recipient@example.test"],
+                "Subject",
+                "body",
+                reply_to="回复@example.test",
+            )
+
+    smtp.mail.assert_not_awaited()
+    smtp.sendmail.assert_not_awaited()
+    smtp.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unicode_reply_to_requires_smtputf8_for_ascii_envelope(rfc_email_client):
     smtp = _smtp_with_extensions("SMTPUTF8", "8BITMIME", "SIZE")
 
@@ -438,6 +456,24 @@ async def test_unicode_reply_to_requires_smtputf8_for_ascii_envelope(rfc_email_c
     assert reply_to is not None
     assert [address.addr_spec for address in reply_to.addresses] == ["回复@example.test"]
     assert [type(defect).__name__ for defect in reply_to.defects] == ["NonASCIILocalPartDefect"]
+
+
+@pytest.mark.asyncio
+async def test_smtputf8_outcome_rejects_before_mail_when_8bitmime_is_missing(rfc_email_client):
+    smtp = _smtp_with_extensions("SMTPUTF8")
+
+    with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+        outcome = await rfc_email_client.send_email_with_outcome(
+            ["recipient@example.test"],
+            "Subject",
+            "body",
+            reply_to="回复@example.test",
+        )
+
+    assert [(item.status, item.detail) for item in outcome.outcomes] == [("failed", "smtp-8bitmime-required")]
+    smtp.mail.assert_not_awaited()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -711,7 +747,7 @@ async def test_legacy_sent_copy_does_not_replay_ascii_append_after_timeout(rfc_e
 
 @pytest.mark.asyncio
 async def test_unicode_envelope_recipient_uses_smtputf8_for_mail_rcpt_and_data(rfc_email_client):
-    smtp = _smtp_with_extensions("SMTPUTF8")
+    smtp = _smtp_with_extensions("SMTPUTF8", "8BITMIME")
 
     with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
         outcome = await rfc_email_client.send_email_with_outcome(
@@ -721,7 +757,11 @@ async def test_unicode_envelope_recipient_uses_smtputf8_for_mail_rcpt_and_data(r
         )
 
     assert [(item.status, item.detail) for item in outcome.outcomes] == [("succeeded", None)]
-    smtp.mail.assert_awaited_once_with("test@example.com", options=["SMTPUTF8"], encoding="utf-8")
+    smtp.mail.assert_awaited_once_with(
+        "test@example.com",
+        options=["SMTPUTF8", "BODY=8BITMIME"],
+        encoding="utf-8",
+    )
     smtp.rcpt.assert_awaited_once_with("用户@example.test", encoding="utf-8")
     assert "用户@example.test".encode() in smtp.data.await_args.args[0]
 

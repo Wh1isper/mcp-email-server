@@ -350,7 +350,23 @@ thread header requires internationalized syntax but the SMTP server did not
 advertise SMTPUTF8; the server rejects before issuing `MAIL FROM`, `RCPT TO`, or
 `DATA`. Use an ASCII addr-spec/header value or a provider with SMTPUTF8 support.
 A non-ASCII display name attached to an ASCII address does not trigger this
-requirement. Results never include the provider's free-form response text.
+requirement.
+
+`smtp-8bitmime-required` means either a correctly labeled `8bit` MIME body needs
+raw high-bit transport or an SMTPUTF8 message is subject to RFC 6531's mandatory
+8BITMIME pairing, but the server did not advertise `8BITMIME`. Use a provider
+with that extension or, when SMTPUTF8 is not otherwise required, compose a
+7-bit-safe message whose parts use base64 or quoted-printable.
+`smtp-mime-transport-invalid` means raw high-bit payload bytes
+do not match their declared transfer encoding, so enabling `8BITMIME` would not
+make the MIME entity valid; correct or re-encode that source part.
+`smtp-binarymime-unsupported` means the message requires a binary transport path,
+for example because it declares a binary transfer encoding or contains NUL or
+DATA framing that ordinary line-oriented SMTP cannot carry. This client does not
+implement `BINARYMIME` with `CHUNKING`/`BDAT`; re-encode the affected leaf part as
+base64 before sending. Both failures happen before `MAIL FROM`, so they are known
+failures and must not be treated as ambiguous delivery. Results never include the
+provider's free-form response text.
 
 For delivery diagnostics, enable `DEBUG` and inspect the bounded SMTP records.
 `phase=connect` and `phase=authenticate` cover session setup; `phase=mail`,

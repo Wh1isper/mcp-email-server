@@ -133,7 +133,32 @@ is serialized under the matching policy and `SMTPUTF8` is requested on `MAIL`;
 a provider without the extension returns the fixed `smtp-utf8-unsupported`
 failure before `MAIL`, `RCPT`, or `DATA`. A non-ASCII display name paired with an
 ASCII addr-spec remains an encoded RFC 5322 display name and does not alone
-require SMTPUTF8.
+require SMTPUTF8. RFC 6531 additionally requires an SMTPUTF8-aware server to
+advertise `8BITMIME` and an SMTPUTF8-aware client to request `BODY=8BITMIME`;
+missing 8BITMIME therefore returns `smtp-8bitmime-required` before `MAIL` even
+when the MIME body itself is otherwise 7-bit clean.
+
+The final serialized SMTP message is classified before `MAIL` according to the
+transport required by its body. Outside the RFC 6531 case above, a 7-bit-clean
+body uses ordinary `DATA` without requesting `BODY=8BITMIME`. Raw high-bit body
+octets require an advertised
+`8BITMIME` capability and `BODY=8BITMIME`; otherwise every target returns the
+fixed `smtp-8bitmime-required` failure before `MAIL`, `RCPT`, or `DATA`. A leaf
+that emits raw high-bit payload bytes without declaring the `8bit` MIME transfer
+encoding is malformed rather than eligible for capability-based transport; it
+returns `smtp-mime-transport-invalid` at the same pre-effect boundary. Composite
+`multipart` and `message` entities also reject transfer encodings other than
+`7bit`, `8bit`, or `binary`, and a composite entity carrying actual 8-bit child
+data must itself declare the `8bit` domain.
+
+`8BITMIME` does not make arbitrary binary content safe for the line-oriented
+`DATA` command. A MIME tree declaring `Content-Transfer-Encoding: binary`, or a
+serialized message containing NUL, bare line endings, or a line longer than the
+RFC 5321 limit, requires a binary submission path. This client does not implement
+`BINARYMIME` with `CHUNKING`/`BDAT`, so it returns the fixed
+`smtp-binarymime-unsupported` failure before `MAIL` even when the provider
+advertises those capabilities. The preflight does not silently rewrite MIME
+parts or attempt a recursive base64/quoted-printable downgrade.
 
 SMTP delivery and IMAP sent-copy APPEND are independent effects:
 
@@ -196,8 +221,10 @@ Mutation requests bound target count, address count/bytes, headers, body, total
 encoded bytes, mailbox names, and batch size. Results bound per-target details,
 warnings, provider-code normalization, and aggregate serialization. Public send
 results may include only reviewed fixed delivery-detail tags such as
-`smtp-mail-rejected`, `smtp-recipient-rejected`, or `provider-timeout` alongside
-the affected target. Unrecognized detail is omitted. Raw provider responses,
+`smtp-mail-rejected`, `smtp-recipient-rejected`, `smtp-8bitmime-required`,
+`smtp-binarymime-unsupported`, `smtp-mime-transport-invalid`, or
+`provider-timeout` alongside the affected
+target. Unrecognized detail is omitted. Raw provider responses,
 message content, credentials, stack traces, and uncontrolled local paths do not
 enter public errors.
 
@@ -229,3 +256,10 @@ enter public errors.
     SMTPUTF8 detection and pre-effect rejection, display-name downgrade without
     a false SMTPUTF8 requirement, pre-SELECT RFC 6855 negotiation, exact literal8
     APPEND framing, and abort/no-replay behavior at ambiguous framing boundaries.
+12. Byte-level SMTP tests prove that ordinary 7-bit-clean messages do not
+    request `BODY=8BITMIME`, SMTPUTF8 messages require both advertised SMTPUTF8
+    and 8BITMIME plus both `MAIL` parameters, correctly labeled raw high-bit body
+    octets require an advertised `8BITMIME` capability, and mislabeled high-bit payloads, binary
+    transfer encoding, NUL, bare line endings, and overlong DATA lines fail
+    before `MAIL`, `RCPT`, or `DATA` without MIME
+    rewriting or automatic replay.

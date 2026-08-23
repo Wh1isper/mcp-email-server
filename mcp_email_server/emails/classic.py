@@ -24,7 +24,7 @@ from email.policy import SMTPUTF8 as SMTPUTF8_POLICY
 from email.policy import default
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import aioimaplib
 import aiosmtplib
@@ -81,6 +81,8 @@ MAX_METADATA_UID_SEARCH_BYTES = MAX_METADATA_CANDIDATES * 11
 MAX_ATTACHMENT_BYTES = APPLICATION_LIMITS.attachment_bytes
 MAX_TOTAL_ATTACHMENT_BYTES = APPLICATION_LIMITS.total_attachment_bytes
 MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
+SmtpDataTransport = Literal["7bit", "8bit", "binary", "invalid"]
+_HIGH_BIT_OCTET = re.compile(rb"[\x80-\xff]")
 
 
 def _addresses_for_header(message: Message, field_name: str) -> list[Address]:
@@ -109,6 +111,80 @@ def _message_requires_smtputf8(message: Message) -> bool:
         for name in ("Message-Id", "In-Reply-To", "References")
         for value in message.get_all(name, [])
     )
+
+
+def _normalized_content_transfer_encoding(part: Message) -> str:
+    """Return one MIME transfer-encoding token with ordinary comments removed."""
+    value = str(part.get("Content-Transfer-Encoding", "7bit"))
+    while True:
+        without_comments = re.sub(r"\([^()]*\)", "", value)
+        if without_comments == value:
+            return value.strip().casefold()
+        value = without_comments
+
+
+def _leaf_payload_has_high_bit(part: Message) -> bool:
+    """Return whether one unencoded leaf payload contains non-ASCII data."""
+    payload = part.get_payload()
+    if isinstance(payload, str):
+        return not payload.isascii()
+    if isinstance(payload, bytes):
+        return not payload.isascii()
+    return False
+
+
+def _classify_mime_entity_transport(part: Message) -> SmtpDataTransport:
+    """Classify one MIME entity while enforcing its recursive CTE domain."""
+    transfer_encoding = _normalized_content_transfer_encoding(part)
+    if transfer_encoding == "binary":
+        return "binary"
+    if part.get_content_maintype() in ("multipart", "message") and transfer_encoding not in (
+        "7bit",
+        "8bit",
+        "binary",
+    ):
+        return "invalid"
+    if part.is_multipart():
+        child_transports = tuple(
+            _classify_mime_entity_transport(child) for child in part.get_payload() if isinstance(child, Message)
+        )
+        if "binary" in child_transports:
+            return "binary"
+        if "invalid" in child_transports:
+            return "invalid"
+        if "8bit" in child_transports:
+            return "8bit" if transfer_encoding == "8bit" else "invalid"
+        return "7bit"
+    if _leaf_payload_has_high_bit(part):
+        return "8bit" if transfer_encoding == "8bit" else "invalid"
+    return "7bit"
+
+
+def _classify_smtp_data_transport(message: Message, message_bytes: bytes) -> SmtpDataTransport:
+    """Classify the transport required by one fully serialized SMTP DATA payload.
+
+    SMTP ``DATA`` remains line-oriented even when the server advertises
+    ``8BITMIME``. A binary transfer encoding, NUL, bare line ending, or line over
+    the RFC 5321 limit therefore requires a binary submission path that this
+    client does not implement. Raw high-bit leaf payloads are valid only with an
+    ``8bit`` MIME transfer encoding; a capability cannot repair a mismatched CTE.
+    """
+    mime_transport = _classify_mime_entity_transport(message)
+    if mime_transport in ("binary", "invalid"):
+        return mime_transport
+    if (
+        b"\x00" in message_bytes
+        or re.search(rb"(?<!\r)\n|\r(?!\n)", message_bytes) is not None
+        or re.search(rb"[^\r\n]{999}", message_bytes) is not None
+    ):
+        return "binary"
+    body_start = message_bytes.find(b"\r\n\r\n")
+    if body_start < 0:
+        return "binary"
+    body_has_high_bit = _HIGH_BIT_OCTET.search(message_bytes, body_start + 4) is not None
+    if body_has_high_bit and mime_transport != "8bit":
+        return "invalid"
+    return "8bit" if body_has_high_bit else "7bit"
 
 
 def _serialize_message_for_imap_append(message: Message, *, utf8: bool | None = None) -> bytes:
@@ -800,13 +876,12 @@ async def _imap_login(
 
 
 def _smtp_utf8_mail_options(smtp: aiosmtplib.SMTP) -> list[str]:
-    """Return legacy-send ESMTP options or reject before MAIL."""
+    """Return RFC 6531 legacy-send options or reject before MAIL."""
     if not smtp.supports_extension("smtputf8"):
         raise SMTPNotSupported("SMTPUTF8 is not supported by this server")
-    options = ["SMTPUTF8"]
-    if smtp.supports_extension("8bitmime"):
-        options.append("BODY=8BITMIME")
-    return options
+    if not smtp.supports_extension("8bitmime"):
+        raise SMTPNotSupported("8BITMIME is required by SMTPUTF8")
+    return ["SMTPUTF8", "BODY=8BITMIME"]
 
 
 def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
@@ -2257,11 +2332,28 @@ class EmailClient:
                         None,
                     )
                 mail_options.append("SMTPUTF8")
-            if smtp.supports_extension("8bitmime"):
-                mail_options.append("BODY=8BITMIME")
             policy = SMTPUTF8_POLICY if utf8_required else SMTP_POLICY
             message_bytes = msg.as_bytes(policy=policy)
-            logger.debug("SMTP phase=message outcome=prepared")
+            data_transport = _classify_smtp_data_transport(msg, message_bytes)
+            if data_transport in ("binary", "invalid"):
+                detail = "smtp-binarymime-unsupported" if data_transport == "binary" else "smtp-mime-transport-invalid"
+                logger.warning("SMTP phase=message outcome=rejected reason={}", detail.removeprefix("smtp-"))
+                return DeliveryMutationOutcome(
+                    tuple(TargetMutationOutcome(target, "failed", detail) for target in all_recipients),
+                    None,
+                )
+            if utf8_required or data_transport == "8bit":
+                if not smtp.supports_extension("8bitmime"):
+                    logger.warning("SMTP phase=message outcome=rejected reason=8bitmime-required")
+                    return DeliveryMutationOutcome(
+                        tuple(
+                            TargetMutationOutcome(target, "failed", "smtp-8bitmime-required")
+                            for target in all_recipients
+                        ),
+                        None,
+                    )
+                mail_options.append("BODY=8BITMIME")
+            logger.debug("SMTP phase=message outcome=prepared transport={}", data_transport)
             if smtp.supports_extension("size"):
                 mail_options.insert(0, f"SIZE={len(message_bytes)}")
 

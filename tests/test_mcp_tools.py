@@ -972,6 +972,24 @@ async def test_send_tool_preserves_recipient_order_across_status_tags() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "detail",
+    ("smtp-8bitmime-required", "smtp-binarymime-unsupported", "smtp-mime-transport-invalid"),
+)
+async def test_send_tool_reports_safe_transport_rejection(detail: str) -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "failed", detail),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    with patch("mcp_email_server.app.send_email_command", command_handler):
+        result = await send_email("test", ["recipient@example.test"], "Subject", "body")
+
+    assert result == f"Email delivery [failed: recipient@example.test ({detail}); sent-copy: skipped]"
+
+
+@pytest.mark.asyncio
 async def test_send_tool_does_not_expose_unrecognized_provider_detail() -> None:
     command_handler = AsyncMock(
         return_value=SendMutationOutcome(

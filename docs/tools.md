@@ -262,9 +262,28 @@ Reply-To fields, and non-ASCII Message-ID, In-Reply-To, or References syntax,
 require the provider's SMTPUTF8 extension. The server requests `SMTPUTF8` and
 serializes the complete message with the matching policy. If the extension is
 unavailable, every target fails with `smtp-utf8-unsupported` before `MAIL FROM`,
-`RCPT TO`, or message data is sent. A non-ASCII display name with an ASCII
-addr-spec is encoded as an ordinary RFC 5322 display name and does not by itself
-require SMTPUTF8.
+`RCPT TO`, or message data is sent. RFC 6531 also requires SMTPUTF8 messages to
+use `BODY=8BITMIME`; if the provider advertises SMTPUTF8 without 8BITMIME, every
+target instead fails with `smtp-8bitmime-required` before `MAIL FROM`. A
+non-ASCII display name with an ASCII addr-spec is encoded as an ordinary RFC
+5322 display name and does not by itself require SMTPUTF8.
+
+The server also classifies the final serialized message body before `MAIL FROM`.
+Outside the SMTPUTF8 case above, a 7-bit-clean body uses ordinary SMTP `DATA`;
+raw high-bit body bytes require the
+provider's `8BITMIME` extension and are sent with `BODY=8BITMIME`. Without that
+extension, every target fails with `smtp-8bitmime-required` before `MAIL FROM`.
+A leaf containing raw high-bit payload bytes under a missing, `7bit`, base64, or
+quoted-printable transfer-encoding label is rejected as
+`smtp-mime-transport-invalid`; `8BITMIME` cannot repair a mismatched MIME label.
+The same failure applies when a composite `multipart` or `message` entity uses a
+forbidden base64/quoted-printable encoding, or labels actual 8-bit child data as
+7-bit. Content that requires binary transport, including a MIME part declaring
+`Content-Transfer-Encoding: binary`, NUL, bare line endings, or an overlong DATA
+line, fails with `smtp-binarymime-unsupported`. The server does not currently
+submit `BINARYMIME` through `CHUNKING`/`BDAT` and does not silently rewrite MIME
+parts to downgrade them. Both transport failures occur before `MAIL FROM`,
+`RCPT TO`, or message data is sent.
 
 Saving the Sent copy is a second IMAP effect and is reported in its own
 `sent-copy` section; a failed or unknown copy never changes an accepted delivery

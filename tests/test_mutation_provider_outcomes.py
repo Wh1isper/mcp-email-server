@@ -6,7 +6,11 @@ import re
 import ssl
 from collections.abc import Iterator
 from contextlib import contextmanager
+from email.message import Message
 from email.mime.text import MIMEText
+from email.parser import BytesParser
+from email.policy import SMTP as SMTP_POLICY
+from email.policy import compat32
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,7 +20,7 @@ from aiosmtplib.errors import SMTPNotSupported, SMTPRecipientRefused, SMTPRespon
 from loguru import logger
 
 from mcp_email_server.application.mutations import FlagOperation, MutableEmailFlag
-from mcp_email_server.emails.classic import EmailClient, _smtp_error_category
+from mcp_email_server.emails.classic import EmailClient, _classify_smtp_data_transport, _smtp_error_category
 
 
 def _imap(*, capabilities: tuple[str, ...] = ("IMAP4rev1", "UIDPLUS")) -> AsyncMock:
@@ -355,6 +359,234 @@ def _smtp() -> AsyncMock:
     smtp.login.return_value = None
     smtp.supports_extension = MagicMock(return_value=False)
     return smtp
+
+
+def _smtp_message(content_transfer_encoding: str | None, payload: bytes) -> Message:
+    transfer_header = (
+        b""
+        if content_transfer_encoding is None
+        else f"Content-Transfer-Encoding: {content_transfer_encoding}\r\n".encode("ascii")
+    )
+    raw_message = (
+        b"From: sender@example.test\r\n"
+        b"To: recipient@example.test\r\n"
+        b"Subject: Subject\r\n"
+        b"Content-Type: application/octet-stream\r\n" + transfer_header + b"\r\n" + payload + b"\r\n"
+    )
+    return BytesParser(policy=compat32).parsebytes(raw_message)
+
+
+@pytest.mark.parametrize(
+    ("content_transfer_encoding", "payload", "expected"),
+    (
+        ("7bit", b"ASCII payload", "7bit"),
+        ("8bit", b"ASCII payload", "7bit"),
+        ("8bit", b"caf\xe9", "8bit"),
+        ("binary", b"ASCII payload", "binary"),
+        ("8bit", b"ASCII\x00payload", "binary"),
+        ("8bit", b"a" * 998, "7bit"),
+        ("8bit", b"a" * 999, "binary"),
+        (None, b"caf\xe9", "invalid"),
+        ("7bit", b"caf\xe9", "invalid"),
+        ("base64", b"caf\xe9", "invalid"),
+        ("quoted-printable", b"caf\xe9", "invalid"),
+    ),
+)
+def test_smtp_data_transport_classification(
+    content_transfer_encoding: str | None,
+    payload: bytes,
+    expected: str,
+) -> None:
+    message = _smtp_message(content_transfer_encoding, payload)
+
+    assert _classify_smtp_data_transport(message, message.as_bytes(policy=SMTP_POLICY)) == expected
+
+
+def test_smtp_data_transport_finds_nested_binary_leaf() -> None:
+    message = BytesParser(policy=compat32).parsebytes(
+        b"Content-Type: multipart/mixed; boundary=outer\r\n"
+        b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"Content-Transfer-Encoding: binary\r\n"
+        b"\r\n"
+        b"ASCII payload\r\n"
+        b"--outer--\r\n"
+    )
+
+    assert _classify_smtp_data_transport(message, message.as_bytes(policy=SMTP_POLICY)) == "binary"
+
+
+@pytest.mark.parametrize(
+    ("outer_transfer_encoding", "expected"),
+    ((None, "invalid"), ("7bit", "invalid"), ("8bit", "8bit"), ("base64", "invalid")),
+)
+def test_smtp_data_transport_enforces_composite_cte_domain(
+    outer_transfer_encoding: str | None,
+    expected: str,
+) -> None:
+    transfer_header = (
+        b""
+        if outer_transfer_encoding is None
+        else f"Content-Transfer-Encoding: {outer_transfer_encoding}\r\n".encode("ascii")
+    )
+    message = BytesParser(policy=compat32).parsebytes(
+        b"Content-Type: multipart/mixed; boundary=outer\r\n" + transfer_header + b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Transfer-Encoding: 8bit\r\n"
+        b"\r\n"
+        b"caf\xe9\r\n"
+        b"--outer--\r\n"
+    )
+
+    assert _classify_smtp_data_transport(message, message.as_bytes(policy=SMTP_POLICY)) == expected
+
+
+@pytest.mark.asyncio
+async def test_smtp_raw_8bit_requires_extension_before_mail(email_server) -> None:
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    message = _smtp_message("8bit", b"caf\xe9")
+    smtp = _smtp()
+
+    with (
+        patch.object(client, "compose_message", return_value=message),
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        result = await client.send_email_with_outcome(["recipient@example.test"], "Subject", "body")
+
+    assert [(item.status, item.detail) for item in result.outcomes] == [("failed", "smtp-8bitmime-required")]
+    assert result.sent_message is None
+    smtp.mail.assert_not_awaited()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_smtp_raw_8bit_uses_advertised_extension(email_server) -> None:
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    message = _smtp_message("8bit", b"caf\xe9")
+    message["Reply-To"] = "回复@example.test"
+    smtp = _smtp()
+    advertised = {"8bitmime", "size", "smtputf8"}
+    smtp.supports_extension = MagicMock(side_effect=lambda name: name.casefold() in advertised)
+
+    with (
+        patch.object(client, "compose_message", return_value=message),
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        result = await client.send_email_with_outcome(["recipient@example.test"], "Subject", "body")
+
+    assert [(item.status, item.detail) for item in result.outcomes] == [("succeeded", None)]
+    message_bytes = smtp.data.await_args.args[0]
+    smtp.mail.assert_awaited_once_with(
+        "sender@example.test",
+        options=[f"SIZE={len(message_bytes)}", "SMTPUTF8", "BODY=8BITMIME"],
+        encoding="utf-8",
+    )
+    assert b"caf\xe9" in message_bytes
+
+
+@pytest.mark.asyncio
+async def test_smtp_7bit_message_does_not_request_8bitmime_only_because_it_is_advertised(email_server) -> None:
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    smtp = _smtp()
+    smtp.supports_extension = MagicMock(side_effect=lambda name: name.casefold() == "8bitmime")
+
+    with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+        result = await client.send_email_with_outcome(["recipient@example.test"], "Subject", "body")
+
+    assert [(item.status, item.detail) for item in result.outcomes] == [("succeeded", None)]
+    smtp.mail.assert_awaited_once_with("sender@example.test", options=[], encoding="ascii")
+    assert smtp.data.await_args.args[0].isascii()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_transfer_encoding", (None, "7bit", "base64", "quoted-printable"))
+async def test_smtp_mislabeled_raw_8bit_is_rejected_for_every_recipient_before_mail(
+    email_server,
+    content_transfer_encoding: str | None,
+) -> None:
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    message = _smtp_message(content_transfer_encoding, b"caf\xe9")
+    smtp = _smtp()
+    smtp.supports_extension = MagicMock(side_effect=lambda name: name.casefold() == "8bitmime")
+
+    with (
+        patch.object(client, "compose_message", return_value=message),
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        result = await client.send_email_with_outcome(
+            ["to@example.test"],
+            "Subject",
+            "body",
+            cc=["cc@example.test"],
+            bcc=["bcc@example.test"],
+        )
+
+    assert [(item.target, item.status, item.detail) for item in result.outcomes] == [
+        ("to@example.test", "failed", "smtp-mime-transport-invalid"),
+        ("cc@example.test", "failed", "smtp-mime-transport-invalid"),
+        ("bcc@example.test", "failed", "smtp-mime-transport-invalid"),
+    ]
+    smtp.mail.assert_not_awaited()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content_transfer_encoding", "payload"),
+    (
+        ("binary", b"ASCII payload"),
+        ("8bit", b"ASCII\x00payload"),
+        ("8bit", b"a" * 999),
+    ),
+)
+async def test_smtp_binary_data_is_rejected_before_mail_even_with_8bitmime(
+    email_server,
+    content_transfer_encoding: str,
+    payload: bytes,
+) -> None:
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    message = _smtp_message(content_transfer_encoding, payload)
+    smtp = _smtp()
+    advertised = {"8bitmime", "binarymime", "chunking"}
+    smtp.supports_extension = MagicMock(side_effect=lambda name: name.casefold() in advertised)
+
+    with (
+        patch.object(client, "compose_message", return_value=message),
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        result = await client.send_email_with_outcome(["recipient@example.test"], "Subject", "body")
+
+    assert [(item.status, item.detail) for item in result.outcomes] == [("failed", "smtp-binarymime-unsupported")]
+    assert result.sent_message is None
+    smtp.mail.assert_not_awaited()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bare_line_ending", (b"\n", b"\r"))
+async def test_smtp_bare_line_ending_is_rejected_before_mail(email_server, bare_line_ending: bytes) -> None:
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    message = _smtp_message("8bit", b"ASCII payload")
+    replacement = b"ASCII" + bare_line_ending + b"payload\r\n"
+    message_bytes = message.as_bytes(policy=SMTP_POLICY).replace(b"ASCII payload\r\n", replacement)
+    smtp = _smtp()
+
+    with (
+        patch.object(client, "compose_message", return_value=message),
+        patch.object(message, "as_bytes", return_value=message_bytes),
+        patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp),
+    ):
+        result = await client.send_email_with_outcome(["recipient@example.test"], "Subject", "body")
+
+    assert [(item.status, item.detail) for item in result.outcomes] == [("failed", "smtp-binarymime-unsupported")]
+    smtp.mail.assert_not_awaited()
+    smtp.rcpt.assert_not_awaited()
+    smtp.data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
