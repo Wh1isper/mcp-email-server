@@ -228,15 +228,21 @@ wider than the compose byte limit so that display-oriented parser truncation can
 never yield a sendable value: an over-limit source body is rejected by compose
 validation, never silently shortened. Re-attached parts preserve their source
 MIME main type, subtype, and parameters rather than being coerced into
-`application/*`; a re-attached part carrying correctly labeled raw 8-bit
-content widens the composed container's declared transfer-encoding domain to
-`8bit`, and transport acceptability is then decided by the shared SMTP DATA
-transport classification owned by the send boundary above.
+`application/*`. Their per-part and aggregate size evidence MUST conservatively
+cover serialization under both possible SMTP wire policies, including CRLF
+expansion, because the final SMTP/SMTPUTF8 choice is not known until the full
+message and envelope are composed. A re-attached part carrying correctly labeled
+raw 8-bit content widens the composed container's declared transfer-encoding
+domain to `8bit`, and transport acceptability is then decided by the shared SMTP
+DATA transport classification owned by the send boundary above.
 
 The source read is a mail read and is subject to the sender allowlist under the
 same privacy rule as every other read path: a blocked source is not
-distinguishable from a missing one. A source whose top-level entity is itself
-the attachment is re-attached stripped to its MIME content headers, so the
+distinguishable from a missing one. The source sender is retained as internal
+policy evidence and MUST be checked against the freshly resolved sender policy
+again before SMTP; a policy tightened after the read aborts delivery with the
+same not-found-shaped denial. A source whose top-level entity is itself the
+attachment is re-attached stripped to its MIME content headers, so the
 source's envelope header block (Received chain, Message-ID, and any Bcc a Sent
 copy carries) never rides into the outgoing message. The quoting block carries
 only provenance the source itself asserts; an absent Date header is omitted,
@@ -320,8 +326,10 @@ enter public errors.
     independent effects with authority revalidated before each. Tests prove that a
     send-incapable account performs no provider I/O, that a failed, denied, or
     allowlist-blocked source read aborts before any SMTP session opens, that a
+    sender policy tightened after the read still aborts before SMTP, that a
     source body beyond the display parse window is forwarded in full or rejected
     as over-limit rather than silently truncated, that a root-as-attachment
     source is re-attached without its envelope headers, that re-attached parts
-    preserve source MIME type and parameters, and that an existing `Fwd:`
-    subject prefix is not duplicated.
+    preserve source MIME type and parameters, that forwarded-part size evidence
+    includes SMTP CRLF expansion, and that an existing `Fwd:` subject prefix is
+    not duplicated.

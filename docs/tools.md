@@ -365,9 +365,10 @@ subtype, and parameters instead of being coerced into `application/*`. Set
 `include_attachments=false` to forward only the text.
 
 Re-attached parts are bounded by the shared application limits: at most 20
-retained parts, 25 MiB per part, and 50 MiB in total, each measured on the
-serialized form the SMTP transaction actually carries. A source with more
-retained parts than the limit is rejected after the read; forward its text with
+retained parts, 25 MiB per part, and 50 MiB in total. Each size is the
+conservative maximum of the part serialized under the SMTP and SMTPUTF8 wire
+policies, including CRLF expansion. A source with more retained parts than the
+limit is rejected after the read; forward its text with
 `include_attachments=false` instead. Only parts the server classifies as
 attachments are re-attached — an inline part with no filename and no attachment
 disposition (for example a `Content-ID` image referenced by an HTML body) is
@@ -391,8 +392,11 @@ before `MAIL FROM`.
 
 A forward performs three independent provider effects: the IMAP read of the
 source message, SMTP delivery, and the IMAP Sent copy. Current account authority
-and policy are revalidated before each one. If the source message cannot be
-read, the call fails before any SMTP session is opened, so a forward is never
+is resolved for each effect. Send capability and recipient policy are checked
+before the source read and again before SMTP; the source sender is also checked
+against the freshly resolved sender policy before SMTP. Sent-copy follows the
+same post-delivery authority rules as `send_email`. If the source message cannot
+be read, the call fails before any SMTP session is opened, so a forward is never
 delivered without the content and attachments it was supposed to carry. Delivery
 and sent-copy outcomes are reported separately under the same rules as
 `send_email`, and an ambiguous SMTP outcome is reported `unknown` and is never
@@ -400,9 +404,11 @@ replayed automatically.
 
 Reading the source message is a mail read. When a sender allowlist is
 configured, a message from a blocked sender is indistinguishable from a missing
-message, so the forward fails without revealing that the message exists. The
-recipient allowlist applies to the forward's To, CC, and BCC addresses exactly
-as it does for `send_email`.
+message, so the forward fails without revealing that the message exists. If the
+sender policy is tightened after the source read but before SMTP, the fresh
+policy also aborts delivery with the same not-found-shaped error. The recipient
+allowlist applies to the forward's To, CC, and BCC addresses exactly as it does
+for `send_email`.
 
 For a worked example, see
 [Forward a message with its attachments](guides.md#forward-a-message-with-its-attachments).

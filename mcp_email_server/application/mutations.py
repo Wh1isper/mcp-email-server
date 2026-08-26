@@ -287,11 +287,12 @@ class ForwardSource:
 
     ``body_text`` is the provider-composed forwarded block (its own quoting
     header plus the original text); the application only prefixes the caller's
-    note and never formats the block itself. Only the fields the application
-    actually bounds or derives from are carried — no write-only evidence.
+    note and never formats the block itself. ``sender`` is retained solely as
+    policy evidence so a fresh allowlist can be enforced before SMTP delivery.
     """
 
     subject: str
+    sender: str
     body_text: str
     parts: tuple[ForwardSourcePart, ...]
 
@@ -533,6 +534,21 @@ def _validate_forward_source(source: ForwardSource) -> None:
         raise ValueError("body must be a string")  # noqa: TRY004 - stable validation contract
     if not isinstance(source.subject, str):
         raise ValueError("subject must be a string")  # noqa: TRY004 - stable validation contract
+    if not isinstance(source.sender, str):
+        raise ValueError("source sender must be a string")  # noqa: TRY004 - stable validation contract
+
+
+def _validate_forward_sender_policy(
+    command: ForwardCommand,
+    source: ForwardSource,
+    account: MutationAccountSnapshot,
+) -> None:
+    """Apply the current sender policy without turning a blocked UID into an oracle."""
+
+    from mcp_email_server.config import sender_allowed
+
+    if not sender_allowed(source.sender, list(account.allowed_senders)):
+        raise ValueError(f"Failed to fetch email with UID {command.source_email_id}")
 
 
 def _validate_optional_header(name: str, value: str | None) -> None:
@@ -1035,6 +1051,10 @@ class ForwardService(_MutationWorkflow):
             # submitted without the content and parts it was meant to carry.
             raise MutationProviderError("forward source retrieval timed out") from None
         _validate_forward_source(source)
+        # The provider blocks disallowed sources before reading their body. Keep
+        # the application boundary fail-closed as well if a provider returns
+        # evidence that does not satisfy the snapshot used for that read.
+        _validate_forward_sender_policy(command, source, incoming.account)
         forwarded = replace(
             command,
             subject=_forwarded_subject(source.subject),
@@ -1048,6 +1068,10 @@ class ForwardService(_MutationWorkflow):
         access = self._open(account, purpose="outgoing")
         self._require_send_capability(access.account)
         _validate_recipient_policy(forwarded, access.account)
+        # A policy tightened after the IMAP read must still prevent the retained
+        # source content from being delivered. Use the same not-found-shaped
+        # denial as the read boundary so this recheck does not become an oracle.
+        _validate_forward_sender_policy(forwarded, source, access.account)
         try:
             delivery = _validate_delivery_result(
                 await _bounded_provider_effect(access.provider.forward(forwarded, source, access.account))

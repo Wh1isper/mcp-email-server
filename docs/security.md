@@ -514,8 +514,9 @@ The allowlist protects:
 - Metadata listing and pagination.
 - Body retrieval and optional read marking.
 - Attachment download.
-- The `forward_email` source read (a blocked source is indistinguishable from a
-  missing message, so a forward never reveals that it exists).
+- The `forward_email` source read and SMTP handoff. A blocked source is
+  indistinguishable from a missing message, and a sender policy tightened after
+  the read is rechecked before SMTP, so a forward never reveals or delivers it.
 - Deletion and approved flag/read-state mutations.
 - Move and archive operations.
 

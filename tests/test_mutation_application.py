@@ -692,6 +692,7 @@ async def test_sent_copy_timeout_preserves_delivery_and_is_unknown(monkeypatch) 
 def _forward_source(**changes: object) -> ForwardSource:
     source = ForwardSource(
         subject="Quarterly report",
+        sender="author@example.test",
         body_text="---------- Forwarded message ----------\nFrom: author@example.test\n\noriginal body",
         parts=(),
     )
@@ -1032,6 +1033,24 @@ async def test_forward_send_capability_loss_on_the_outgoing_open_fails_before_de
 
     provider.fetch_forward_source.assert_awaited_once()
     provider.forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_sender_policy_tightening_before_smtp_aborts_delivery() -> None:
+    provider = _forward_provider(source=_forward_source(sender="author@example.test"))
+    services, _, factory, _ = _services(provider=provider)
+    factory.open.side_effect = [
+        MutationProviderAccess(_account(allowed_senders=("*@example.test",)), provider),
+        MutationProviderAccess(_account(allowed_senders=("other@example.test",)), provider),
+    ]
+
+    with pytest.raises(ValueError, match=r"^Failed to fetch email with UID 42$"):
+        await services.forward.execute(_forward_command())
+
+    provider.fetch_forward_source.assert_awaited_once()
+    provider.forward.assert_not_awaited()
+    provider.save_sent_copy.assert_not_awaited()
+    assert factory.open.call_count == 2
 
 
 @pytest.mark.asyncio

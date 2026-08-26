@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.policy import SMTP as SMTP_POLICY
+from email.policy import SMTPUTF8 as SMTPUTF8_POLICY
 from pathlib import Path
 from typing import TypeVar
 
@@ -49,6 +51,13 @@ async def _bounded_mutation_call(awaitable: Awaitable[_T]) -> _T:
         raise
     except Exception:
         raise MutationProviderError("provider_failure: mutation provider request failed") from None
+
+
+def _forward_part_wire_size(part: Message) -> int:
+    """Return a conservative serialized size for either possible SMTP policy."""
+
+    smtp_size = len(part.as_bytes(policy=SMTP_POLICY))
+    return max(smtp_size, len(part.as_bytes(policy=SMTPUTF8_POLICY)))
 
 
 @dataclass(frozen=True)
@@ -197,12 +206,14 @@ class ClassicMutationProvider:
         )
         return ForwardSource(
             subject=source["subject"],
+            sender=source["from"],
             body_text=source["body"],
             parts=tuple(
                 ForwardSourcePart(
-                    # The serialized part is what the SMTP transaction actually carries,
-                    # so it is the only honest size to bound the forward against.
-                    byte_size=len(part.as_bytes()),
+                    # The outgoing transaction selects SMTP or SMTPUTF8 only
+                    # after the full message and envelope are known. Bound the
+                    # conservative wire-compatible size across both policies.
+                    byte_size=_forward_part_wire_size(part),
                     raw_part=part,
                 )
                 for part in source["parts"]
