@@ -247,12 +247,18 @@ def _recording_imap(timeout: float = 1.0, *, fail_write_at: int | None = None):
     return imap, protocol, transport
 
 
+async def _wait_for_transport_writes(transport: _RecordingTransport, count: int = 1) -> None:
+    async with asyncio.timeout(1.0):
+        while len(transport.writes) < count:
+            await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_uid_search_treats_icloud_completion_only_response_as_empty():
     imap, protocol, transport = _recording_imap()
 
     search_task = asyncio.create_task(_uid_search(imap, ["ALL"]))
-    await asyncio.sleep(0)
+    await _wait_for_transport_writes(transport)
 
     tag = transport.writes[0].split(maxsplit=1)[0]
     protocol.data_received(tag + b" OK SEARCH completed (took 2 ms)\r\n")
