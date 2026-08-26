@@ -1066,12 +1066,12 @@ class ForwardService(_MutationWorkflow):
         ComposeCommand.validate(forwarded)
         # Re-resolve authority immediately before the outgoing submission effect.
         access = self._open(account, purpose="outgoing")
+        # Protect source privacy before reporting any independently tightened
+        # send capability or recipient policy. Otherwise those errors could
+        # distinguish a newly blocked retained source from a missing message.
+        _validate_forward_sender_policy(forwarded, source, access.account)
         self._require_send_capability(access.account)
         _validate_recipient_policy(forwarded, access.account)
-        # A policy tightened after the IMAP read must still prevent the retained
-        # source content from being delivered. Use the same not-found-shaped
-        # denial as the read boundary so this recheck does not become an oracle.
-        _validate_forward_sender_policy(forwarded, source, access.account)
         try:
             delivery = _validate_delivery_result(
                 await _bounded_provider_effect(access.provider.forward(forwarded, source, access.account))
