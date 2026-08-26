@@ -20,6 +20,7 @@ from mcp_email_server.emails.classic import (
     _ImapAppendMode,
     _ImapSearchLiteral,
     _message_requires_smtputf8,
+    _normalize_search_uids,
     _parse_list_responses,
     _uid_search,
     _validate_flags,
@@ -244,6 +245,22 @@ def _recording_imap(timeout: float = 1.0, *, fail_write_at: int | None = None):
     imap.protocol = protocol
     imap.timeout = timeout
     return imap, protocol, transport
+
+
+@pytest.mark.asyncio
+async def test_uid_search_treats_icloud_completion_only_response_as_empty():
+    imap, protocol, transport = _recording_imap()
+
+    search_task = asyncio.create_task(_uid_search(imap, ["ALL"]))
+    await asyncio.sleep(0)
+
+    tag = transport.writes[0].split(maxsplit=1)[0]
+    protocol.data_received(tag + b" OK SEARCH completed (took 2 ms)\r\n")
+    response = await search_task
+
+    assert response.result == "OK"
+    assert response.lines == [b"SEARCH completed (took 2 ms)"]
+    assert _normalize_search_uids(response.lines) == []
 
 
 @pytest.mark.asyncio

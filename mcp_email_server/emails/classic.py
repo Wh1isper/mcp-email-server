@@ -670,6 +670,15 @@ def _normalize_search_uids(messages: Any) -> list[str]:  # noqa: C901 - bounded 
     else:
         raise MetadataProviderObservationError("Provider returned invalid UID search results")
 
+    # iCloud omits the untagged `* SEARCH` line when a search has no matches.
+    # aioimaplib then exposes only the tagged completion text in `lines`, while
+    # compliant empty responses contain an empty payload before that text.
+    # Recognize only the observed completion-only format; all other non-UID
+    # payloads remain provider observation failures.
+    if len(messages) == 1 and re.fullmatch(r"SEARCH completed \(took [0-9]+ ms\)", text, flags=re.IGNORECASE):
+        logger.debug("Provider omitted the empty UID SEARCH payload; treating the successful search as empty")
+        return []
+
     result: list[str] = []
     seen: set[str] = set()
     for token in text.split():
@@ -1913,6 +1922,9 @@ class EmailClient:
                 return 0, []
 
             email_ids = _normalize_search_uids(messages)
+            if not email_ids:
+                logger.warning("No messages returned from search")
+                return 0, []
             logger.info(f"Found {len(email_ids)} email IDs")
             header_budget = _MetadataHeaderBudget()
 

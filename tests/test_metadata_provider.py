@@ -403,9 +403,61 @@ async def test_snapshot_same_count_wrong_internaldate_uid_set_cannot_claim_compl
 
 
 @pytest.mark.asyncio
+async def test_provider_fallback_treats_icloud_completion_only_search_response_as_empty() -> None:
+    client = _client()
+    imap = _imap()
+    imap.select.return_value = ("OK", [])
+    imap.uid_search.return_value = ("OK", [b"SEARCH completed (took 2 ms)"])
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_batch_fetch_dates", AsyncMock()) as dates,
+        patch.object(client, "_batch_fetch_headers", AsyncMock()) as headers,
+    ):
+        total, emails = await client.get_emails_metadata()
+
+    assert total == 0
+    assert emails == []
+    dates.assert_not_awaited()
+    headers.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_fallback_rejects_completion_text_with_extra_response_elements() -> None:
+    client = _client()
+    imap = _imap()
+    imap.select.return_value = ("OK", [])
+    imap.uid_search.return_value = (
+        "OK",
+        [b"SEARCH completed (took 2 ms)", b"unexpected response"],
+    )
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_batch_fetch_dates", AsyncMock()) as dates,
+        patch.object(client, "_batch_fetch_headers", AsyncMock()) as headers,
+    ):
+        with pytest.raises(MetadataProviderObservationError, match="invalid UID search results"):
+            await client.get_emails_metadata()
+
+    dates.assert_not_awaited()
+    headers.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "search_payload",
-    [b"1:*", b"1,2", b"0", b"01", b"4294967296", b"1 1", b"\xff"],
+    [
+        b"1:*",
+        b"1,2",
+        b"0",
+        b"01",
+        b"4294967296",
+        b"1 1",
+        b"SEARCH failed",
+        b"SEARCH completed but results were omitted",
+        b"SEARCH completed (took 2 ms) trailing-data",
+        b"UID SEARCH completed (took 2 ms)",
+        b"\xff",
+    ],
 )
 async def test_provider_fallback_rejects_noncanonical_search_uids_before_fetch_work(
     search_payload: bytes,

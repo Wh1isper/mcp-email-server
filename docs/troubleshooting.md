@@ -199,12 +199,14 @@ again.
 so the application could not prove the requested page and exact filtered total
 within its work budget. Narrow the mailbox or add a date, sender, recipient,
 subject, body, text, flag, or attachment filter. Increasing `page_size` cannot
-bypass the limit; `page_size` is restricted to 1 through 100. An `invalid UID
-search results` or incomplete provider-metadata error means the server returned
-a malformed UID set or did not return exact sender/INTERNALDATE evidence for
-every requested UID. The request is rejected rather than expanding a UID range
-or returning an incorrect page; retry after the mailbox is stable or report the
-provider issue.
+bypass the limit; `page_size` is restricted to 1 through 100. Some providers,
+including iCloud, omit the untagged empty `SEARCH` response and return only a
+successful tagged completion line; this known response shape is treated as zero
+matches. An `invalid UID search results` or incomplete provider-metadata error
+means the server returned another malformed UID set or did not return exact
+sender/INTERNALDATE evidence for every requested UID. The request is rejected
+rather than expanding a UID range or returning an incorrect page; retry after
+the mailbox is stable or report the provider issue.
 
 Non-ASCII subject, body, text, sender, or recipient filters are sent as
 synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`. If a provider rejects the
