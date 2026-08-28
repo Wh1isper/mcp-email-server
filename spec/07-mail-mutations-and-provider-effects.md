@@ -71,6 +71,10 @@ forms such as `$Forwarded`, dotted names, and leading digits are not narrowed by
 a local identifier grammar, while controls and protocol specials are rejected.
 Every APPEND path serializes the complete MIME message with CRLF line endings and
 does not emit bare LF or CR line breaks, including draft and sent-copy placement.
+When composing `In-Reply-To` or `References`, a simple whitespace-separated list
+of bare or bracketed Message-IDs is normalized to the bracketed RFC 5322 `msg-id`
+form without double-wrapping. Non-simple historical syntax is preserved intact
+rather than partially rewritten.
 
 Message encoding and IMAP session mode are separate decisions. After
 authentication and before selecting a mailbox, every APPEND workflow refreshes
@@ -310,7 +314,10 @@ enter public errors.
    IDs, not durable listing-epoch tokens.
 9. No management UI route can invoke mail mutations in this delivery.
 10. Byte-level tests prove every IMAP APPEND path serializes MIME messages with
-    CRLF line endings and emits no bare LF or CR line breaks.
+    CRLF line endings and emits no bare LF or CR line breaks. Composition tests
+    also prove that bare simple Message-IDs gain RFC angle brackets, already
+    bracketed IDs are not double-wrapped, mixed `References` lists normalize as
+    one chain, and non-simple historical syntax remains intact.
 11. Interoperability tests prove complete IMAP atom validation, full-message
     SMTPUTF8 detection and pre-effect rejection, display-name downgrade without
     a false SMTPUTF8 requirement, pre-SELECT RFC 6855 negotiation, exact literal8

@@ -22,6 +22,7 @@ SentCopyStatus = Literal["skipped", "succeeded", "failed", "unknown"]
 FlagOperation = Literal["add", "remove"]
 MutableEmailFlag = Literal[r"\Seen", r"\Flagged", r"\Answered", r"\Draft"]
 MUTABLE_EMAIL_FLAGS: frozenset[str] = frozenset({r"\Seen", r"\Flagged", r"\Answered", r"\Draft"})
+_MESSAGE_ID_ATEXT = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+-/=?^_`{|}~")
 
 
 ProviderResultT = TypeVar("ProviderResultT")
@@ -217,6 +218,45 @@ class ArchiveCommand:
         validate_mailbox_name(self.source_mailbox)
 
 
+def _is_message_id_dot_atom(value: str) -> bool:
+    """Return whether value is conservative RFC 5322/RFC 6532 dot-atom text."""
+    return all(
+        part and all(character in _MESSAGE_ID_ATEXT or ord(character) > 0x7F for character in part)
+        for part in value.split(".")
+    )
+
+
+def _is_message_id_domain_literal(value: str) -> bool:
+    """Return whether value is one simple domain literal without quoting or folding."""
+    if len(value) < 3 or not value.startswith("[") or not value.endswith("]"):
+        return False
+    return all(
+        ord(character) > 0x7F or (0x21 <= ord(character) <= 0x7E and character not in "[]\\")
+        for character in value[1:-1]
+    )
+
+
+def _is_simple_message_id(value: str) -> bool:
+    """Recognize the unambiguous Message-ID subset that is safe to normalize."""
+    candidate = value[1:-1] if value.startswith("<") and value.endswith(">") else value
+    if "<" in candidate or ">" in candidate or candidate.count("@") != 1:
+        return False
+    left, right = candidate.split("@")
+    return _is_message_id_dot_atom(left) and (_is_message_id_dot_atom(right) or _is_message_id_domain_literal(right))
+
+
+def normalize_thread_message_ids(value: str) -> str:
+    """Add RFC delimiters when value is a simple bare or bracketed Message-ID list.
+
+    More complex historical syntax is preserved verbatim rather than partially
+    rewritten. Callers remain responsible for controlled-string validation.
+    """
+    message_ids = value.split()
+    if not message_ids or any(not _is_simple_message_id(message_id) for message_id in message_ids):
+        return value
+    return " ".join(message_id if message_id.startswith("<") else f"<{message_id}>" for message_id in message_ids)
+
+
 @dataclass(frozen=True)
 class ComposeCommand:
     account_name: str
@@ -236,6 +276,10 @@ class ComposeCommand:
         _validate_content(self.subject, self.body, self.attachments)
         _validate_optional_header("in_reply_to", self.in_reply_to)
         _validate_optional_header("references", self.references)
+        if self.in_reply_to is not None:
+            _validate_optional_header("in_reply_to", normalize_thread_message_ids(self.in_reply_to))
+        if self.references is not None:
+            _validate_optional_header("references", normalize_thread_message_ids(self.references))
 
 
 @dataclass(frozen=True)

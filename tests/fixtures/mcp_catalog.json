@@ -839,7 +839,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Message-ID of the email being replied to. Enables proper threading in email clients.",
+                        "description": "Message-ID of the email being replied to. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
                         "title": "In Reply To"
                     },
                     "references": {
@@ -853,7 +853,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Space-separated Message-IDs for the thread chain. Usually includes in_reply_to plus ancestors.",
+                        "description": "Space-separated Message-IDs for the thread chain. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition. Usually includes in_reply_to plus ancestors.",
                         "title": "References"
                     },
                     "reply_to": {
@@ -1113,7 +1113,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Message-ID of the email being replied to. Enables proper threading in email clients.",
+                        "description": "Message-ID of the email being replied to. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
                         "title": "In Reply To"
                     },
                     "references": {
@@ -1127,7 +1127,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Space-separated Message-IDs for the thread chain.",
+                        "description": "Space-separated Message-IDs for the thread chain. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
                         "title": "References"
                     },
                     "flags": {

@@ -55,6 +55,7 @@ from mcp_email_server.application.mutations import (
     MutationStatus,
     SentCopyMutationOutcome,
     TargetMutationOutcome,
+    normalize_thread_message_ids,
     validate_mailbox_name,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, get_settings, sender_allowed
@@ -2491,11 +2492,13 @@ class EmailClient:
         if bcc and include_bcc_header:
             msg["Bcc"] = ", ".join(bcc)
 
-        # Set threading headers for replies
+        # Set threading headers for replies. MCP callers may provide simple
+        # Message-IDs without angle brackets; emit the RFC 5322 msg-id form while
+        # preserving already-delimited and non-simple historical syntax.
         if in_reply_to:
-            msg["In-Reply-To"] = in_reply_to
+            msg["In-Reply-To"] = normalize_thread_message_ids(in_reply_to)
         if references:
-            msg["References"] = references
+            msg["References"] = normalize_thread_message_ids(references)
         if reply_to:
             msg["Reply-To"] = reply_to
 

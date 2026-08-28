@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcp_email_server.application.mutations import AppendMutationOutcome
+from mcp_email_server.application.limits import APPLICATION_LIMITS
+from mcp_email_server.application.mutations import AppendMutationOutcome, SaveToMailboxCommand
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient, _validate_flags
 
@@ -186,6 +187,66 @@ class TestComposeMessage:
         )
         assert msg["In-Reply-To"] == "<original@example.com>"
         assert msg["References"] == "<original@example.com>"
+
+    def test_bare_threading_message_ids_gain_rfc_delimiters(self, email_client):
+        msg = email_client.compose_message(
+            recipients=["r@example.com"],
+            subject="Re: Thread",
+            body="reply",
+            in_reply_to="parent@example.com",
+            references="root@example.com <parent@example.com>",
+        )
+
+        assert msg["In-Reply-To"] == "<parent@example.com>"
+        assert msg["References"] == "<root@example.com> <parent@example.com>"
+        headers = msg.as_bytes(policy=SMTP).partition(b"\r\n\r\n")[0]
+        assert b"In-Reply-To: <parent@example.com>" in headers
+        assert b"References: <root@example.com> <parent@example.com>" in headers
+
+    @pytest.mark.parametrize(
+        "historical_message_ids",
+        [
+            '<"legacy id"@example.com>',
+            "first@example.com, second@example.com",
+            "first(comment)@example.com second@example.com",
+            "first..last@example.com second@example.com",
+            "<first@example.com><second@example.com>",
+        ],
+    )
+    def test_non_simple_threading_syntax_is_preserved(self, email_client, historical_message_ids):
+        msg = email_client.compose_message(
+            recipients=["r@example.com"],
+            subject="Re: Thread",
+            body="reply",
+            in_reply_to=historical_message_ids,
+            references=historical_message_ids,
+        )
+
+        assert msg["In-Reply-To"] == historical_message_ids
+        assert msg["References"] == historical_message_ids
+
+    def test_bare_domain_literal_message_id_gains_rfc_delimiters(self, email_client):
+        msg = email_client.compose_message(
+            recipients=["r@example.com"],
+            subject="Re: Thread",
+            body="reply",
+            in_reply_to="parent@[IPv6:2001:db8::1]",
+        )
+
+        assert msg["In-Reply-To"] == "<parent@[IPv6:2001:db8::1]>"
+
+    def test_threading_normalization_cannot_exceed_header_limit(self):
+        bare_message_id = "a@" + "b" * (APPLICATION_LIMITS.header_bytes - 2)
+        command = SaveToMailboxCommand(
+            account_name="test",
+            recipients=("recipient@example.com",),
+            subject="Draft",
+            body="body",
+            in_reply_to=bare_message_id,
+        )
+
+        with pytest.raises(ValueError, match=rf"in_reply_to exceeds {APPLICATION_LIMITS.header_bytes} bytes"):
+            command.validate()
 
     def test_unicode_subject(self, email_client):
         msg = email_client.compose_message(
@@ -407,6 +468,24 @@ class TestAppendToMailbox:
 
 class TestClassicEmailHandlerSaveToMailbox:
     """Tests for ClassicEmailHandler.save_to_mailbox — end-to-end orchestration."""
+
+    @pytest.mark.asyncio
+    async def test_bare_threading_ids_are_bracketed_in_append_payload(self, email_settings, mock_imap):
+        handler = ClassicEmailHandler(email_settings)
+
+        with patch("mcp_email_server.emails.classic.aioimaplib") as mock_lib:
+            mock_lib.IMAP4_SSL.return_value = mock_imap
+            await handler.save_to_mailbox(
+                recipients=["r@example.com"],
+                subject="Re: Thread",
+                body="reply",
+                in_reply_to="parent@example.com",
+                references="root@example.com parent@example.com",
+            )
+
+        payload = mock_imap.append.call_args.args[0]
+        assert b"In-Reply-To: <parent@example.com>\r\n" in payload
+        assert b"References: <root@example.com> <parent@example.com>\r\n" in payload
 
     @pytest.mark.asyncio
     async def test_save_to_drafts_default_flags(self, email_settings):

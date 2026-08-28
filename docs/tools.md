@@ -298,7 +298,10 @@ as `utf8-append-unsupported` without changing the successful SMTP outcome.
 Composes a message and appends it to an IMAP mailbox instead of sending it. It
 works without SMTP and is useful for drafts or templates. It shares recipient,
 body, attachment, and threading fields with `send_email`, adds `mailbox` and
-`flags`, and does not support `reply_to`.
+`flags`, and does not support `reply_to`. For both compose tools, simple
+Message-IDs in `in_reply_to` and `references` may be supplied with or without
+angle brackets. The server adds missing brackets to each simple whitespace-separated
+ID when constructing the RFC headers and does not double-wrap bracketed IDs.
 
 The default mailbox is `Drafts`. When no explicit flags are supplied, the
 message is saved with `\Draft` and `\Seen`. The response includes the RFC
@@ -580,5 +583,8 @@ To preserve conversation threading:
 3. Build `references` from the returned `references` value followed by the
    original `message_id`, omitting missing values.
 4. Send the reply with a suitable `Re:` subject.
+
+Simple Message-IDs may be bare or already enclosed in angle brackets; the compose
+path emits the required bracketed RFC form for both headers.
 
 For a complete example, see [Reply with proper threading](guides.md#reply-with-proper-threading).

@@ -223,10 +223,13 @@ await send_email(
 ```
 
 `in_reply_to` and `references` are nullable because not every message belongs to
-a thread or has a valid Message-ID. The server returns `references` as one
+a thread or has a valid Message-ID. Simple Message-IDs may be supplied bare or
+inside angle brackets; the compose path adds missing brackets to each simple ID
+and preserves already bracketed values. The server returns `references` as one
 whitespace-normalized string rather than guessing how to tokenize malformed or
 historical header syntax. Treat both values as untrusted observations: compose
-validation rejects malformed values containing control characters.
+validation rejects malformed values containing control characters, and unusual
+legacy syntax is preserved rather than partially rewritten.
 
 ## Forward a message with its attachments
 
