@@ -80,6 +80,7 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
     handler.incoming_client.get_emails_metadata = AsyncMock(return_value=(response.total, []))
     handler.incoming_client.get_mailbox_state = AsyncMock(return_value=snapshot.state)
     handler.incoming_client.get_mailbox_metadata_snapshot = AsyncMock(return_value=snapshot)
+    handler.incoming_client.get_email_flags = AsyncMock(return_value={"7": ["$label4"]})
     provider = ClassicMetadataProvider(handler)
     query = ListEmailMetadataQuery(
         account_name="work",
@@ -101,6 +102,7 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
     assert await provider.list_metadata(query, account) == response
     assert await provider.mailbox_state("Archive") == snapshot.state
     assert await provider.mailbox_snapshot("Archive") is snapshot
+    assert await provider.flags_for("Archive", ("7",)) == {"7": ["$label4"]}
     handler.incoming_client.get_emails_metadata.assert_awaited_once_with(
         page=2,
         page_size=20,
@@ -117,8 +119,11 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
         body=None,
         text=None,
         has_attachment=True,
+        tag_keywords=[],
+        tag_match="all",
         allowed_senders=["trusted@example.test"],
     )
+    handler.incoming_client.get_email_flags.assert_awaited_once_with(["7"], "Archive")
     handler.incoming_client.get_mailbox_metadata_snapshot.assert_awaited_once_with(
         "Archive",
         maximum_window=MAX_INDEXED_UID_WINDOW,

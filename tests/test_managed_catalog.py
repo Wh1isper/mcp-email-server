@@ -15,6 +15,7 @@ import pytest
 
 from mcp_email_server import managed as managed_module
 from mcp_email_server.config import EmailServer
+from mcp_email_server.imap_keywords import ImapKeywordTag
 from mcp_email_server.managed import (
     SQLITE_BUSY_TIMEOUT_MS,
     WAL_RETRY_BUSY_TIMEOUT_MS,
@@ -108,13 +109,23 @@ def _catalog(tmp_path: Path, store: FakeSecretStore | None = None) -> ManagedCat
     return ManagedCatalog(initialized.path, secret_store=store) if store is not None else initialized
 
 
-def _add_account(catalog: ManagedCatalog, *, outgoing: bool = False) -> None:
+def _tag(name: str = "important", keyword: str = "$Important") -> ImapKeywordTag:
+    return ImapKeywordTag(name=name, keyword=keyword, description=f"{name} messages", writable=True)
+
+
+def _add_account(
+    catalog: ManagedCatalog,
+    *,
+    outgoing: bool = False,
+    tags: tuple[ImapKeywordTag, ...] = (),
+) -> None:
     catalog.add_account(
         name="alice",
         full_name="Alice",
         email_address="alice@example.test",
         incoming=_server(),
         outgoing=_server(host="smtp.example.test") if outgoing else None,
+        tags=tags,
     )
 
 
@@ -180,7 +191,8 @@ def test_initialize_adopts_existing_catalog_without_resetting_state(tmp_path: Pa
     policy = catalog.policy()
     catalog.update_policy(
         expected_revision=policy.revision,
-        enable_attachment_download=True,
+        enable_attachment_download=False,
+        enable_attachment_content=True,
         allowed_recipients=("alice@example.test",),
         allowed_senders=(),
         report_blocked_mutations=False,
@@ -191,6 +203,8 @@ def test_initialize_adopts_existing_catalog_without_resetting_state(tmp_path: Pa
 
     assert adopted.path == catalog.path
     assert adopted.catalog_revision() == revision
+    assert adopted.policy().enable_attachment_download is False
+    assert adopted.policy().enable_attachment_content is True
     assert adopted.policy().allowed_recipients == ("alice@example.test",)
 
 
@@ -262,6 +276,24 @@ def test_normalized_name_and_tombstone_prevent_reuse(tmp_path: Path) -> None:
             outgoing=None,
         )
     assert duplicate_error.value.reason == "account_name_exists"
+
+
+def test_account_tags_round_trip_through_add_show_update_and_runtime_settings(tmp_path: Path) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog, tags=(_tag(),))
+
+    assert catalog.show_account("alice").tags == (_tag(),)
+    catalog.set_secret("alice", "incoming", "secret")
+    revision = catalog.show_account("alice").revision
+    catalog.update_account(
+        "alice",
+        expected_revision=revision,
+        tags=(_tag("triage", "$Triage"),),
+    )
+
+    assert catalog.show_account("alice").tags == (_tag("triage", "$Triage"),)
+    assert catalog.load_settings().emails[0].tags == (_tag("triage", "$Triage"),)
 
 
 def test_add_and_resolve_round_trip_never_persists_secret(tmp_path):

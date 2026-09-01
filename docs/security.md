@@ -312,6 +312,24 @@ reader, directory listing, remote URL, or arbitrary path lookup is exposed by
 this feature. Only connect a local MCP client whose own filesystem tools may
 legitimately inspect paths returned by the server.
 
+## Semantic tags and embedded attachments
+
+Semantic tag mappings are non-secret account configuration, but their names and
+provider keywords can reveal mailbox organization. Legacy mode stores them with
+the account in the private TOML configuration; managed mode stores them with the
+account in the private catalog. Tag writes require `writable=true` and accept
+semantic names only. The workflow never modifies standard flags, read-only
+configured tags, or unrelated provider keywords.
+
+`get_attachment_content` does not create a local artifact, but it transfers the
+original decoded bytes through MCP and therefore exposes private message content
+to the connected MCP client. It has an independent
+`enable_attachment_content=true` policy and rechecks current authority after
+fetch. Enabling `download_attachment` does not enable content transfer. Use the
+content mode for a trusted remote client, such as a ChatGPT app, that cannot read
+server-local paths. The complete encoded tool result remains subject to the
+existing global serialized-result ceiling.
+
 ## Indexed metadata privacy
 
 The operational SQLite projection contains no message bodies, raw MIME,

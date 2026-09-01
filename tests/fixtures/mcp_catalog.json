@@ -83,6 +83,72 @@
             }
         },
         {
+            "name": "list_email_tags",
+            "description": "List the configured semantic IMAP tags for one account. The name and description support natural-language selection; writable is false unless explicitly enabled in the account configuration.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    }
+                },
+                "required": ["account_name"],
+                "title": "list_email_tagsArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "$defs": {
+                    "ImapKeywordTag": {
+                        "additionalProperties": false,
+                        "description": "One semantic tag name mapped to one provider keyword.",
+                        "properties": {
+                            "name": {
+                                "title": "Name",
+                                "type": "string"
+                            },
+                            "keyword": {
+                                "title": "Keyword",
+                                "type": "string"
+                            },
+                            "description": {
+                                "default": "",
+                                "title": "Description",
+                                "type": "string"
+                            },
+                            "writable": {
+                                "default": false,
+                                "title": "Writable",
+                                "type": "boolean"
+                            }
+                        },
+                        "required": ["name", "keyword"],
+                        "title": "ImapKeywordTag",
+                        "type": "object"
+                    }
+                },
+                "properties": {
+                    "result": {
+                        "items": {
+                            "$ref": "#/$defs/ImapKeywordTag"
+                        },
+                        "title": "Result",
+                        "type": "array"
+                    }
+                },
+                "required": ["result"],
+                "title": "list_email_tagsOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false
+            }
+        },
+        {
             "name": "list_emails_metadata",
             "description": "List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.",
             "inputSchema": {
@@ -271,6 +337,31 @@
                         "default": null,
                         "description": "Filter by attachment presence: True=has attachment, False=none, None=all (multipart/mixed heuristic; may miss inline images or yield false positives).",
                         "title": "Has Attachment"
+                    },
+                    "semantic_tags": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 128,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Configured semantic tag names to match.",
+                        "title": "Semantic Tags"
+                    },
+                    "tag_match": {
+                        "default": "all",
+                        "description": "Require all requested tags or at least any one requested tag.",
+                        "enum": ["all", "any"],
+                        "title": "Tag Match",
+                        "type": "string"
                     }
                 },
                 "required": ["account_name"],
@@ -323,6 +414,24 @@
                                     "type": "string"
                                 },
                                 "title": "Attachments",
+                                "type": "array"
+                            },
+                            "provider_keywords": {
+                                "items": {
+                                    "maxLength": 128,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "title": "Provider Keywords",
+                                "type": "array"
+                            },
+                            "semantic_tags": {
+                                "items": {
+                                    "maxLength": 128,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "title": "Semantic Tags",
                                 "type": "array"
                             }
                         },
@@ -524,6 +633,24 @@
                                     "type": "string"
                                 },
                                 "title": "Attachments",
+                                "type": "array"
+                            },
+                            "provider_keywords": {
+                                "items": {
+                                    "maxLength": 128,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "title": "Provider Keywords",
+                                "type": "array"
+                            },
+                            "semantic_tags": {
+                                "items": {
+                                    "maxLength": 128,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "title": "Semantic Tags",
                                 "type": "array"
                             },
                             "in_reply_to": {
@@ -1300,6 +1427,76 @@
             }
         },
         {
+            "name": "set_email_tags",
+            "description": "Add or remove configured writable semantic tags on emails. Only semantic names are accepted; standard flags and unrelated provider keywords are preserved.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_ids": {
+                        "description": "List of email_id values whose tags should be changed.",
+                        "items": {
+                            "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Email Ids",
+                        "type": "array"
+                    },
+                    "operation": {
+                        "description": "Whether to add or remove every supplied semantic tag.",
+                        "enum": ["add", "remove"],
+                        "title": "Operation",
+                        "type": "string"
+                    },
+                    "tags": {
+                        "description": "Configured writable semantic tag names.",
+                        "items": {
+                            "maxLength": 128,
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Tags",
+                        "type": "array"
+                    },
+                    "mailbox": {
+                        "default": "INBOX",
+                        "description": "The mailbox containing the emails.",
+                        "maxLength": 1024,
+                        "title": "Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": ["account_name", "email_ids", "operation", "tags"],
+                "title": "set_email_tagsArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "set_email_tagsOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "mark_emails_as_read",
             "description": "Mark one or more emails as read by email_id. This is the common-workflow equivalent of adding \\Seen with set_email_flags. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {
@@ -1535,6 +1732,49 @@
                 },
                 "required": ["result"],
                 "title": "list_mailboxesOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
+            }
+        },
+        {
+            "name": "get_attachment_content",
+            "description": "Read one email attachment as an MCP embedded binary resource without writing a local file. This independent transfer mode requires enable_attachment_content=true.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_id": {
+                        "description": "The email ID obtained from list_emails_metadata or get_emails_content.",
+                        "maxLength": 10,
+                        "pattern": "^[1-9][0-9]*$",
+                        "title": "Email Id",
+                        "type": "string"
+                    },
+                    "attachment_name": {
+                        "description": "The attachment filename shown in the message's attachments list.",
+                        "maxLength": 4096,
+                        "title": "Attachment Name",
+                        "type": "string"
+                    },
+                    "mailbox": {
+                        "default": "INBOX",
+                        "description": "The mailbox containing the email.",
+                        "maxLength": 1024,
+                        "title": "Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": ["account_name", "email_id", "attachment_name"],
+                "title": "get_attachment_contentArguments",
                 "type": "object"
             },
             "annotations": {

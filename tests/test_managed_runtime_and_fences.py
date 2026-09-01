@@ -24,6 +24,7 @@ from mcp_email_server.config import (
     delete_settings,
     get_settings,
 )
+from mcp_email_server.imap_keywords import ImapKeywordTag
 from mcp_email_server.managed import ManagedCatalog
 from mcp_email_server.windows_security import ensure_private_parent, harden_private_file
 
@@ -73,7 +74,15 @@ def _harden_private_test_file(path: Path) -> None:
         path.chmod(0o600)
 
 
-def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, complete: bool = True):
+def _select_managed(
+    monkeypatch,
+    tmp_path: Path,
+    fake_keyring,
+    *,
+    complete: bool = True,
+    tags: tuple[ImapKeywordTag, ...] = (),
+    enable_attachment_content: bool = False,
+):
     parent = _private_directory(tmp_path / "managed")
     config_path = parent / "config.toml"
     database = parent / "catalog.sqlite3"
@@ -89,9 +98,20 @@ def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, complete: bool
             port=993,
         ),
         outgoing=None,
+        tags=tags,
     )
     if complete:
         catalog.set_secret("managed-alice", "incoming", "runtime-secret")
+    if enable_attachment_content:
+        policy = catalog.policy()
+        catalog.update_policy(
+            expected_revision=policy.revision,
+            enable_attachment_download=policy.enable_attachment_download,
+            enable_attachment_content=True,
+            allowed_recipients=policy.allowed_recipients,
+            allowed_senders=policy.allowed_senders,
+            report_blocked_mutations=policy.report_blocked_mutations,
+        )
     config_path.write_text(
         f"bootstrap_version = {BOOTSTRAP_VERSION}\n"
         'mode = "managed"\n'
@@ -107,14 +127,24 @@ def _select_managed(monkeypatch, tmp_path: Path, fake_keyring, *, complete: bool
 
 
 def test_managed_get_settings_uses_non_secret_catalog_not_legacy_or_environment(monkeypatch, tmp_path, fake_keyring):
-    _config_path, catalog = _select_managed(monkeypatch, tmp_path, fake_keyring)
+    tag = ImapKeywordTag(name="important", keyword="$Important", writable=True)
+    _config_path, catalog = _select_managed(
+        monkeypatch,
+        tmp_path,
+        fake_keyring,
+        tags=(tag,),
+        enable_attachment_content=True,
+    )
     monkeypatch.setenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS", "env@example.test")
     monkeypatch.setenv("MCP_EMAIL_SERVER_PASSWORD", "environment-secret")
     monkeypatch.setenv("MCP_EMAIL_SERVER_IMAP_HOST", "env-imap.example.test")
+    monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT", "false")
 
     settings = get_settings(reload=True)
 
     assert [account.account_name for account in settings.emails] == ["managed-alice"]
+    assert settings.emails[0].tags == (tag,)
+    assert settings.enable_attachment_content is True
     assert settings.emails[0].incoming.password.get_secret_value() == ""
     assert (
         catalog.load_account("managed-alice", roles=("incoming",)).incoming.password.get_secret_value()

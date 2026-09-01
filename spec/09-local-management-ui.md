@@ -25,7 +25,7 @@ The UI MUST provide the managed management plane:
 - list/show/create/edit managed accounts;
 - disable, re-enable, and soft-remove accounts with confirmation;
 - set/rotate/remove credentials and perform explicit bounded cleanup;
-- view/edit catalog and account policy;
+- view/edit catalog policy and account-scoped semantic IMAP tag definitions;
 - automatically preview effective TOML/environment legacy import on entry and
   explicitly apply only a changed, conflict-free plan;
 - run bounded doctor and index-health checks;

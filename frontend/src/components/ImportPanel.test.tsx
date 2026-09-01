@@ -12,6 +12,7 @@ const emptyPlan = (): LegacyImportPlan => ({
   accounts: [],
   source_policy: {
     enable_attachment_download: false,
+    enable_attachment_content: false,
     allowed_recipients: [],
     allowed_senders: [],
     report_blocked_mutations: false,

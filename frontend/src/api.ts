@@ -206,6 +206,7 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
     updatePolicy: (policy, target) => catalogMutate('policy/update', {
       expected_revision: policy.revision,
       enable_attachment_download: policy.enable_attachment_download,
+      enable_attachment_content: policy.enable_attachment_content,
       allowed_recipients: policy.allowed_recipients,
       allowed_senders: policy.allowed_senders,
       report_blocked_mutations: policy.report_blocked_mutations,

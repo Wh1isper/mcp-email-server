@@ -1,3 +1,5 @@
+import base64
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -6,11 +8,11 @@ from typing import Annotated, Literal
 
 import anyio
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource, ToolAnnotations
 from pydantic import Field
 
 from mcp_email_server.application.accounts import AvailableAccount, EffectiveConfiguration
-from mcp_email_server.application.limits import APPLICATION_LIMITS
+from mcp_email_server.application.limits import APPLICATION_LIMITS, validate_serialized_result
 from mcp_email_server.application.metadata import ListEmailMetadataQuery
 from mcp_email_server.application.mutations import (
     MUTABLE_EMAIL_FLAGS,
@@ -29,6 +31,7 @@ from mcp_email_server.application.mutations import (
     SendCommand,
     SendMutationOutcome,
     SetEmailFlagsCommand,
+    SetEmailTagsCommand,
     TargetMutationOutcome,
 )
 from mcp_email_server.application.reads import (
@@ -42,6 +45,7 @@ from mcp_email_server.emails.models import (
     EmailMetadataPageResponse,
     MailboxInfo,
 )
+from mcp_email_server.imap_keywords import ImapKeywordTag
 from mcp_email_server.runtime import close_application_runtime, get_application_runtime
 
 MAX_IMAP_UID_CHARACTERS = len(str(APPLICATION_LIMITS.maximum_imap_uid))
@@ -87,6 +91,10 @@ async def set_email_flags_command(command: SetEmailFlagsCommand) -> BatchMutatio
     return await get_application_runtime().mutations.set_flags.execute(command)
 
 
+async def set_email_tags_command(command: SetEmailTagsCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.set_tags.execute(command)
+
+
 async def mark_read_command(command: MarkReadCommand) -> BatchMutationOutcome:
     return await get_application_runtime().mutations.mark_read.execute(command)
 
@@ -109,6 +117,10 @@ async def list_mailboxes_query(query: ListMailboxesQuery) -> list[MailboxInfo]:
 
 async def download_attachment_command(command: DownloadAttachmentCommand) -> AttachmentDownloadResponse:
     return await get_application_runtime().reads.attachments.execute(command)
+
+
+async def get_attachment_content_command(command: DownloadAttachmentCommand):
+    return await get_application_runtime().reads.attachment_content.execute(command)
 
 
 def effective_configuration() -> EffectiveConfiguration:
@@ -277,6 +289,21 @@ async def list_available_accounts() -> AccountDiscoveryResult:
 
 
 @mcp.tool(
+    description=(
+        "List the configured semantic IMAP tags for one account. The name and description support natural-language "
+        "selection; writable is false unless explicitly enabled in the account configuration."
+    ),
+    annotations=_READ_ONLY_LOCAL,
+)
+async def list_email_tags(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+) -> list[ImapKeywordTag]:
+    return list(get_application_runtime().metadata.list_tags(account_name))
+
+
+@mcp.tool(
     description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.",
     annotations=_READ_ONLY_REMOTE,
 )
@@ -372,6 +399,18 @@ async def list_emails_metadata(
             "(multipart/mixed heuristic; may miss inline images or yield false positives).",
         ),
     ] = None,
+    semantic_tags: Annotated[
+        list[FlagInput] | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.flags,
+            description="Configured semantic tag names to match.",
+        ),
+    ] = None,
+    tag_match: Annotated[
+        Literal["all", "any"],
+        Field(default="all", description="Require all requested tags or at least any one requested tag."),
+    ] = "all",
 ) -> EmailMetadataPageResponse:
     return await list_email_metadata(
         ListEmailMetadataQuery(
@@ -391,6 +430,8 @@ async def list_emails_metadata(
             body=body,
             text=text,
             has_attachment=has_attachment,
+            semantic_tags=tuple(semantic_tags or ()),
+            tag_match=tag_match,
         )
     )
 
@@ -867,6 +908,62 @@ async def set_email_flags(
 
 @mcp.tool(
     description=(
+        "Add or remove configured writable semantic tags on emails. Only semantic names are accepted; "
+        "standard flags and unrelated provider keywords are preserved."
+    ),
+    annotations=_IDEMPOTENT_REMOTE_MUTATION,
+)
+async def set_email_tags(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id values whose tags should be changed.",
+        ),
+    ],
+    operation: Annotated[
+        Literal["add", "remove"],
+        Field(description="Whether to add or remove every supplied semantic tag."),
+    ],
+    tags: Annotated[
+        list[FlagInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.flags,
+            description="Configured writable semantic tag names.",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox containing the emails.",
+        ),
+    ] = "INBOX",
+) -> str:
+    outcome = await set_email_tags_command(
+        SetEmailTagsCommand(
+            account_name=account_name,
+            email_ids=tuple(email_ids),
+            operation=operation,
+            tags=tuple(tags),
+            mailbox=mailbox,
+        )
+    )
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        action = "added" if operation == "add" else "removed"
+        return f"Successfully {action} configured tags on {len(succeeded)} email(s)"
+    return f"Set-tags result [{_tagged_batch_result(outcome)}]"
+
+
+@mcp.tool(
+    description=(
         "Mark one or more emails as read by email_id. This is the common-workflow equivalent of adding \\Seen "
         "with set_email_flags. Use list_emails_metadata first. Partial or ambiguous effects report per-ID "
         "succeeded/failed/unknown status and are not retried automatically."
@@ -1008,6 +1105,67 @@ async def list_mailboxes(
     return await list_mailboxes_query(
         ListMailboxesQuery(account_name=account_name, pattern=pattern, reference=reference)
     )
+
+
+@mcp.tool(
+    description=(
+        "Read one email attachment as an MCP embedded binary resource without writing a local file. "
+        "This independent transfer mode requires enable_attachment_content=true."
+    ),
+    annotations=_READ_ONLY_REMOTE,
+)
+async def get_attachment_content(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    email_id: Annotated[
+        UidInput,
+        Field(description="The email ID obtained from list_emails_metadata or get_emails_content."),
+    ],
+    attachment_name: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.attachment_path_bytes,
+            description="The attachment filename shown in the message's attachments list.",
+        ),
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="The mailbox containing the email.",
+        ),
+    ] = "INBOX",
+) -> CallToolResult:
+    payload = await get_attachment_content_command(
+        DownloadAttachmentCommand(
+            account_name=account_name,
+            email_id=email_id,
+            attachment_name=attachment_name,
+            mailbox=mailbox,
+        )
+    )
+    uri = f"email-attachment://content/{secrets.token_urlsafe(18)}"
+    resource = BlobResourceContents.model_validate({
+        "uri": uri,
+        "mimeType": payload.mime_type,
+        "blob": base64.b64encode(payload.content).decode("ascii"),
+    })
+    embedded = EmbeddedResource.model_validate({
+        "type": "resource",
+        "resource": resource,
+        "_meta": {
+            "filename": payload.attachment_name,
+            "size": len(payload.content),
+        },
+    })
+    result = CallToolResult(content=[embedded])
+    try:
+        validate_serialized_result(result.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+    except ValueError:
+        raise ValueError("serialized attachment content exceeds the global result limit") from None
+    return result
 
 
 @mcp.tool(

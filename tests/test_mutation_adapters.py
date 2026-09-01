@@ -22,6 +22,7 @@ from mcp_email_server.application.mutations import (
     SendCommand,
     SentCopyMutationOutcome,
     SetEmailFlagsCommand,
+    SetEmailTagsCommand,
 )
 from mcp_email_server.config import EmailSettings
 
@@ -83,6 +84,26 @@ async def test_mutation_adapter_forwards_generic_flag_contract_and_policy() -> N
         ["1", "2"],
         "remove",
         [r"\Seen", r"\Flagged"],
+        "Archive",
+        ["*@allowed.test"],
+        True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mutation_adapter_forwards_generic_tag_contract_and_policy() -> None:
+    outcome = MagicMock()
+    handler = MagicMock()
+    handler.incoming_client.set_email_tags_with_outcome = AsyncMock(return_value=outcome)
+    provider = ClassicMutationProvider(handler)
+    account = MutationAccountSnapshot("primary", "managed", ("*@allowed.test",), (), True, can_send=True)
+    command = SetEmailTagsCommand("primary", ("1", "2"), "remove", ("$label4",), "Archive")
+
+    assert await provider.set_tags(command, account) is outcome
+    handler.incoming_client.set_email_tags_with_outcome.assert_awaited_once_with(
+        ["1", "2"],
+        "remove",
+        ["$label4"],
         "Archive",
         ["*@allowed.test"],
         True,

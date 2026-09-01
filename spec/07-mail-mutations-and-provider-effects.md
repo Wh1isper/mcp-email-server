@@ -60,6 +60,19 @@ separate `mark_as_read` option requests the focused workflow. Tagged protocol
 completion produces individual success, failure, or unknown outcomes, and an
 ambiguous effect is not retried automatically.
 
+`set_email_tags` is the separate provider-keyword workflow. Inputs use
+configured semantic names only; every requested tag must exist in the current
+account configuration and have `writable=true`. Name matching is
+ASCII-case-insensitive and non-writable is the safe per-tag default. The request
+selects exactly one idempotent operation, `add` or `remove`, and a non-empty
+unique semantic-tag list. The provider issues one UID-scoped `+FLAGS.SILENT` or
+`-FLAGS.SILENT` command per target with only the resolved provider keywords.
+Unknown provider keywords, read-only configured tags, and all standard system
+flags are untouched. The workflow retains input-aligned per-UID outcomes,
+sender-policy behavior, timeout/ambiguity evidence, current-authority checks,
+and projection invalidation. It makes no mailbox-wide or multi-target atomicity
+claim.
+
 ## Save or Append
 
 Saving a message to a mailbox is an IMAP APPEND effect. The request bounds
@@ -340,3 +353,7 @@ enter public errors.
     preserve source MIME type and parameters, that forwarded-part size evidence
     includes SMTP CRLF expansion, and that an existing `Fwd:` subject prefix is
     not duplicated.
+14. Tag mutation tests prove add, per-message replacement, empty replacement,
+    multiple UIDs, non-writable rejection, and preservation of system,
+    read-only, and unknown keywords with the same effect evidence and metadata
+    invalidation rules as other mailbox mutations.

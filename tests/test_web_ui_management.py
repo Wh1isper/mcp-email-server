@@ -11,9 +11,11 @@ from mcp_email_server.application.management import (
     CatalogInitializationResult,
     CredentialMutationResult,
     EndpointSummary,
+    ManagedPolicy,
     ManagementError,
     RevisionConflictError,
 )
+from mcp_email_server.imap_keywords import ImapKeywordTag
 from mcp_email_server.web_ui.app import LocalUiState, create_local_ui_app
 from mcp_email_server.web_ui.models import ApplyImportRequest
 
@@ -29,7 +31,11 @@ def _endpoint() -> EndpointSummary:
     )
 
 
-def _details(*, revision: int = 4) -> AccountDetails:
+def _details(
+    *,
+    revision: int = 4,
+    tags: tuple[ImapKeywordTag, ...] = (),
+) -> AccountDetails:
     return AccountDetails(
         name="alice",
         full_name="Alice",
@@ -42,6 +48,7 @@ def _details(*, revision: int = 4) -> AccountDetails:
         outgoing=None,
         incoming_binding="ACTIVE",
         outgoing_binding=None,
+        tags=tags,
     )
 
 
@@ -160,6 +167,14 @@ async def test_create_account_passes_secret_once_and_never_echoes_it() -> None:
                 },
                 outgoing=None,
                 credentials={"incoming": sentinel, "outgoing": None},
+                tags=[
+                    {
+                        "name": "important",
+                        "keyword": "$Important",
+                        "description": "Important messages",
+                        "writable": True,
+                    }
+                ],
             ),
         )
     finally:
@@ -175,6 +190,83 @@ async def test_create_account_passes_secret_once_and_never_echoes_it() -> None:
     assert command.incoming_secret.get_secret_value() == sentinel
     assert sentinel not in repr(command)
     assert command.incoming.host == "imap.example.test"
+    assert command.tags == (
+        ImapKeywordTag(
+            name="important",
+            keyword="$Important",
+            description="Important messages",
+            writable=True,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_account_and_policy_requests_include_tags_and_attachment_content() -> None:
+    management = MagicMock()
+    tag = ImapKeywordTag(name="triage", keyword="$Triage", writable=True)
+    management.accounts.show.side_effect = [_details(revision=4), _details(revision=5, tags=(tag,))]
+    management.policy.update.return_value = ManagedPolicy(
+        revision=8,
+        enable_attachment_download=False,
+        enable_attachment_content=True,
+        allowed_recipients=(),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
+    state, client, csrf = await _authenticated(management, port=8787)
+    try:
+        updated_account = await client.post(
+            f"{state.route_prefix}/api/accounts/alice/update",
+            headers=_mutation_headers(state, csrf),
+            json=_target_payload(
+                expected_revision=4,
+                name="alice",
+                full_name="Alice",
+                email_address="alice@example.test",
+                save_to_sent=True,
+                sent_folder_name=None,
+                incoming={
+                    "host": "imap.example.test",
+                    "port": 993,
+                    "use_ssl": True,
+                    "start_ssl": False,
+                    "verify_ssl": True,
+                    "user_name": "alice@example.test",
+                },
+                outgoing=None,
+                tags=[{"name": "triage", "keyword": "$Triage", "writable": True}],
+            ),
+        )
+        updated_policy = await client.post(
+            f"{state.route_prefix}/api/policy/update",
+            headers=_mutation_headers(state, csrf),
+            json=_target_payload(
+                expected_revision=7,
+                enable_attachment_download=False,
+                enable_attachment_content=True,
+                allowed_recipients=[],
+                allowed_senders=[],
+                report_blocked_mutations=False,
+            ),
+        )
+    finally:
+        await client.aclose()
+
+    assert updated_account.status_code == 200, updated_account.text
+    assert updated_account.json()["tags"] == [
+        {
+            "name": "triage",
+            "keyword": "$Triage",
+            "description": "",
+            "writable": True,
+        }
+    ]
+    command = management.accounts.update.call_args.args[0]
+    assert command.tags == (tag,)
+    assert updated_policy.status_code == 200, updated_policy.text
+    policy = management.policy.update.call_args.args[0]
+    assert policy.enable_attachment_download is False
+    assert policy.enable_attachment_content is True
 
 
 @pytest.mark.asyncio

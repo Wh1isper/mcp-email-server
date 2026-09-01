@@ -95,6 +95,50 @@ async def test_set_email_flags_removes_multiple_flags_with_silent_store(email_se
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("operation", "store_operation"),
+    [("add", "+FLAGS.SILENT"), ("remove", "-FLAGS.SILENT")],
+)
+async def test_set_email_tags_adds_or_removes_keywords_with_silent_store(
+    email_server,
+    operation: str,
+    store_operation: str,
+) -> None:
+    client = EmailClient(email_server)
+    imap = _imap()
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        result = await client.set_email_tags_with_outcome(
+            ["8", "9"],
+            cast(FlagOperation, operation),
+            ["$label4"],
+            "Archive",
+            [],
+            False,
+        )
+
+    assert result.targets("succeeded") == ["8", "9"]
+    assert [call.args for call in imap.uid.await_args_list] == [
+        ("store", "8", store_operation, "($label4)"),
+        ("store", "9", store_operation, "($label4)"),
+    ]
+    imap.select.assert_awaited_once_with('"Archive"')
+
+
+@pytest.mark.asyncio
+async def test_set_email_tags_rejects_empty_tags_before_connect(email_server) -> None:
+    client = EmailClient(email_server)
+    connect = AsyncMock()
+
+    with (
+        patch.object(client, "_connect_imap", connect),
+        pytest.raises(ValueError, match="tags must contain between 1 and"),
+    ):
+        await client.set_email_tags_with_outcome(["8"], "add", [], "INBOX", [], False)
+
+    connect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("operation", "flags", "message"),
     [
         ("replace", [r"\Seen"], "operation must be"),

@@ -552,6 +552,51 @@ class TestParseHeadersExposesMessageId:
         assert result["message_id"] is None
 
 
+@pytest.mark.asyncio
+async def test_fetch_attachment_is_not_bounded_by_download_ceiling(email_client) -> None:
+    raw_email = _build_email_with_explicit_attachment()
+    mock_imap = AsyncMock()
+    mock_imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+    mock_imap.select = AsyncMock(return_value=("OK", [b"1"]))
+    mock_imap.logout = AsyncMock()
+
+    async def fake_fetch(_imap, _email_id):
+        return [b"1 FETCH (BODY[] {%d}" % len(raw_email), bytearray(raw_email), b")"]
+
+    with (
+        patch.object(email_client, "_connect_imap", AsyncMock(return_value=mock_imap)),
+        patch.object(email_client, "_fetch_email_with_formats", side_effect=fake_fetch),
+        patch("mcp_email_server.emails.classic.MAX_ATTACHMENT_BYTES", 4),
+    ):
+        result = await email_client.fetch_attachment("1", "report.pdf")
+
+    assert result["content"] == b"%PDF-1.4 fake pdf bytes"
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_retains_download_ceiling(email_client, tmp_path) -> None:
+    destination = tmp_path / "report.pdf"
+    with (
+        patch.object(
+            email_client,
+            "fetch_attachment",
+            AsyncMock(
+                return_value={
+                    "email_id": "1",
+                    "attachment_name": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "content": b"12345",
+                }
+            ),
+        ),
+        patch("mcp_email_server.emails.classic.MAX_ATTACHMENT_BYTES", 4),
+        pytest.raises(ValueError, match="attachment exceeds 4 bytes"),
+    ):
+        await email_client.download_attachment("1", "report.pdf", str(destination))
+
+    assert not destination.exists()
+
+
 class TestDownloadInlineAttachment:
     """``download_attachment`` finds inline-disposition attachments by filename."""
 

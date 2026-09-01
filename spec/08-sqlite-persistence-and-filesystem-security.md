@@ -21,7 +21,7 @@ logical model includes:
 
 - catalog metadata: stable ID, revision, schema version, timestamps;
 - accounts: stable ID, normalized unique name, display data, lifecycle,
-  revision, timestamps;
+  revision, account-scoped semantic IMAP tag definitions, and timestamps;
 - IMAP/SMTP endpoint configuration without credentials;
 - catalog defaults and account policy overrides;
 - role binding state: revision, opaque internal handles, active/superseded and
@@ -43,7 +43,9 @@ Windows catalog copies, snapshots, and backups therefore contain plaintext
 secret values and MUST retain private protection equivalent to the original;
 they are never classified as non-secret databases. Bodies, raw MIME,
 attachment bytes, UI bootstrap/session/CSRF state, and browser view state MUST
-NOT be stored in managed SQLite.
+NOT be stored in managed SQLite. Semantic tag definitions are bounded non-secret
+account configuration; provider message keyword observations remain projection
+data.
 
 ## Schema Version and Migration
 

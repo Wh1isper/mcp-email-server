@@ -151,6 +151,65 @@ test('opens and focuses the nickname item after a duplicate-name response', asyn
   expect(secret).toHaveValue('')
 })
 
+test('creates an account with addable and removable tag rows', async () => {
+  const user = userEvent.setup()
+  const api = createMockApi()
+  render(<AccountsPanel api={api} target={target} />)
+
+  await user.click(await screen.findByRole('button', { name: 'Add your first account' }))
+  await user.type(screen.getByLabelText('Email address'), 'alice@example.test')
+  await user.type(screen.getByLabelText('Password or app password'), 'one-use-secret')
+  await user.click(screen.getByText('Email tags (optional)'))
+  await user.click(screen.getByRole('button', { name: 'Add tag' }))
+  await user.type(screen.getByLabelText('Tag 1 name'), 'todo')
+  await user.type(screen.getByLabelText('Tag 1 IMAP keyword'), '$label4')
+  await user.type(screen.getByLabelText('Tag 1 description'), 'Needs action')
+  await user.click(screen.getByRole('checkbox', { name: 'Writable through MCP' }))
+  await user.click(screen.getByRole('button', { name: 'Add tag' }))
+  await user.type(screen.getByLabelText('Tag 2 name'), 'remove-me')
+  await user.click(screen.getByRole('button', { name: 'Remove tag 2: remove-me' }))
+  await user.click(screen.getByRole('button', { name: 'Add account' }))
+
+  await waitFor(() => expect(api.createAccount).toHaveBeenCalledWith(expect.objectContaining({
+    tags: [{ name: 'todo', keyword: '$label4', description: 'Needs action', writable: true }],
+  }), { incoming: 'one-use-secret', outgoing: null }, 1, target))
+})
+
+test('edits existing account tags and includes them in the update payload', async () => {
+  const user = userEvent.setup()
+  const api = createMockApi()
+  const account = {
+    name: 'work', email_address: 'alice@example.test', enabled: true, revision: 3,
+    has_outgoing: false, incoming_binding: 'ACTIVE' as const, outgoing_binding: null,
+    full_name: 'Alice Example', save_to_sent: true, sent_folder_name: null,
+    tags: [{ name: 'todo', keyword: '$label4', description: '', writable: false }],
+    incoming: {
+      host: 'imap.example.test', port: 993, user_name: 'alice@example.test',
+      use_ssl: true, start_ssl: false, verify_ssl: true,
+    },
+    outgoing: null,
+  }
+  vi.mocked(api.accounts).mockResolvedValue([account])
+  vi.mocked(api.account).mockResolvedValue(account)
+  render(<AccountsPanel api={api} target={target} />)
+
+  await user.click(await screen.findByRole('button', { name: 'Edit' }))
+  await user.type(screen.getByLabelText('Tag 1 description'), 'Needs action')
+  await user.click(screen.getByRole('checkbox', { name: 'Writable through MCP' }))
+  await user.click(screen.getByRole('button', { name: 'Add tag' }))
+  await user.type(screen.getByLabelText('Tag 2 name'), 'waiting')
+  await user.type(screen.getByLabelText('Tag 2 IMAP keyword'), '$label5')
+  await user.click(screen.getByRole('button', { name: 'Save changes' }))
+
+  await waitFor(() => expect(api.updateAccount).toHaveBeenCalledWith('work', expect.objectContaining({
+    expected_revision: 3,
+    tags: [
+      { name: 'todo', keyword: '$label4', description: 'Needs action', writable: true },
+      { name: 'waiting', keyword: '$label5', description: '', writable: false },
+    ],
+  }), target))
+})
+
 test('editing an email address does not silently rename hidden account identity', async () => {
   const user = userEvent.setup()
   const api = createMockApi()
@@ -165,6 +224,7 @@ test('editing an email address does not silently rename hidden account identity'
     full_name: 'Alice Example',
     save_to_sent: true,
     sent_folder_name: null,
+    tags: [],
     incoming: {
       host: 'imap.example.test', port: 993, user_name: 'alice@example.test',
       use_ssl: true, start_ssl: false, verify_ssl: true,
@@ -193,7 +253,7 @@ test('hides stale account actions when a post-write refresh fails', async () => 
   const account = {
     name: 'work', email_address: 'alice@example.test', enabled: true, revision: 3,
     has_outgoing: false, incoming_binding: 'ACTIVE' as const, outgoing_binding: null,
-    full_name: 'Alice Example', save_to_sent: true, sent_folder_name: null,
+    full_name: 'Alice Example', save_to_sent: true, sent_folder_name: null, tags: [],
     incoming: {
       host: 'imap.example.test', port: 993, user_name: 'alice@example.test',
       use_ssl: true, start_ssl: false, verify_ssl: true,

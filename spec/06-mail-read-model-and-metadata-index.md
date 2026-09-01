@@ -8,8 +8,19 @@ never a complete offline mailbox and may be rebuilt without changing provider
 truth.
 
 Read workflows are mailbox discovery, metadata listing/search, body retrieval,
-and attachment materialization. Each begins from a current operational account
+attachment transfer, and attachment materialization. Each begins from a current operational account
 snapshot and uses late credential resolution from spec 05.
+
+Message flags are split at the public boundary. `provider_keywords` contains
+every observed non-system IMAP keyword, including unknown provider keywords.
+`semantic_tags` contains only configured semantic names whose provider keyword
+is present. Standard system flags remain separate and never appear in either
+field. The same fields are returned by metadata listing and full-content reads.
+The projection stores the last bounded provider flag observation, but a page
+answered from the projection refreshes current FLAGS for only its returned UIDs
+before exposing keywords. Semantic names are resolved from the currently
+selected account configuration when constructing a response, so a configuration
+change never requires a projection rewrite.
 
 ## Mailbox Discovery
 
@@ -64,6 +75,14 @@ Otherwise the service queries IMAP, returns a provider-qualified result, and
 updates the projection only with evidence actually observed. Partial scans,
 bounded windows, failed refreshes, or interrupted fetches never delete rows by
 absence and never produce an exact total claim.
+
+Tag filters accept configured semantic names only, resolve them to provider
+keywords, and issue IMAP `KEYWORD` search before sorting and pagination. `all`
+requires every resolved keyword; `any` builds the exact nested IMAP `OR`
+predicate. Name matching is ASCII-case-insensitive and unknown requested tags
+fail before provider access. The projection never answers a tag-filtered query
+because external clients may mutate keywords without changing UIDNEXT or message
+count.
 
 ## Metadata Query Flow
 
@@ -198,6 +217,18 @@ local-only response. Logs and remote/provider errors do not include it. Partial
 files are removed when their identity can be proven; otherwise the operation
 returns a bounded cleanup warning without deleting an unverified path.
 
+`get_attachment_content` shares the same MIME lookup, sender allowlist, and
+current account authority as attachment materialization, but performs no
+filesystem write. It has the independent `enable_attachment_content` policy,
+which defaults to `false` because the default product mode is a local client with
+filesystem access. Operators of ChatGPT apps and other clients without a shared
+filesystem enable it explicitly. The tool returns one content-only MCP embedded
+blob resource with filename metadata, MIME type, exact size, an opaque response
+URI, and the original decoded bytes. The blob appears exactly once and the
+canonical complete MCP result must fit the existing global serialized-result
+ceiling; there is no second configurable or attachment-specific inline limit.
+`download_attachment` remains unchanged.
+
 ## Index Writes and Failures
 
 Projection writes occur after provider reads and outside provider sessions when
@@ -240,3 +271,9 @@ catalog authority or secret binding state.
    ASCII astring escaping, multi-literal UTF-8 SEARCH continuations and failure
    framing, LIST completion filtering and literal lengths, and case-insensitive
    special-use attributes.
+9. Metadata and content return every non-system provider keyword plus configured
+   semantic names, preserve unknown keywords, and implement exact
+   pre-pagination `all` and `any` filtering for semantic-name inputs.
+10. Embedded attachment content preserves filename, MIME type, size, opaque URI,
+    and bytes exactly once; its independent default-off policy and global
+    serialized-result ceiling are proven without writing a local file.

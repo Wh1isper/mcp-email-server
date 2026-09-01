@@ -129,7 +129,7 @@ async def _server(tmp_path: Path, *, probe: bool = False) -> AsyncIterator[RawSt
 @pytest.mark.asyncio
 async def test_raw_stdio_initialization_catalog_stdout_purity_and_idle_eof(tmp_path: Path) -> None:
     expected = json.loads((REPOSITORY / "tests/fixtures/mcp_catalog.json").read_text(encoding="utf-8"))
-    async with _server(tmp_path) as server:
+    async with _server(tmp_path, probe=True) as server:
         initialized = await server.initialize()
         assert initialized["result"]["protocolVersion"] == "2025-06-18"
         assert initialized["result"]["serverInfo"] == {
@@ -152,6 +152,30 @@ async def test_raw_stdio_initialization_catalog_stdout_purity_and_idle_eof(tmp_p
         assert results["resources"] == expected["resources"]
         assert results["resourceTemplates"] == expected["resource_templates"]
         assert results["prompts"] == expected["prompts"]
+
+        await server.send({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "get_attachment_content",
+                "arguments": {
+                    "account_name": "work",
+                    "email_id": "7",
+                    "attachment_name": "private-report.bin",
+                },
+            },
+        })
+        attachment_result = (await server.response(6))["result"]
+        assert "structuredContent" not in attachment_result
+        assert len(attachment_result["content"]) == 1
+        embedded = attachment_result["content"][0]
+        assert embedded["type"] == "resource", embedded
+        assert embedded["resource"]["blob"] == "cmF3LXN0ZGlvLWF0dGFjaG1lbnQ="
+        assert "work" not in embedded["resource"]["uri"]
+        assert "private-report.bin" not in embedded["resource"]["uri"]
+        assert json.dumps(attachment_result).count(embedded["resource"]["blob"]) == 1
+
         await server.close_stdin()
         assert await server.wait() == 0
         assert all(frame["jsonrpc"] == "2.0" for frame in server.frames)

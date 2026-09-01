@@ -8,12 +8,12 @@ import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import PurePosixPath
 from typing import Any, TypeVar
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
@@ -267,7 +267,10 @@ def _role(request: Request) -> BindingRole:
 
 
 def _asdict(value: object) -> dict[str, object]:
-    return asdict(value)  # type: ignore[arg-type]
+    result = TypeAdapter(type(value)).dump_python(value, mode="json")
+    if not isinstance(result, dict):
+        raise TypeError(f"Expected dataclass result, got {type(result).__name__}")
+    return result
 
 
 def _account_details(value: AccountDetails) -> dict[str, object]:
@@ -410,6 +413,7 @@ async def _create_account(_request: Request, state: LocalUiState, payload: Creat
             outgoing_secret=payload.credentials.outgoing,
             save_to_sent=payload.save_to_sent,
             sent_folder_name=payload.sent_folder_name,
+            tags=payload.tags,
         ),
     )
     return {

@@ -73,6 +73,7 @@ describe('bootstrap and API security behavior', () => {
     await api.updatePolicy({
       revision: 8,
       enable_attachment_download: false,
+      enable_attachment_content: true,
       allowed_recipients: [],
       allowed_senders: [],
       report_blocked_mutations: false,
@@ -84,12 +85,58 @@ describe('bootstrap and API security behavior', () => {
     expect(JSON.parse(body)).toEqual({
       expected_revision: 8,
       enable_attachment_download: false,
+      enable_attachment_content: true,
       allowed_recipients: [],
       allowed_senders: [],
       report_blocked_mutations: false,
       expected_bootstrap_revision: 4,
       expected_catalog: '/private/catalog.sqlite3',
     })
+  })
+
+  test('serializes account tags in create and update payloads', async () => {
+    window.history.replaceState(null, '', '/route/')
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf: 'csrf-value' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ incoming: {}, outgoing: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const api = createApi(fetcher)
+    await api.session()
+    const input = {
+      name: 'work',
+      full_name: 'Alice Example',
+      email_address: 'alice@example.test',
+      save_to_sent: true,
+      sent_folder_name: null,
+      incoming: {
+        host: 'imap.example.test', port: 993, user_name: 'alice@example.test',
+        use_ssl: true, start_ssl: false, verify_ssl: true,
+      },
+      outgoing: null,
+      tags: [{ name: 'todo', keyword: '$label4', description: 'Needs action', writable: true }],
+    }
+    const target = { expected_bootstrap_revision: 4, expected_catalog: '/private/catalog.sqlite3' }
+
+    await api.createAccount(input, { incoming: 'secret', outgoing: null }, 6, target)
+    await api.updateAccount('work', { ...input, expected_revision: 7 }, target)
+
+    const createBody = fetcher.mock.calls[1]?.[1]?.body
+    const updateBody = fetcher.mock.calls[2]?.[1]?.body
+    expect(typeof createBody).toBe('string')
+    expect(typeof updateBody).toBe('string')
+    if (typeof createBody !== 'string' || typeof updateBody !== 'string') throw new Error('Expected JSON request bodies')
+    expect(JSON.parse(createBody)).toEqual(expect.objectContaining({
+      tags: input.tags,
+      credentials: { incoming: 'secret', outgoing: null },
+      expected_catalog_revision: 6,
+      ...target,
+    }))
+    expect(JSON.parse(updateBody)).toEqual(expect.objectContaining({
+      tags: input.tags,
+      expected_revision: 7,
+      ...target,
+    }))
   })
 
   test('returns a typed conflict without replaying a mutation', async () => {

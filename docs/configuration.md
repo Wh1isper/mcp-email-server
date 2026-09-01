@@ -480,6 +480,7 @@ The following example contains all commonly used account fields:
 ```toml
 credential_storage = "auto"
 enable_attachment_download = false
+enable_attachment_content = false
 allowed_recipients = []
 allowed_senders = []
 report_blocked_mutations = false
@@ -491,6 +492,12 @@ full_name = "John Doe"
 email_address = "john@example.com"
 save_to_sent = true
 sent_folder_name = "Sent"
+
+[[emails.tags]]
+name = "todo"
+keyword = "$label4"
+description = "Messages requiring an action"
+writable = true
 
 [emails.incoming]
 user_name = "john@example.com"
@@ -649,12 +656,28 @@ identifiers are fixed and contain no account-specific information.
 | ---------------------------- | -------- | -------------------------------------------------------------------------- |
 | `credential_storage`         | `"auto"` | Select `auto`, `keyring`, or `plaintext` credential storage.               |
 | `enable_attachment_download` | `false`  | Allow `download_attachment` to write files.                                |
+| `enable_attachment_content`  | `false`  | Allow `get_attachment_content` to return attachment bytes through MCP.     |
 | `allowed_recipients`         | `[]`     | Exact recipients; empty disables sending and recipient-bound saves.        |
 | `allowed_senders`            | `[]`     | Incoming `From` patterns; empty does not restrict reading.                 |
 | `report_blocked_mutations`   | `false`  | Report blocked message IDs instead of returning privacy-preserving no-ops. |
 
 See [Security](security.md) before enabling attachment downloads or applying
 allowlists.
+
+## Semantic IMAP tags
+
+Semantic tags belong to an email account. In managed mode, add or edit them in
+the account form in `mcp-email-server ui`. In legacy mode, define
+`[[emails.tags]]` entries inside the corresponding `[[emails]]` account, as
+shown in the TOML example above.
+
+`name` is the stable semantic value used by MCP tools; `keyword` is the provider
+IMAP keyword. Both are required and are unique within an account, ignoring case.
+`description` defaults to `""`, and `writable` defaults to `false`. Consequently,
+omitting `writable` never grants permission to change that tag. Keywords must be
+non-system IMAP keyword atoms; standard flags such as `\\Seen` are rejected.
+Managed changes are read from current account authority. Restart the MCP server
+after changing legacy TOML.
 
 ## Environment variable reference
 
@@ -692,7 +715,8 @@ values are treated as false. Do not add surrounding whitespace to these values.
 | Variable                                      | Default                                  | Description                                                         |
 | --------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------- |
 | `MCP_EMAIL_SERVER_CONFIG_PATH`                | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                             |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment download access.                                |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment file-download access.                           |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`  | `false`                                  | Override attachment MCP-content transfer access.                    |
 | `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Empty                                    | Comma-separated recipients; empty disables sending.                 |
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Empty                                    | Comma-separated sender globs; empty does not restrict reading.      |
 | `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | `false`                                  | Override blocked mutation reporting.                                |

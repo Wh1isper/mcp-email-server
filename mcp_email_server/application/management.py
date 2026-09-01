@@ -13,10 +13,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal, Protocol, Self
 
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS, validate_controlled_string
 from mcp_email_server.config import EmailServer, EmailSettings, normalize_address_list, normalize_pattern_list
+from mcp_email_server.imap_keywords import ImapKeywordAccount, ImapKeywordTag
 
 BindingRole = Literal["incoming", "outgoing"]
 SecretSourceClass = Literal["plaintext", "keyring", "environment"]
@@ -117,6 +118,7 @@ class AccountDetails:
     outgoing: EndpointSummary | None
     incoming_binding: str
     outgoing_binding: str | None
+    tags: tuple[ImapKeywordTag, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,7 @@ class ManagedPolicy:
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
+    enable_attachment_content: bool = False
 
 
 @dataclass(frozen=True)
@@ -262,6 +265,7 @@ class CreateAccountCommand:
     outgoing_secret: SecretStr | None = field(default=None, repr=False, compare=False)
     save_to_sent: bool = True
     sent_folder_name: str | None = None
+    tags: tuple[ImapKeywordTag, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -316,6 +320,7 @@ class UpdateAccountCommand:
     save_to_sent: bool | None = None
     sent_folder_name: str | None = None
     update_sent_folder: bool = False
+    tags: tuple[ImapKeywordTag, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -329,6 +334,7 @@ class LegacyAccountSnapshot:
     outgoing_secret_source: SecretSourceClass | None
     save_to_sent: bool
     sent_folder_name: str | None
+    tags: tuple[ImapKeywordTag, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,6 +343,7 @@ class LegacyPolicySnapshot:
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
+    enable_attachment_content: bool = False
 
 
 @dataclass(frozen=True)
@@ -347,11 +354,13 @@ class LegacySourceSnapshot:
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
+    enable_attachment_content: bool = False
 
     @property
     def policy(self) -> LegacyPolicySnapshot:
         return LegacyPolicySnapshot(
             enable_attachment_download=self.enable_attachment_download,
+            enable_attachment_content=self.enable_attachment_content,
             allowed_recipients=self.allowed_recipients,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
@@ -424,6 +433,7 @@ class ManagedCatalogPort(Protocol):
         *,
         expected_revision: int,
         enable_attachment_download: bool,
+        enable_attachment_content: bool,
         allowed_recipients: tuple[str, ...],
         allowed_senders: tuple[str, ...],
         report_blocked_mutations: bool,
@@ -448,6 +458,7 @@ class ManagedCatalogPort(Protocol):
         outgoing: EmailServer | EndpointSummary | None,
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
+        tags: tuple[ImapKeywordTag, ...] = (),
         expected_revision: int | None = None,
     ) -> str: ...
 
@@ -480,6 +491,7 @@ class ManagedCatalogPort(Protocol):
         save_to_sent: bool | None = None,
         sent_folder_name: str | None = None,
         update_sent_folder: bool = False,
+        tags: tuple[ImapKeywordTag, ...] | None = None,
     ) -> int: ...
 
     def disable_account(self, name: str, *, expected_revision: int) -> int: ...
@@ -848,6 +860,7 @@ class ManagedAccountService(_ConfiguredCatalogService):
                 field_name="sent folder",
                 maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
             )
+        ImapKeywordAccount(tags=command.tags)
         validate_endpoint(command.incoming, role="incoming")
         incoming_secret = _unwrap_secret(command.incoming_secret, role="incoming")
         if (command.outgoing is None) != (command.outgoing_secret is None):
@@ -865,6 +878,7 @@ class ManagedAccountService(_ConfiguredCatalogService):
             outgoing=command.outgoing,
             save_to_sent=command.save_to_sent,
             sent_folder_name=command.sent_folder_name,
+            tags=command.tags,
             expected_revision=command.expected_catalog_revision,
         )
         incoming = catalog.set_secret(
@@ -901,6 +915,8 @@ class ManagedAccountService(_ConfiguredCatalogService):
         ):
             if value is not None:
                 validate_controlled_string(value, field_name=field_name, maximum_bytes=limit)
+        if command.tags is not None:
+            ImapKeywordAccount(tags=command.tags)
         catalog = self._catalog()
         current = catalog.show_account(command.name)
         incoming = command.incoming.apply(current.incoming) if command.incoming is not None else None
@@ -921,6 +937,7 @@ class ManagedAccountService(_ConfiguredCatalogService):
             save_to_sent=command.save_to_sent,
             sent_folder_name=command.sent_folder_name,
             update_sent_folder=command.update_sent_folder,
+            tags=command.tags,
         )
 
     def disable(self, name: str, *, expected_revision: int) -> int:
@@ -977,7 +994,18 @@ class LegacyImportService(_ConfiguredCatalogService):
 
     @staticmethod
     def _source_fingerprint(source: LegacySourceSnapshot) -> str:
-        canonical = json.dumps(asdict(source), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        def serialize_model(value: object) -> object:
+            if isinstance(value, BaseModel):
+                return value.model_dump(mode="json")
+            raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+        canonical = json.dumps(
+            asdict(source),
+            default=serialize_model,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     @staticmethod
@@ -997,6 +1025,7 @@ class LegacyImportService(_ConfiguredCatalogService):
             and source.outgoing == destination.outgoing
             and source.save_to_sent == destination.save_to_sent
             and source.sent_folder_name == destination.sent_folder_name
+            and source.tags == destination.tags
         )
 
     def _build_plan(
@@ -1075,6 +1104,7 @@ class LegacyImportService(_ConfiguredCatalogService):
         policy = catalog.policy()
         policy_matches = (
             policy.enable_attachment_download == source.policy.enable_attachment_download
+            and policy.enable_attachment_content == source.policy.enable_attachment_content
             and policy.allowed_recipients == source.policy.allowed_recipients
             and policy.allowed_senders == source.policy.allowed_senders
             and policy.report_blocked_mutations == source.policy.report_blocked_mutations
@@ -1301,6 +1331,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                         outgoing_secret=SecretStr(outgoing_secret) if outgoing_secret is not None else None,
                         save_to_sent=account.save_to_sent,
                         sent_folder_name=account.sent_folder_name,
+                        tags=account.tags,
                     )
                 )
                 for role, mutation in (("incoming", result.incoming), ("outgoing", result.outgoing)):
@@ -1411,6 +1442,7 @@ class LegacyImportService(_ConfiguredCatalogService):
             catalog.update_policy(
                 expected_revision=expected_catalog_revision,
                 enable_attachment_download=plan.source_policy.enable_attachment_download,
+                enable_attachment_content=plan.source_policy.enable_attachment_content,
                 allowed_recipients=plan.source_policy.allowed_recipients,
                 allowed_senders=plan.source_policy.allowed_senders,
                 report_blocked_mutations=plan.source_policy.report_blocked_mutations,
@@ -1490,6 +1522,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
         revision = self._catalog().update_policy(
             expected_revision=policy.revision,
             enable_attachment_download=policy.enable_attachment_download,
+            enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=recipients,
             allowed_senders=senders,
             report_blocked_mutations=policy.report_blocked_mutations,
@@ -1497,6 +1530,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
         return ManagedPolicy(
             revision=revision,
             enable_attachment_download=policy.enable_attachment_download,
+            enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=recipients,
             allowed_senders=senders,
             report_blocked_mutations=policy.report_blocked_mutations,

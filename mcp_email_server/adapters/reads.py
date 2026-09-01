@@ -31,6 +31,7 @@ from mcp_email_server.emails.models import (
     EmailContentBatchResponse,
     MailboxInfo,
 )
+from mcp_email_server.imap_keywords import ImapKeywordRegistry
 from mcp_email_server.windows_security import (
     WindowsSecurityError,
     preflight_artifact_destination,
@@ -86,6 +87,11 @@ class ClassicReadProvider:
                     date=email_data["date"],
                     body=email_data["body"],
                     attachments=email_data["attachments"],
+                    provider_keywords=[
+                        flag
+                        for flag in email_data.get("_flags", [])
+                        if isinstance(flag, str) and not flag.startswith("\\")
+                    ],
                 )
             except asyncio.CancelledError:
                 raise
@@ -452,6 +458,8 @@ class LocalReadBackend:
                 mode=resolved.mode,
                 allowed_senders=tuple(resolved.settings.allowed_senders),
                 enable_attachment_download=resolved.settings.enable_attachment_download,
+                enable_attachment_content=resolved.settings.enable_attachment_content,
+                tag_registry=ImapKeywordRegistry.from_tags(resolved.account.tags),
             ),
         )
 

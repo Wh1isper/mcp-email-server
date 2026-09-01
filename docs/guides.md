@@ -288,6 +288,38 @@ second = await get_emails_content(
 Keep the mailbox argument consistent with the mailbox used to obtain the
 `email_id`.
 
+## Work with semantic email tags
+
+Start by calling `list_email_tags(account_name="work")`. A request such as
+“messages requiring an action” can then resolve to the configured `todo` name.
+Filter with `list_emails_metadata(semantic_tags=["todo"], tag_match="all")`.
+Add or remove the tag with
+`set_email_tags(email_ids=["123"], operation="add", tags=["todo"])` or
+`operation="remove"`. Tool inputs use semantic names only, and mutation requires
+the configured tag to have `writable=true`.
+
+## Return attachments to ChatGPT or another remote MCP app
+
+A remote ChatGPT app or custom MCP client does not share the server's filesystem.
+A path returned by `download_attachment` therefore remains a path on the machine
+running `mcp-email-server`; it is not an attachment the remote client can read.
+
+For that setup, expose the server through the HTTPS transport expected by the
+client, or through a trusted secure MCP tunnel, and explicitly enable attachment
+content transfer:
+
+```toml
+enable_attachment_content = true
+```
+
+In managed mode, enable **Allow attachments to be returned through MCP** in the
+local management UI instead. Then call `get_attachment_content` with the message
+ID and filename returned by `get_emails_content`. The tool returns the attachment
+as one embedded binary resource without creating a local file. This setting is
+independent of `enable_attachment_download`; enable only the mode your client
+uses. The complete encoded result must fit the server's existing global result
+ceiling.
+
 ## Import legacy accounts into a managed catalog
 
 Create the destination while keeping legacy runtime selected, preview the

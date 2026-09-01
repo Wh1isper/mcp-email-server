@@ -264,6 +264,7 @@ class LocalManagementBackend:
             outgoing_secret_source=outgoing_source,
             save_to_sent=account.save_to_sent,
             sent_folder_name=account.sent_folder_name,
+            tags=account.tags,
         )
         cls._validate_legacy_account_snapshot(snapshot)
         return snapshot
@@ -419,6 +420,7 @@ class LocalManagementBackend:
         recipients = raw.get("allowed_recipients", [])
         senders = raw.get("allowed_senders", [])
         attachment_download = raw.get("enable_attachment_download", False)
+        attachment_content = raw.get("enable_attachment_content", False)
         report_blocked = raw.get("report_blocked_mutations", False)
         if (
             not isinstance(recipients, list)
@@ -428,18 +430,24 @@ class LocalManagementBackend:
             or len(senders) > APPLICATION_LIMITS.policy_entries
             or not all(isinstance(item, str) for item in senders)
             or not isinstance(attachment_download, bool)
+            or not isinstance(attachment_content, bool)
             or not isinstance(report_blocked, bool)
         ):
             raise ManagementError("Stored legacy policy is invalid")
 
         try:
-            attachment_download, normalized_recipients, normalized_senders, report_blocked = (
-                compose_legacy_policy_environment(
-                    enable_attachment_download=attachment_download,
-                    allowed_recipients=recipients,
-                    allowed_senders=senders,
-                    report_blocked_mutations=report_blocked,
-                )
+            (
+                attachment_download,
+                attachment_content,
+                normalized_recipients,
+                normalized_senders,
+                report_blocked,
+            ) = compose_legacy_policy_environment(
+                enable_attachment_download=attachment_download,
+                enable_attachment_content=attachment_content,
+                allowed_recipients=recipients,
+                allowed_senders=senders,
+                report_blocked_mutations=report_blocked,
             )
         except ValueError as exc:
             raise ManagementError("Effective legacy policy environment is invalid") from exc
@@ -467,6 +475,7 @@ class LocalManagementBackend:
             accounts=accounts,
             unsupported_provider_names=tuple(sorted(provider_names)),
             enable_attachment_download=attachment_download,
+            enable_attachment_content=attachment_content,
             allowed_recipients=tuple(normalized_recipients),
             allowed_senders=tuple(normalized_senders),
             report_blocked_mutations=report_blocked,

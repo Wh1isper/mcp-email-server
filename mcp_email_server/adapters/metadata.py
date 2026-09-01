@@ -31,6 +31,7 @@ from mcp_email_server.emails.classic import (
     MetadataPayloadTooLargeError,
 )
 from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse
+from mcp_email_server.imap_keywords import ImapKeywordRegistry
 from mcp_email_server.metadata_index import MetadataIndex, MetadataIndexError
 
 _T = TypeVar("_T")
@@ -82,6 +83,8 @@ class ClassicMetadataProvider:
                 body=query.body,
                 text=query.text,
                 has_attachment=query.has_attachment,
+                tag_keywords=list(query.provider_keywords),
+                tag_match=query.tag_match,
                 allowed_senders=list(account.allowed_senders),
             )
         )
@@ -105,6 +108,9 @@ class ClassicMetadataProvider:
                 maximum_window=MAX_INDEXED_UID_WINDOW,
             )
         )
+
+    async def flags_for(self, mailbox: str, email_ids: tuple[str, ...]) -> dict[str, list[str]]:
+        return await _bounded_provider_call(self._handler.incoming_client.get_email_flags(list(email_ids), mailbox))
 
 
 class SQLiteMetadataProjection:
@@ -175,6 +181,7 @@ class LocalMetadataBackend:
                 account_name=resolved.account.account_name,
                 mode=resolved.mode,
                 allowed_senders=tuple(resolved.settings.allowed_senders),
+                tag_registry=ImapKeywordRegistry.from_tags(resolved.account.tags),
             ),
         )
 

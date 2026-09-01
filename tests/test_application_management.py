@@ -30,6 +30,7 @@ from mcp_email_server.application.management import (
     UpdateAccountCommand,
 )
 from mcp_email_server.config import EmailServer, EmailSettings
+from mcp_email_server.imap_keywords import ImapKeywordTag
 
 
 def _endpoint(host: str = "imap.example.test") -> EmailServer:
@@ -55,6 +56,10 @@ def _summary(host: str = "imap.example.test") -> EndpointSummary:
 
 def _empty_legacy_source() -> LegacySourceSnapshot:
     return LegacySourceSnapshot((), (), False, (), (), False)
+
+
+def _tag(name: str = "important", keyword: str = "$Important") -> ImapKeywordTag:
+    return ImapKeywordTag(name=name, keyword=keyword, description=f"{name} messages", writable=True)
 
 
 def _details(*, outgoing: EndpointSummary | None = None) -> AccountDetails:
@@ -203,12 +208,14 @@ def test_account_creation_uses_one_service_for_rows_and_both_candidates() -> Non
         incoming_secret=SecretStr("incoming-secret"),
         outgoing=_summary("smtp.example.test"),
         outgoing_secret=SecretStr("outgoing-secret"),
+        tags=(_tag(),),
     )
 
     ManagedAccountService(backend).create(command)
 
     catalog.add_account.assert_called_once()
     assert catalog.add_account.call_args.kwargs["expected_revision"] == 3
+    assert catalog.add_account.call_args.kwargs["tags"] == (_tag(),)
     assert catalog.set_secret.call_args_list[0].args == ("alice", "incoming", "incoming-secret")
     assert catalog.set_secret.call_args_list[0].kwargs == {"expected_revision": 1}
     assert catalog.set_secret.call_args_list[1].args == ("alice", "outgoing", "outgoing-secret")
@@ -246,6 +253,7 @@ def test_account_update_merges_endpoint_patch_before_catalog_write() -> None:
             name="alice",
             expected_revision=4,
             incoming=EndpointPatch(host="imap-new.example.test", verify_ssl=False),
+            tags=(_tag("triage", "$Triage"),),
         )
     )
 
@@ -259,6 +267,7 @@ def test_account_update_merges_endpoint_patch_before_catalog_write() -> None:
         start_ssl=False,
         verify_ssl=False,
     )
+    assert catalog.update_account.call_args.kwargs["tags"] == (_tag("triage", "$Triage"),)
 
 
 def test_new_outgoing_endpoint_requires_complete_patch() -> None:
@@ -312,6 +321,7 @@ def test_legacy_preview_never_resolves_credentials() -> None:
         ),
         unsupported_provider_names=("calendar-provider",),
         enable_attachment_download=True,
+        enable_attachment_content=True,
         allowed_recipients=("bob@example.test",),
         allowed_senders=(),
         report_blocked_mutations=False,
@@ -336,6 +346,7 @@ def test_legacy_preview_never_resolves_credentials() -> None:
     assert plan.accounts[0].expected_target_revision is None
     assert plan.policy_action == "update"
     assert plan.source_policy.allowed_recipients == ("bob@example.test",)
+    assert plan.source_policy.enable_attachment_content is True
     assert plan.target_policy_revision == 1
     assert plan.unsupported_provider_names == ("calendar-provider",)
     backend.resolve_legacy_secret.assert_not_called()
@@ -681,9 +692,11 @@ def test_import_with_unsupported_provider_keeps_legacy_selected() -> None:
     backend.load_legacy_source.return_value = replace(
         _legacy_source(),
         unsupported_provider_names=("unsupported-provider",),
+        enable_attachment_content=True,
     )
     catalog.list_accounts.return_value = [AccountSummary("alice", "alice@example.test", True, 4, False, "ACTIVE", None)]
     catalog.show_account.return_value = _details()
+    catalog.policy.return_value = ManagedPolicy(5, False, (), (), False, False)
     service = LegacyImportService(backend)
     preview = service.preview()
 
@@ -695,6 +708,14 @@ def test_import_with_unsupported_provider_keeps_legacy_selected() -> None:
 
     assert report.mode == "legacy"
     assert report.restart_required is False
+    catalog.update_policy.assert_called_once_with(
+        expected_revision=5,
+        enable_attachment_download=False,
+        enable_attachment_content=True,
+        allowed_recipients=(),
+        allowed_senders=(),
+        report_blocked_mutations=False,
+    )
     backend.write_selection.assert_not_called()
 
 
@@ -853,17 +874,20 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
         ManagedPolicy(
             revision=7,
             enable_attachment_download=True,
+            enable_attachment_content=True,
             allowed_recipients=(" Alice <ALICE@Example.Test> ", "", "alice@example.test"),
             allowed_senders=(" *@Example.Test ", "", "*@example.test"),
             report_blocked_mutations=True,
         )
     )
 
+    assert result.enable_attachment_content is True
     assert result.allowed_recipients == ("alice@example.test",)
     assert result.allowed_senders == ("*@example.test",)
     catalog.update_policy.assert_called_once_with(
         expected_revision=7,
         enable_attachment_download=True,
+        enable_attachment_content=True,
         allowed_recipients=("alice@example.test",),
         allowed_senders=("*@example.test",),
         report_blocked_mutations=True,

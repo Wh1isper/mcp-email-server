@@ -772,7 +772,7 @@ class TestEmailClientGetEmailBodyById:
 
         assert result is not None
         assert result["email_id"] == "123"
-        mock_imap.uid.assert_called_once_with("fetch", "123", "BODY.PEEK[]")
+        mock_imap.uid.assert_called_once_with("fetch", "123", "(FLAGS BODY.PEEK[])")
 
     @pytest.mark.asyncio
     async def test_get_email_body_by_id_never_owns_mark_as_read_effect(self, email_client, mock_imap):
@@ -783,7 +783,7 @@ class TestEmailClientGetEmailBodyById:
             result = await email_client.get_email_body_by_id("123", mark_as_read=True)
 
         assert result is not None
-        mock_imap.uid.assert_called_once_with("fetch", "123", "BODY.PEEK[]")
+        mock_imap.uid.assert_called_once_with("fetch", "123", "(FLAGS BODY.PEEK[])")
 
     @pytest.mark.asyncio
     async def test_get_email_body_by_id_does_not_mark_as_read_when_parse_fails(self, email_client, mock_imap):
@@ -795,7 +795,7 @@ class TestEmailClientGetEmailBodyById:
                 result = await email_client.get_email_body_by_id("123", mark_as_read=True)
 
         assert result is None
-        mock_imap.uid.assert_called_once_with("fetch", "123", "BODY.PEEK[]")
+        mock_imap.uid.assert_called_once_with("fetch", "123", "(FLAGS BODY.PEEK[])")
 
     @pytest.mark.asyncio
     async def test_get_email_body_by_id_blocked_sender_returns_none_without_reading_body(self, email_client, mock_imap):

@@ -106,8 +106,10 @@ On first use:
    required.
 
 The UI has only two primary destinations: **Email accounts** for ordinary setup
-and **Settings & help** for importing earlier settings, sending/attachment safety,
-and bounded troubleshooting checks. Ordinary labels and errors use task language;
+and per-account semantic tags, and **Settings & help** for importing earlier
+settings, sending/attachment safety, and bounded troubleshooting checks. The
+attachment settings distinguish saving files on the server from returning bytes
+through MCP for clients such as ChatGPT apps. Ordinary labels and errors use task language;
 storage and concurrency terms are kept out of the primary workflow. Optional
 settings are loaded only when their disclosure
 is opened. On Linux and Windows, managed credentials default to the private

@@ -47,6 +47,13 @@ export interface Endpoint {
   user_name: string
 }
 
+export interface AccountTag {
+  name: string
+  keyword: string
+  description: string
+  writable: boolean
+}
+
 export interface AccountSummary {
   name: string
   email_address: string
@@ -63,6 +70,7 @@ export interface AccountDetails extends AccountSummary {
   sent_folder_name: string | null
   incoming: Endpoint
   outgoing: Endpoint | null
+  tags: AccountTag[]
 }
 
 export interface AccountInput {
@@ -73,6 +81,7 @@ export interface AccountInput {
   sent_folder_name: string | null
   incoming: Endpoint
   outgoing: Endpoint | null
+  tags: AccountTag[]
 }
 
 export interface AccountUpdate extends AccountInput {
@@ -82,6 +91,7 @@ export interface AccountUpdate extends AccountInput {
 export interface ManagedPolicy {
   revision: number
   enable_attachment_download: boolean
+  enable_attachment_content: boolean
   allowed_recipients: string[]
   allowed_senders: string[]
   report_blocked_mutations: boolean
@@ -101,6 +111,7 @@ export interface LegacyAccountSource {
 
 export interface LegacyPolicySource {
   enable_attachment_download: boolean
+  enable_attachment_content: boolean
   allowed_recipients: string[]
   allowed_senders: string[]
   report_blocked_mutations: boolean

@@ -50,7 +50,7 @@ export const createMockApi = (): ManagementApi => ({
   setCredential: vi.fn().mockResolvedValue({ state: 'active', revision: 2, cleanup_required: 0 }),
   removeCredential: vi.fn().mockResolvedValue({ state: 'removed', revision: 2, cleanup_required: 0 }),
   cleanupCredentials: vi.fn().mockResolvedValue({ examined: 0, cleaned: 0, remaining: 0 }),
-  policy: vi.fn().mockResolvedValue({ revision: 1, enable_attachment_download: false, allowed_recipients: [], allowed_senders: [], report_blocked_mutations: false }),
+  policy: vi.fn().mockResolvedValue({ revision: 1, enable_attachment_download: false, enable_attachment_content: false, allowed_recipients: [], allowed_senders: [], report_blocked_mutations: false }),
   updatePolicy: vi.fn(),
   previewImport: vi.fn(),
   applyImport: vi.fn(),

@@ -36,6 +36,7 @@ from mcp_email_server.application.management import (
     RevisionConflictError,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, Settings
+from mcp_email_server.imap_keywords import ImapKeywordAccount, ImapKeywordTag
 from mcp_email_server.log import logger
 from mcp_email_server.windows_security import (
     WindowsFileIdentity,
@@ -48,7 +49,7 @@ from mcp_email_server.windows_security import (
     windows_security_supported,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
@@ -99,6 +100,7 @@ class _ManagedAuthoritySnapshot:
     email_address: str
     save_to_sent: bool
     sent_folder_name: str | None
+    tags: tuple[ImapKeywordTag, ...]
     incoming: EndpointSummary
     outgoing: EndpointSummary | None
     binding_ids: tuple[tuple[BindingRole, str], ...]
@@ -548,6 +550,7 @@ CREATE TABLE catalog (
     id TEXT PRIMARY KEY CHECK (id = 'local'),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     enable_attachment_download INTEGER NOT NULL CHECK (enable_attachment_download IN (0, 1)),
+    enable_attachment_content INTEGER NOT NULL CHECK (enable_attachment_content IN (0, 1)),
     allowed_recipients_json TEXT NOT NULL,
     allowed_senders_json TEXT NOT NULL,
     report_blocked_mutations INTEGER NOT NULL CHECK (report_blocked_mutations IN (0, 1))
@@ -563,6 +566,7 @@ CREATE TABLE managed_account (
     revision INTEGER NOT NULL CHECK (revision >= 1),
     save_to_sent INTEGER NOT NULL CHECK (save_to_sent IN (0, 1)),
     sent_folder_name TEXT,
+    tags_json TEXT NOT NULL,
     removed_at TEXT,
     UNIQUE (catalog_id, normalized_name)
 );
@@ -702,11 +706,20 @@ def _validate_managed_schema(connection: sqlite3.Connection, schema: str) -> Non
         raise ManagedCatalogError("Managed catalog schema is missing or incompatible")
 
 
+def _parse_tags_json(value: object) -> tuple[ImapKeywordTag, ...]:
+    if not isinstance(value, str):
+        raise ManagedCatalogError("Managed account tag data is invalid")
+    try:
+        return ImapKeywordAccount.model_validate({"tags": json.loads(value)}).tags
+    except (TypeError, json.JSONDecodeError, ValueError) as exc:
+        raise ManagedCatalogError("Managed account tag data is invalid") from exc
+
+
 def _validate_managed_invariants(connection: sqlite3.Connection) -> None:
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ManagedCatalogError("Managed catalog contains invalid references")
     catalogs = connection.execute(
-        """SELECT id, revision, enable_attachment_download,
+        """SELECT id, revision, enable_attachment_download, enable_attachment_content,
                   allowed_recipients_json, allowed_senders_json, report_blocked_mutations
              FROM catalog"""
     ).fetchall()
@@ -724,9 +737,11 @@ def _validate_managed_invariants(connection: sqlite3.Connection) -> None:
             raise ManagedCatalogError("Managed catalog policy data is invalid") from exc
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise ManagedCatalogError("Managed catalog policy data is invalid")
-    accounts = connection.execute("SELECT name, normalized_name FROM managed_account").fetchall()
+    accounts = connection.execute("SELECT name, normalized_name, tags_json FROM managed_account").fetchall()
     if any(row["normalized_name"] != _normalize_account_name(row["name"]) for row in accounts):
         raise ManagedCatalogError("Managed account identity data is invalid")
+    for row in accounts:
+        _parse_tags_json(row["tags_json"])
 
 
 class ManagedCatalog:
@@ -761,9 +776,9 @@ class ManagedCatalog:
                 connection.execute("INSERT INTO schema_metadata(singleton, version) VALUES (1, ?)", (SCHEMA_VERSION,))
                 connection.execute(
                     """INSERT INTO catalog(
-                           id, revision, enable_attachment_download,
+                           id, revision, enable_attachment_download, enable_attachment_content,
                            allowed_recipients_json, allowed_senders_json, report_blocked_mutations
-                       ) VALUES ('local', 1, 0, '[]', '[]', 0)"""
+                       ) VALUES ('local', 1, 0, 0, '[]', '[]', 0)"""
                 )
                 connection.commit()
         except Exception:
@@ -856,6 +871,7 @@ class ManagedCatalog:
         return ManagedPolicy(
             revision=row["revision"],
             enable_attachment_download=bool(row["enable_attachment_download"]),
+            enable_attachment_content=bool(row["enable_attachment_content"]),
             allowed_recipients=tuple(allowed_recipients),
             allowed_senders=tuple(allowed_senders),
             report_blocked_mutations=bool(row["report_blocked_mutations"]),
@@ -876,6 +892,7 @@ class ManagedCatalog:
         allowed_recipients: tuple[str, ...],
         allowed_senders: tuple[str, ...],
         report_blocked_mutations: bool,
+        enable_attachment_content: bool = False,
     ) -> int:
         if expected_revision < 1:
             raise ManagedCatalogError("Expected catalog revision must be positive")
@@ -891,12 +908,14 @@ class ManagedCatalog:
                 """UPDATE catalog SET
                        revision = revision + 1,
                        enable_attachment_download = ?,
+                       enable_attachment_content = ?,
                        allowed_recipients_json = ?,
                        allowed_senders_json = ?,
                        report_blocked_mutations = ?
                    WHERE id = 'local' AND revision = ?""",
                 (
                     int(enable_attachment_download),
+                    int(enable_attachment_content),
                     json.dumps(list(allowed_recipients)),
                     json.dumps(list(allowed_senders)),
                     int(report_blocked_mutations),
@@ -919,12 +938,14 @@ class ManagedCatalog:
         outgoing: EmailServer | EndpointSummary | None,
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
+        tags: tuple[ImapKeywordTag, ...] = (),
         expected_revision: int | None = None,
     ) -> str:
         if not name.strip() or not full_name.strip() or not email_address.strip():
             raise ManagedCatalogError("Account name, full name, and email address are required")
         account_id = uuid.uuid4().hex
         normalized_name = _normalize_account_name(name)
+        validated_tags = ImapKeywordAccount(tags=tags).tags
         with self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -957,8 +978,8 @@ class ManagedCatalog:
                 connection.execute(
                     """INSERT INTO managed_account(
                            id, catalog_id, name, normalized_name, full_name, email_address,
-                           enabled, revision, save_to_sent, sent_folder_name, removed_at
-                       ) VALUES (?, 'local', ?, ?, ?, ?, 1, 1, ?, ?, NULL)""",
+                           enabled, revision, save_to_sent, sent_folder_name, tags_json, removed_at
+                       ) VALUES (?, 'local', ?, ?, ?, ?, 1, 1, ?, ?, ?, NULL)""",
                     (
                         account_id,
                         name.strip(),
@@ -967,6 +988,7 @@ class ManagedCatalog:
                         email_address,
                         int(save_to_sent),
                         sent_folder_name,
+                        json.dumps([tag.model_dump(mode="json") for tag in validated_tags]),
                     ),
                 )
                 self._insert_endpoint(connection, account_id, "incoming", incoming)
@@ -1272,6 +1294,7 @@ class ManagedCatalog:
             revision=account["revision"],
             save_to_sent=bool(account["save_to_sent"]),
             sent_folder_name=account["sent_folder_name"],
+            tags=_parse_tags_json(account["tags_json"]),
             incoming=incoming,
             outgoing=endpoints.get("outgoing"),
             incoming_binding=bindings.get("incoming", "MISSING"),
@@ -1313,6 +1336,7 @@ class ManagedCatalog:
         save_to_sent: bool | None = None,
         sent_folder_name: str | None = None,
         update_sent_folder: bool = False,
+        tags: tuple[ImapKeywordTag, ...] | None = None,
     ) -> int:
         if expected_revision < 1:
             raise ManagedCatalogError("Expected account revision must be positive")
@@ -1324,6 +1348,7 @@ class ManagedCatalog:
             raise ManagedCatalogError("Email address must not be empty")
         if outgoing is not None and remove_outgoing:
             raise ManagedCatalogError("Outgoing endpoint update and removal are mutually exclusive")
+        validated_tags = ImapKeywordAccount(tags=tags).tags if tags is not None else None
         if not any((
             new_name is not None,
             full_name is not None,
@@ -1333,6 +1358,7 @@ class ManagedCatalog:
             remove_outgoing,
             save_to_sent is not None,
             update_sent_folder,
+            validated_tags is not None,
         )):
             raise ManagedCatalogError("Account update did not specify any changes")
 
@@ -1354,6 +1380,7 @@ class ManagedCatalog:
                     save_to_sent=save_to_sent,
                     sent_folder_name=sent_folder_name,
                     update_sent_folder=update_sent_folder,
+                    tags=validated_tags,
                 )
                 connection.commit()
             except sqlite3.IntegrityError as exc:
@@ -1379,6 +1406,7 @@ class ManagedCatalog:
         save_to_sent: bool | None,
         sent_folder_name: str | None,
         update_sent_folder: bool,
+        tags: tuple[ImapKeywordTag, ...] | None,
     ) -> None:
         account = connection.execute(
             """SELECT id, enabled, revision FROM managed_account
@@ -1426,6 +1454,9 @@ class ManagedCatalog:
         if update_sent_folder:
             assignments.append("sent_folder_name = ?")
             values.append(sent_folder_name)
+        if tags is not None:
+            assignments.append("tags_json = ?")
+            values.append(json.dumps([tag.model_dump(mode="json") for tag in tags]))
         values.extend((account["id"], expected_revision))
         cursor = connection.execute(
             f"UPDATE managed_account SET {', '.join(assignments)} WHERE id = ? AND revision = ?",  # noqa: S608
@@ -1849,6 +1880,7 @@ class ManagedCatalog:
             email_address=account["email_address"],
             save_to_sent=bool(account["save_to_sent"]),
             sent_folder_name=account["sent_folder_name"],
+            tags=_parse_tags_json(account["tags_json"]),
             incoming=self._endpoint_summary(incoming_row),
             outgoing=self._endpoint_summary(outgoing_row) if outgoing_row is not None else None,
             binding_ids=tuple((role, bindings[role]["id"]) for role in sorted(bindings)),
@@ -1900,6 +1932,7 @@ class ManagedCatalog:
                 outgoing=outgoing,
                 save_to_sent=current.save_to_sent,
                 sent_folder_name=current.sent_folder_name,
+                tags=current.tags,
             ),
             policy=current.policy,
         )
@@ -1959,6 +1992,7 @@ class ManagedCatalog:
                         outgoing=outgoing,
                         save_to_sent=bool(account["save_to_sent"]),
                         sent_folder_name=account["sent_folder_name"],
+                        tags=_parse_tags_json(account["tags_json"]),
                     )
                 )
             policy = self._policy_from_row(catalog)
@@ -1968,6 +2002,7 @@ class ManagedCatalog:
             providers=[],
             db_location=self.path.as_posix(),
             enable_attachment_download=policy.enable_attachment_download,
+            enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
             report_blocked_mutations=policy.report_blocked_mutations,

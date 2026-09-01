@@ -437,6 +437,22 @@ only for a trusted local endpoint with a known self-signed certificate.
 For ProtonMail Bridge, copy the host, ports, username, and password shown by the
 bridge rather than using the normal account password.
 
+## Attachment content is unavailable to a remote MCP client
+
+`download_attachment` returns a path on the server machine. A ChatGPT app or
+other remote MCP client cannot read that path because it does not share the
+server filesystem. Enable the independent content-transfer mode instead:
+
+```toml
+enable_attachment_content = true
+```
+
+Or set `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT=true`. In managed mode, use
+the **Allow attachments to be returned through MCP** checkbox. Then call
+`get_attachment_content`. If the encoded resource exceeds the existing global
+serialized-result ceiling, use a smaller attachment; the server does not create
+a temporary URL or split the blob into chunks.
+
 ## Attachment download is denied
 
 The tool is visible even when permission is disabled. Enable it explicitly:

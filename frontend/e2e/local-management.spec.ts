@@ -24,6 +24,12 @@ full_name = "Earlier Browser Test"
 email_address = "earlier@example.test"
 save_to_sent = true
 
+[[emails.tags]]
+name = "follow-up"
+keyword = "$label5"
+description = "Imported browser tag"
+writable = true
+
 [emails.incoming]
 host = "imap.earlier.example.test"
 port = 993
@@ -187,7 +193,7 @@ test('real browser completes secure local management workflows', async ({ browse
     expect((await backAction.boundingBox())?.height).toBeGreaterThanOrEqual(44)
     await page.getByLabel('Email address').fill('browser@example.test')
     await page.getByLabel('Password or app password').fill(incomingSecret)
-    const setupDetails = page.locator('details.setup-details:not(.outgoing-section)')
+    const setupDetails = page.locator('details.setup-details:not(.outgoing-section):not(.tag-section)')
     const setupSummary = page.getByText('Advanced account settings')
     await setupSummary.click()
     await page.getByLabel('Name shown on sent mail').fill('Browser Test')
@@ -203,6 +209,12 @@ test('real browser completes secure local management workflows', async ({ browse
     await expect(incomingOptions).toHaveJSProperty('open', true)
     await expect(incomingLogin).toBeFocused()
     await incomingLogin.fill('browser@example.test')
+    await page.getByText('Email tags (optional)', { exact: true }).click()
+    await page.getByRole('button', { name: 'Add tag' }).click()
+    await page.getByLabel('Tag 1 name').fill('todo')
+    await page.getByLabel('Tag 1 IMAP keyword').fill('$label4')
+    await page.getByLabel('Tag 1 description').fill('Needs action')
+    await page.getByRole('checkbox', { name: 'Writable through MCP' }).check()
     await page.getByRole('button', { name: 'Add account' }).click()
     await expect(page.getByRole('heading', { name: 'browser@example.test' })).toBeVisible()
     await expect(page.getByText('Email account added.')).toBeVisible()
@@ -218,6 +230,7 @@ test('real browser completes secure local management workflows', async ({ browse
     await page.getByLabel('Recipient 1').fill('browser-recipient@example.test')
     await page.getByRole('button', { name: 'Add sender pattern' }).click()
     await page.getByLabel('Sender pattern 1').fill('*@example.test')
+    await page.getByRole('checkbox', { name: 'Allow attachments to be returned through MCP' }).check()
     await page.getByRole('button', { name: 'Save safety settings' }).click()
     await expect(page.getByText('Safety settings saved.')).toBeVisible()
     await navigation.getByRole('button', { name: 'Email accounts' }).click()
@@ -233,6 +246,11 @@ test('real browser completes secure local management workflows', async ({ browse
     await expect(page.getByText('Enabled', { exact: true })).toBeVisible()
 
     await page.getByRole('button', { name: 'Edit' }).click()
+    await expect(page.locator('details.tag-section')).toHaveJSProperty('open', true)
+    await expect(page.getByLabel('Tag 1 name')).toHaveValue('todo')
+    await expect(page.getByLabel('Tag 1 IMAP keyword')).toHaveValue('$label4')
+    await expect(page.getByLabel('Tag 1 description')).toHaveValue('Needs action')
+    await expect(page.getByRole('checkbox', { name: 'Writable through MCP' })).toBeChecked()
     await page.getByLabel('Name shown on sent mail').fill('Browser Test Updated')
     await page.getByRole('button', { name: 'Save changes' }).click()
     await expect(page.getByText('Account settings saved.')).toBeVisible()
@@ -329,6 +347,12 @@ test('real browser explicitly prepares and imports detected earlier settings', a
     await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Email accounts' }).click()
     await expect(page.getByRole('heading', { name: 'earlier@example.test' })).toBeVisible()
     expect(await page.locator('body').innerText()).not.toContain(legacySecret)
+    await page.getByRole('button', { name: 'Edit' }).click()
+    await expect(page.locator('details.tag-section')).toHaveJSProperty('open', true)
+    await expect(page.getByLabel('Tag 1 name')).toHaveValue('follow-up')
+    await expect(page.getByLabel('Tag 1 IMAP keyword')).toHaveValue('$label5')
+    await expect(page.getByLabel('Tag 1 description')).toHaveValue('Imported browser tag')
+    await expect(page.getByRole('checkbox', { name: 'Writable through MCP' })).toBeChecked()
     expect(pageErrors).toEqual([])
   } finally {
     await ui.stop()

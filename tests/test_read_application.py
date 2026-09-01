@@ -11,6 +11,7 @@ from mcp_email_server.application import limits as limits_module
 from mcp_email_server.application import reads as reads_module
 from mcp_email_server.application.mutations import APPLICATION_LIMITS, BatchMutationOutcome, TargetMutationOutcome
 from mcp_email_server.application.reads import (
+    AttachmentContentService,
     AttachmentDownloadService,
     AttachmentPayload,
     DownloadAttachmentCommand,
@@ -23,14 +24,22 @@ from mcp_email_server.application.reads import (
     ReadProviderError,
 )
 from mcp_email_server.emails.models import EmailBodyResponse, EmailContentBatchResponse, MailboxInfo
+from mcp_email_server.imap_keywords import ImapKeywordRegistry, ImapKeywordTag
 
 
-def _account(*, downloads: bool = False) -> ReadAccountSnapshot:
+def _account(
+    *,
+    downloads: bool = False,
+    content: bool = False,
+    tag_registry: ImapKeywordRegistry | None = None,
+) -> ReadAccountSnapshot:
     return ReadAccountSnapshot(
         account_name="work",
         mode="managed",
         allowed_senders=("allowed@example.test",),
         enable_attachment_download=downloads,
+        enable_attachment_content=content,
+        tag_registry=tag_registry or ImapKeywordRegistry(),
     )
 
 
@@ -138,6 +147,74 @@ async def test_content_service_preserves_bodies_when_marking_fails() -> None:
     )
 
     assert result == response
+
+
+@pytest.mark.asyncio
+async def test_content_service_maps_snapshot_provider_keywords_to_semantic_tags() -> None:
+    registry = ImapKeywordRegistry.from_tags((ImapKeywordTag(name="todo", keyword="$label4"),))
+    account = _account(tag_registry=registry)
+    authority, factory, provider = _ports(initial=account, fresh=account)
+    body = _body("1").model_copy(update={"provider_keywords": ["$label4", "provider-keyword"]})
+    provider.get_content = AsyncMock(
+        return_value=EmailContentBatchResponse(emails=[body], requested_count=1, retrieved_count=1, failed_ids=[])
+    )
+
+    result = await EmailContentService(authority, factory, Mock()).execute(
+        GetEmailContentQuery(account_name="work", email_ids=("1",))
+    )
+
+    assert result.emails[0].provider_keywords == ["$label4", "provider-keyword"]
+    assert result.emails[0].semantic_tags == ["todo"]
+
+
+@pytest.mark.asyncio
+async def test_attachment_content_uses_independent_policy_without_attachment_byte_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        reads_module,
+        "APPLICATION_LIMITS",
+        replace(reads_module.APPLICATION_LIMITS, attachment_bytes=3),
+    )
+    account = _account(downloads=False, content=True)
+    authority, factory, provider = _ports(initial=account, fresh=account)
+    authority.resolve.side_effect = [account, account]
+    payload = AttachmentPayload("1", "document.pdf", "application/pdf", b"1234")
+    provider.fetch_attachment = AsyncMock(return_value=payload)
+
+    result = await AttachmentContentService(authority, factory).execute(
+        DownloadAttachmentCommand("work", "1", "document.pdf")
+    )
+
+    assert result is payload
+    assert authority.resolve.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_attachment_content_rejects_disabled_policy_even_when_download_is_enabled() -> None:
+    authority, factory, _provider = _ports(initial=_account(downloads=True, content=False))
+
+    with pytest.raises(PermissionError, match="disabled"):
+        await AttachmentContentService(authority, factory).execute(
+            DownloadAttachmentCommand("work", "1", "document.pdf")
+        )
+
+    factory.open.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_attachment_content_rechecks_fresh_policy_after_fetch() -> None:
+    enabled = _account(content=True)
+    authority, factory, provider = _ports(initial=enabled, fresh=enabled)
+    authority.resolve.side_effect = [enabled, _account(content=False)]
+    provider.fetch_attachment = AsyncMock(
+        return_value=AttachmentPayload("1", "document.pdf", "application/pdf", b"content")
+    )
+
+    with pytest.raises(PermissionError, match="disabled"):
+        await AttachmentContentService(authority, factory).execute(
+            DownloadAttachmentCommand("work", "1", "document.pdf")
+        )
+
+    provider.fetch_attachment.assert_awaited_once()
 
 
 @pytest.mark.asyncio

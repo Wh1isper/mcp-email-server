@@ -35,9 +35,11 @@ from mcp_email_server.application.mutations import (
     SendMutationOutcome,
     SentCopyMutationOutcome,
     SetEmailFlagsCommand,
+    SetEmailTagsCommand,
     TargetMutationOutcome,
 )
 from mcp_email_server.emails.classic import ClassicEmailHandler
+from mcp_email_server.imap_keywords import ImapKeywordRegistry, ImapKeywordTag
 
 
 def _account(**changes: object) -> MutationAccountSnapshot:
@@ -79,6 +81,54 @@ def _services(
         factory,
         selected_projection,
     )
+
+
+def _tag_registry() -> ImapKeywordRegistry:
+    return ImapKeywordRegistry.from_tags((
+        ImapKeywordTag(name="todo", keyword="$label4", writable=True),
+        ImapKeywordTag(name="important", keyword="$label1", writable=False),
+    ))
+
+
+@pytest.mark.asyncio
+async def test_set_email_tags_resolves_writable_names_and_invalidates_projection() -> None:
+    provider = MagicMock()
+    provider.set_tags = AsyncMock(return_value=_batch(TargetMutationOutcome("1", "succeeded")))
+    services, _authority, _factory, projection = _services(
+        account=_account(tag_registry=_tag_registry()),
+        provider=provider,
+    )
+
+    result = await services.set_tags.execute(SetEmailTagsCommand("primary", ("1",), "add", ("todo",), "Archive"))
+
+    assert result.targets("succeeded") == ["1"]
+    dispatched = provider.set_tags.await_args.args[0]
+    assert dispatched.operation == "add"
+    assert dispatched.tags == ("$label4",)
+    assert dispatched.mailbox == "Archive"
+    projection.invalidate.assert_awaited_once_with(("Archive",))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tag", "expected_error"),
+    [("missing", ValueError), ("important", PermissionError)],
+)
+async def test_set_email_tags_rejects_unknown_or_read_only_before_provider(
+    tag: str,
+    expected_error: type[Exception],
+) -> None:
+    services, _authority, factory, _projection = _services(account=_account(tag_registry=_tag_registry()))
+
+    with pytest.raises(expected_error):
+        await services.set_tags.execute(SetEmailTagsCommand("primary", ("1",), "remove", (tag,), "INBOX"))
+
+    factory.open.assert_not_called()
+
+
+def test_set_email_tags_command_requires_non_empty_tags() -> None:
+    with pytest.raises(ValueError, match="tags must not be empty"):
+        SetEmailTagsCommand("primary", ("1",), "add", (), "INBOX").validate()
 
 
 @pytest.mark.parametrize(

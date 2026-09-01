@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import imaplib
 import importlib.metadata
@@ -24,7 +25,7 @@ from typing import Any
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from mcp.types import BlobResourceContents, EmbeddedResource, TextContent
 
 from mcp_email_server.bootstrap import read_bootstrap
 from mcp_email_server.managed import SCHEMA_VERSION
@@ -40,6 +41,7 @@ BOB = ("bob@example.test", "bob-password")
 
 CONFIG_TEMPLATE = f"""credential_storage = "plaintext"
 enable_attachment_download = true
+enable_attachment_content = true
 allowed_recipients = ["bob@example.test"]
 
 [[emails]]
@@ -48,6 +50,12 @@ full_name = "alice@example.test"
 email_address = "alice@example.test"
 save_to_sent = true
 sent_folder_name = "Sent"
+
+[[emails.tags]]
+name = "todo"
+keyword = "$label4"
+description = "Messages requiring an action"
+writable = true
 
 [emails.incoming]
 user_name = "alice@example.test"
@@ -879,6 +887,9 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                 "archive_emails",
                 "list_mailboxes",
                 "download_attachment",
+                "get_attachment_content",
+                "list_email_tags",
+                "set_email_tags",
             } <= tool_names
 
             accounts = await _call_tool(session, "list_available_accounts", {})
@@ -965,6 +976,61 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
             )
             _wait_for_message(ALICE, "INBOX", forward_source_subject)
             forward_source_metadata = await _metadata_for_subject(session, "alice", forward_source_subject)
+            tagged = await _call_tool(
+                session,
+                "set_email_tags",
+                {
+                    "account_name": "alice",
+                    "email_ids": [forward_source_metadata["email_id"]],
+                    "operation": "add",
+                    "tags": ["todo"],
+                },
+            )
+            assert tagged["result"] == "Successfully added configured tags on 1 email(s)"
+            source_with_tag = _wait_for_message(ALICE, "INBOX", forward_source_subject)
+            assert "$label4" in {flag.casefold() for flag in source_with_tag.flags}
+            tagged_metadata = await _metadata_for_subject(session, "alice", forward_source_subject)
+            assert "$label4" in {keyword.casefold() for keyword in tagged_metadata["provider_keywords"]}
+            assert tagged_metadata["semantic_tags"] == ["todo"]
+
+            attachment_content = await session.call_tool(
+                "get_attachment_content",
+                arguments={
+                    "account_name": "alice",
+                    "email_id": forward_source_metadata["email_id"],
+                    "attachment_name": forwarded_attachment_name,
+                },
+            )
+            assert attachment_content.isError is not True
+            assert attachment_content.structuredContent is None
+            assert len(attachment_content.content) == 1
+            embedded = attachment_content.content[0]
+            assert isinstance(embedded, EmbeddedResource)
+            assert isinstance(embedded.resource, BlobResourceContents)
+            assert embedded.resource.mimeType == "application/pdf"
+            assert embedded.resource.blob == base64.b64encode(forwarded_attachment_bytes).decode("ascii")
+            assert embedded.meta == {
+                "filename": forwarded_attachment_name,
+                "size": len(forwarded_attachment_bytes),
+            }
+
+            untagged = await _call_tool(
+                session,
+                "set_email_tags",
+                {
+                    "account_name": "alice",
+                    "email_ids": [forward_source_metadata["email_id"]],
+                    "operation": "remove",
+                    "tags": ["todo"],
+                },
+            )
+            assert untagged["result"] == "Successfully removed configured tags on 1 email(s)"
+            source_without_tag = _wait_for_message(ALICE, "INBOX", forward_source_subject)
+            assert "$label4" not in {flag.casefold() for flag in source_without_tag.flags}
+            untagged_metadata = await _metadata_for_subject(session, "alice", forward_source_subject)
+            assert "$label4" not in {keyword.casefold() for keyword in untagged_metadata["provider_keywords"]}
+            assert untagged_metadata["semantic_tags"] == []
+
             forward_note = f"Please review this {run_id}"
             forward_result = await _call_tool(
                 session,

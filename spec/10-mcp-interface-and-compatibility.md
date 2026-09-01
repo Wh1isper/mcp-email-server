@@ -64,7 +64,8 @@ against worst-case behavior across optional parameters:
   the generic flag tool;
 - delete, move, and archive are destructive, non-idempotent remote mutations;
 - attachment download is a non-idempotent filesystem write that may replace the
-  caller-selected destination.
+  caller-selected destination, while attachment-content retrieval is a read-only
+  open-world provider read with no filesystem effect.
 
 Annotations are advisory planning and approval hints. They are never treated as
 an authorization, credential, policy, idempotency-proof, or safe-retry boundary;
@@ -93,6 +94,8 @@ The stable mail catalog may expose these compatibility families:
 - metadata listing and querying;
 - body and attachment reads;
 - flag/read-state mutations;
+- semantic keyword discovery, filtering, and explicitly authorized tag
+  mutations;
 - save/append, move, archive, and delete;
 - SMTP send and sent-copy behavior.
 
@@ -110,6 +113,9 @@ MCP-specific ceilings include:
 - maximum serialized success/partial response bytes;
 - maximum mailbox items and aggregate mailbox-name/attribute bytes;
 - maximum per-item and aggregate metadata/body detail;
+- at most the centralized flag-count bound for configured or requested semantic
+  tags; embedded attachment content must fit the same canonical serialized-result
+  ceiling as every other MCP result;
 - maximum target IDs, recipients, headers, and message bytes;
 - maximum warnings, failures, unknown outcomes, and error-detail bytes;
 - bounded string lengths for account/description/mailbox/path/query fields;
@@ -192,8 +198,10 @@ result shape. Clients that reject unknown output fields must update their result
 type before consuming this catalog revision.
 
 This delivery adds no `ui://` resources, MCP App metadata, embedded-app CSP, or
-host bridge calls. Any MCP App requires a separate accepted design and security
-model.
+host bridge calls. `get_attachment_content` is a transport-neutral MCP read tool
+that can be enabled for ChatGPT apps and other clients without a shared local
+filesystem; it does not turn this server into an MCP App or remote management
+plane.
 
 ## Acceptance Criteria
 
@@ -217,3 +225,8 @@ model.
    the explicit non-secret capability DTO.
 9. The catalog contains no MCP App, account/credential management, agent
    installation, or graphical management resource.
+10. The catalog and raw stdio tests cover `list_email_tags`, tag-aware
+    `list_emails_metadata` and `get_emails_content`, `set_email_tags`, and
+    `get_attachment_content`, including defaults, semantic-name inputs,
+    annotations, schemas, one-copy embedded blob content, the global result
+    ceiling, and policy failures.

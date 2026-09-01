@@ -203,7 +203,29 @@ async def test_get_email_body_accepts_short_fetch_literal(
     assert result["email_id"] == "1"
     assert result["subject"] == "Hi"
     assert result["body"] == "OK\r\n"
-    mock_imap.uid.assert_awaited_once_with("fetch", "1", "BODY.PEEK[]")
+    mock_imap.uid.assert_awaited_once_with("fetch", "1", "(FLAGS BODY.PEEK[])")
+
+
+@pytest.mark.asyncio
+async def test_get_email_flags_fetches_current_keywords_without_message_content(
+    email_client: EmailClient,
+    mock_imap: AsyncMock,
+) -> None:
+    mock_imap.uid = AsyncMock(
+        return_value=(
+            "OK",
+            [
+                b"1 FETCH (UID 7 FLAGS (\\Seen $label4))",
+                b"2 FETCH (UID 8 FLAGS (custom))",
+            ],
+        )
+    )
+
+    with patch.object(email_client, "_connect_imap", AsyncMock(return_value=mock_imap)):
+        result = await email_client.get_email_flags(["7", "8"], "Archive")
+
+    assert result == {"7": [r"\Seen", "$label4"], "8": ["custom"]}
+    mock_imap.uid.assert_awaited_once_with("fetch", "7,8", "(FLAGS)")
 
 
 @pytest.mark.parametrize("payload_type", [bytes, bytearray])
@@ -474,6 +496,24 @@ class TestEmailClient:
         criteria = EmailClient._build_search_criteria()
         assert criteria == ["ALL"]
 
+    def test_build_search_criteria_tag_all_and_any(self):
+        assert EmailClient._build_search_criteria(tag_keywords=["$label4", "$label1"], tag_match="all") == [
+            "KEYWORD",
+            "$label4",
+            "KEYWORD",
+            "$label1",
+        ]
+        assert EmailClient._build_search_criteria(tag_keywords=["$label4", "$label1", "custom"], tag_match="any") == [
+            "OR",
+            "OR",
+            "KEYWORD",
+            "$label4",
+            "KEYWORD",
+            "$label1",
+            "KEYWORD",
+            "custom",
+        ]
+
         # Test with before date
         before_date = datetime(2023, 1, 1, tzinfo=UTC)
         criteria = EmailClient._build_search_criteria(before=before_date)
@@ -660,6 +700,7 @@ class TestEmailClient:
                     mock_fetch_headers.assert_called_once_with(
                         mock_imap,
                         ["3", "2", "1"],
+                        include_flags=True,
                         header_budget=ANY,
                     )
 

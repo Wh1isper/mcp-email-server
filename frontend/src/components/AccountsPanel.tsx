@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, KeyRound, Mail, MoreHorizontal, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Wrench } from 'lucide-react'
 
 import { ApiError, type ManagementApi } from '../api'
-import type { AccountDetails, AccountInput, AccountSummary, BindingState, CatalogTarget, Endpoint, ManagementStatus } from '../types'
+import type { AccountDetails, AccountInput, AccountSummary, AccountTag, BindingState, CatalogTarget, Endpoint, ManagementStatus } from '../types'
 import { ConflictNotice, errorMessage, StatusMessage } from './Feedback'
 import { CredentialsPanel } from './CredentialsPanel'
 
@@ -95,6 +95,7 @@ const blankAccount = (): AccountInput => ({
   sent_folder_name: null,
   incoming: blankEndpoint(993),
   outgoing: null,
+  tags: [],
 })
 
 const editableAccount = (current: AccountDetails): AccountInput => ({
@@ -105,6 +106,7 @@ const editableAccount = (current: AccountDetails): AccountInput => ({
   sent_folder_name: current.sent_folder_name,
   incoming: current.incoming,
   outgoing: current.outgoing,
+  tags: current.tags.map((tag) => ({ ...tag })),
 })
 
 const matchesTarget = (status: ManagementStatus, target: CatalogTarget): boolean =>
@@ -169,6 +171,37 @@ function AdvancedEndpointFields({
   )
 }
 
+const blankTag = (): AccountTag => ({ name: '', keyword: '', description: '', writable: false })
+
+function TagEditor({ tags, onChange }: { tags: AccountTag[]; onChange: (tags: AccountTag[]) => void }) {
+  const update = <K extends keyof AccountTag>(index: number, key: K, value: AccountTag[K]) => {
+    onChange(tags.map((tag, tagIndex) => tagIndex === index ? { ...tag, [key]: value } : tag))
+  }
+
+  return (
+    <div className="details-body tag-editor">
+      <p className="hint">Map clear names used by MCP to IMAP keywords for this account.</p>
+      {tags.length ? (
+        <div className="tag-list">
+          {tags.map((tag, index) => (
+            <fieldset className="tag-row" key={`tag-${index}`}>
+              <legend>Tag {index + 1}</legend>
+              <div className="field"><label htmlFor={`tag-name-${index}`}>Name</label><input id={`tag-name-${index}`} aria-label={`Tag ${index + 1} name`} value={tag.name} onChange={(event) => update(index, 'name', event.target.value)} required /></div>
+              <div className="field"><label htmlFor={`tag-keyword-${index}`}>IMAP keyword</label><input id={`tag-keyword-${index}`} aria-label={`Tag ${index + 1} IMAP keyword`} value={tag.keyword} onChange={(event) => update(index, 'keyword', event.target.value)} required autoCapitalize="none" spellCheck={false} /></div>
+              <div className="field tag-description"><label htmlFor={`tag-description-${index}`}>Description (optional)</label><input id={`tag-description-${index}`} aria-label={`Tag ${index + 1} description`} value={tag.description} onChange={(event) => update(index, 'description', event.target.value)} /></div>
+              <div className="tag-row-actions">
+                <label className="field-checkbox"><input type="checkbox" checked={tag.writable} onChange={(event) => update(index, 'writable', event.target.checked)} /> Writable through MCP</label>
+                <button type="button" className="secondary with-icon" aria-label={`Remove tag ${index + 1}${tag.name ? `: ${tag.name}` : ''}`} onClick={() => onChange(tags.filter((_tag, tagIndex) => tagIndex !== index))}><Trash2 size={16} aria-hidden="true" />Remove</button>
+              </div>
+            </fieldset>
+          ))}
+        </div>
+      ) : null}
+      <button type="button" className="secondary with-icon tag-add" onClick={() => onChange([...tags, blankTag()])}><Plus size={16} aria-hidden="true" />Add tag</button>
+    </div>
+  )
+}
+
 function AccountEditor({
   api,
   current,
@@ -202,6 +235,7 @@ function AccountEditor({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [outgoingOpen, setOutgoingOpen] = useState(Boolean(current?.outgoing))
+  const [tagsOpen, setTagsOpen] = useState(Boolean(current?.tags.length))
   const setupDetailsRef = useRef<HTMLDetailsElement>(null)
   const accountNameRef = useRef<HTMLInputElement>(null)
 
@@ -323,6 +357,11 @@ function AccountEditor({
           </div>
           <AdvancedEndpointFields id="incoming" label="incoming mail" value={input.incoming} portTouched={touches.incoming.port} onChange={(value, field) => { touchEndpoint('incoming', field); update('incoming', value) }} />
         </div>
+      </details>
+
+      <details className="setup-details tag-section" open={tagsOpen} onToggle={(event) => setTagsOpen(event.currentTarget.open)}>
+        <summary>Email tags (optional)</summary>
+        <TagEditor tags={input.tags} onChange={(tags) => update('tags', tags)} />
       </details>
 
       <details className="setup-details outgoing-section" open={outgoingOpen} onToggle={(event) => setOutgoingOpen(event.currentTarget.open)}>

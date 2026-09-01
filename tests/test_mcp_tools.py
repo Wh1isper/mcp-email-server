@@ -1,10 +1,11 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from mcp.types import TextContent
+from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource, TextContent
 
 from mcp_email_server import app as app_module
 from mcp_email_server.app import (
@@ -12,10 +13,12 @@ from mcp_email_server.app import (
     delete_emails,
     download_attachment,
     forward_email,
+    get_attachment_content,
     get_emails_content,
     list_allowed_recipients,
     list_allowed_senders,
     list_available_accounts,
+    list_email_tags,
     list_emails_metadata,
     list_mailboxes,
     mark_emails_as_read,
@@ -23,7 +26,9 @@ from mcp_email_server.app import (
     save_to_mailbox,
     send_email,
     set_email_flags,
+    set_email_tags,
 )
+from mcp_email_server.application import limits as limits_module
 from mcp_email_server.application.accounts import AvailableAccount, EffectiveConfiguration
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
@@ -34,8 +39,10 @@ from mcp_email_server.application.mutations import (
     SendMutationOutcome,
     SentCopyMutationOutcome,
     SetEmailFlagsCommand,
+    SetEmailTagsCommand,
     TargetMutationOutcome,
 )
+from mcp_email_server.application.reads import AttachmentPayload
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
@@ -45,6 +52,7 @@ from mcp_email_server.emails.models import (
     EmailMetadataPageResponse,
     MailboxInfo,
 )
+from mcp_email_server.imap_keywords import ImapKeywordTag
 
 
 def _batch_outcome(
@@ -430,6 +438,12 @@ class TestMcpTools:
         assert mutable_flags["maxItems"] == 4
         assert mutable_flags["items"]["enum"] == [r"\Seen", r"\Flagged", r"\Answered", r"\Draft"]
         assert tools["set_email_flags"]["operation"]["enum"] == ["add", "remove"]
+        metadata = tools["list_emails_metadata"]
+        assert "semantic_tags" in metadata
+        assert "provider_keywords" not in metadata
+        mutable_tags = tools["set_email_tags"]
+        assert mutable_tags["operation"]["enum"] == ["add", "remove"]
+        assert mutable_tags["tags"]["minItems"] == 1
 
     @pytest.mark.asyncio
     async def test_send_email(self):
@@ -1280,3 +1294,130 @@ async def test_tool_annotations_expose_agent_safety_and_retry_hints() -> None:
         "openWorldHint": True,
     }
     assert all(tool.annotations is not None for tool in tools.values())
+
+
+@pytest.mark.asyncio
+async def test_list_email_tags_returns_account_scoped_semantic_config() -> None:
+    tags = (
+        ImapKeywordTag(name="todo", keyword="$label4"),
+        ImapKeywordTag(name="review", keyword="Review", description="Needs review", writable=True),
+    )
+    runtime = MagicMock()
+    runtime.metadata.list_tags.return_value = tags
+
+    with patch("mcp_email_server.app.get_application_runtime", return_value=runtime):
+        result = await list_email_tags("work")
+
+    assert result == list(tags)
+    runtime.metadata.list_tags.assert_called_once_with("work")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["add", "remove"])
+async def test_set_email_tags_maps_semantic_add_remove_command(operation: str) -> None:
+    command_handler = AsyncMock(return_value=_batch_outcome(succeeded=("1",)))
+    with patch("mcp_email_server.app.set_email_tags_command", command_handler):
+        result = await set_email_tags("work", ["1"], operation, ["todo"], mailbox="Archive")
+
+    action = "added" if operation == "add" else "removed"
+    assert result == f"Successfully {action} configured tags on 1 email(s)"
+    assert command_handler.await_args.args[0] == SetEmailTagsCommand(
+        account_name="work",
+        email_ids=("1",),
+        operation=operation,
+        tags=("todo",),
+        mailbox="Archive",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_returns_one_content_only_opaque_blob_resource() -> None:
+    payload = AttachmentPayload("7", "report.pdf", "application/pdf", b"pdf-bytes")
+    command_handler = AsyncMock(return_value=payload)
+    with (
+        patch("mcp_email_server.app.get_attachment_content_command", command_handler),
+        patch("mcp_email_server.app.secrets.token_urlsafe", return_value="opaque-token"),
+    ):
+        result = await get_attachment_content("work", "7", "report.pdf", mailbox="Archive")
+
+    assert isinstance(result, CallToolResult)
+    assert result.structuredContent is None
+    assert len(result.content) == 1
+    embedded = result.content[0]
+    assert isinstance(embedded, EmbeddedResource)
+    assert isinstance(embedded.resource, BlobResourceContents)
+    assert str(embedded.resource.uri) == "email-attachment://content/opaque-token"
+    assert all(value not in str(embedded.resource.uri) for value in ("work", "Archive", "report.pdf"))
+    assert embedded.resource.mimeType == "application/pdf"
+    assert embedded.resource.blob == "cGRmLWJ5dGVz"
+    assert embedded.meta == {"filename": "report.pdf", "size": 9}
+    command = command_handler.await_args.args[0]
+    assert command.save_path is None
+    assert command.mailbox == "Archive"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("ceiling_delta", "valid"), [(0, True), (-1, False)])
+async def test_get_attachment_content_enforces_global_serialized_result_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    ceiling_delta: int,
+    valid: bool,
+) -> None:
+    payload = AttachmentPayload("7", "report.pdf", "application/pdf", b"pdf-bytes")
+    resource = BlobResourceContents.model_validate({
+        "uri": "email-attachment://content/opaque-token",
+        "mimeType": payload.mime_type,
+        "blob": "cGRmLWJ5dGVz",
+    })
+    expected = CallToolResult(
+        content=[
+            EmbeddedResource.model_validate({
+                "type": "resource",
+                "resource": resource,
+                "_meta": {"filename": payload.attachment_name, "size": len(payload.content)},
+            })
+        ]
+    )
+    serialized_size = len(expected.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8"))
+    monkeypatch.setattr(
+        limits_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, serialized_response_bytes=serialized_size + ceiling_delta),
+    )
+
+    with (
+        patch("mcp_email_server.app.get_attachment_content_command", AsyncMock(return_value=payload)),
+        patch("mcp_email_server.app.secrets.token_urlsafe", return_value="opaque-token"),
+    ):
+        if valid:
+            assert await get_attachment_content("work", "7", "report.pdf") == expected
+        else:
+            with pytest.raises(ValueError, match="global result limit"):
+                await get_attachment_content("work", "7", "report.pdf")
+
+
+@pytest.mark.asyncio
+async def test_attachment_blob_survives_fastmcp_tool_adapter_without_structured_content() -> None:
+    payload = AttachmentPayload("7", "photo.png", "image/png", b"png")
+    with patch(
+        "mcp_email_server.app.get_attachment_content_command",
+        AsyncMock(return_value=payload),
+    ):
+        result = await app_module.mcp.call_tool(
+            "get_attachment_content",
+            {
+                "account_name": "work",
+                "email_id": "7",
+                "attachment_name": "photo.png",
+                "mailbox": "INBOX",
+            },
+        )
+
+    assert isinstance(result, CallToolResult)
+    assert result.structuredContent is None
+    assert len(result.content) == 1
+    embedded = result.content[0]
+    assert isinstance(embedded, EmbeddedResource)
+    assert isinstance(embedded.resource, BlobResourceContents)
+    assert embedded.resource.blob == "cG5n"
+    assert embedded.meta == {"filename": "photo.png", "size": 3}

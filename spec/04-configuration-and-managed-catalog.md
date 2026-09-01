@@ -163,7 +163,8 @@ Catalog defaults and account overrides form effective policy. Policy includes at
 least:
 
 - allowed mail mutation classes;
-- attachment materialization enablement and size ceilings;
+- attachment materialization and MCP content-transfer enablement plus shared
+  result ceilings;
 - provider TLS requirements;
 - relevant request/result limits where configurable;
 - sent-copy behavior and safe fallback choices.
@@ -178,6 +179,42 @@ empty allowed recipients disables sending, while empty allowed senders does not
 restrict reading. Permissive changes do not bypass capability or input
 validation. Restrictive changes take effect on the next independent effect
 because authority is revalidated at operation boundaries.
+
+## Semantic IMAP Keyword Configuration
+
+Semantic IMAP tags are account-scoped, non-secret account configuration. Managed
+mode stores them with the account in the revisioned catalog, exposes them through
+the account service and UI editor, and includes them in CLI account/import
+presentation. Legacy mode stores the same model in the account's existing TOML
+section and follows normal legacy persistence and environment-composition rules;
+there is no independent keyword sidecar or second authority. A legacy example is:
+
+```toml
+[[emails]]
+account_name = "sales"
+
+[[emails.tags]]
+name = "todo"
+keyword = "$label4"
+description = "Messages requiring an action"
+writable = true
+```
+
+Each tag requires non-empty `name` and `keyword`. `description` defaults to the
+empty string and `writable` defaults to `false`; write authority therefore
+requires an explicit `writable = true`. Semantic names and provider keywords are
+case-insensitively unique within an account. A keyword is one bounded
+non-system IMAP atom: system flags such as `\Seen`, protocol controls,
+whitespace, and atom-special characters are rejected. Configuration collections
+use centralized bounds.
+
+Mail workflows resolve the selected account and its current tag definitions at
+invocation time. Mutations re-resolve current account authority before each
+independent provider effect, so managed revisions and legacy configuration remain
+the only authority. The registry is a small immutable projection of that resolved
+account, not a process-global configuration source. Unknown semantic names fail
+before provider access; provider keywords are observable data but are never
+accepted as semantic mutation input.
 
 ## Legacy Mode
 
@@ -346,3 +383,7 @@ SQL, raw provider responses, or reusable locators.
     satisfy spec 08's reparse, ACL, identity, lock, WAL/SHM, replacement, and
     crash-recovery contract; unsupported Windows path/filesystem classes fail
     before authority or secret effects.
+12. Semantic keyword configuration is independently loaded and bounded, is
+    never rewritten by the UI or catalog, rejects invalid, duplicate, or system
+    keyword mappings, and proves that omitted `description` and `writable`
+    values become `""` and `false`.

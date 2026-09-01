@@ -70,14 +70,14 @@ for client discovery and configuration migration steps.
 Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 `idempotentHint`, and `openWorldHint` values:
 
-| Tools                                                                        | Read-only | Destructive | Idempotent | Open world |
-| ---------------------------------------------------------------------------- | --------- | ----------- | ---------- | ---------- |
-| `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders` | yes       | no          | yes        | no         |
-| `list_emails_metadata`, `list_mailboxes`                                     | yes       | no          | yes        | yes        |
-| `get_emails_content`                                                         | no        | no          | yes        | yes        |
-| `send_email`, `forward_email`, `save_to_mailbox`                             | no        | no          | no         | yes        |
-| `set_email_flags`, `mark_emails_as_read`                                     | no        | no          | yes        | yes        |
-| `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`      | no        | yes         | no         | yes        |
+| Tools                                                                                           | Read-only | Destructive | Idempotent | Open world |
+| ----------------------------------------------------------------------------------------------- | --------- | ----------- | ---------- | ---------- |
+| `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders`, `list_email_tags` | yes       | no          | yes        | no         |
+| `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                              | yes       | no          | yes        | yes        |
+| `get_emails_content`                                                                            | no        | no          | yes        | yes        |
+| `send_email`, `forward_email`, `save_to_mailbox`                                                | no        | no          | no         | yes        |
+| `set_email_flags`, `set_email_tags`, `mark_emails_as_read`                                      | no        | no          | yes        | yes        |
+| `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`                         | no        | yes         | no         | yes        |
 
 `get_emails_content` is conservatively non-read-only because
 `mark_as_read=true` changes remote flags. Download is destructive because the
@@ -113,11 +113,17 @@ Important parameters include:
 | `body`                        | None     | Search message bodies with IMAP `BODY`.     |
 | `text`                        | None     | Search headers and bodies with IMAP `TEXT`. |
 | `has_attachment`              | None     | Apply a multipart attachment heuristic.     |
+| `semantic_tags`               | None     | Configured semantic tag names.              |
+| `tag_match`                   | `all`    | Require `all` tags or at least `any` tag.   |
 | `order`                       | `desc`   | Return ascending or descending results.     |
 
 The response contains pagination metadata, a filtered `total`, and message
 metadata including `email_id`, `message_id`, subject, sender, recipients, and
-date. To and Cc are parsed as structured RFC 5322 address fields: a comma inside
+date. Every message also returns `provider_keywords`, containing all observed
+non-system IMAP keywords, and `semantic_tags`, containing the configured semantic
+names that map to those keywords. Unknown keywords remain visible in
+`provider_keywords`; standard flags remain
+separate. To and Cc are parsed as structured RFC 5322 address fields: a comma inside
 a quoted display name is preserved, while addresses inside a group are returned
 as individual recipient entries. Because this operation fetches headers only,
 its `attachments` field is empty. `get_emails_content` populates attachment names
@@ -132,9 +138,12 @@ pagination, so `total` and page sizes describe only visible messages.
 The application keeps a rebuildable SQLite projection for unfiltered mailbox
 pages. It uses that projection only after a small IMAP `STATUS` probe confirms
 the same UIDVALIDITY, UIDNEXT, and message count and the projection covers the
-whole mailbox. Text, date, address, flag, body, and attachment filters remain on
-the bounded IMAP path so provider-specific search semantics and mutable flags
-stay authoritative. ASCII filter values retain their exact text through IMAP
+whole mailbox. Before returning a cached page, it fetches current FLAGS only for
+the UIDs on that page so external tag changes are not hidden by the projection.
+Text, date, address, flag, tag, body, and attachment filters remain on the
+bounded IMAP path so provider-specific search semantics and mutable flags stay
+authoritative. Tag filters resolve configured semantic names before IMAP search
+and reject unknown values before provider access. ASCII filter values retain their exact text through IMAP
 atom or quoted-string encoding. Non-ASCII filter values use synchronizing UTF-8
 literals with `CHARSET UTF-8`; a provider that rejects that charset returns a
 bounded search failure rather than receiving malformed raw UTF-8 command text.
@@ -162,6 +171,15 @@ unbounded projection.
 ### `get_emails_content`
 
 Fetches the body of one or more messages by `email_id`.
+
+Each returned message includes the same `provider_keywords` and `semantic_tags`
+fields as `list_emails_metadata`.
+
+### `list_email_tags`
+
+Returns the semantic tag configuration for one account: `name`, `keyword`,
+`description`, and `writable`. Use it to translate natural-language intent into
+a configured tag. An omitted `writable` value is reported as `false`.
 
 | Parameter         | Default  | Description                                                     |
 | ----------------- | -------- | --------------------------------------------------------------- |
@@ -459,6 +477,15 @@ Marks one or more message IDs as read in the selected mailbox. This focused
 common-workflow tool uses the same implementation as `set_email_flags` with
 `operation="add"` and `flags=["\\Seen"]`.
 
+### `set_email_tags`
+
+Adds or removes one or more configured writable tags. `operation` is `add` or
+`remove`, and `tags` must contain one or more semantic names. Provider keywords
+are not accepted as public input. Each requested tag must exist and have
+`writable=true`; unknown or read-only tags are rejected before provider access.
+The provider performs one UID-scoped `+FLAGS.SILENT` or `-FLAGS.SILENT` effect per
+message. Standard flags and unrelated provider keywords are preserved.
+
 ### `move_emails`
 
 Moves messages from `source_mailbox`, which defaults to `INBOX`, to a required
@@ -511,6 +538,15 @@ When a sender allowlist is active, blocked messages are never changed. See
 blocked IDs.
 
 ## Attachments
+
+### `get_attachment_content`
+
+Reads one named attachment as an MCP embedded binary resource without writing a
+server-host file. The content-only result carries an opaque `email-attachment://`
+URI, original filename, MIME type, decoded byte size, and one copy of the blob.
+It is independently enabled with `enable_attachment_content=true`; enabling file
+download does not enable MCP content transfer. The complete serialized tool
+result must fit the server's existing global result ceiling.
 
 ### `download_attachment`
 

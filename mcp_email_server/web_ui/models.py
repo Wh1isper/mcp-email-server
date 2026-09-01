@@ -10,6 +10,7 @@ from mcp_email_server.application.management import (
     ManagedPolicy,
     UpdateAccountCommand,
 )
+from mcp_email_server.imap_keywords import ImapKeywordTag
 
 
 class RequestModel(BaseModel):
@@ -78,6 +79,7 @@ class CreateAccountRequest(CatalogTargetRequest):
     incoming: EndpointInput
     outgoing: EndpointInput | None
     credentials: CredentialInput
+    tags: tuple[ImapKeywordTag, ...] = ()
 
     @model_validator(mode="after")
     def validate_outgoing_credential(self) -> CreateAccountRequest:
@@ -99,6 +101,7 @@ class UpdateAccountRequest(CatalogTargetRequest):
     sent_folder_name: str | None = Field(default=None, max_length=65535)
     incoming: EndpointInput
     outgoing: EndpointInput | None
+    tags: tuple[ImapKeywordTag, ...] = ()
 
     def command(self, current_name: str, *, had_outgoing: bool) -> UpdateAccountCommand:
         return UpdateAccountCommand(
@@ -113,6 +116,7 @@ class UpdateAccountRequest(CatalogTargetRequest):
             save_to_sent=self.save_to_sent,
             sent_folder_name=self.sent_folder_name,
             update_sent_folder=True,
+            tags=self.tags,
         )
 
 
@@ -141,6 +145,7 @@ class CleanupCredentialsRequest(ExpectedRevisionRequest):
 class UpdatePolicyRequest(CatalogTargetRequest):
     expected_revision: int = Field(ge=1)
     enable_attachment_download: bool
+    enable_attachment_content: bool
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
@@ -149,6 +154,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
         return ManagedPolicy(
             revision=self.expected_revision,
             enable_attachment_download=self.enable_attachment_download,
+            enable_attachment_content=self.enable_attachment_content,
             allowed_recipients=self.allowed_recipients,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
