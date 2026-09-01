@@ -50,6 +50,7 @@ from mcp_email_server.windows_security import (
 )
 
 SCHEMA_VERSION = 4
+_MIGRATION_SOURCE_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
@@ -550,7 +551,6 @@ CREATE TABLE catalog (
     id TEXT PRIMARY KEY CHECK (id = 'local'),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     enable_attachment_download INTEGER NOT NULL CHECK (enable_attachment_download IN (0, 1)),
-    enable_attachment_content INTEGER NOT NULL CHECK (enable_attachment_content IN (0, 1)),
     allowed_recipients_json TEXT NOT NULL,
     allowed_senders_json TEXT NOT NULL,
     report_blocked_mutations INTEGER NOT NULL CHECK (report_blocked_mutations IN (0, 1))
@@ -566,7 +566,6 @@ CREATE TABLE managed_account (
     revision INTEGER NOT NULL CHECK (revision >= 1),
     save_to_sent INTEGER NOT NULL CHECK (save_to_sent IN (0, 1)),
     sent_folder_name TEXT,
-    tags_json TEXT NOT NULL,
     removed_at TEXT,
     UNIQUE (catalog_id, normalized_name)
 );
@@ -651,7 +650,16 @@ CREATE INDEX IF NOT EXISTS metadata_projection_uid_desc
     ON message_metadata_projection(mailbox_id, uidvalidity, uid DESC);
 """
 
-_SCHEMA = _AUTHORITY_SCHEMA + _OPERATIONAL_SCHEMA
+_SCHEMA_V4_ADDITIONS = """
+ALTER TABLE catalog
+    ADD COLUMN enable_attachment_content INTEGER NOT NULL DEFAULT 0
+        CHECK (enable_attachment_content IN (0, 1));
+ALTER TABLE managed_account
+    ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
+"""
+
+_SCHEMA_V3 = _AUTHORITY_SCHEMA + _OPERATIONAL_SCHEMA
+_SCHEMA = _AUTHORITY_SCHEMA + _SCHEMA_V4_ADDITIONS + _OPERATIONAL_SCHEMA
 _OPERATIONAL_DATABASE_SCHEMA = (
     """
 CREATE TABLE schema_metadata (
@@ -704,6 +712,23 @@ def _validate_operational_schema(connection: sqlite3.Connection) -> None:
 def _validate_managed_schema(connection: sqlite3.Connection, schema: str) -> None:
     if _schema_objects(connection) != _expected_schema_objects(schema):
         raise ManagedCatalogError("Managed catalog schema is missing or incompatible")
+
+
+def _read_schema_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
+    if row is None or not isinstance(row["version"], int):
+        raise ManagedCatalogError("Managed catalog schema version is unsupported")
+    return row["version"]
+
+
+def _require_migration_source(version: int) -> None:
+    if version != _MIGRATION_SOURCE_VERSION:
+        raise ManagedCatalogError("Managed catalog schema version is unsupported")
+
+
+def _require_migration_update(cursor: sqlite3.Cursor) -> None:
+    if cursor.rowcount != 1:
+        raise ManagedCatalogError("Managed catalog schema changed during migration")
 
 
 def _parse_tags_json(value: object) -> tuple[ImapKeywordTag, ...]:
@@ -787,20 +812,51 @@ class ManagedCatalog:
             raise
         return cls(normalized)
 
-    def _preflight_schema_ownership(self, connection: sqlite3.Connection) -> None:
+    def _preflight_schema_ownership(self, connection: sqlite3.Connection) -> int:
         try:
-            row = connection.execute("SELECT version FROM schema_metadata WHERE singleton = 1").fetchone()
+            version = _read_schema_version(connection)
         except sqlite3.Error as exc:
             raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
-        if row is None or row["version"] != SCHEMA_VERSION:
+        if version == SCHEMA_VERSION:
+            _validate_managed_schema(connection, _SCHEMA)
+        elif version == _MIGRATION_SOURCE_VERSION:
+            _validate_managed_schema(connection, _SCHEMA_V3)
+        else:
             raise ManagedCatalogError("Managed catalog schema version is unsupported")
-        _validate_managed_schema(connection, _SCHEMA)
+        return version
+
+    @staticmethod
+    def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            version = _read_schema_version(connection)
+            if version == SCHEMA_VERSION:
+                _validate_managed_schema(connection, _SCHEMA)
+                _validate_managed_invariants(connection)
+                connection.commit()
+                return
+            _require_migration_source(version)
+            _validate_managed_schema(connection, _SCHEMA_V3)
+            _execute_schema(connection, _SCHEMA_V4_ADDITIONS)
+            _validate_managed_schema(connection, _SCHEMA)
+            _validate_managed_invariants(connection)
+            updated = connection.execute(
+                "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?",
+                (SCHEMA_VERSION, _MIGRATION_SOURCE_VERSION),
+            )
+            _require_migration_update(updated)
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
     @contextlib.contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         with _connect(self.path, enable_wal=False) as connection:
-            self._preflight_schema_ownership(connection)
+            version = self._preflight_schema_ownership(connection)
         with _connect(self.path) as connection:
+            if version == _MIGRATION_SOURCE_VERSION:
+                self._migrate_v3_to_v4(connection)
             self._validate_schema(connection)
             yield connection
 

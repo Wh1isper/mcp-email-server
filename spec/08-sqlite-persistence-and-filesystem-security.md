@@ -60,10 +60,16 @@ A new catalog is created at the current exact schema version. Opening:
 - leaves no partially advertised version on rollback or crash.
 
 No startup path silently drops/recreates authoritative tables. Projection-only
-rebuild is explicit and isolated. There are no released managed-catalog users,
-so this delivery makes no compatibility or automatic-migration commitment for
-pre-release managed schema files. Legacy TOML, environment, and keyring import
-remains supported through the explicit spec 04 workflow.
+rebuild is explicit and isolated. Schema v3 is the sole declared pre-release
+migration source for v4. Opening a v3 catalog first validates its exact schema,
+then uses one bounded `BEGIN IMMEDIATE` transaction to add the disabled
+attachment-content policy and empty account tag mappings. It validates the exact
+v4 schema and invariants before recording version 4 as the final write. Failure
+or process interruption rolls back both additions and leaves the catalog
+advertised as v3; account, policy, binding, secret, and projection rows retain
+their identifiers and revisions. Other pre-release schema versions remain
+unsupported without a general compatibility promise. Legacy TOML, environment,
+and keyring import remains supported through the explicit spec 04 workflow.
 
 ## Filesystem Layout and Locking
 
@@ -281,7 +287,7 @@ remain separate operator procedures outside this delivery.
 5. Concurrent initialization/open, application-lock timeout, crash release, and
    SQLite busy timeout behavior is deterministic and bounded on POSIX and native
    Windows.
-6. Unsupported pre-release schema versions are rejected without mutation; future crash and migration tests never advertise a partially migrated schema.
+6. Exact schema v3 migrates transactionally to v4 without losing authority or secret rows; rollback never advertises a partially migrated schema, and every other unsupported pre-release version is rejected without mutation.
 7. External network, system-keyring, and large filesystem work is absent from
    SQLite transaction scopes; Linux secret insertion and binding activation are
    atomic in one bounded transaction.

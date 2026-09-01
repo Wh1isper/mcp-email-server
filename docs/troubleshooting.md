@@ -114,13 +114,19 @@ sidecar itself is unparseable, repair or restore that sidecar manually; `reset`
 cannot safely infer its mode and therefore does not unlink the independent legacy
 source.
 
-There are no released managed-catalog users for this pre-release redesign, so
-older development catalog schemas are rejected rather than migrated. While
-legacy mode is selected, preserve the old file for rollback and initialize a
-fresh owner-only path with `mcp-email-server config init --database NEW_PATH`.
-Then re-enter accounts or use the reviewed legacy import flow. Fresh setup
-selects managed immediately; an existing v1 source remains selected until a
-complete import succeeds. Remove the obsolete development catalog only after verifying the
+Schema v3 is the only supported pre-release managed-catalog migration source.
+The first v4 open performs that migration transactionally, preserving account,
+policy, binding, and secret rows while initializing empty tag mappings and a
+disabled attachment-content policy. If startup was attempted before upgrading
+the application, restart it after checking out the v4-capable version. A failed
+migration rolls back without advertising v4.
+
+Other older development schemas are still rejected. For those versions, select
+legacy mode, preserve the old file for rollback, and initialize a fresh
+owner-only path with `mcp-email-server config init --database NEW_PATH`. Then
+re-enter accounts or use the reviewed legacy import flow. Fresh setup selects
+managed immediately; an existing v1 source remains selected until a complete
+import succeeds. Remove an obsolete development catalog only after verifying the
 replacement; on Linux and Windows, treat every old catalog copy as
 secret-bearing.
 

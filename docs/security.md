@@ -114,6 +114,13 @@ backups include plaintext `managed_secret.secret_value` values. Keep every copy
 under protection equivalent to the private original; do not upload, share, or
 treat it as a non-secret account database.
 
+The declared v3-to-v4 catalog migration runs only after the existing catalog and
+sidecars pass the same private-file checks as a normal managed open. One bounded
+SQLite write transaction validates the exact v3 schema, adds default-disabled
+attachment content and empty tag mappings, validates the resulting v4 schema and
+invariants, and records version 4 last. It neither selects nor copies secret
+values; failure rolls back without changing the advertised schema version.
+
 A create or rotation stores a new immutable value and commits it as active only
 if the reviewed account revision still matches. On Linux and Windows, inserting
 `managed_secret`, activating its binding, incrementing the binding/account

@@ -427,13 +427,16 @@ Managed storage uses one exact current schema for account authority, the
 platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
-original and never treat the catalog as a non-secret database. There are no
-released managed-catalog users, so pre-release development schemas receive no
-compatibility or automatic-migration promise. Legacy TOML, environment, and
-keyring sources remain supported through explicit import. Unsupported, corrupt,
-or insecure managed storage fails closed. In legacy mode, an unavailable or unsafe operational
-database produces a bounded warning and the metadata query uses its bounded IMAP
-fallback instead.
+original and never treat the catalog as a non-secret database. Schema v3 is the
+only declared pre-release migration source: the first v4 open validates the exact
+v3 shape, transactionally adds empty account tag mappings and the disabled
+attachment-content policy, verifies the resulting schema and invariants, and
+records v4 only after those checks pass. Account, policy, binding, and secret
+rows are preserved. Other unsupported versions, corrupt storage, and insecure
+storage fail closed. Legacy TOML, environment, and keyring sources remain
+supported through explicit import. In legacy mode, an unavailable or unsafe
+operational database produces a bounded warning and the metadata query uses its
+bounded IMAP fallback instead.
 
 ## Legacy configuration precedence
 
