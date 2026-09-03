@@ -10,7 +10,7 @@ import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email import encoders
 from email.header import Header
 from email.headerregistry import Address, AddressHeader
@@ -44,6 +44,7 @@ from mcp_email_server.application.metadata import (
     MailboxState,
     MetadataProviderObservationError,
     MetadataQueryTooBroadError,
+    normalize_datetime_boundary,
 )
 from mcp_email_server.application.mutations import (
     MUTABLE_EMAIL_FLAGS,
@@ -1470,10 +1471,34 @@ class EmailClient:
         tag_match: Literal["all", "any"] = "all",
     ) -> list[ImapSearchToken]:
         search_criteria: list[ImapSearchToken] = []
-        if before:
-            search_criteria.extend(["BEFORE", f"{before.day:02d}-{_IMAP_MONTHS[before.month - 1]}-{before.year:04d}"])
-        if since:
-            search_criteria.extend(["SINCE", f"{since.day:02d}-{_IMAP_MONTHS[since.month - 1]}-{since.year:04d}"])
+        before_utc = normalize_datetime_boundary(before, field_name="before")
+        since_utc = normalize_datetime_boundary(since, field_name="since")
+
+        # IMAP BEFORE/SINCE compare only the calendar part of INTERNALDATE and
+        # disregard its time and timezone. Accepted INTERNALDATE offsets are
+        # strictly less than 24 hours, so include the adjacent local date on
+        # each side and apply the exact UTC interval after FETCH INTERNALDATE.
+        if before_utc is not None:
+            try:
+                candidate_before = before_utc.date() + timedelta(days=2)
+            except OverflowError:
+                candidate_before = None
+            if candidate_before is not None:
+                search_criteria.extend([
+                    "BEFORE",
+                    f"{candidate_before.day:02d}-{_IMAP_MONTHS[candidate_before.month - 1]}-"
+                    f"{candidate_before.year:04d}",
+                ])
+        if since_utc is not None:
+            try:
+                candidate_since = since_utc.date() - timedelta(days=1)
+            except OverflowError:
+                candidate_since = None
+            if candidate_since is not None:
+                search_criteria.extend([
+                    "SINCE",
+                    f"{candidate_since.day:02d}-{_IMAP_MONTHS[candidate_since.month - 1]}-{candidate_since.year:04d}",
+                ])
 
         # Substring-match fields (IMAP keyword, value)
         text_criteria = [
@@ -1946,6 +1971,8 @@ class EmailClient:
             raise ValueError("page must be at least 1")
         if not 1 <= page_size <= 100:
             raise ValueError("page_size must be between 1 and 100")
+        before_utc = normalize_datetime_boundary(before, field_name="before")
+        since_utc = normalize_datetime_boundary(since, field_name="since")
         imap = await self._connect_imap()
         try:
             # Login and select mailbox
@@ -1955,8 +1982,8 @@ class EmailClient:
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
 
             search_criteria = self._build_search_criteria(
-                before,
-                since,
+                before_utc,
+                since_utc,
                 subject,
                 body=body,
                 text=text,
@@ -2000,7 +2027,7 @@ class EmailClient:
                 if not email_ids:
                     return 0, []
 
-            # Phase 1: Batch fetch INTERNALDATE for sorting (sequential chunks)
+            # Phase 1: Batch fetch INTERNALDATE for exact datetime filtering and sorting.
             fetch_dates_start = time.perf_counter()
             uid_dates = await self._batch_fetch_dates(imap, email_ids)
             fetch_dates_elapsed = time.perf_counter() - fetch_dates_start
@@ -2012,6 +2039,18 @@ class EmailClient:
                 raise MetadataProviderObservationError(
                     f"Provider returned incomplete INTERNALDATE metadata for {missing_date_count} UIDs"
                 )
+
+            if before_utc is not None or since_utc is not None:
+                candidate_count = len(email_ids)
+                email_ids = [
+                    uid
+                    for uid in email_ids
+                    if (since_utc is None or uid_dates[uid] >= since_utc)
+                    and (before_utc is None or uid_dates[uid] < before_utc)
+                ]
+                logger.info(f"Exact INTERNALDATE filter: {len(email_ids)} of {candidate_count} match")
+                if not email_ids:
+                    return 0, []
 
             # Keep UID SEARCH results as the source of truth and require
             # INTERNALDATE for exact provider-compatible ordering.

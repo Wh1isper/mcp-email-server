@@ -150,7 +150,7 @@
         },
         {
             "name": "list_emails_metadata",
-            "description": "List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.",
+            "description": "List email metadata (email_id, subject, sender, recipients, date) without body content. Time filtering and ordering use provider INTERNALDATE; the returned date is the message's RFC 5322 Date header. Returns email_id for use with get_emails_content.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -185,7 +185,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Retrieve emails before this datetime (UTC).",
+                        "description": "Filter to messages whose provider INTERNALDATE is earlier than this timezone-aware datetime (exclusive); any UTC offset is accepted and normalized to UTC.",
                         "title": "Before"
                     },
                     "since": {
@@ -199,7 +199,7 @@
                             }
                         ],
                         "default": null,
-                        "description": "Retrieve emails since this datetime (UTC).",
+                        "description": "Filter to messages whose provider INTERNALDATE is equal to or later than this timezone-aware datetime (inclusive); any UTC offset is accepted and normalized to UTC.",
                         "title": "Since"
                     },
                     "subject": {
@@ -246,7 +246,7 @@
                     },
                     "order": {
                         "default": "desc",
-                        "description": "Sort matching emails by date: oldest first (`asc`) or newest first (`desc`).",
+                        "description": "Sort matching emails by provider INTERNALDATE: oldest first (`asc`) or newest first (`desc`).",
                         "enum": ["asc", "desc"],
                         "title": "Order",
                         "type": "string"

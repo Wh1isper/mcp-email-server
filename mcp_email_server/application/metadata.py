@@ -46,6 +46,18 @@ async def _bounded_provider_call(operation: Awaitable[ProviderResultT]) -> Provi
         raise MetadataProviderError("provider request timed out") from None
 
 
+def normalize_datetime_boundary(value: datetime | None, *, field_name: str) -> datetime | None:
+    """Return one timezone-aware query boundary as a UTC instant."""
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must include a timezone offset")
+    try:
+        return value.astimezone(UTC)
+    except (OverflowError, ValueError):
+        raise ValueError(f"{field_name} cannot be represented in UTC") from None
+
+
 @dataclass(frozen=True)
 class ListEmailMetadataQuery:
     account_name: str
@@ -80,6 +92,8 @@ class ListEmailMetadataQuery:
             raise ValueError("page_size must be between 1 and 100")
         if self.order not in ("asc", "desc"):
             raise ValueError("order must be 'asc' or 'desc'")
+        normalize_datetime_boundary(self.before, field_name="before")
+        normalize_datetime_boundary(self.since, field_name="since")
         validate_controlled_string(
             self.mailbox,
             field_name="mailbox",

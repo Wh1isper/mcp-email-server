@@ -23,7 +23,7 @@ before release.
 | layers, late secrets, resource/transaction scopes  | 03                     | import/architecture, isolation, lifecycle, and transaction tests                                |
 | mode, catalog/account/policy/import lifecycle      | 04                     | application + CLI + UI contract and crash/conflict tests                                        |
 | secret rotation/removal/cleanup/redaction          | 05                     | atomic activation, unchanged-authority failure, leakage, and parity tests                       |
-| mailbox/index/body/attachment reads                | 06                     | provider fakes, SQLite, filesystem race, bounds, and GreenMail tests                            |
+| mailbox/index/body/attachment reads                | 06                     | provider fakes, exact datetime boundaries, SQLite, filesystem race, bounds, and GreenMail tests |
 | mutations and independent effects                  | 07                     | capability, ambiguity, cancellation, no-bare-expunge, SMTP/sent-copy tests                      |
 | schema, WAL/SHM security, retention/rebuild        | 08                     | exact schema/migration, POSIX + native Windows pre-open race, concurrency, corruption tests     |
 | loopback UI security and packaging                 | 09                     | backend, frontend, real-browser, artifact, and no-Node tests                                    |
@@ -116,9 +116,10 @@ satisfied by mocks.
 ### End to end
 
 GreenMail tests exercise real IMAP/SMTP through MCP stdio, including restart,
-managed selection, read/mutation evidence, RFC 5321/RFC 5322 sender separation
-when a display name contains address-special characters, and ordinary ASCII
-APPEND/search behavior. Deterministic protocol tests additionally exercise
+managed selection, read/mutation evidence, exact same-day timezone-aware
+`INTERNALDATE` filtering before total and pagination, RFC 5321/RFC 5322 sender
+separation when a display name contains address-special characters, and ordinary
+ASCII APPEND/search behavior. Deterministic protocol tests additionally exercise
 quoted/grouped RFC 5322 addresses, MIME attachment subtrees and charset failure,
 exact IMAP LIST and multi-literal SEARCH framing, SMTPUTF8 decisions, SMTP DATA
 7-bit/8-bit/binary transport classification, and RFC 6855 APPEND because the

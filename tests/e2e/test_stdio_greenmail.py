@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from email import policy
 from email.message import EmailMessage, Message
 from email.parser import BytesParser
@@ -225,6 +225,28 @@ def _seed_message_with_attachment_as(
 
 def _seed_message(subject: str, body: str) -> None:
     _seed_message_as(ALICE, BOB[0], subject, body)
+
+
+def _append_message_at(
+    credentials: tuple[str, str],
+    mailbox: str,
+    *,
+    sender: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    internal_date: datetime,
+) -> None:
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = subject
+    message["Date"] = "Fri, 01 Jan 1999 00:00:00 +0000"
+    message["Message-ID"] = make_msgid(domain="example.test")
+    message.set_content(body)
+    with _imap_session(credentials) as client:
+        status, _ = client.append(mailbox, None, internal_date, message.as_bytes())
+        assert status == "OK"
 
 
 def _mark_deleted_without_expunge(credentials: tuple[str, str], mailbox: str, uid: str) -> None:
@@ -731,9 +753,23 @@ async def test_metadata_index_paging_fallback_and_restart_reuse_against_greenmai
     _ensure_empty_mailboxes(BOB, ["INBOX"])
     run_id = uuid.uuid4().hex
     subjects = [f"metadata-index-{run_id}-{number}" for number in range(5)]
-    for number, subject in enumerate(subjects):
-        _seed_message(subject, f"indexed body {number}; unique needle {run_id}-{number}")
-        _wait_for_message(BOB, "INBOX", subject)
+    internal_dates = [
+        datetime(2026, 9, 2, 16, 47, 59, tzinfo=UTC),
+        datetime(2026, 9, 2, 16, 48, tzinfo=UTC),
+        datetime(2026, 9, 2, 17, 0, tzinfo=UTC),
+        datetime(2026, 9, 2, 19, 12, 59, tzinfo=UTC),
+        datetime(2026, 9, 2, 19, 13, tzinfo=UTC),
+    ]
+    for number, (subject, internal_date) in enumerate(zip(subjects, internal_dates, strict=True)):
+        _append_message_at(
+            BOB,
+            "INBOX",
+            sender=ALICE[0],
+            recipient=BOB[0],
+            subject=subject,
+            body=f"indexed body {number}; unique needle {run_id}-{number}",
+            internal_date=internal_date,
+        )
     flagged = _wait_for_message(BOB, "INBOX", subjects[2])
     _add_flags(BOB, "INBOX", flagged.uid, r"\Seen \Flagged")
 
@@ -812,6 +848,31 @@ async def test_metadata_index_paging_fallback_and_restart_reuse_against_greenmai
                             {"account_name": "bob", "page_size": 10, **filters},
                         )
                         assert result["total"] == expected_total, (filters, result)
+
+                    datetime_arguments = {
+                        "account_name": "bob",
+                        "page_size": 2,
+                        "since": "2026-09-02T16:48:00Z",
+                        "before": "2026-09-02T19:13:00Z",
+                    }
+                    datetime_first = await _call_tool(
+                        session,
+                        "list_emails_metadata",
+                        datetime_arguments,
+                    )
+                    datetime_second = await _call_tool(
+                        session,
+                        "list_emails_metadata",
+                        {**datetime_arguments, "page": 2},
+                    )
+                    assert datetime_first["total"] == datetime_second["total"] == 3
+                    assert [email["subject"] for email in datetime_first["emails"]] == [subjects[3], subjects[2]]
+                    assert [email["subject"] for email in datetime_second["emails"]] == [subjects[1]]
+                    assert all(
+                        email["date"].startswith("1999-01-01")
+                        for email in datetime_first["emails"] + datetime_second["emails"]
+                    )
+
                     invalid = await session.call_tool(
                         "list_emails_metadata",
                         arguments={"account_name": "bob", "page_size": 101},

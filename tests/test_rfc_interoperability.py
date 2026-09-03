@@ -178,8 +178,8 @@ def test_imap_dates_use_fixed_english_month_names():
     expected_months = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
     for month, expected in enumerate(expected_months, start=1):
-        value = datetime(2026, month, 1, tzinfo=UTC)
-        assert EmailClient._build_search_criteria(since=value) == ["SINCE", f"01-{expected}-2026"]
+        value = datetime(2026, month, 15, tzinfo=UTC)
+        assert EmailClient._build_search_criteria(since=value) == ["SINCE", f"14-{expected}-2026"]
 
 
 def test_list_response_framing_ignores_completion_and_reassembles_literal():

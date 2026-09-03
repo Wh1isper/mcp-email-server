@@ -512,3 +512,20 @@ async def test_metadata_provider_fallback_has_application_deadline(monkeypatch) 
 
     with pytest.raises(MetadataProviderError, match="timed out"):
         await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field_name", ["before", "since"])
+async def test_metadata_query_rejects_naive_datetime_before_authority_resolution(field_name: str) -> None:
+    service, accounts, _providers, _projections, _provider, _projection = _service()
+    value = datetime(2026, 9, 2, 12, 0)
+    query = ListEmailMetadataQuery(
+        account_name="work",
+        before=value if field_name == "before" else None,
+        since=value if field_name == "since" else None,
+    )
+
+    with pytest.raises(ValueError, match=rf"{field_name} must include a timezone offset"):
+        await service.execute(query)
+
+    accounts.resolve.assert_not_called()

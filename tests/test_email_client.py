@@ -514,15 +514,14 @@ class TestEmailClient:
             "custom",
         ]
 
-        # Test with before date
+        # Date-only IMAP criteria are widened before exact INTERNALDATE filtering.
         before_date = datetime(2023, 1, 1, tzinfo=UTC)
         criteria = EmailClient._build_search_criteria(before=before_date)
-        assert criteria == ["BEFORE", "01-JAN-2023"]
+        assert criteria == ["BEFORE", "03-JAN-2023"]
 
-        # Test with since date
         since_date = datetime(2023, 1, 1, tzinfo=UTC)
         criteria = EmailClient._build_search_criteria(since=since_date)
-        assert criteria == ["SINCE", "01-JAN-2023"]
+        assert criteria == ["SINCE", "31-DEC-2022"]
 
         # Test with subject
         criteria = EmailClient._build_search_criteria(subject="Test")
@@ -548,7 +547,7 @@ class TestEmailClient:
         criteria = EmailClient._build_search_criteria(
             subject="Test", from_address="test@example.com", since=datetime(2023, 1, 1, tzinfo=UTC)
         )
-        assert criteria == ["SINCE", "01-JAN-2023", "SUBJECT", "Test", "FROM", "test@example.com"]
+        assert criteria == ["SINCE", "31-DEC-2022", "SUBJECT", "Test", "FROM", "test@example.com"]
 
         # Test with seen=True (read emails)
         criteria = EmailClient._build_search_criteria(seen=True)
@@ -1736,3 +1735,98 @@ class TestSenderFilterCoverage:
         with patch.object(email_client, "_parse_headers", return_value=None):
             result = await email_client._batch_fetch_senders(mock_imap, [b"300"])
         assert result == {}
+
+
+def _metadata_imap(search_uids: bytes) -> AsyncMock:
+    imap = AsyncMock()
+    imap._client_task = asyncio.Future()
+    imap._client_task.set_result(None)
+    imap.wait_hello_from_server = AsyncMock()
+    imap.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+    imap.select = AsyncMock(return_value=("OK", []))
+    imap.uid_search = AsyncMock(return_value=("OK", [search_uids]))
+    imap.logout = AsyncMock()
+    return imap
+
+
+def test_datetime_search_criteria_are_conservative_utc_supersets() -> None:
+    since = datetime.fromisoformat("2026-09-02T00:30:00+14:00")
+    before = datetime.fromisoformat("2026-09-02T23:30:00-12:00")
+
+    assert EmailClient._build_search_criteria(before=before, since=since) == [
+        "BEFORE",
+        "05-SEP-2026",
+        "SINCE",
+        "31-AUG-2026",
+    ]
+    assert EmailClient._build_search_criteria(since=datetime.min.replace(tzinfo=UTC)) == ["ALL"]
+    assert EmailClient._build_search_criteria(before=datetime.max.replace(tzinfo=UTC)) == ["ALL"]
+
+
+@pytest.mark.asyncio
+async def test_get_emails_metadata_filters_exact_internaldate_before_total_and_pagination(email_client) -> None:
+    imap = _metadata_imap(b"1 2 3 4 5")
+    since = datetime.fromisoformat("2026-09-02T02:30:00+02:00")
+    before = datetime.fromisoformat("2026-09-03T01:30:00+02:00")
+    internal_dates = {
+        "1": datetime.fromisoformat("2026-09-01T22:29:59-02:00"),
+        "2": datetime.fromisoformat("2026-09-01T22:30:00-02:00"),
+        "3": datetime.fromisoformat("2026-09-03T07:00:00+14:00"),
+        "4": datetime.fromisoformat("2026-09-03T13:29:59+14:00"),
+        "5": datetime.fromisoformat("2026-09-03T13:30:00+14:00"),
+    }
+
+    def page_headers(_imap, uids, **_kwargs):
+        return {
+            uid: {
+                "email_id": uid,
+                "subject": f"Subject {uid}",
+                "from": "allowed@example.test",
+                "to": ["user@example.test"],
+                # The RFC 5322 Date header is deliberately outside the query;
+                # filtering is authoritative against provider INTERNALDATE.
+                "date": datetime(1999, 1, int(uid), tzinfo=UTC),
+                "attachments": [],
+            }
+            for uid in uids
+        }
+
+    with (
+        patch.object(email_client, "imap_class", return_value=imap),
+        patch.object(email_client, "_batch_fetch_dates", return_value=internal_dates),
+        patch.object(email_client, "_batch_fetch_headers", side_effect=page_headers),
+    ):
+        first_total, first_page = await email_client.get_emails_metadata(
+            page=1,
+            page_size=2,
+            since=since,
+            before=before,
+        )
+        second_total, second_page = await email_client.get_emails_metadata(
+            page=2,
+            page_size=2,
+            since=since,
+            before=before,
+        )
+
+    assert first_total == second_total == 3
+    assert [email["email_id"] for email in first_page] == ["4", "3"]
+    assert [email["email_id"] for email in second_page] == ["2"]
+    assert all(email["date"].year == 1999 for email in first_page + second_page)
+    imap.uid_search.assert_awaited_with(
+        "BEFORE",
+        "04-SEP-2026",
+        "SINCE",
+        "01-SEP-2026",
+        charset=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_emails_metadata_rejects_naive_datetime_before_provider_access(email_client) -> None:
+    connect = AsyncMock()
+    with patch.object(email_client, "_connect_imap", connect):
+        with pytest.raises(ValueError, match="since must include a timezone offset"):
+            await email_client.get_emails_metadata(since=datetime(2026, 9, 2, 0, 30))
+
+    connect.assert_not_awaited()

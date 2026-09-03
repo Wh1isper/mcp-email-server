@@ -104,7 +104,7 @@ Important parameters include:
 | `page`                        | `1`      | One-based result page.                      |
 | `page_size`                   | `10`     | Number of results per page, from 1 to 100.  |
 | `mailbox`                     | `INBOX`  | Mailbox to search.                          |
-| `before` / `since`            | None     | UTC datetime boundaries.                    |
+| `before` / `since`            | None     | Timezone-aware `INTERNALDATE` boundaries.   |
 | `subject`                     | None     | Subject filter.                             |
 | `from_address` / `to_address` | None     | Address filters.                            |
 | `seen`                        | None     | Filter by read status.                      |
@@ -119,7 +119,12 @@ Important parameters include:
 
 The response contains pagination metadata, a filtered `total`, and message
 metadata including `email_id`, `message_id`, subject, sender, recipients, and
-date. Every message also returns `provider_keywords`, containing all observed
+date. `since` is inclusive, `before` is exclusive, and both compare the
+provider's IMAP `INTERNALDATE` as an absolute instant. Each value must include a
+UTC offset; values with any valid offset are normalized to UTC. Ordering uses the
+same `INTERNALDATE` value. The returned `date` remains the message's RFC 5322
+`Date` header and can differ from the provider timestamp used for filtering and
+ordering. Every message also returns `provider_keywords`, containing all observed
 non-system IMAP keywords, and `semantic_tags`, containing the configured semantic
 names that map to those keywords. Unknown keywords remain visible in
 `provider_keywords`; standard flags remain
@@ -147,8 +152,13 @@ and reject unknown values before provider access. ASCII filter values retain the
 atom or quoted-string encoding. Non-ASCII filter values use synchronizing UTF-8
 literals with `CHARSET UTF-8`; a provider that rejects that charset returns a
 bounded search failure rather than receiving malformed raw UTF-8 command text.
-Date criteria always use the protocol's English month tokens regardless of the
-server process locale. A response normally omits `warnings`; if a validated IMAP
+Because base IMAP `BEFORE` and `SINCE` ignore the time and timezone components
+of `INTERNALDATE`, date criteria are conservative candidate filters. The server
+widens them across adjacent calendar dates, fetches complete `INTERNALDATE`
+evidence, and reapplies the exact `[since, before)` interval before calculating
+`total`, ordering, and pagination. Date criteria always use the protocol's
+English month tokens regardless of the server process locale. A response
+normally omits `warnings`; if a validated IMAP
 result was returned but its rebuildable projection could not be persisted, the
 response includes `warnings: ["projection_write_failed"]`. It never includes the
 local exception detail.

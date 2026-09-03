@@ -84,6 +84,23 @@ fail before provider access. The projection never answers a tag-filtered query
 because external clients may mutate keywords without changing UIDNEXT or message
 count.
 
+Metadata datetime boundaries are timezone-aware absolute instants. Any valid UTC
+offset is normalized to UTC; an offset-free value fails before account authority
+or provider access. `since` is inclusive and `before` is exclusive, forming the
+interval `[since, before)`. Filtering and ordering use IMAP `INTERNALDATE` as the
+authoritative provider timestamp. The public metadata `date` remains the RFC 5322
+message-header value and can differ from `INTERNALDATE`.
+
+Base IMAP `BEFORE` and `SINCE` disregard the time and timezone components of
+`INTERNALDATE`, so they are conservative pushdowns rather than exact datetime
+predicates. The provider widens their calendar dates enough to include every
+accepted `INTERNALDATE` offset, fetches complete `INTERNALDATE` evidence for the
+bounded candidates, and reapplies the exact interval before total calculation,
+ordering, and pagination. At a representable datetime edge where a widened date
+cannot be formed, the provider omits that coarse criterion and relies on the
+exact residual predicate. Candidate or evidence limits fail explicitly rather
+than returning an approximate total or partial page.
+
 ## Metadata Query Flow
 
 ```mermaid
@@ -249,7 +266,9 @@ catalog authority or secret binding state.
    name, delimiter, and attributes.
 2. UIDVALIDITY changes prevent prior-epoch rows from answering current queries.
 3. Exact totals require fresh qualified complete coverage; partial absence never
-   deletes or proves absence.
+   deletes or proves absence. Datetime-filtered totals and pages apply the exact
+   timezone-aware `[since, before)` interval to complete `INTERNALDATE` evidence
+   after conservative IMAP date search and before ordering or pagination.
 4. Candidate UID count, fetch batches, headers, bodies, parser work, errors, and
    serialized results have enforced ceilings, including direct service calls.
 5. Body reads use PEEK, preserve input order, and return per-item outcomes for up

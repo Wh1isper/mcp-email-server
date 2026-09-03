@@ -304,7 +304,11 @@ async def list_email_tags(
 
 
 @mcp.tool(
-    description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content.",
+    description=(
+        "List email metadata (email_id, subject, sender, recipients, date) without body content. "
+        "Time filtering and ordering use provider INTERNALDATE; the returned date is the message's RFC 5322 Date header. "
+        "Returns email_id for use with get_emails_content."
+    ),
     annotations=_READ_ONLY_REMOTE,
 )
 async def list_emails_metadata(
@@ -321,11 +325,23 @@ async def list_emails_metadata(
     ] = 10,
     before: Annotated[
         datetime | None,
-        Field(default=None, description="Retrieve emails before this datetime (UTC)."),
+        Field(
+            default=None,
+            description=(
+                "Filter to messages whose provider INTERNALDATE is earlier than this timezone-aware datetime "
+                "(exclusive); any UTC offset is accepted and normalized to UTC."
+            ),
+        ),
     ] = None,
     since: Annotated[
         datetime | None,
-        Field(default=None, description="Retrieve emails since this datetime (UTC)."),
+        Field(
+            default=None,
+            description=(
+                "Filter to messages whose provider INTERNALDATE is equal to or later than this timezone-aware "
+                "datetime (inclusive); any UTC offset is accepted and normalized to UTC."
+            ),
+        ),
     ] = None,
     subject: Annotated[
         str | None,
@@ -353,7 +369,10 @@ async def list_emails_metadata(
     ] = None,
     order: Annotated[
         Literal["asc", "desc"],
-        Field(default=None, description="Sort matching emails by date: oldest first (`asc`) or newest first (`desc`)."),
+        Field(
+            default=None,
+            description="Sort matching emails by provider INTERNALDATE: oldest first (`asc`) or newest first (`desc`).",
+        ),
     ] = "desc",
     mailbox: Annotated[
         str,
