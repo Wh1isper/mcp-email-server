@@ -1,3 +1,6 @@
+CONTAINER_IMAGE ?= mcp-email-server:local
+CONTAINER_VERSION ?= $(shell python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+
 .PHONY: install
 install: ## Install the virtual environment and install the pre-commit hooks
 	@echo "Creating virtual environment using uv"
@@ -45,6 +48,14 @@ test-e2e: ## Test the stdio MCP server against local GreenMail SMTP and IMAP ser
 build: clean-build frontend-check ## Build the wheel and source distribution
 	@echo "Creating distribution artifacts"
 	@uv build
+
+.PHONY: container
+container: ## Build the local runtime container image
+	@docker build --tag "$(CONTAINER_IMAGE)" .
+
+.PHONY: container-check
+container-check: container ## Build and verify the local runtime container image
+	@python3 dev/verify_container.py --image "$(CONTAINER_IMAGE)" --expected-version "$(CONTAINER_VERSION)"
 
 .PHONY: clean-build
 clean-build: ## Clean build artifacts

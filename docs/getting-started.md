@@ -229,6 +229,93 @@ catalog or configuration authority directly in the volume root or on a UNC path,
 mapped network drive, FAT/exFAT volume, device namespace, or alternate data
 stream.
 
+## Run the official container image
+
+Release 1.6.2 and later publish Linux `amd64` and `arm64` images to the current
+canonical registry path:
+
+```text
+ghcr.io/wh1isper/mcp-email-server
+```
+
+Use a version tag for a controlled deployment or `latest` to follow the newest
+release:
+
+```bash
+docker pull ghcr.io/wh1isper/mcp-email-server:1.6.2
+docker run --rm ghcr.io/wh1isper/mcp-email-server:1.6.2 --version
+```
+
+The former `ghcr.io/ai-zerolab/mcp-email-server` package is historical and is
+not updated by the current repository. The image entrypoint is
+`mcp-email-server` and its default command is `stdio`. Keep stdin attached when
+using it from an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "mcp-email-server": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env-file",
+        "/absolute/path/to/mcp-email-server.env",
+        "ghcr.io/wh1isper/mcp-email-server:1.6.2"
+      ]
+    }
+  }
+}
+```
+
+The env file uses the variables described in
+[Configure without the UI](#configure-without-the-ui). Keep it outside the
+source tree, restrict its permissions, and do not pass credentials as Docker
+build arguments. Environment-only accounts do not require persistent container
+storage.
+
+For managed CLI configuration on a POSIX Docker host, bind a private host
+directory, run with the host user's numeric identity, and select an explicit
+container configuration path. This preserves the owner-only storage contract
+instead of creating root-owned host files:
+
+```bash
+install -d -m 700 "$HOME/.config/mcp-email-server-container"
+docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
+  --env HOME=/config \
+  --env MCP_EMAIL_SERVER_CONFIG_PATH=/config/config.toml \
+  --mount "type=bind,src=$HOME/.config/mcp-email-server-container,dst=/config" \
+  ghcr.io/wh1isper/mcp-email-server:1.6.2 \
+  config init --database /config/managed.sqlite3
+```
+
+Reuse the same user, environment, and mount arguments for subsequent `account`
+and server commands. Do not bind a host directory owned by a different user;
+the managed storage preflight rejects it rather than weakening its ownership
+checks. The local management UI intentionally binds only to container loopback and is not made
+remote by publishing a Docker port; run the UI from a host installation or use
+the managed CLI inside the container.
+
+For Streamable HTTP, override the default command and configure the wildcard
+bind plus the exact external Host/Origin values:
+
+```bash
+docker run --rm -p 8000:8000 \
+  --env-file /absolute/path/to/mcp-email-server.env \
+  -e MCP_HOST=0.0.0.0 \
+  -e MCP_PORT=8000 \
+  -e MCP_ALLOWED_HOSTS='localhost:8000,127.0.0.1:8000' \
+  -e MCP_ALLOWED_ORIGINS='http://localhost:8000' \
+  ghcr.io/wh1isper/mcp-email-server:1.6.2 streamable-http
+```
+
+Review the reverse-proxy and authentication boundary in
+[Transports](transports.md#reverse-proxies) before exposing HTTP beyond the
+local machine. Maintainers can build and run the same image verification locally
+with `make container-check`.
+
 ## Configure without the UI
 
 For containers, CI, and headless systems, pass account settings as environment

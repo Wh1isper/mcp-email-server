@@ -1,0 +1,7 @@
+**
+!README.md
+!LICENSE
+!pyproject.toml
+!uv.lock
+!mcp_email_server/
+!mcp_email_server/**

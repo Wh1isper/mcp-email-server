@@ -31,6 +31,7 @@ before release.
 | semantic keyword configuration and tag workflows   | 04, 06, 07, 08, 09, 10 | legacy/managed persistence, UI, provider/projection, mutation, catalog, and GreenMail E2E       |
 | embedded attachment content                        | 04, 06, 10             | independent policy, MIME matrix, one-copy/global-result bounds, raw protocol, and GreenMail E2E |
 | agent integration and safe setup handoff           | 11                     | Codex/Claude Code install fixtures, scenario, drift, and no-secret tests                        |
+| release artifacts and container delivery           | 12                     | exact source/version, restricted image, raw stdio, multi-platform, and publication gates        |
 
 ### Checked Delivery References
 
@@ -175,24 +176,33 @@ Before delivery, all of the following pass from a clean checkout:
     rejection of unsupported path/filesystem classes; junction coverage must not
     depend on Developer Mode, while unavailable symlink privilege is reported
     distinctly rather than silently converting all reparse coverage to mocks;
-15. clean git tree after generated-asset drift and all checks.
+15. restricted container-context and runtime-content checks, native image build,
+    exact release-version identity, raw stdio initialization/catalog smoke, and
+    Linux `amd64`/`arm64` publication from the same stamped release commit;
+16. clean git tree after generated-asset drift and all checks.
 
 CI and release publishing invoke the same authoritative artifact build/verify
 workflow. Release cannot publish an artifact that skipped the supported Python
 matrix, frontend build, notices, from-sdist reconstruction, authenticated
-installed/`uvx` UI smoke, or asset verification. The release workflow pins and
-verifies the peeled tag commit, deterministically stamps only application package
-and lock metadata from the canonical tag, then builds `dist/` once in an
-unprivileged validation job. It records checksums and gives the credential-bearing
-publish job only those unchanged verified bytes. Plugin metadata is not part of
-application release stamping.
+installed/`uvx` UI smoke, container smoke, or asset verification. The release
+workflow pins and verifies the peeled tag commit, deterministically stamps only
+application package and lock metadata from the canonical tag, then builds
+`dist/` once and verifies the native runtime image in an unprivileged validation
+job. It records Python artifact checksums and gives the credential-bearing Python
+publish job only those unchanged verified bytes. A separately scoped
+`packages: write` job stamps the same exact commit and publishes the multi-platform
+container under the canonical repository owner only after all validation jobs
+succeed. Plugin metadata is not part of application release stamping.
 
 ## Artifact Contract
 
 The wheel contains only runtime Python/package resources and the complete
 prebuilt local UI. The sdist contains the Python source, build metadata, required
-scripts, frontend source and lockfile, notices, and the same prebuilt UI needed
-for a Node-free wheel build.
+scripts, container definition, frontend source and lockfile, notices, and the
+same prebuilt UI needed for a Node-free wheel or local container build. The
+runtime container contains only the non-editable installed environment and
+required operating-system runtime packages; repository configuration, source,
+tests, caches, and build inputs remain outside the image.
 
 Artifact verification rejects:
 
@@ -260,9 +270,10 @@ possibility does not add placeholders or generic abstractions now.
 2. The entire Python/frontend/security/E2E/docs gate passes from a clean checkout
    and leaves no uncommitted generated drift.
 3. Published wheel and sdist pass exact content checks; a wheel rebuilt from the
-   sdist and the installed/`uvx` UI work without Node or frontend network access.
-4. CI and release use the same verified artifact path and publish only artifacts
-   that passed it.
+   sdist and the installed/`uvx` UI work without Node or frontend network access;
+   the restricted runtime container passes version, content, and raw MCP smoke.
+4. CI and release use the same verified artifact paths and publish only Python or
+   multi-platform container artifacts that passed their applicable gates.
 5. Independent review finds no unresolved material correctness, authorization,
    secret, persistence, provider-effect, packaging, or test-adequacy issue.
 6. User documentation and README match implemented Windows/POSIX behavior,

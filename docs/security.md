@@ -427,6 +427,13 @@ container platform. If a literal secret must be stored in a client
 configuration, restrict that file to the account running the client and keep it
 out of version control and diagnostic output.
 
+The checked-in container build uses an allowlisted Docker context and copies only
+the non-editable installed environment into the runtime image. It does not embed
+repository `.env`, `config.toml`, database, source, test, or cache files. Keep
+credentials out of Docker build arguments and derived image layers; inject them
+only at runtime through a protected env file, secret provider, or private
+configuration mount.
+
 Neither MCP nor ordinary local-UI account forms read legacy environment secrets.
 Treat environment-composited accounts as runtime compatibility inputs and copy
 them only through the explicit, reviewed import flow; the environment value is

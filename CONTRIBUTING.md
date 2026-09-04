@@ -96,6 +96,7 @@ make check
 make test
 make docs-test
 make test-browser
+make container-check
 ```
 
 `make test` combines coverage from the main pytest process and Python
@@ -147,8 +148,11 @@ fail-closed boundaries.
 
 The CI pipeline runs quality and strict documentation checks, the unit test
 suite against every supported Python version, a full native Windows suite, the
-locked frontend and real-browser management E2E, and the GreenMail baseline once
-for pull requests and pushes to `main`. It also builds one release-format wheel/sdist pair and runs
+locked frontend and real-browser management E2E, the GreenMail baseline, and a
+restricted runtime-container build plus raw stdio/catalog smoke for pull requests
+and pushes to `main`. Run `make container-check` locally when changing the
+Dockerfile, dependency lock, package contents, entrypoint, or stdio startup; it
+requires Docker. CI also builds one release-format wheel/sdist pair and runs
 `make verify-dist` against those exact bytes, including the Node-free from-sdist
 rebuild and installed/`uvx` UI smokes. Relevant changes should still run
 `make test-browser` and `make test-e2e` locally before they are pushed so
@@ -188,10 +192,15 @@ into `pyproject.toml` and the matching editable entry in `uv.lock` inside each
 isolated release job. It does not rewrite plugin metadata. The complete Python
 3.11-3.14 matrix runs against that stamped release tree. A separate unprivileged
 validation job rebuilds the locked frontend, rejects staged-asset drift, runs the
-default-Python, documentation, browser, packaging, and GreenMail gates, builds
-the final wheel and sdist once, and records their checksums. The
-credential-bearing publish job can only download, checksum, and publish those
-unchanged verified artifacts; it contains no build step.
+default-Python, documentation, browser, packaging, GreenMail, and native
+container gates, builds the final wheel and sdist once, and records their
+checksums. The credential-bearing Python publish job can only download,
+checksum, and publish those unchanged verified artifacts; it contains no build
+step. After the same validation gates pass, a separate job with `packages: write`
+checks out and stamps the same exact release commit, then publishes Linux
+`amd64` and `arm64` images tagged with the normalized release version and
+`latest` to `ghcr.io/wh1isper/mcp-email-server`. New packages must be made public
+in GitHub Packages so the documented unauthenticated pull path remains valid.
 
 Plugin semver is independent from the Python application. Bump the plugin
 manifests and marketplace entry only when the bundled manifests, `.mcp.json`,

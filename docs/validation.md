@@ -114,10 +114,12 @@ so one-time launch material cannot enter browser artifacts.
 The main GitHub Actions workflow runs quality checks, a strict documentation
 build, the Python version matrix, a dedicated native `windows-latest` job, the locked frontend build with staged-asset
 drift rejection, locked-Chromium browser E2E, and GreenMail once on
-`ubuntu-latest` for every pull request and push to `main`. A dedicated artifact
-job runs the same authoritative `make build` then `make verify-dist` sequence as
-the release workflow, so CI validates one exact wheel/sdist pair rather than
-independent temporary builds only. The GreenMail job has a 10-minute outer
+`ubuntu-latest` for every pull request and push to `main`. A dedicated container
+job builds the restricted runtime image and checks its version, absence of source
+and build inputs, raw initialization, stdout purity, and exact MCP tool catalog.
+A dedicated artifact job runs the same authoritative `make build` then
+`make verify-dist` sequence as the release workflow, so CI validates one exact
+wheel/sdist pair rather than independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
 3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
 repeated for every interpreter version. The Windows job installs the conditional
@@ -147,8 +149,13 @@ default-Python, docs, browser, package, and GreenMail gates, builds `dist/` once
 and runs `make verify-dist` against those exact wheel/sdist bytes. Verification
 includes authenticated UI smoke from both
 the wheel rebuilt from the sdist without Node and the original release wheel.
-The credential-bearing publish job receives only the checksum-verified artifacts
-and cannot rebuild them.
+The same stamped release tree also builds and verifies the native container
+before publication is authorized. After all Python, frontend, documentation,
+E2E, package, and container gates pass, a separate `packages: write` job rebuilds
+that exact Dockerfile for Linux `amd64` and `arm64` and publishes the normalized
+release version plus `latest` to `ghcr.io/wh1isper/mcp-email-server`. The
+credential-bearing Python publish job receives only the checksum-verified
+artifacts and cannot rebuild them.
 
 The management CLI contract suite invokes every finite `config` and `account`
 command plus reset and credential migration in JSON mode. It parses the complete

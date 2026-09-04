@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
 import urllib.parse
 import urllib.request
 import zipfile
@@ -180,6 +181,32 @@ def _workflow_job_runs(path: Path, job_name: str) -> list[str]:
     return runs
 
 
+def test_container_build_context_and_runtime_copy_are_restricted() -> None:
+    dockerignore = (REPOSITORY / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert dockerignore == [
+        "**",
+        "!README.md",
+        "!LICENSE",
+        "!pyproject.toml",
+        "!uv.lock",
+        "!mcp_email_server/",
+        "!mcp_email_server/**",
+    ]
+
+    dockerfile = (REPOSITORY / "Dockerfile").read_text(encoding="utf-8")
+    project = tomllib.loads((REPOSITORY / "pyproject.toml").read_text(encoding="utf-8"))
+    uv_requirement = next(
+        requirement for requirement in project["dependency-groups"]["dev"] if requirement.startswith("uv==")
+    )
+    assert f"ARG UV_VERSION={uv_requirement.removeprefix('uv==')}" in dockerfile
+    assert "ghcr.io/astral-sh/uv:latest" not in dockerfile
+    assert "COPY . /app" not in dockerfile
+    assert "COPY mcp_email_server ./mcp_email_server" in dockerfile
+    assert "uv sync --frozen --no-dev --no-editable" in dockerfile
+    assert "COPY --from=builder /app/.venv /app/.venv" in dockerfile
+    assert "COPY --from=builder /app /app" not in dockerfile
+
+
 def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     assert uv is not None
@@ -246,11 +273,13 @@ def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) ->
         "mcp_email_server/web_ui/static/THIRD_PARTY_NOTICES.md",
         ".agents/plugins/marketplace.json",
         ".claude-plugin/marketplace.json",
+        ".dockerignore",
         ".github/actions/setup-python-env/action.yml",
         ".github/workflows/main.yml",
         ".github/workflows/on-release-main.yml",
         ".pre-commit-config.yaml",
         "codecov.yaml",
+        "Dockerfile",
         "plugins/mcp-email-server/.codex-plugin/plugin.json",
         "plugins/mcp-email-server/.claude-plugin/plugin.json",
         "plugins/mcp-email-server/.mcp.json",
@@ -259,6 +288,7 @@ def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) ->
         "plugins/mcp-email-server/skills/safe-email-operations/references/safe-commands.md",
         "dev/build_frontend.py",
         "dev/set_release_version.py",
+        "dev/verify_container.py",
         "dev/install_claude_desktop.py",
         "dev/claude_desktop_config.json",
         "dev/greenmail/compose.yml",
@@ -406,6 +436,7 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
 
     assert _workflow_job_runs(main, "documentation") == ["make docs-test"]
     assert _workflow_job_runs(main, "artifacts") == ["make build", "make verify-dist"]
+    assert _workflow_job_runs(main, "container") == ["make container-check CONTAINER_IMAGE=mcp-email-server:ci"]
 
     supported = ["3.11", "3.12", "3.13", "3.14"]
     main_matrix = _workflow_job(main, "tests-and-type-check")
@@ -415,15 +446,46 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
     assert _workflow_job_runs(main, "tests-and-type-check")[0] in _workflow_job_runs(release, "release-python-matrix")
 
     validation_runs = _workflow_job_runs(release, "release-validation-and-build")
+    release_container_check = (
+        "make container-check CONTAINER_IMAGE=mcp-email-server:release "
+        "CONTAINER_VERSION=${{ needs.verify-release-source.outputs.release_version }}"
+    )
+    assert release_container_check in validation_runs
+    assert validation_runs.index(release_container_check) < validation_runs.index("make build")
     assert validation_runs.index("make build") < validation_runs.index("make verify-dist")
     publish_runs = _workflow_job_runs(release, "publish")
     assert publish_runs == ["sha256sum --check dist.sha256", "uv publish dist/*"]
     publish = _workflow_job(release, "publish")
-    assert set(publish["needs"]) == {  # type: ignore[arg-type]
+    release_dependencies = {
         "verify-release-source",
         "release-python-matrix",
         "release-validation-and-build",
     }
+    assert set(publish["needs"]) == release_dependencies  # type: ignore[arg-type]
+
+    publish_container = _workflow_job(release, "publish-container")
+    assert set(publish_container["needs"]) == release_dependencies  # type: ignore[arg-type]
+    assert publish_container["permissions"] == {"contents": "read", "packages": "write"}
+    container_steps = _workflow_steps(release, "publish-container")
+    container_actions = {step.get("uses") for step in container_steps if step.get("uses")}
+    assert {
+        "actions/checkout@v6",
+        "docker/setup-qemu-action@v3",
+        "docker/setup-buildx-action@v3",
+        "docker/login-action@v3",
+        "docker/metadata-action@v5",
+        "docker/build-push-action@v6",
+    } <= container_actions
+    container_build = next(step for step in container_steps if step.get("uses") == "docker/build-push-action@v6")
+    container_options = container_build["with"]
+    assert isinstance(container_options, dict)
+    assert container_options["platforms"] == "linux/amd64,linux/arm64"
+    assert container_options["push"] is True
+    metadata = next(step for step in container_steps if step.get("uses") == "docker/metadata-action@v5")
+    metadata_options = metadata["with"]
+    assert isinstance(metadata_options, dict)
+    assert metadata_options["images"] == "ghcr.io/wh1isper/mcp-email-server"
+
     workflow = yaml.safe_load(release.read_text(encoding="utf-8"))
     assert workflow["permissions"] == {"contents": "read"}
     assert publish["permissions"] == {"contents": "write"}
@@ -446,7 +508,7 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
 
     expected_ref = "${{ needs.verify-release-source.outputs.release_sha }}"
     stamp_command = 'python3 dev/set_release_version.py "${{ needs.verify-release-source.outputs.release_version }}"'
-    for job_name in ("release-python-matrix", "release-validation-and-build"):
+    for job_name in ("release-python-matrix", "release-validation-and-build", "publish-container"):
         steps = _workflow_steps(release, job_name)
         checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v6")
         options = checkout["with"]
@@ -456,8 +518,14 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
 
     release_commands = [
         command
-        for job_name in ("verify-release-source", "release-python-matrix", "release-validation-and-build", "publish")
+        for job_name in (
+            "verify-release-source",
+            "release-python-matrix",
+            "release-validation-and-build",
+            "publish",
+            "publish-container",
+        )
         for command in _workflow_job_runs(release, job_name)
     ]
-    assert sum("set_release_version" in command for command in release_commands) == 3
+    assert sum("set_release_version" in command for command in release_commands) == 4
     assert "uv lock" not in release_commands
