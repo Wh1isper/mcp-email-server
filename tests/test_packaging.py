@@ -205,6 +205,7 @@ def test_container_build_context_and_runtime_copy_are_restricted() -> None:
     assert "uv sync --frozen --no-dev --no-editable" in dockerfile
     assert "COPY --from=builder /app/.venv /app/.venv" in dockerfile
     assert "COPY --from=builder /app /app" not in dockerfile
+    assert 'org.opencontainers.image.licenses="BSD-3-Clause"' in dockerfile
 
 
 def test_distribution_is_node_free_and_embeds_reproducible_ui(tmp_path: Path) -> None:

@@ -35,7 +35,7 @@ FROM python:${PYTHON_VERSION}-slim AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/Wh1isper/mcp-email-server" \
       org.opencontainers.image.description="MCP server for IMAP and SMTP email workflows" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="BSD-3-Clause"
 
 # tini reaps the children the server spawns; without an init the container
 # accumulates zombies on long-running IMAP sessions.
