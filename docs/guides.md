@@ -206,11 +206,7 @@ Build the ancestor chain from the returned `references` value and the immediate
 parent's `message_id`, then send the reply:
 
 ```python
-references = " ".join(
-    value
-    for value in (original.references, original.message_id)
-    if value
-) or None
+references = " ".join(value for value in (original.references, original.message_id) if value) or None
 
 await send_email(
     account_name="work",
