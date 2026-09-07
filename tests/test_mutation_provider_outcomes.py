@@ -679,6 +679,36 @@ async def test_smtp_partial_recipient_rejection_is_preserved(email_server) -> No
 
 
 @pytest.mark.asyncio
+async def test_smtp_accepted_data_reports_the_delivered_message_id(email_server) -> None:
+    """The composed Message-Id is the only handle a caller has on what was actually delivered."""
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    smtp = _smtp()
+
+    with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+        result = await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+
+    assert [item.status for item in result.outcomes] == ["succeeded"]
+    assert result.message_id is not None
+    assert re.fullmatch(r"<[^<>@\s]+@[^<>@\s]+>", result.message_id)
+    assert f"Message-Id: {result.message_id}".encode() in smtp.data.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_smtp_data_transport_loss_reports_no_message_id(email_server) -> None:
+    """A lost DATA result leaves delivery unknown, so no identifier may be claimed for it."""
+    client = EmailClient(email_server, sender="Sender <sender@example.test>")
+    smtp = _smtp()
+    smtp.data.side_effect = ConnectionError("result lost")
+
+    with patch("mcp_email_server.emails.classic.aiosmtplib.SMTP", return_value=smtp):
+        result = await client.send_email_with_outcome(["one@example.test"], "Subject", "body")
+
+    assert [item.status for item in result.outcomes] == ["unknown"]
+    assert result.sent_message is None
+    assert result.message_id is None
+
+
+@pytest.mark.asyncio
 async def test_smtp_data_transport_loss_marks_accepted_recipients_unknown(email_server) -> None:
     client = EmailClient(email_server, sender="Sender <sender@example.test>")
     smtp = _smtp()

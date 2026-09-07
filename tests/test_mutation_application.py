@@ -791,6 +791,83 @@ async def test_mutation_timeout_is_unknown_and_never_replayed(monkeypatch, workf
 
 
 @pytest.mark.asyncio
+async def test_send_carries_the_delivered_message_id_through_a_failed_sent_copy() -> None:
+    """The identifier belongs to authoritative SMTP delivery, not to the independent Sent copy."""
+    provider = MagicMock()
+    provider.send = AsyncMock(
+        return_value=DeliveryMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            object(),
+            message_id="<delivered@example.test>",
+        )
+    )
+    provider.save_sent_copy = AsyncMock(return_value=SentCopyMutationOutcome("failed", "Sent", "append"))
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.send.execute(
+        SendCommand(
+            account_name="primary",
+            recipients=("recipient@example.test",),
+            subject="Message",
+            body="body",
+        )
+    )
+
+    assert result.message_id == "<delivered@example.test>"
+    assert result.sent_copy.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_send_timeout_reports_no_message_id(monkeypatch) -> None:
+    """A submission that timed out before any provider evidence has no identifier to report."""
+    monkeypatch.setattr(
+        mutations_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, provider_timeout_seconds=0.001),
+    )
+    provider = MagicMock()
+    provider.send = AsyncMock(side_effect=_hang_provider)
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.send.execute(
+        SendCommand(
+            account_name="primary",
+            recipients=("recipient@example.test",),
+            subject="Message",
+            body="body",
+        )
+    )
+
+    assert result.recipients("unknown") == ["recipient@example.test"]
+    assert result.message_id is None
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_report_a_message_id_the_provider_withheld() -> None:
+    """An ambiguous DATA phase yields no accepted message, so the workflow must not invent one."""
+    provider = MagicMock()
+    provider.send = AsyncMock(
+        return_value=DeliveryMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "unknown", "smtp-data-unknown"),),
+            None,
+        )
+    )
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.send.execute(
+        SendCommand(
+            account_name="primary",
+            recipients=("recipient@example.test",),
+            subject="Message",
+            body="body",
+        )
+    )
+
+    assert result.reconciliation_needed is True
+    assert result.message_id is None
+
+
+@pytest.mark.asyncio
 async def test_sent_copy_timeout_preserves_delivery_and_is_unknown(monkeypatch) -> None:
     monkeypatch.setattr(
         mutations_module,
@@ -1311,6 +1388,22 @@ async def test_forward_preserves_partial_delivery_and_skips_sent_copy_without_ev
     assert result.reconciliation_needed is False
     provider.save_sent_copy.assert_not_awaited()
     assert factory.open.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_forward_carries_the_delivered_message_id() -> None:
+    provider = _forward_provider(
+        delivery=DeliveryMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            object(),
+            message_id="<forwarded@example.test>",
+        )
+    )
+    services, _, _, _ = _services(provider=provider)
+
+    result = await services.forward.execute(_forward_command())
+
+    assert result.message_id == "<forwarded@example.test>"
 
 
 @pytest.mark.asyncio

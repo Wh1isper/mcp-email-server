@@ -208,7 +208,13 @@ reports delivery and sent-copy outcomes. If SMTP is unknown, automated replay is
 forbidden; operator reconciliation is required.
 
 Message-ID or other local identifiers can aid reconciliation but do not create
-exactly-once guarantees.
+exactly-once guarantees. The delivery result carries the composed `Message-ID`
+only once the provider has accepted the message data; a rejected or ambiguous
+submission MUST report no identifier. A caller keeping its own record of what was
+sent can therefore cite an identifier exactly when the server can vouch for it,
+rather than choosing between an empty record and an invented one. The sent-copy
+APPEND reports its own identifier independently and never substitutes for
+delivery evidence.
 
 ### Forward
 
@@ -320,7 +326,11 @@ enter public errors.
    failure/unknown never causes SMTP replay. Tests prove display names are safely
    formatted while the SMTP reverse-path uses only the configured account
    address, including when the display name itself contains `@` and when the
-   account address requires SMTPUTF8/RFC 6532 serialization.
+   account address requires SMTPUTF8/RFC 6532 serialization. Submission results
+   report the delivered `Message-ID` when, and only when, the provider accepted
+   the message data. Tests prove a send and a forward name the identifier the
+   recipient actually received, that it survives an independent sent-copy
+   failure, and that a rejected, timed-out, or ambiguous delivery reports none.
 7. Cancellation and timeout tests cover before-effect, known-after-effect, and
    ambiguous boundaries for IMAP and SMTP.
 8. Public numeric IDs are documented and tested as current-mailbox compatibility

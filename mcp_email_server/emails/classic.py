@@ -2814,9 +2814,14 @@ class EmailClient:
                     all_recipients[accepted_index], accepted_status, accepted_detail
                 )
             delivery_outcomes = tuple(item for item in outcomes if item is not None)
+            accepted_message = msg if accepted_status == "succeeded" else None
+            # Only an accepted DATA phase proves which message the provider took,
+            # so a rejected or ambiguous submission reports no Message-Id at all.
+            accepted_message_id = accepted_message["Message-Id"] if accepted_message is not None else None
             return DeliveryMutationOutcome(
                 delivery_outcomes,
-                msg if accepted_status == "succeeded" else None,
+                accepted_message,
+                message_id=str(accepted_message_id) if accepted_message_id else None,
             )
 
         known_outcome: DeliveryMutationOutcome | None = None

@@ -285,6 +285,16 @@ include reviewed fixed diagnostics when available, for example
 `smtp-data-unknown`, or `provider-timeout`. Unrecognized detail and raw provider
 response text are omitted.
 
+The response names the delivered message's RFC `Message-Id`: a clean send appends
+`Message-Id: <...>` to the success line, and a partial delivery reports the same
+identifier in its own `message-id` section. The server reports it only once the
+provider has accepted the message data, so a rejected, timed-out, or otherwise
+ambiguous delivery names no identifier at all rather than one it cannot vouch
+for. A caller keeping its own record of sent mail can therefore store the
+identifier exactly when the send is proven, and store nothing when it is not.
+The independent Sent copy is not the source of this value; a failed or unknown
+Sent copy does not remove the identifier of a delivered message.
+
 Internationalized addr-specs in the envelope or From, Sender, To, Cc, Bcc, or
 Reply-To fields, and non-ASCII Message-ID, In-Reply-To, or References syntax,
 require the provider's SMTPUTF8 extension. The server requests `SMTPUTF8` and
@@ -431,7 +441,9 @@ be read, the call fails before any SMTP session is opened, so a forward is never
 delivered without the content and attachments it was supposed to carry. Delivery
 and sent-copy outcomes are reported separately under the same rules as
 `send_email`, and an ambiguous SMTP outcome is reported `unknown` and is never
-replayed automatically.
+replayed automatically. The forwarded message's `Message-Id` is reported under
+the same rule: named once the provider accepted the message data, and omitted
+for an ambiguous delivery.
 
 Reading the source message is a mail read. When a sender allowlist is
 configured, a message from a blocked sender is indistinguishable from a missing
@@ -635,5 +647,9 @@ To preserve conversation threading:
 
 Simple Message-IDs may be bare or already enclosed in angle brackets; the compose
 path emits the required bracketed RFC form for both headers.
+
+`send_email` and `forward_email` name the delivered message's own `Message-Id` in
+their response, so a follow-up in the same thread can be built from it without
+first locating the message again over IMAP.
 
 For a complete example, see [Reply with proper threading](guides.md#reply-with-proper-threading).

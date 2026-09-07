@@ -111,6 +111,10 @@ class AppendMutationOutcome:
 class DeliveryMutationOutcome:
     outcomes: tuple[TargetMutationOutcome, ...]
     sent_message: object | None
+    # RFC 5322 Message-Id of the message the provider accepted, and None whenever
+    # delivery failed or stayed ambiguous. A caller's send journal may therefore
+    # cite an identifier only for a message that was demonstrably handed over.
+    message_id: str | None = None
 
     @property
     def has_accepted_recipient(self) -> bool:
@@ -129,6 +133,9 @@ class SendMutationOutcome:
     delivery: tuple[TargetMutationOutcome, ...]
     sent_copy: SentCopyMutationOutcome
     reconciliation_needed: bool = False
+    # Carried from the delivery effect, never from composition: an ambiguous or
+    # failed submission reports no identifier rather than one it cannot vouch for.
+    message_id: str | None = None
 
     def __post_init__(self) -> None:
         ambiguous = any(item.status == "unknown" for item in self.delivery) or self.sent_copy.status == "unknown"
@@ -766,9 +773,23 @@ def _validate_append_result(outcome: AppendMutationOutcome) -> AppendMutationOut
     return outcome
 
 
+def _validate_optional_message_id(message_id: str | None) -> None:
+    if message_id is None:
+        return
+    _validate_result_string(
+        message_id,
+        field_name="message_id",
+        maximum_bytes=APPLICATION_LIMITS.header_bytes,
+    )
+
+
 def _validate_delivery_result(outcome: DeliveryMutationOutcome) -> DeliveryMutationOutcome:
     _validate_target_outcomes(outcome.outcomes)
-    _validate_result_payload({"outcomes": [_outcome_payload(item) for item in outcome.outcomes]})
+    _validate_optional_message_id(outcome.message_id)
+    _validate_result_payload({
+        "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+        "message_id": outcome.message_id,
+    })
     return outcome
 
 
@@ -788,6 +809,7 @@ def _validate_sent_copy_result(outcome: SentCopyMutationOutcome) -> SentCopyMuta
 def _validate_send_result(outcome: SendMutationOutcome) -> SendMutationOutcome:
     _validate_target_outcomes(outcome.delivery)
     _validate_sent_copy_result(outcome.sent_copy)
+    _validate_optional_message_id(outcome.message_id)
     _validate_result_payload({
         "delivery": [_outcome_payload(item) for item in outcome.delivery],
         "sent_copy": {
@@ -796,6 +818,7 @@ def _validate_send_result(outcome: SendMutationOutcome) -> SendMutationOutcome:
             "detail": outcome.sent_copy.detail,
         },
         "reconciliation_needed": outcome.reconciliation_needed,
+        "message_id": outcome.message_id,
     })
     return outcome
 
@@ -844,12 +867,28 @@ class _MutationWorkflow:
     ) -> SendMutationOutcome:
         """Attach the independent Sent copy to already-authoritative delivery.
 
-        Every submission workflow shares this tail so the ambiguity and
-        ``reconciliation_needed`` semantics have exactly one owner.
+        Every submission workflow shares this tail so the ambiguity,
+        ``reconciliation_needed``, and reported-identifier semantics have exactly
+        one owner.
         """
 
+        def completed(
+            sent_copy: SentCopyMutationOutcome,
+            *,
+            reconciliation_needed: bool = False,
+        ) -> SendMutationOutcome:
+            """Report the delivery evidence identically on every sent-copy path."""
+            return _validate_send_result(
+                SendMutationOutcome(
+                    delivery.outcomes,
+                    sent_copy,
+                    reconciliation_needed,
+                    message_id=delivery.message_id,
+                )
+            )
+
         if not delivery.has_accepted_recipient or delivery.sent_message is None:
-            return _validate_send_result(SendMutationOutcome(delivery.outcomes, SentCopyMutationOutcome("skipped")))
+            return completed(SentCopyMutationOutcome("skipped"))
 
         # Saving the copy is a separate provider effect and therefore gets a fresh
         # lifecycle/credential resolution. SMTP delivery is never rewritten.
@@ -858,55 +897,32 @@ class _MutationWorkflow:
         except Exception:
             # SMTP delivery is already authoritative. Lifecycle or credential
             # failure before opening the independent copy cannot erase it.
-            return _validate_send_result(
-                SendMutationOutcome(
-                    delivery.outcomes,
-                    SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
-                )
-            )
+            return completed(SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"))
         try:
             sent_copy = await _bounded_provider_effect(sent_access.provider.save_sent_copy(delivery.sent_message, bcc))
         except MutationProviderError:
             # Typed APPEND-boundary cancellation is returned by the provider;
             # escaped setup/cancellation happened before APPEND started.
-            return _validate_send_result(
-                SendMutationOutcome(
-                    delivery.outcomes,
-                    SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
-                )
-            )
+            return completed(SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"))
         except TimeoutError:
-            return _validate_send_result(
-                SendMutationOutcome(
-                    delivery.outcomes,
-                    SentCopyMutationOutcome("unknown", detail="provider-timeout"),
-                    reconciliation_needed=True,
-                )
+            return completed(
+                SentCopyMutationOutcome("unknown", detail="provider-timeout"),
+                reconciliation_needed=True,
             )
         except asyncio.CancelledError:
             # Provider adapters use typed unknown outcomes once APPEND may have
             # started; an escaped cancellation is therefore pre-effect setup.
-            return _validate_send_result(
-                SendMutationOutcome(
-                    delivery.outcomes,
-                    SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"),
-                )
-            )
+            return completed(SentCopyMutationOutcome("failed", detail="sent-copy-unavailable"))
         except Exception:
             # Treat an untyped provider escape conservatively rather than claim
             # that an APPEND definitely did not happen.
-            return _validate_send_result(
-                SendMutationOutcome(
-                    delivery.outcomes,
-                    SentCopyMutationOutcome("unknown", detail="sent-copy"),
-                )
-            )
+            return completed(SentCopyMutationOutcome("unknown", detail="sent-copy"))
         sent_copy = _validate_sent_copy_result(sent_copy)
         reconciliation_needed = False
         if sent_copy.status in ("succeeded", "unknown") and sent_copy.mailbox is not None:
             invalidated = await self._invalidate(sent_access.account, (sent_copy.mailbox,))
             reconciliation_needed = not invalidated
-        return _validate_send_result(SendMutationOutcome(delivery.outcomes, sent_copy, reconciliation_needed))
+        return completed(sent_copy, reconciliation_needed=reconciliation_needed)
 
     @staticmethod
     def _require_send_capability(account: MutationAccountSnapshot) -> None:

@@ -1072,9 +1072,14 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                     "references": references,
                 },
             )
-            assert send_result["result"] == f"Email sent successfully to {BOB[0]} with 1 attachment(s)"
+            send_prefix = f"Email sent successfully to {BOB[0]} with 1 attachment(s). Message-Id: "
+            assert send_result["result"].startswith(send_prefix)
+            reported_message_id = send_result["result"].removeprefix(send_prefix)
 
             delivered = _wait_for_message(BOB, "INBOX", sent_subject)
+            # The reported identifier must be the one the recipient actually received,
+            # so a caller's send journal can cite it without a second lookup.
+            assert str(delivered.message["Message-ID"]) == reported_message_id
             assert sent_body in (delivered.message.get_body(preferencelist=("plain",)).get_content())
             delivered_from = delivered.message["From"]
             assert delivered_from is not None
@@ -1206,12 +1211,15 @@ async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
                     "body": forward_note,
                 },
             )
-            assert forward_result["result"] == f"Email forwarded successfully to {BOB[0]}"
+            forward_prefix = f"Email forwarded successfully to {BOB[0]}. Message-Id: "
+            assert forward_result["result"].startswith(forward_prefix)
+            reported_forward_message_id = forward_result["result"].removeprefix(forward_prefix)
 
             # Read the delivered forward back over plain imaplib rather than trusting
             # the server's own report of what it claims to have sent.
             forwarded_subject = f"Fwd: {forward_source_subject}"
             forwarded = _wait_for_message(BOB, "INBOX", forwarded_subject)
+            assert str(forwarded.message["Message-ID"]) == reported_forward_message_id
             forwarded_text = forwarded.message.get_body(preferencelist=("plain",)).get_content()
             assert forward_note in forwarded_text
             assert "---------- Forwarded message ----------" in forwarded_text

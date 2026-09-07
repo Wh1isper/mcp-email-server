@@ -863,7 +863,7 @@
         },
         {
             "name": "send_email",
-            "description": "Send one email using the specified account. Supports reply threading. Partial or ambiguous SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy outcome separately; ambiguous effects are not retried automatically.",
+            "description": "Send one email using the specified account. Supports reply threading. Partial or ambiguous SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy outcome separately; ambiguous effects are not retried automatically. The response names the delivered message's RFC Message-Id once the provider accepts the message data, and reports no identifier for an ambiguous delivery.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -1022,7 +1022,7 @@
         },
         {
             "name": "forward_email",
-            "description": "Forward an existing message to new recipients using the specified account. The source message is read over IMAP first: if it cannot be read, the call fails before any SMTP session is opened, so a forward is never delivered without the content it was supposed to carry. The subject is derived from the source as 'Fwd: <original subject>' without stacking a second prefix, the caller's note is placed above a plain-text forwarded block re-composed from the source's parsed text body, and the source's attachments are re-attached with their original MIME types unless include_attachments is false. Partial or ambiguous SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy outcome separately; ambiguous effects are not retried automatically.",
+            "description": "Forward an existing message to new recipients using the specified account. The source message is read over IMAP first: if it cannot be read, the call fails before any SMTP session is opened, so a forward is never delivered without the content it was supposed to carry. The subject is derived from the source as 'Fwd: <original subject>' without stacking a second prefix, the caller's note is placed above a plain-text forwarded block re-composed from the source's parsed text body, and the source's attachments are re-attached with their original MIME types unless include_attachments is false. Partial or ambiguous SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy outcome separately; ambiguous effects are not retried automatically. The response names the delivered message's RFC Message-Id once the provider accepts the message data, and reports no identifier for an ambiguous delivery.",
             "inputSchema": {
                 "properties": {
                     "account_name": {

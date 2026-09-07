@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,9 @@ from mcp_email_server.emails.models import (
     MailboxInfo,
 )
 from mcp_email_server.imap_keywords import ImapKeywordTag
+
+# RFC 5322 msg-id shape, as an external journal would look for it in the response.
+_MESSAGE_ID_PATTERN = re.compile(r"<[^<>@\s]+@[^<>@\s]+>")
 
 
 def _batch_outcome(
@@ -1181,6 +1185,102 @@ async def test_send_tool_reports_safe_internationalized_sent_copy_failure() -> N
         result = await send_email("test", ["recipient@example.test"], "Subject", "body")
 
     assert result == ("Email delivery [succeeded: recipient@example.test; sent-copy: failed (utf8-append-unsupported)]")
+
+
+@pytest.mark.asyncio
+async def test_send_tool_names_the_delivered_message_id() -> None:
+    """A caller that journals the send can only cite an identifier the tool actually reports."""
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            SentCopyMutationOutcome("succeeded", "Sent"),
+            message_id="<delivered.1@example.test>",
+        )
+    )
+    with patch("mcp_email_server.app.send_email_command", command_handler):
+        result = await send_email("test", ["recipient@example.test"], "Subject", "body")
+
+    assert result == "Email sent successfully to recipient@example.test. Message-Id: <delivered.1@example.test>"
+    assert _MESSAGE_ID_PATTERN.search(result) is not None
+
+
+@pytest.mark.asyncio
+async def test_send_tool_names_the_message_id_of_a_partially_delivered_message() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (
+                TargetMutationOutcome("accepted@example.test", "succeeded"),
+                TargetMutationOutcome("rejected@example.test", "failed", "smtp-recipient-rejected"),
+            ),
+            SentCopyMutationOutcome("succeeded", "Sent"),
+            message_id="<delivered.2@example.test>",
+        )
+    )
+    with patch("mcp_email_server.app.send_email_command", command_handler):
+        result = await send_email(
+            "test",
+            ["accepted@example.test", "rejected@example.test"],
+            "Subject",
+            "body",
+        )
+
+    assert result == (
+        "Email delivery [succeeded: accepted@example.test; "
+        "failed: rejected@example.test (smtp-recipient-rejected); "
+        "message-id: <delivered.2@example.test>; sent-copy: succeeded (Sent)]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_tool_does_not_invent_a_message_id_for_an_ambiguous_delivery() -> None:
+    """An unknown SMTP outcome must leave the journal empty rather than fabricate an identifier."""
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "unknown", "smtp-data-unknown"),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    with patch("mcp_email_server.app.send_email_command", command_handler):
+        result = await send_email("test", ["recipient@example.test"], "Subject", "body")
+
+    assert result == (
+        "Email delivery [unknown: recipient@example.test (smtp-data-unknown); sent-copy: skipped; "
+        "warning: reconciliation needed]"
+    )
+    assert _MESSAGE_ID_PATTERN.search(result) is None
+
+
+@pytest.mark.asyncio
+async def test_forward_tool_names_the_delivered_message_id() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            SentCopyMutationOutcome("succeeded", "Sent"),
+            message_id="<forwarded.1@example.test>",
+        )
+    )
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        result = await forward_email("test_account", "12345", ["recipient@example.test"])
+
+    assert result == "Email forwarded successfully to recipient@example.test. Message-Id: <forwarded.1@example.test>"
+
+
+@pytest.mark.asyncio
+async def test_forward_tool_does_not_invent_a_message_id_for_an_ambiguous_delivery() -> None:
+    command_handler = AsyncMock(
+        return_value=SendMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "unknown", "provider-timeout"),),
+            SentCopyMutationOutcome("skipped"),
+        )
+    )
+    with patch("mcp_email_server.app.forward_email_command", command_handler):
+        result = await forward_email("test_account", "12345", ["recipient@example.test"])
+
+    assert result == (
+        "Email forward [unknown: recipient@example.test (provider-timeout); sent-copy: skipped; "
+        "warning: reconciliation needed]"
+    )
+    assert _MESSAGE_ID_PATTERN.search(result) is None
 
 
 @pytest.mark.asyncio

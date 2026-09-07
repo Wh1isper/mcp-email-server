@@ -195,6 +195,15 @@ def _send_outcome_is_clean(outcome: SendMutationOutcome) -> bool:
     )
 
 
+def _reported_message_id(outcome: SendMutationOutcome) -> str:
+    """Name the delivered message only when the provider proved which one it took.
+
+    An ambiguous submission reports nothing here, so a caller journaling the send
+    records an empty identifier instead of one the server cannot vouch for.
+    """
+    return f". Message-Id: {outcome.message_id}" if outcome.message_id else ""
+
+
 def _tagged_send_result(outcome: SendMutationOutcome) -> str:
     sections = _ordered_target_sections(
         outcome.delivery,
@@ -210,6 +219,8 @@ def _tagged_send_result(outcome: SendMutationOutcome) -> str:
         sent_copy_context.append(outcome.sent_copy.detail)
     if sent_copy_context:
         sent_copy = f"{sent_copy} ({'; '.join(sent_copy_context)})"
+    if outcome.message_id:
+        sections.append(f"message-id: {outcome.message_id}")
     sections.append(f"sent-copy: {sent_copy}")
     if outcome.reconciliation_needed:
         sections.append("warning: reconciliation needed")
@@ -555,7 +566,9 @@ async def list_allowed_senders() -> PolicyDiscoveryResult:
     description=(
         "Send one email using the specified account. Supports reply threading. Partial or ambiguous SMTP "
         "delivery reports per-recipient succeeded/failed/unknown status and reports the independent Sent-copy "
-        "outcome separately; ambiguous effects are not retried automatically."
+        "outcome separately; ambiguous effects are not retried automatically. The response names the delivered "
+        "message's RFC Message-Id once the provider accepts the message data, and reports no identifier for an "
+        "ambiguous delivery."
     ),
     annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
 )
@@ -650,7 +663,7 @@ async def send_email(
     if _send_outcome_is_clean(outcome):
         recipient_str = ", ".join(recipients)
         attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
-        return f"Email sent successfully to {recipient_str}{attachment_info}"
+        return f"Email sent successfully to {recipient_str}{attachment_info}{_reported_message_id(outcome)}"
     return f"Email delivery [{_tagged_send_result(outcome)}]"
 
 
@@ -663,7 +676,9 @@ async def send_email(
         "plain-text forwarded block re-composed from the source's parsed text body, and the source's attachments "
         "are re-attached with their original MIME types unless include_attachments is false. Partial or ambiguous "
         "SMTP delivery reports per-recipient succeeded/failed/unknown status and reports the independent "
-        "Sent-copy outcome separately; ambiguous effects are not retried automatically."
+        "Sent-copy outcome separately; ambiguous effects are not retried automatically. The response names the "
+        "delivered message's RFC Message-Id once the provider accepts the message data, and reports no "
+        "identifier for an ambiguous delivery."
     ),
     annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
 )
@@ -733,7 +748,7 @@ async def forward_email(
             "before sending or saving. An empty allowlist denies all recipients."
         ) from exc
     if _send_outcome_is_clean(outcome):
-        return f"Email forwarded successfully to {', '.join(recipients)}"
+        return f"Email forwarded successfully to {', '.join(recipients)}{_reported_message_id(outcome)}"
     return f"Email forward [{_tagged_send_result(outcome)}]"
 
 
