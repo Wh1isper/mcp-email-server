@@ -357,7 +357,7 @@ def _update_recipient_policy(console_script: Path, env: dict[str, str], recipien
 async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenmail(tmp_path: Path) -> None:
     """Prove CLI setup -> test -> restart -> live managed IMAP without catalog activation."""
     _wait_until_ready()
-    _ensure_empty_mailboxes(ALICE, ["INBOX", "Drafts", "Archive"])
+    _ensure_empty_mailboxes(ALICE, ["INBOX", "Drafts", "Archive", "WildcardDrafts"])
     subject = f"managed-index-{uuid.uuid4().hex}"
     _seed_message_as(BOB, ALICE[0], subject, "Managed indexed metadata")
     _wait_for_message(ALICE, "INBOX", subject)
@@ -470,6 +470,21 @@ async def test_managed_cli_setup_restart_and_stdio_list_mailboxes_against_greenm
                 },
             )
             _wait_for_message(BOB, "INBOX", allowed_subject)
+            _update_recipient_policy(console_script, server_env, "*")
+            assert (await _call_tool(session, "list_allowed_recipients", {}))["result"] == ["*"]
+            wildcard_draft_subject = f"managed-wildcard-draft-{uuid.uuid4().hex}"
+            await _call_tool(
+                session,
+                "save_to_mailbox",
+                {
+                    "account_name": "alice-managed",
+                    "recipients": ["dynamic@partner.test"],
+                    "subject": wildcard_draft_subject,
+                    "mailbox": "WildcardDrafts",
+                    "body": "Explicit wildcard draft",
+                },
+            )
+            _wait_for_message(ALICE, "WildcardDrafts", wildcard_draft_subject)
             _update_recipient_policy(console_script, server_env, "")
             await _assert_empty_recipient_policy_blocks_compose(session, "alice-managed", managed_uid)
             _update_recipient_policy(console_script, server_env, BOB[0])
@@ -987,6 +1002,70 @@ async def test_legacy_empty_recipient_policy_against_greenmail(tmp_path: Path, p
             assert metadata["email_id"] == source.uid
             await _assert_empty_recipient_policy_blocks_compose(session, "alice", source.uid)
             assert r"\Seen" not in _wait_for_message(ALICE, "INBOX", subject).flags
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["*", "*@*", "*@example.test", "[ab]*@example.test"])
+async def test_recipient_globs_against_greenmail(tmp_path: Path, pattern: str) -> None:
+    """Explicit wildcard authority permits send, forward, and recipient-bound APPEND."""
+    _wait_until_ready()
+    _ensure_empty_mailboxes(ALICE, ["INBOX", "Sent", "Drafts"])
+    _ensure_empty_mailboxes(BOB, ["INBOX"])
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        CONFIG_TEMPLATE.replace('allowed_recipients = ["bob@example.test"]', f'allowed_recipients = ["{pattern}"]')
+    )
+    config_path.chmod(0o600)
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({"MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path), "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING"})
+    server = StdioServerParameters(
+        command=str(Path(sys.executable).with_name("mcp-email-server")),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream, read_timeout_seconds=timedelta(seconds=15)) as session:
+            await session.initialize()
+            assert (await _call_tool(session, "list_allowed_recipients", {}))["result"] == [pattern]
+            subject = f"glob-{uuid.uuid4().hex}"
+            await _call_tool(
+                session,
+                "send_email",
+                {
+                    "account_name": "alice",
+                    "recipients": [BOB[0]],
+                    "cc": [ALICE[0]],
+                    "subject": subject,
+                    "body": "Synthetic wildcard delivery",
+                },
+            )
+            _wait_for_message(BOB, "INBOX", subject)
+            _wait_for_message(ALICE, "INBOX", subject)
+            source = await _metadata_for_subject(session, "alice", subject)
+            await _call_tool(
+                session,
+                "forward_email",
+                {
+                    "account_name": "alice",
+                    "email_id": source["email_id"],
+                    "recipients": [ALICE[0]],
+                },
+            )
+            _wait_for_message(ALICE, "INBOX", f"Fwd: {subject}")
+            await _call_tool(
+                session,
+                "save_to_mailbox",
+                {
+                    "account_name": "alice",
+                    "recipients": [BOB[0]],
+                    "bcc": [ALICE[0]],
+                    "subject": f"draft-{subject}",
+                    "body": "Synthetic wildcard draft",
+                },
+            )
+            _wait_for_message(ALICE, "Drafts", f"draft-{subject}")
+            assert _find_message(BOB, "INBOX", f"draft-{subject}") is None
 
 
 @pytest.mark.asyncio

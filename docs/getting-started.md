@@ -96,9 +96,10 @@ On first use:
    password. A failed save leaves the current password authority unchanged.
    Provider connectivity testing is intentionally not
    available in the Web UI;
-4. under **Settings & help**, add each allowed recipient needed for sending and
-   each optional allowed-sender pattern as an individual item. No recipients
-   disables sending; no senders leaves reading unrestricted;
+4. under **Settings & help**, add recipient addresses or glob patterns (for
+   example `*@example.com`) and optional sender patterns as individual items.
+   `*` explicitly allows every recipient for sending, forwarding, and drafts.
+   No recipients disables all three operations; no senders leaves reading unrestricted;
 5. saved complete accounts are immediately usable by managed runtime; there is
    no catalog activation or second save. Incomplete accounts remain visible in
    diagnostics but do not hide complete accounts;

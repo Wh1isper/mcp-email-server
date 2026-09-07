@@ -16,7 +16,7 @@ from typing import Literal, Protocol, Self
 from pydantic import BaseModel, SecretStr
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS, validate_controlled_string
-from mcp_email_server.config import EmailServer, EmailSettings, normalize_address_list, normalize_pattern_list
+from mcp_email_server.config import EmailServer, EmailSettings, normalize_pattern_list, normalize_recipient_patterns
 from mcp_email_server.imap_keywords import ImapKeywordAccount, ImapKeywordTag
 
 BindingRole = Literal["incoming", "outgoing"]
@@ -1517,7 +1517,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             )
             for item in policy.allowed_senders
         )
-        recipients = tuple(normalize_address_list(raw_recipients))
+        recipients = tuple(normalize_recipient_patterns(raw_recipients))
         senders = tuple(normalize_pattern_list(raw_senders))
         revision = self._catalog().update_policy(
             expected_revision=policy.revision,

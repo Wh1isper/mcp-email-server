@@ -875,20 +875,28 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
             revision=7,
             enable_attachment_download=True,
             enable_attachment_content=True,
-            allowed_recipients=(" Alice <ALICE@Example.Test> ", "", "alice@example.test"),
+            allowed_recipients=(
+                " Alice <ALICE@Example.Test> ",
+                "",
+                "alice@example.test",
+                " * ",
+                "*@*",
+                "*@EXAMPLE.TEST",
+                "user[0-9]@example.test",
+            ),
             allowed_senders=(" *@Example.Test ", "", "*@example.test"),
             report_blocked_mutations=True,
         )
     )
 
     assert result.enable_attachment_content is True
-    assert result.allowed_recipients == ("alice@example.test",)
+    assert result.allowed_recipients == ("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test")
     assert result.allowed_senders == ("*@example.test",)
     catalog.update_policy.assert_called_once_with(
         expected_revision=7,
         enable_attachment_download=True,
         enable_attachment_content=True,
-        allowed_recipients=("alice@example.test",),
+        allowed_recipients=("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test"),
         allowed_senders=("*@example.test",),
         report_blocked_mutations=True,
     )

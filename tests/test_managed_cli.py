@@ -257,7 +257,7 @@ def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tm
             "--enable-attachment-download",
             "--enable-attachment-content",
             "--allowed-recipients",
-            "BOB@EXAMPLE.TEST, Alice <ALICE@example.test>",
+            "BOB@EXAMPLE.TEST, Alice <ALICE@example.test>, *, *@*, *@EXAMPLE.TEST, user[0-9]@example.test",
             "--allowed-senders",
             "*@EXAMPLE.TEST,*@example.test",
             "--report-blocked-mutations",
@@ -277,7 +277,14 @@ def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tm
     policy = ManagedCatalog(database).policy()
     assert policy.enable_attachment_download is True
     assert policy.enable_attachment_content is True
-    assert policy.allowed_recipients == ("bob@example.test", "alice@example.test")
+    assert policy.allowed_recipients == (
+        "bob@example.test",
+        "alice@example.test",
+        "*",
+        "*@*",
+        "*@example.test",
+        "user[0-9]@example.test",
+    )
     assert policy.allowed_senders == ("*@example.test",)
     assert health.exit_code == 0, health.output
     assert "status=" in health.output

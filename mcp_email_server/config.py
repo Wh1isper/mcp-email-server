@@ -105,9 +105,16 @@ def sender_allowed(sender: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(addrs[0], pattern.lower()) for pattern in patterns)
 
 
-def normalize_address_list(raw: Iterable[str]) -> list[str]:
-    """Normalize each address, drop empties, de-duplicate (order-preserving)."""
-    return list(dict.fromkeys(a for a in (normalize_address(x) for x in raw) if a))
+def normalize_recipient_patterns(raw: Iterable[str]) -> list[str]:
+    """Normalize exact addresses and bare glob patterns without losing glob syntax.
+
+    Display-name addresses retain legacy address extraction. Bare patterns must
+    not go through ``parseaddr``, which can discard bracket expressions.
+    """
+    return normalize_pattern_list(
+        value if any(char in value for char in "*?[") and "<" not in value else normalize_address(value)
+        for value in raw
+    )
 
 
 def normalize_pattern_list(raw: Iterable[str]) -> list[str]:
@@ -136,9 +143,9 @@ def compose_legacy_policy_environment(
         _parse_bool_env(attachment_content_value, False)
         if attachment_content_value is not None
         else enable_attachment_content,
-        normalize_address_list(recipients_value.split(","))
+        normalize_recipient_patterns(recipients_value.split(","))
         if recipients_value is not None
-        else normalize_address_list(allowed_recipients),
+        else normalize_recipient_patterns(allowed_recipients),
         normalize_pattern_list(senders_value.split(","))
         if senders_value is not None
         else normalize_pattern_list(allowed_senders),
@@ -527,7 +534,7 @@ class Settings(BaseSettings):
         # TOML normalisation is unconditional (safe during migration loads too): it
         # only reshapes values already in the file, independent of env state.
         if self.allowed_recipients:
-            self.allowed_recipients = normalize_address_list(self.allowed_recipients)
+            self.allowed_recipients = normalize_recipient_patterns(self.allowed_recipients)
         if self.allowed_senders:
             self.allowed_senders = normalize_pattern_list(self.allowed_senders)
 

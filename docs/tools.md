@@ -624,8 +624,11 @@ always advertised. Account existence, enabled state, SMTP capability, and
 current policies are enforced when each tool is called. The allowlist tools have
 distinct empty semantics: an empty recipient list denies `send_email`,
 `forward_email`, and `save_to_mailbox`, while an empty sender list does not
-restrict reading. Recipient denial errors direct users to configure exact
-allowed addresses through the user-operated CLI/UI; this does not require
+restrict reading. Recipient entries support case-insensitive, whole-address glob
+matching (`*`, `?`, and bracket expressions), such as `*@example.com`.
+`*` or `*@*` explicitly permits all valid recipients for sending, forwarding,
+and draft saves; this is not draft-only permission. Recipient denial errors
+direct users to configure allowed addresses or patterns through the user-operated CLI/UI; this does not require
 sharing credentials with the agent. Each list is limited to 1,000
 entries, and the complete effective-configuration snapshot
 is canonically serialized against the shared 8 MiB ceiling before either policy

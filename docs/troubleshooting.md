@@ -18,13 +18,13 @@ Restart the server after changing configuration paths or environment variables.
 ## Recipient allowlist errors
 
 If sending or saving reports `Recipient(s) not in allowlist`, check that every
-To, CC, and BCC address appears in `allowed_recipients`. An empty list
+To, CC, and BCC address matches an entry in `allowed_recipients`. An empty list
 blocks `send_email`, `forward_email`, and `save_to_mailbox`, even when SMTP or
 IMAP credentials work. This applies in both managed and legacy mode. Earlier
 implementations incorrectly allowed any recipient for an empty list; see the
 [upgrade note](security.md#recipient-policy-upgrade-note).
 
-In managed mode, add the intended addresses in the Web UI policy panel, or run
+In managed mode, add the intended addresses or glob patterns in the Web UI policy panel, or run
 `mcp-email-server config policy` and then update using the displayed revision:
 
 ```bash
@@ -37,6 +37,12 @@ never enables unrestricted sending. In legacy mode, configure `allowed_recipient
 in TOML or `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS` in the server environment and
 restart. An explicitly empty environment value overrides a non-empty TOML list.
 `list_allowed_recipients` shows the effective policy without exposing credentials.
+
+For changing draft recipients, add `*@example.com` for an allowed domain, or
+explicitly use `*` (or `*@*`) for all valid recipients. For example, use
+`--allowed-recipients '*'` in the command above. Quote shell patterns. This also
+permits sending and forwarding to matching recipients; it is not a draft-only
+permission. Leaving the list empty is not an allow-all shortcut.
 
 ## The server reports `Missing command`
 

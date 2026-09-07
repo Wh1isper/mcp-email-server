@@ -536,9 +536,10 @@ async def get_emails_content(
 
 @mcp.tool(
     description=(
-        "List the configured recipient allowlist — the addresses that send_email and forward_email are "
-        "permitted to send to and save_to_mailbox is permitted to address. An empty list denies all "
-        "recipients for these operations; configure allowed recipients through the user-operated CLI/UI."
+        "List the configured recipient allowlist — the address patterns that send_email and forward_email are "
+        "permitted to send to and save_to_mailbox is permitted to address. Matching is case-insensitive and "
+        "supports glob patterns such as *@example.com; * explicitly allows all recipients. An empty list "
+        "denies all recipients for these operations; configure patterns through the user-operated CLI/UI."
     ),
     annotations=_READ_ONLY_LOCAL,
 )

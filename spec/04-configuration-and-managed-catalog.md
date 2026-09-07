@@ -169,8 +169,9 @@ least:
 - relevant request/result limits where configurable;
 - sent-copy behavior and safe fallback choices.
 
-Policy updates are revisioned. Recipient addresses are extracted, trimmed,
-lowercased, empty-filtered, and stably deduplicated; sender glob patterns are
+Policy updates are revisioned. Recipient entries accept exact addresses (with
+legacy display-name extraction) or bare glob patterns, preserving glob syntax.
+Both are trimmed, lowercased, empty-filtered, and stably deduplicated; sender glob patterns are
 trimmed, lowercased, empty-filtered, and stably deduplicated. Managed updates and
 legacy composition use the same canonicalizers. The UI presents each allowed
 recipient and sender as an individual add/edit/remove item rather than a
@@ -178,7 +179,10 @@ comma-separated field. Empty collections have deliberately different semantics:
 an empty allowed-recipient collection denies `send_email`, `forward_email`, and
 `save_to_mailbox` in both managed and legacy mode, while an empty allowed-sender
 collection does not restrict reading. Every To, CC, and BCC address requires an
-exact normalized recipient match; no wildcard or implicit unrestricted mode exists.
+case-insensitive whole-address glob match (`*`, `?`, and bracket expressions,
+as for sender policy). A literal `*` or `*@*` explicitly permits all valid
+recipients for all three operations, not just drafts; no implicit unrestricted
+mode exists. Patterns apply to the extracted address, never the display name.
 An initially empty recipient policy is rejected before opening a provider,
 including before a forward source is read. Permissive changes do not bypass
 capability or input validation. Restrictive changes take effect on the next
@@ -362,7 +366,9 @@ SQL, raw provider responses, or reusable locators.
    cardinality limits are enforced on both read and write boundaries, including
    the full 1,000-entry recipient and sender policy limit. Empty recipient policy
    denies send, forward, and mailbox saves in both runtime modes, including
-   after policy is cleared between independent provider effects.
+   after policy is cleared between independent provider effects. Explicit glob
+   authority works for all three operations without bypassing address validation;
+   glob syntax survives managed updates, legacy TOML/environment, and import.
 4. Soft removal disables provider work and permanently reserves the normalized
    name in this delivery.
 5. Every finite management command has a tested single-document JSON success

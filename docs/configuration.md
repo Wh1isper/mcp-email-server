@@ -262,8 +262,9 @@ Selecting managed mode never deletes preserved legacy TOML rows, and selecting
 legacy mode never deletes the managed catalog.
 
 Managed policy updates use the same canonicalization as legacy configuration:
-recipient addresses are extracted and lowercased, sender glob patterns are
-trimmed and lowercased, and empty or duplicate entries are removed while
+recipient entries accept exact addresses (including display names) or bare glob
+patterns; sender entries also accept glob patterns. Entries are trimmed and
+lowercased without losing glob syntax, and empty or duplicate entries are removed while
 preserving first occurrence order. `config update-policy` preserves omitted
 fields; pass an empty value to `--allowed-recipients` or `--allowed-senders` to
 clear that list. These empty values differ deliberately: empty allowed recipients
@@ -271,6 +272,14 @@ disables sending, while empty allowed senders does not restrict reading. The Web
 UI represents each recipient or sender pattern as an individual add/edit/remove
 item rather than a comma-separated field. Every update requires the revision
 shown by `config policy`.
+
+For dynamic recipients, use `--allowed-recipients '*@example.com'` to allow a
+domain, or `--allowed-recipients '*'` to explicitly allow every valid recipient.
+`'*@*'` also allows all. Quote patterns to prevent shell expansion. Matching uses
+case-insensitive, whole-address globs (`*`, `?`, `[0-9]`), just like sender policy.
+In legacy mode use `allowed_recipients = ["*"]` in TOML or
+`MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS='*'` in the environment. These patterns
+apply equally to sending, forwarding, and saving drafts, not just drafts.
 
 An empty recipient policy also denies `save_to_mailbox`; it is not just an SMTP
 switch. This applies in managed and legacy mode, including an omitted legacy
@@ -661,14 +670,14 @@ identifiers are fixed and contain no account-specific information.
 
 ## Global settings
 
-| Setting                      | Default  | Description                                                                |
-| ---------------------------- | -------- | -------------------------------------------------------------------------- |
-| `credential_storage`         | `"auto"` | Select `auto`, `keyring`, or `plaintext` credential storage.               |
-| `enable_attachment_download` | `false`  | Allow `download_attachment` to write files.                                |
-| `enable_attachment_content`  | `false`  | Allow `get_attachment_content` to return attachment bytes through MCP.     |
-| `allowed_recipients`         | `[]`     | Exact recipients; empty disables sending and recipient-bound saves.        |
-| `allowed_senders`            | `[]`     | Incoming `From` patterns; empty does not restrict reading.                 |
-| `report_blocked_mutations`   | `false`  | Report blocked message IDs instead of returning privacy-preserving no-ops. |
+| Setting                      | Default  | Description                                                                                          |
+| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `credential_storage`         | `"auto"` | Select `auto`, `keyring`, or `plaintext` credential storage.                                         |
+| `enable_attachment_download` | `false`  | Allow `download_attachment` to write files.                                                          |
+| `enable_attachment_content`  | `false`  | Allow `get_attachment_content` to return attachment bytes through MCP.                               |
+| `allowed_recipients`         | `[]`     | Exact addresses or globs; `*` explicitly allows all; empty denies sending and recipient-bound saves. |
+| `allowed_senders`            | `[]`     | Incoming `From` patterns; empty does not restrict reading.                                           |
+| `report_blocked_mutations`   | `false`  | Report blocked message IDs instead of returning privacy-preserving no-ops.                           |
 
 See [Security](security.md) before enabling attachment downloads or applying
 allowlists.

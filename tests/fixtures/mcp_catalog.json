@@ -803,7 +803,7 @@
         },
         {
             "name": "list_allowed_recipients",
-            "description": "List the configured recipient allowlist — the addresses that send_email and forward_email are permitted to send to and save_to_mailbox is permitted to address. An empty list denies all recipients for these operations; configure allowed recipients through the user-operated CLI/UI.",
+            "description": "List the configured recipient allowlist — the address patterns that send_email and forward_email are permitted to send to and save_to_mailbox is permitted to address. Matching is case-insensitive and supports glob patterns such as *@example.com; * explicitly allows all recipients. An empty list denies all recipients for these operations; configure patterns through the user-operated CLI/UI.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_recipientsArguments",

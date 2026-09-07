@@ -601,7 +601,7 @@ def config_update_policy(
     allowed_recipients: str | None = typer.Option(
         None,
         "--allowed-recipients",
-        help="Comma-separated addresses; pass an empty value to clear.",
+        help="Comma-separated addresses or glob patterns; '*' allows all, an empty value denies all.",
     ),
     allowed_senders: str | None = typer.Option(
         None,

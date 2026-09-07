@@ -413,7 +413,10 @@ def test_effective_legacy_source_supports_environment_only_without_a_file(
     _set_environment_account(monkeypatch)
     monkeypatch.setattr(backend, "_read_legacy_raw", lambda: {})
     monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD", "true")
-    monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS", " BOB@EXAMPLE.TEST, bob@example.test ")
+    monkeypatch.setenv(
+        "MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS",
+        " BOB@EXAMPLE.TEST, bob@example.test, *, *@*, *@EXAMPLE.TEST, user[0-9]@example.test ",
+    )
     monkeypatch.setenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS", " *@Example.Test ")
     monkeypatch.setenv("MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS", "true")
 
@@ -423,7 +426,7 @@ def test_effective_legacy_source_supports_environment_only_without_a_file(
     assert source.accounts[0].incoming_secret_source == "environment"  # noqa: S105 - source class
     assert "environment-secret" not in repr(source)
     assert source.enable_attachment_download is True
-    assert source.allowed_recipients == ("bob@example.test",)
+    assert source.allowed_recipients == ("bob@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test")
     assert source.allowed_senders == ("*@example.test",)
     assert source.report_blocked_mutations is True
     assert backend.resolve_legacy_secret("environment", "incoming", source.accounts[0]) == "environment-secret"

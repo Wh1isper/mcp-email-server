@@ -98,8 +98,12 @@ satisfied by mocks.
   Recipient policy evidence links `tests/test_mutation_application.py`,
   `tests/test_mcp_tools.py`, and `tests/e2e/test_stdio_greenmail.py` to the
   [configuration policy contract](04-configuration-and-managed-catalog.md):
-  empty-policy denial before provider effects, To/CC/BCC checks, current-policy
-  revalidation, discovery wording, and managed/legacy stdio behavior. Published
+  empty-policy denial before provider effects, explicit glob authorization,
+  To/CC/BCC checks, current-policy revalidation, discovery wording, and
+  managed/legacy stdio behavior. `tests/test_config.py`,
+  `tests/test_application_management.py`, `tests/test_management_adapters.py`,
+  and `tests/test_managed_cli.py` cover glob canonicalization and persistence.
+  Published
   upgrade guidance lives in `docs/security.md` and `docs/troubleshooting.md`.
 - CLI: command help/options, confirmations, user-controlled stdin secrets, one
   parsed schema-version-1 JSON envelope for every finite command, typed errors

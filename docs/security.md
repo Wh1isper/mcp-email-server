@@ -497,7 +497,7 @@ responsibility.
 
 Sending is disabled when the allowed-recipient collection is empty. Enable and
 restrict `send_email`, `forward_email`, and `save_to_mailbox` by adding exact
-addresses:
+addresses or bare glob patterns:
 
 ```toml
 allowed_recipients = [
@@ -513,7 +513,21 @@ MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS='alice@example.com,bob@example.com'
 ```
 
 Every To, CC, and BCC address must be allowed. Matching is case-insensitive and
-understands display-name forms such as `Alice <alice@example.com>`.
+understands display-name forms such as `Alice <alice@example.com>`. Patterns
+match the entire extracted address, not the display name, using the same glob
+syntax as sender policy: `*`, `?`, and bracket expressions such as `[0-9]`.
+For example, `*@example.com` permits that domain, not `example.com.evil`.
+
+To explicitly allow dynamic recipients, configure:
+
+```toml
+allowed_recipients = ["*"]
+```
+
+`["*@*"]` also allows all valid recipients. **This permits unrestricted sending,
+forwarding, and recipient-bound draft saves**, not just drafts. It does not
+bypass address validation, account capabilities, or other policies. Prefer a
+narrow domain pattern when possible; there is no separate draft-only allowlist.
 
 `list_allowed_recipients` is always visible in the static MCP tool catalog. An
 empty result means sending is disabled; it never means unrestricted sending.
@@ -532,8 +546,10 @@ empty, despite the documented restriction and UI guidance. The fix for
 behavior: an empty list now denies `send_email`, `forward_email`, and
 `save_to_mailbox`. This is a compatibility change in both managed and legacy
 mode. Before upgrading a workflow that relied on unrestricted recipients,
-configure its intended addresses explicitly. No automatic unrestricted fallback
-or wildcard recipient is provided. See
+configure its intended addresses or patterns explicitly. Use `"*"` only if you
+intend to allow every recipient for all three operations; there is no automatic
+unrestricted fallback. Existing entries containing glob syntax now act as
+patterns rather than literal addresses, so review them when upgrading. See
 [recipient-policy troubleshooting](troubleshooting.md#recipient-allowlist-errors).
 
 ## Sender allowlist

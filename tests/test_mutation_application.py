@@ -96,10 +96,18 @@ def _services(
         ("recipient@example.test", ("recipient@example.test",), True),
         ("Recipient <RECIPIENT@Example.Test>", ("recipient@example.test",), True),
         ("other@example.test", ("recipient@example.test",), False),
-        ("recipient@example.test", ("*",), False),
+        ("recipient@example.test", ("*",), True),
+        ("recipient@example.test", ("*@*",), True),
+        ("Recipient <RECIPIENT@Example.Test>", ("*@EXAMPLE.TEST",), True),
+        ("user7@example.test", ("user?@example.test",), True),
+        ("user7@example.test", ("user[0-9]@example.test",), True),
+        ("userx@example.test", ("user[0-9]@example.test",), False),
+        ("recipient@example.test.evil", ("*@example.test",), False),
+        ("recipient@other.test", ("*@example.test",), False),
+        ("", ("*",), False),
     ],
 )
-def test_recipient_policy_requires_explicit_exact_match(
+def test_recipient_policy_requires_explicit_pattern_match(
     recipient: str, allowed: tuple[str, ...], expected: bool
 ) -> None:
     assert mutations_module._recipient_policy_allows(recipient, allowed) is expected
@@ -153,8 +161,8 @@ async def test_empty_recipient_policy_denies_before_provider_effect(
 async def test_recipient_policy_checks_every_address_before_provider_access(
     field: str, command: SendCommand | SaveToMailboxCommand | ForwardCommand
 ) -> None:
-    services, _, factory, _ = _services(account=_account(allowed_recipients=("recipient@example.test",)))
-    command = replace(command, **{field: ("recipient@example.test", "blocked@example.test")})
+    services, _, factory, _ = _services(account=_account(allowed_recipients=("*@example.test",)))
+    command = replace(command, **{field: ("recipient@example.test", "blocked@other.test")})
     if isinstance(command, ForwardCommand):
         operation = services.forward.execute(command)
     elif isinstance(command, SaveToMailboxCommand):
@@ -561,8 +569,9 @@ async def test_send_delivery_survives_untyped_sent_copy_failure_as_unknown() -> 
 
 
 @pytest.mark.asyncio
-async def test_direct_application_call_rejects_packed_recipient_values() -> None:
-    services, _, factory, _ = _services(account=_account(allowed_recipients=("allowed@example.test",)))
+@pytest.mark.parametrize("allowed", [("allowed@example.test",), ("*",)])
+async def test_direct_application_call_rejects_packed_recipient_values(allowed: tuple[str, ...]) -> None:
+    services, _, factory, _ = _services(account=_account(allowed_recipients=allowed))
 
     with pytest.raises(ValueError, match="exactly one email address"):
         await services.send.execute(

@@ -22,6 +22,12 @@ mcp-email-server account {add|set-secret|list|show|update|disable|enable|remove|
 mcp-email-server-plugin
 ```
 
+`config update-policy --allowed-recipients` accepts comma-separated exact
+addresses or glob patterns. Quote patterns, for example `--allowed-recipients
+'*@example.com'`. `--allowed-recipients '*'` explicitly permits every recipient
+for sending, forwarding, and draft saves; an empty value denies all three.
+Supply the current `--expected-revision` from `config policy`.
+
 `mcp-email-server-plugin` is the dedicated plugin entry point. It accepts no
 transport or management command and starts the same bounded stdio server directly.
 Because this entry point is introduced with the mail-only Local Email App V2
