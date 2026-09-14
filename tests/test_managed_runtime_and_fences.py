@@ -153,6 +153,33 @@ def test_managed_get_settings_uses_non_secret_catalog_not_legacy_or_environment(
     assert all(account.account_name not in {"legacy-tripwire", "default"} for account in settings.emails)
 
 
+@pytest.mark.parametrize("downloads", [False, True])
+def test_managed_read_backend_uses_current_attachment_policy(monkeypatch, tmp_path, fake_keyring, downloads):
+    _config_path, catalog = _select_managed(monkeypatch, tmp_path, fake_keyring)
+    backend = LocalReadBackend()
+
+    # Reuse the backend across updates to cover enabling and revoking permission.
+    for content in (False, True, False):
+        policy = catalog.policy()
+        catalog.update_policy(
+            expected_revision=policy.revision,
+            enable_attachment_download=downloads,
+            enable_attachment_content=content,
+            allowed_recipients=policy.allowed_recipients,
+            allowed_senders=policy.allowed_senders,
+            report_blocked_mutations=policy.report_blocked_mutations,
+        )
+        # Managed authority must not pick up conflicting legacy environment flags.
+        monkeypatch.setenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT", str(not content).lower())
+
+        snapshot = backend.resolve("managed-alice")
+        access = backend.open("managed-alice", expected_mode="managed")
+
+        for account in (snapshot, access.account):
+            assert account.enable_attachment_content is content
+            assert account.enable_attachment_download is downloads
+
+
 def test_linux_managed_store_is_independent_of_unavailable_keyring(monkeypatch, tmp_path, broken_keyring):
     monkeypatch.setattr(managed_module.sys, "platform", "linux")
     parent = _private_directory(tmp_path / "managed-sqlite")

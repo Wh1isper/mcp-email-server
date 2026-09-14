@@ -482,8 +482,12 @@ server filesystem. Enable the independent content-transfer mode instead:
 enable_attachment_content = true
 ```
 
-Or set `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT=true`. In managed mode, use
-the **Allow attachments to be returned through MCP** checkbox. Then call
+In legacy mode, you can also set
+`MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT=true`. In managed mode, use
+the **Allow attachments to be returned through MCP** checkbox or run
+`mcp-email-server config update-policy --enable-attachment-content`; confirm the
+stored value with `mcp-email-server config policy`. Managed runtime reads use
+this policy rather than legacy TOML or environment overrides. Then call
 `get_attachment_content`. If the encoded resource exceeds the existing global
 serialized-result ceiling, use a smaller attachment; the server does not create
 a temporary URL or split the blob into chunks.

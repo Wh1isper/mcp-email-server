@@ -679,6 +679,12 @@ identifiers are fixed and contain no account-specific information.
 | `allowed_senders`            | `[]`     | Incoming `From` patterns; empty does not restrict reading.                                           |
 | `report_blocked_mutations`   | `false`  | Report blocked message IDs instead of returning privacy-preserving no-ops.                           |
 
+In managed mode, enable attachment content transfer with
+`mcp-email-server config update-policy --enable-attachment-content` and inspect
+it with `mcp-email-server config policy`. The current managed policy is applied
+when each account is resolved, independently of `enable_attachment_download`;
+legacy TOML and environment flags do not override it.
+
 See [Security](security.md) before enabling attachment downloads or applying
 allowlists.
 

@@ -47,6 +47,7 @@ def resolve_local_account(
             providers=[],
             db_location=catalog.path.as_posix(),
             enable_attachment_download=policy.enable_attachment_download,
+            enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
             report_blocked_mutations=policy.report_blocked_mutations,
