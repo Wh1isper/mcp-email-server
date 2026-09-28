@@ -49,6 +49,9 @@ mcp-email-server ui [--no-open] [--port PORT]
   option exists.
 - Default port is `0` (OS-assigned ephemeral). A fixed valid port may be chosen
   explicitly.
+- On Windows the listener sets `SO_EXCLUSIVEADDRUSE` and never `SO_REUSEADDR`,
+  so no other socket can bind the same address and port; POSIX keeps
+  `SO_REUSEADDR` for fixed-port restart.
 - The process freezes bootstrap mode and selected catalog before constructing UI
   state or binding its listener. Freezing does not open the catalog, so a missing
   or corrupt selected catalog remains recoverable through explicit legacy

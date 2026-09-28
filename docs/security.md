@@ -13,7 +13,8 @@ an MCP client or network.
 
 `mcp-email-server ui` is a foreground, single-user local adapter. It binds
 exactly to IPv4 `127.0.0.1`; port `0` is the default and selects an ephemeral
-port. The command exposes no host, wildcard, share, daemon, debug, reload, CORS,
+port. On Windows the listener claims its port exclusively, so another local
+socket cannot bind the same address and receive UI connections. The command exposes no host, wildcard, share, daemon, debug, reload, CORS,
 or remote mode. Its process-unique route serves only packaged same-origin React
 assets and explicit management use cases. There is no provider-connectivity
 control or route, mail, arbitrary file, generic RPC, OpenAPI, metrics, or

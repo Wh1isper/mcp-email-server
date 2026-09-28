@@ -16,12 +16,22 @@ from mcp_email_server.web_ui.app import LocalUiState, create_local_ui_app
 _BIND_HOST = "127.0.0.1"
 
 
+def _configure_address_reuse(listener: socket.socket) -> None:
+    """Keep POSIX restart reuse without letting another Windows socket share the port."""
+    if sys.platform == "win32":
+        # Windows SO_REUSEADDR lets another socket bind the same port and receive
+        # connections; SO_EXCLUSIVEADDRUSE denies that and must not be combined with it.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+
 def _bound_socket(port: int) -> socket.socket:
     if port < 0 or port > 65535:
         raise ValueError("UI port must be between 0 and 65535")
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _configure_address_reuse(listener)
         listener.bind((_BIND_HOST, port))
         listener.listen(socket.SOMAXCONN)
         listener.set_inheritable(True)
