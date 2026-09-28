@@ -35,7 +35,7 @@ from aiosmtplib.errors import (
     SMTPServerDisconnected,
     SMTPTimeoutError,
 )
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, Tag
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS, validate_imap_uid
 from mcp_email_server.application.metadata import (
@@ -746,11 +746,85 @@ def _decoded_payload(message: Message) -> bytes | None:
     return payload if isinstance(payload, bytes) else None
 
 
-def _html_to_text(html: str) -> str:
-    """Convert an HTML email body to readable plain text."""
-    soup = BeautifulSoup(html, "html.parser")
-    for element in soup(["script", "style"]):
+_NON_RENDERED_HTML_TAGS = ("script", "style", "title", "meta", "link", "template")
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSS_IMPORTANT_RE = re.compile(r"!\s*important\s*$")
+_CSS_NUMBER_RE = re.compile(r"([+-]?(?:\d+\.?\d*|\.\d+))([a-z%]*)")
+
+
+def _inline_style_declarations(style: str) -> dict[str, str]:
+    """Parse an inline ``style`` attribute into lowercase property values.
+
+    Later declarations win unless an earlier one is ``!important`` and the later
+    one is not, matching the CSS cascade inside a single declaration block.
+    """
+    declarations: dict[str, tuple[str, bool]] = {}
+    for declaration in _CSS_COMMENT_RE.sub("", style).split(";"):
+        name, separator, raw_value = declaration.partition(":")
+        name = name.strip().lower()
+        if not separator or not name:
+            continue
+        value = raw_value.strip().lower()
+        important = _CSS_IMPORTANT_RE.search(value) is not None
+        value = _CSS_IMPORTANT_RE.sub("", value).strip()
+        previous = declarations.get(name)
+        if previous is not None and previous[1] and not important:
+            continue
+        declarations[name] = (value, important)
+    return {name: value for name, (value, _important) in declarations.items()}
+
+
+def _css_is_zero(value: str) -> bool:
+    """Return whether a CSS length, number, or percentage is exactly zero."""
+    match = _CSS_NUMBER_RE.fullmatch(value)
+    return match is not None and float(match.group(1)) == 0
+
+
+def _is_hidden_html_element(element: Tag) -> bool:
+    """Return whether an element is hidden from the reader by markup or inline style.
+
+    Only the ``hidden`` attribute and inline ``style`` declarations are evaluated.
+    Class-based rules from ``<style>`` sheets, off-screen positioning, clipping,
+    and text colored like its background are not detected.
+    """
+    if element.has_attr("hidden"):
+        return True
+    style = element.get("style")
+    if not isinstance(style, str) or not style:
+        return False
+    declarations = _inline_style_declarations(style)
+    collapsed = declarations.get("overflow") == "hidden" and any(
+        _css_is_zero(declarations.get(name, "")) for name in ("height", "max-height")
+    )
+    return (
+        declarations.get("display") == "none"
+        or declarations.get("visibility") in {"hidden", "collapse"}
+        or _css_is_zero(declarations.get("opacity", ""))
+        or _css_is_zero(declarations.get("font-size", ""))
+        or collapsed
+    )
+
+
+def _remove_non_rendered_html(soup: BeautifulSoup) -> None:
+    """Drop markup a mail client does not show so it never reaches the reader text."""
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+    for element in soup.find_all(_NON_RENDERED_HTML_TAGS):
         element.decompose()
+    for element in soup.find_all(True):
+        if not element.decomposed and _is_hidden_html_element(element):
+            element.decompose()
+
+
+def _html_to_text(html: str) -> str:
+    """Convert an HTML email body to readable plain text.
+
+    Elements a mail client does not render (scripts, styles, head metadata,
+    templates, comments, and hidden or inline-style-invisible elements) are
+    removed first, so text concealed from the human reader is not returned.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    _remove_non_rendered_html(soup)
 
     for link in soup.find_all("a"):
         href = str(link.get("href") or "").strip()

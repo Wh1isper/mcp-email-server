@@ -225,6 +225,17 @@ into the containing message body, even when that part has no filename. If one
 text part declares an unknown charset or contains invalid bytes, it falls back
 to UTF-8 replacement decoding without hiding the other readable parts.
 
+When a message has a `text/plain` part, that part is returned. Otherwise the
+body is derived from the `text/html` part after dropping content a mail client
+does not show: scripts, styles, `<title>` and other head metadata, `<template>`,
+HTML comments (including Outlook conditional comments), elements with the
+`hidden` attribute, and elements whose inline `style` sets `display: none`,
+`visibility: hidden` or `collapse`, `opacity: 0`, `font-size: 0`, or a zero
+`height`/`max-height` together with `overflow: hidden`. Useful link URLs are
+still appended after their link text. Rules from `<style>` sheets or CSS
+classes, off-screen positioning, and text colored like its background are not
+evaluated, so treat returned message text as untrusted content.
+
 A request accepts 1 to 500 canonical positive decimal ASCII IMAP UIDs; zero,
 leading zero, non-ASCII digits, signs, ranges, sets, and values above the IMAP UID
 limit are rejected before provider access. The provider adapter repeats this

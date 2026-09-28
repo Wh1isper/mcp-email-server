@@ -173,6 +173,13 @@ Body reads:
 - decode text parts independently and fall back to UTF-8 with replacement for an
   unknown or invalid declared charset, so one bad part cannot hide the rest of a
   readable message;
+- prefer `text/plain` parts and, when a message has none, derive text from its
+  `text/html` parts only after removing content a mail client does not render:
+  scripts, styles, head metadata, templates, comments, `hidden` elements, and
+  elements whose inline style sets `display: none`, `visibility: hidden` or
+  `collapse`, zero `opacity` or `font-size`, or zero `height`/`max-height` with
+  `overflow: hidden`; class or style-sheet rules are not evaluated, so this
+  reduces rather than eliminates text concealed from the human reader;
 - sanitize decode/parser errors and never persist bodies, thread headers from
   full-content reads, or raw MIME in SQLite.
 
@@ -286,7 +293,8 @@ catalog authority or secret binding state.
 7. Projection failure cannot turn known provider read evidence into a false mail
    failure, and rebuild cannot alter catalog or credential state.
 8. Interoperability tests cover quoted and grouped address fields, attachment
-   subtree pruning, unknown MIME charsets, all English IMAP month tokens, exact
+   subtree pruning, unknown MIME charsets, HTML-fallback removal of each
+   non-rendered and inline-hidden form alongside visible controls, all English IMAP month tokens, exact
    ASCII astring escaping, multi-literal UTF-8 SEARCH continuations and failure
    framing, LIST completion filtering and literal lengths, and case-insensitive
    special-use attributes.
