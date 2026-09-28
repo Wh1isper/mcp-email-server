@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1469,3 +1471,188 @@ async def test_forward_threads_include_attachments_to_the_provider() -> None:
 
     assert provider.fetch_forward_source.await_args.args[0].include_attachments is False
     assert provider.forward.await_args.args[0].include_attachments is False
+
+
+_UNC_ATTACHMENT = r"\\attacker.example.test\share\payload.bin"
+
+
+def _record_attachment_stats(monkeypatch: pytest.MonkeyPatch, *paths: str) -> list[str]:
+    """Record every ``os.stat`` of the given paths; ``Path.stat``/``is_file`` route through it."""
+
+    watched = set(paths)
+    touched: list[str] = []
+    real_stat = os.stat
+
+    def recording_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) in watched:
+            touched.append(os.fspath(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", recording_stat)
+    return touched
+
+
+def _attachment_file(tmp_path: Path, size: int = 4) -> str:
+    attachment = tmp_path / "attachment.bin"
+    attachment.write_bytes(b"x" * size)
+    return str(attachment)
+
+
+def _send_provider() -> MagicMock:
+    provider = MagicMock()
+    provider.send = AsyncMock(
+        return_value=DeliveryMutationOutcome(
+            (TargetMutationOutcome("recipient@example.test", "succeeded"),),
+            object(),
+        )
+    )
+    provider.save_sent_copy = AsyncMock(return_value=SentCopyMutationOutcome("succeeded", "Sent"))
+    provider.save_to_mailbox = AsyncMock(
+        return_value=AppendMutationOutcome("succeeded", "<draft@example.test>", mailbox="Drafts")
+    )
+    return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["resolve", "open"])
+async def test_send_incapable_account_never_touches_attachment_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stage: str
+) -> None:
+    local = _attachment_file(tmp_path)
+    touched = _record_attachment_stats(monkeypatch, local, _UNC_ATTACHMENT)
+    provider = _send_provider()
+    services, _, factory, _ = _services(
+        account=_account(can_send=stage != "resolve"),
+        provider=provider,
+    )
+    factory.open.return_value = MutationProviderAccess(_account(can_send=False), provider)
+
+    with pytest.raises(MutationProviderError, match="SMTP is not configured"):
+        await services.send.execute(
+            SendCommand(
+                "primary",
+                ("recipient@example.test",),
+                "Subject",
+                "body",
+                attachments=(local, _UNC_ATTACHMENT),
+            )
+        )
+
+    assert touched == []
+    assert factory.open.call_count == (0 if stage == "resolve" else 1)
+    provider.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["resolve", "open"])
+@pytest.mark.parametrize("workflow", ["send", "save"])
+async def test_recipient_policy_denial_never_touches_attachment_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stage: str, workflow: str
+) -> None:
+    local = _attachment_file(tmp_path)
+    touched = _record_attachment_stats(monkeypatch, local, _UNC_ATTACHMENT)
+    provider = _send_provider()
+    allowed = ("other@example.test",) if stage == "resolve" else ("recipient@example.test",)
+    services, _, factory, _ = _services(account=_account(allowed_recipients=allowed), provider=provider)
+    factory.open.return_value = MutationProviderAccess(_account(allowed_recipients=("other@example.test",)), provider)
+    fields = {
+        "account_name": "primary",
+        "recipients": ("recipient@example.test",),
+        "subject": "Subject",
+        "body": "body",
+        "attachments": (local, _UNC_ATTACHMENT),
+    }
+    operation = (
+        services.send.execute(SendCommand(**fields))
+        if workflow == "send"
+        else services.save_to_mailbox.execute(SaveToMailboxCommand(**fields))
+    )
+
+    with pytest.raises(RecipientPolicyDeniedError):
+        await operation
+
+    assert touched == []
+    assert factory.open.call_count == (0 if stage == "resolve" else 1)
+    provider.send.assert_not_awaited()
+    provider.save_to_mailbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forward_caller_attachments_are_rejected_without_touching_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local = _attachment_file(tmp_path)
+    touched = _record_attachment_stats(monkeypatch, local, _UNC_ATTACHMENT)
+    provider = _forward_provider()
+    services, _, factory, _ = _services(provider=provider)
+
+    with pytest.raises(ValueError, match="does not accept caller attachments"):
+        await services.forward.execute(_forward_command(attachments=(local, _UNC_ATTACHMENT)))
+
+    assert touched == []
+    factory.open.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow", ["send", "save"])
+async def test_authorized_attachment_is_size_checked_before_the_provider_effect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, workflow: str
+) -> None:
+    local = _attachment_file(tmp_path)
+    touched = _record_attachment_stats(monkeypatch, local)
+    provider = _send_provider()
+    services, _, _, _ = _services(provider=provider)
+    fields = {
+        "account_name": "primary",
+        "recipients": ("recipient@example.test",),
+        "subject": "Subject",
+        "body": "body",
+        "attachments": (local,),
+    }
+    if workflow == "send":
+        await services.send.execute(SendCommand(**fields))
+        provider.send.assert_awaited_once()
+    else:
+        await services.save_to_mailbox.execute(SaveToMailboxCommand(**fields))
+        provider.save_to_mailbox.assert_awaited_once()
+
+    assert local in touched
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limits", "message"),
+    [
+        ({"attachment_bytes": 3}, "an attachment exceeds 3 bytes"),
+        ({"total_attachment_bytes": 7}, "attachments exceed 7 bytes in total"),
+    ],
+)
+@pytest.mark.parametrize("workflow", ["send", "save"])
+async def test_authorized_oversized_attachments_fail_before_the_provider_effect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, limits: dict[str, int], message: str, workflow: str
+) -> None:
+    first = tmp_path / "first.bin"
+    second = tmp_path / "second.bin"
+    first.write_bytes(b"1234")
+    second.write_bytes(b"5678")
+    monkeypatch.setattr(mutations_module, "APPLICATION_LIMITS", replace(APPLICATION_LIMITS, **limits))
+    provider = _send_provider()
+    services, _, _, _ = _services(provider=provider)
+    fields = {
+        "account_name": "primary",
+        "recipients": ("recipient@example.test",),
+        "subject": "Subject",
+        "body": "body",
+        "attachments": (str(first), str(second)),
+    }
+    operation = (
+        services.send.execute(SendCommand(**fields))
+        if workflow == "send"
+        else services.save_to_mailbox.execute(SaveToMailboxCommand(**fields))
+    )
+
+    with pytest.raises(ValueError, match=message):
+        await operation
+
+    provider.send.assert_not_awaited()
+    provider.save_to_mailbox.assert_not_awaited()

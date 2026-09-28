@@ -553,21 +553,40 @@ def _validate_content(subject: str, body: str, attachments: tuple[str, ...]) -> 
     )
     if len(body.encode("utf-8")) > APPLICATION_LIMITS.body_bytes:
         raise ValueError(f"body exceeds {APPLICATION_LIMITS.body_bytes} bytes")
-    _validate_attachments(attachments)
+    _validate_attachment_paths(attachments)
 
 
-def _validate_attachments(attachments: tuple[str, ...]) -> None:
+def _validate_attachment_paths(attachments: tuple[str, ...]) -> None:
+    """Bound caller-supplied attachment paths without touching the filesystem.
+
+    Command validation runs before account authority is known, so it stays
+    purely syntactic. Filesystem size evidence is gathered separately by
+    ``_preflight_attachment_sizes`` once the request has been authorized.
+    """
+
     if len(attachments) > APPLICATION_LIMITS.attachments:
         raise ValueError(f"attachments must contain at most {APPLICATION_LIMITS.attachments} paths")
     if any(not isinstance(raw_path, str) for raw_path in attachments):
         raise ValueError("attachment paths must be strings")
-    total_size = 0
     for raw_path in attachments:
         validate_controlled_string(
             raw_path,
             field_name="attachment path",
             maximum_bytes=APPLICATION_LIMITS.attachment_path_bytes,
         )
+
+
+def _preflight_attachment_sizes(attachments: tuple[str, ...]) -> None:
+    """Bound attachment sizes from filesystem metadata before a provider effect.
+
+    Callers invoke this only after account resolution, send capability, and
+    recipient policy have accepted the request. A rejected request therefore
+    never stats caller-supplied paths, which on Windows could otherwise open an
+    SMB/WebDAV session for a UNC path the request was never allowed to use.
+    """
+
+    total_size = 0
+    for raw_path in attachments:
         path = Path(raw_path)
         try:
             metadata = path.stat()
@@ -599,7 +618,7 @@ def _forwarded_body(note: str, block: str) -> str:
 def _validate_forward_source(source: ForwardSource) -> None:
     """Bound in-memory forwarded parts before any delivery.
 
-    ``_validate_attachments`` bounds caller-supplied filesystem paths; forwarded
+    ``_preflight_attachment_sizes`` bounds caller-supplied filesystem paths; forwarded
     parts never touch the filesystem, so their declared sizes are bounded here
     against the same limits. The derived subject and body are validated once,
     by ``ComposeCommand.validate`` on the derived command — not duplicated here.
@@ -1018,6 +1037,7 @@ class SaveToMailboxService(_MutationWorkflow):
         _validate_recipient_policy(command, account)
         access = self._open(account)
         _validate_recipient_policy(command, access.account)
+        _preflight_attachment_sizes(command.attachments)
         try:
             outcome = _validate_append_result(
                 await _bounded_provider_effect(access.provider.save_to_mailbox(command, access.account))
@@ -1152,6 +1172,7 @@ class SendService(_MutationWorkflow):
         access = self._open(account, purpose="outgoing")
         self._require_send_capability(access.account)
         _validate_recipient_policy(command, access.account)
+        _preflight_attachment_sizes(command.attachments)
         try:
             delivery = _validate_delivery_result(
                 await _bounded_provider_effect(access.provider.send(command, access.account))

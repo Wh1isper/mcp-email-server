@@ -78,7 +78,11 @@ claim.
 Saving a message to a mailbox is an IMAP APPEND effect. The request bounds
 headers, recipients, subject, body, encoded message bytes, attachments, and
 destination. File attachments preserve their inferred MIME main type and subtype
-rather than being coerced into `application/*`. APPEND flags accept system flags
+rather than being coerced into `application/*`. Caller-supplied attachment paths,
+here and for SMTP submission, are validated syntactically with the rest of the
+request, but no filesystem access to them (size preflight or read) happens until
+account resolution, send capability where applicable, and recipient policy have
+accepted the request against the opened authority snapshot. APPEND flags accept system flags
 and provider keywords only when each is one complete IMAP atom; legal keyword
 forms such as `$Forwarded`, dotted names, and leading digits are not narrowed by
 a local identifier grammar, while controls and protocol specials are rejected.
@@ -313,7 +317,9 @@ enter public errors.
 ## Acceptance Criteria
 
 1. Every mutation revalidates current authority before each independent provider
-   effect and resolves only the needed account/role secret.
+   effect and resolves only the needed account/role secret. Tests prove that a
+   send-incapable or recipient-denied submission or save never accesses
+   caller-supplied attachment paths.
 2. Per-target results preserve caller order and distinguish success, failure,
    unknown, cancelled-before-effect, and local projection warning.
 3. Body retrieval does not mark read by default; explicit mark-read and bounded
