@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.metadata
 import io
+import socket
+import sys
 from unittest.mock import MagicMock
 
 import click
@@ -89,6 +91,18 @@ def test_windows_listener_uses_exclusive_address_and_never_reuse(monkeypatch) ->
 
     assert listener.options == [(server_module.socket.SOL_SOCKET, exclusive, 1)]
     assert all(option != server_module.socket.SO_REUSEADDR for _, option, _ in listener.options)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires native Windows socket semantics")
+def test_windows_listener_rejects_competing_address_reuse() -> None:
+    with server_module._bound_socket(0) as listener:
+        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE) == 1
+        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as competitor:
+            competitor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with pytest.raises(OSError) as error:
+                competitor.bind(listener.getsockname())
+            assert error.value.winerror in {10013, 10048}  # WSAEACCES or WSAEADDRINUSE
 
 
 def test_posix_listener_keeps_address_reuse(monkeypatch) -> None:

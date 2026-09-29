@@ -252,6 +252,13 @@ protocol-defined English tokens.
 
 ## The UI cannot load or authenticate
 
+On Windows, the UI claims its listening port exclusively. When using an explicit
+`--port`, restarting immediately can fail to bind while connections from the
+previous process remain active. Use the default `--port 0` to let the OS choose
+an available port, or wait for the previous connections to close before retrying
+the fixed port. If another process owns that port, choose a different one; do
+not disable exclusive binding to work around the error.
+
 Run `mcp-email-server ui` in a visible terminal and keep that foreground process
 running. Open only the fresh browser link launched by that process. If browser
 launch fails, the command prints the one-time URL to that attached terminal. To
