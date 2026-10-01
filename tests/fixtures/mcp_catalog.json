@@ -1299,6 +1299,158 @@
             }
         },
         {
+            "name": "save_draft",
+            "description": "Compose and save an unsent draft to the configured drafts mailbox or unique special-use Drafts mailbox. Requires draft permission, not append or send. Recipients may be omitted; supplied recipients obey the recipient allowlist. The Draft flag is fixed; no arbitrary target or flags.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "subject": {
+                        "description": "The subject of the email.",
+                        "maxLength": 65536,
+                        "title": "Subject",
+                        "type": "string"
+                    },
+                    "body": {
+                        "description": "The body of the email.",
+                        "maxLength": 1048576,
+                        "title": "Body",
+                        "type": "string"
+                    },
+                    "recipients": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Optional draft recipients; supplied addresses obey the recipient allowlist.",
+                        "title": "Recipients"
+                    },
+                    "cc": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of CC email addresses.",
+                        "title": "Cc"
+                    },
+                    "bcc": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 1024,
+                                    "type": "string"
+                                },
+                                "maxItems": 100,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of BCC email addresses.",
+                        "title": "Bcc"
+                    },
+                    "html": {
+                        "default": false,
+                        "description": "Whether the email body is HTML (True) or plain text (False).",
+                        "title": "Html",
+                        "type": "boolean"
+                    },
+                    "attachments": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "maxLength": 4096,
+                                    "type": "string"
+                                },
+                                "maxItems": 20,
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
+                        "title": "Attachments"
+                    },
+                    "in_reply_to": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Message-ID of the email being replied to. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
+                        "title": "In Reply To"
+                    },
+                    "references": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Space-separated Message-IDs for the thread chain. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
+                        "title": "References"
+                    }
+                },
+                "required": ["account_name", "subject", "body"],
+                "title": "save_draftArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "save_draftOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "delete_emails",
             "description": "Delete one or more emails by email_id using target-scoped UID EXPUNGE. Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {

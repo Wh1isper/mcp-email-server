@@ -50,6 +50,7 @@ def resolve_local_account(
             enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
+            allowed_mutations=list(policy.allowed_mutations),
             report_blocked_mutations=policy.report_blocked_mutations,
             credential_storage="keyring",
         )

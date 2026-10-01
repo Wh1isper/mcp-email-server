@@ -19,6 +19,11 @@ disappear when mode, account, policy, or provider capability makes a call
 unavailable. Instead, the application service checks current authority at call
 time and returns a bounded typed denial.
 
+`save_draft` is an independent tool, not a visibility-dependent alias for
+`save_to_mailbox`. Its schema exposes compose fields but no mailbox or flags;
+its destination and mutation authority are owned by specs 04 and 07. The complete
+catalog remains advertised for read-only and selectively granted accounts too.
+
 This preserves client discovery caches while ensuring a permissive startup state
 does not authorize a later effect. Tool list callbacks MUST NOT resolve secrets,
 contact providers, or scan mailboxes.

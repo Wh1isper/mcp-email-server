@@ -27,6 +27,7 @@ from mcp_email_server.application.mutations import (
     MoveCommand,
     MutableEmailFlag,
     RecipientPolicyDeniedError,
+    SaveDraftCommand,
     SaveToMailboxCommand,
     SendCommand,
     SendMutationOutcome,
@@ -861,6 +862,85 @@ async def save_to_mailbox(
     detail = f" ({outcome.detail})" if outcome.detail in _PUBLIC_APPEND_DETAILS else ""
     warning = "; warning: reconciliation needed" if outcome.reconciliation_needed else ""
     return f"Email save [{outcome.status}{detail}: {mailbox}; Message-Id: {outcome.message_id}{warning}]"
+
+
+@mcp.tool(
+    description="Compose and save an unsent draft to the configured drafts mailbox or unique special-use Drafts mailbox. Requires draft permission, not append or send. Recipients may be omitted; supplied recipients obey the recipient allowlist. The Draft flag is fixed; no arbitrary target or flags.",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+)
+async def save_draft(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    subject: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.subject_bytes, description="The subject of the email."),
+    ],
+    body: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.body_bytes, description="The body of the email."),
+    ],
+    recipients: Annotated[
+        list[AddressInput] | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.recipients,
+            description="Optional draft recipients; supplied addresses obey the recipient allowlist.",
+        ),
+    ] = None,
+    cc: Annotated[
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of CC email addresses."),
+    ] = None,
+    bcc: Annotated[
+        list[AddressInput] | None,
+        Field(default=None, max_length=APPLICATION_LIMITS.recipients, description="A list of BCC email addresses."),
+    ] = None,
+    html: Annotated[
+        bool,
+        Field(default=False, description="Whether the email body is HTML (True) or plain text (False)."),
+    ] = False,
+    attachments: Annotated[
+        list[AttachmentPathInput] | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.attachments,
+            description="A list of file paths to attach. Relative paths are resolved against the server process working directory; absolute paths are recommended.",
+        ),
+    ] = None,
+    in_reply_to: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
+            description="Message-ID of the email being replied to. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
+        ),
+    ] = None,
+    references: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
+            description="Space-separated Message-IDs for the thread chain. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
+        ),
+    ] = None,
+) -> str:
+    outcome = await get_application_runtime().mutations.save_draft.execute(
+        SaveDraftCommand(
+            account_name=account_name,
+            recipients=tuple(recipients or ()),
+            subject=subject,
+            body=body,
+            cc=tuple(cc or ()),
+            bcc=tuple(bcc or ()),
+            html=html,
+            attachments=tuple(attachments or ()),
+            in_reply_to=in_reply_to,
+            references=references,
+        )
+    )
+    warning = "; warning: reconciliation needed" if outcome.reconciliation_needed else ""
+    return f"Draft save [{outcome.status}: {outcome.mailbox}; Message-Id: {outcome.message_id}{warning}]"
 
 
 @mcp.tool(

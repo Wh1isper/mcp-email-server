@@ -16,6 +16,7 @@ from typing import Literal, Protocol, Self
 from pydantic import BaseModel, SecretStr
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS, validate_controlled_string
+from mcp_email_server.application.mutation_policy import DEFAULT_ALLOWED_MUTATIONS, MutationClass, validate_mutations
 from mcp_email_server.config import EmailServer, EmailSettings, normalize_pattern_list, normalize_recipient_patterns
 from mcp_email_server.imap_keywords import ImapKeywordAccount, ImapKeywordTag
 
@@ -119,6 +120,8 @@ class AccountDetails:
     incoming_binding: str
     outgoing_binding: str | None
     tags: tuple[ImapKeywordTag, ...] = ()
+    allowed_mutations: tuple[MutationClass, ...] | None = None
+    drafts_mailbox: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +175,7 @@ class ManagedPolicy:
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
+    allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
 
 
 @dataclass(frozen=True)
@@ -266,6 +270,8 @@ class CreateAccountCommand:
     save_to_sent: bool = True
     sent_folder_name: str | None = None
     tags: tuple[ImapKeywordTag, ...] = ()
+    allowed_mutations: tuple[MutationClass, ...] | None = None
+    drafts_mailbox: str | None = None
 
 
 @dataclass(frozen=True)
@@ -321,6 +327,10 @@ class UpdateAccountCommand:
     sent_folder_name: str | None = None
     update_sent_folder: bool = False
     tags: tuple[ImapKeywordTag, ...] | None = None
+    allowed_mutations: tuple[MutationClass, ...] | None = None
+    update_allowed_mutations: bool = False
+    drafts_mailbox: str | None = None
+    update_drafts_mailbox: bool = False
 
 
 @dataclass(frozen=True)
@@ -335,6 +345,8 @@ class LegacyAccountSnapshot:
     save_to_sent: bool
     sent_folder_name: str | None
     tags: tuple[ImapKeywordTag, ...] = ()
+    allowed_mutations: tuple[MutationClass, ...] | None = None
+    drafts_mailbox: str | None = None
 
 
 @dataclass(frozen=True)
@@ -344,6 +356,7 @@ class LegacyPolicySnapshot:
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
+    allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
 
 
 @dataclass(frozen=True)
@@ -355,6 +368,7 @@ class LegacySourceSnapshot:
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
+    allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
 
     @property
     def policy(self) -> LegacyPolicySnapshot:
@@ -364,6 +378,7 @@ class LegacySourceSnapshot:
             allowed_recipients=self.allowed_recipients,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
+            allowed_mutations=self.allowed_mutations,
         )
 
 
@@ -434,6 +449,7 @@ class ManagedCatalogPort(Protocol):
         expected_revision: int,
         enable_attachment_download: bool,
         enable_attachment_content: bool,
+        allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS,
         allowed_recipients: tuple[str, ...],
         allowed_senders: tuple[str, ...],
         report_blocked_mutations: bool,
@@ -459,6 +475,8 @@ class ManagedCatalogPort(Protocol):
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
         tags: tuple[ImapKeywordTag, ...] = (),
+        allowed_mutations: tuple[MutationClass, ...] | None = None,
+        drafts_mailbox: str | None = None,
         expected_revision: int | None = None,
     ) -> str: ...
 
@@ -492,6 +510,10 @@ class ManagedCatalogPort(Protocol):
         sent_folder_name: str | None = None,
         update_sent_folder: bool = False,
         tags: tuple[ImapKeywordTag, ...] | None = None,
+        allowed_mutations: tuple[MutationClass, ...] | None = None,
+        update_allowed_mutations: bool = False,
+        drafts_mailbox: str | None = None,
+        update_drafts_mailbox: bool = False,
     ) -> int: ...
 
     def disable_account(self, name: str, *, expected_revision: int) -> int: ...
@@ -879,6 +901,8 @@ class ManagedAccountService(_ConfiguredCatalogService):
             save_to_sent=command.save_to_sent,
             sent_folder_name=command.sent_folder_name,
             tags=command.tags,
+            allowed_mutations=command.allowed_mutations,
+            drafts_mailbox=command.drafts_mailbox,
             expected_revision=command.expected_catalog_revision,
         )
         incoming = catalog.set_secret(
@@ -937,7 +961,11 @@ class ManagedAccountService(_ConfiguredCatalogService):
             save_to_sent=command.save_to_sent,
             sent_folder_name=command.sent_folder_name,
             update_sent_folder=command.update_sent_folder,
+            update_allowed_mutations=command.update_allowed_mutations,
+            update_drafts_mailbox=command.update_drafts_mailbox,
             tags=command.tags,
+            allowed_mutations=command.allowed_mutations,
+            drafts_mailbox=command.drafts_mailbox,
         )
 
     def disable(self, name: str, *, expected_revision: int) -> int:
@@ -1024,6 +1052,8 @@ class LegacyImportService(_ConfiguredCatalogService):
             and source.incoming == destination.incoming
             and source.outgoing == destination.outgoing
             and source.save_to_sent == destination.save_to_sent
+            and source.allowed_mutations == destination.allowed_mutations
+            and source.drafts_mailbox == destination.drafts_mailbox
             and source.sent_folder_name == destination.sent_folder_name
             and source.tags == destination.tags
         )
@@ -1105,6 +1135,7 @@ class LegacyImportService(_ConfiguredCatalogService):
         policy_matches = (
             policy.enable_attachment_download == source.policy.enable_attachment_download
             and policy.enable_attachment_content == source.policy.enable_attachment_content
+            and policy.allowed_mutations == source.policy.allowed_mutations
             and policy.allowed_recipients == source.policy.allowed_recipients
             and policy.allowed_senders == source.policy.allowed_senders
             and policy.report_blocked_mutations == source.policy.report_blocked_mutations
@@ -1331,6 +1362,8 @@ class LegacyImportService(_ConfiguredCatalogService):
                         outgoing_secret=SecretStr(outgoing_secret) if outgoing_secret is not None else None,
                         save_to_sent=account.save_to_sent,
                         sent_folder_name=account.sent_folder_name,
+                        allowed_mutations=account.allowed_mutations,
+                        drafts_mailbox=account.drafts_mailbox,
                         tags=account.tags,
                     )
                 )
@@ -1444,6 +1477,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                 enable_attachment_download=plan.source_policy.enable_attachment_download,
                 enable_attachment_content=plan.source_policy.enable_attachment_content,
                 allowed_recipients=plan.source_policy.allowed_recipients,
+                allowed_mutations=plan.source_policy.allowed_mutations,
                 allowed_senders=plan.source_policy.allowed_senders,
                 report_blocked_mutations=plan.source_policy.report_blocked_mutations,
             )
@@ -1495,6 +1529,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
         return self._catalog().policy()
 
     def update(self, policy: ManagedPolicy) -> ManagedPolicy:
+        validate_mutations(policy.allowed_mutations)
         if len(policy.allowed_recipients) > APPLICATION_LIMITS.policy_entries:
             raise ManagementError("Managed recipient policy has too many entries")
         if len(policy.allowed_senders) > APPLICATION_LIMITS.policy_entries:
@@ -1524,6 +1559,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             enable_attachment_download=policy.enable_attachment_download,
             enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=recipients,
+            allowed_mutations=policy.allowed_mutations,
             allowed_senders=senders,
             report_blocked_mutations=policy.report_blocked_mutations,
         )
@@ -1532,6 +1568,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             enable_attachment_download=policy.enable_attachment_download,
             enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=recipients,
+            allowed_mutations=policy.allowed_mutations,
             allowed_senders=senders,
             report_blocked_mutations=policy.report_blocked_mutations,
         )

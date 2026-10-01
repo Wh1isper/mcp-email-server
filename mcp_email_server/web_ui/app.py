@@ -413,6 +413,8 @@ async def _create_account(_request: Request, state: LocalUiState, payload: Creat
             outgoing_secret=payload.credentials.outgoing,
             save_to_sent=payload.save_to_sent,
             sent_folder_name=payload.sent_folder_name,
+            allowed_mutations=payload.allowed_mutations,
+            drafts_mailbox=payload.drafts_mailbox,
             tags=payload.tags,
         ),
     )

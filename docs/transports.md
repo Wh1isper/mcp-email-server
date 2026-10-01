@@ -28,6 +28,52 @@ addresses or glob patterns. Quote patterns, for example `--allowed-recipients
 for sending, forwarding, and draft saves; an empty value denies all three.
 Supply the current `--expected-revision` from `config policy`.
 
+### Mutation grants and draft destination
+
+`config update-policy --allowed-mutations` accepts a comma-separated list of
+`draft,organize,delete,send,append`. An empty string sets the global list to `[]`;
+omitting the option preserves the current list. `inherit` is an account-only
+value, not a global grant. Obtain the policy revision with `config policy`:
+
+```bash
+mcp-email-server config update-policy --expected-revision <policy-revision> --allowed-mutations 'draft,organize'
+mcp-email-server config update-policy --expected-revision <policy-revision> --allowed-mutations ''
+```
+
+Both `account add` and `account update` accept `--allowed-mutations` with a CSV
+list (an explicit replacement), `''` (read-only), or `inherit` (global defaults).
+Omitting it on add inherits; omitting it on update leaves the existing override
+unchanged. Neither recipient nor sender policy is replaced by these grants.
+Read-only here means explicit empty grants, not a separate boolean setting.
+
+Both account commands also accept `--drafts-mailbox 'Exact mailbox name'`.
+Omission on add uses special-use Drafts discovery; omission on update preserves
+the current setting. Passing `--drafts-mailbox ''` clears the override and
+restores unique special-use discovery. It never creates or guesses a mailbox.
+
+`account add NAME` takes these options alongside its required `--email`,
+`--full-name`, and `--imap-host` setup fields; it has no `--expected-revision`
+option. `account update NAME` requires the account revision, available from
+`account show NAME --json`, not the global policy revision:
+
+```bash
+mcp-email-server account show work --json
+mcp-email-server account update work --expected-revision <account-revision> --allowed-mutations 'draft' --drafts-mailbox 'Drafts'
+mcp-email-server account update work --expected-revision <account-revision> --allowed-mutations ''
+mcp-email-server account update work --expected-revision <account-revision> --allowed-mutations inherit --drafts-mailbox ''
+```
+
+Use the latest revision for each update; a successful update changes it.
+
+Mail mutation permissions are independent of transport selection. The catalog
+stays static even for read-only accounts. Omitted `allowed_mutations` retains
+all five read/write classes; explicit `[]` blocks writes, including implicit
+mark-read. In legacy mode `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS='draft,organize'`
+selects a global subset and an empty value blocks writes for inheriting accounts.
+Managed policy comes from the catalog, not this environment variable. See
+[configuration](configuration.md#mail-mutation-permissions). Recipientless
+`save_draft` is allowed by `draft`; supplied recipients still require a match.
+
 `mcp-email-server-plugin` is the dedicated plugin entry point. It accepts no
 transport or management command and starts the same bounded stdio server directly.
 Because this entry point is introduced with the mail-only Local Email App V2

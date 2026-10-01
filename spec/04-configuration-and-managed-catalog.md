@@ -169,6 +169,34 @@ least:
 - relevant request/result limits where configurable;
 - sent-copy behavior and safe fallback choices.
 
+### Mutation grants and draft destination
+
+`allowed_mutations` is a list drawn from exactly `draft`, `organize`, `delete`,
+`send`, and `append`. Catalog/global defaults and legacy global settings default
+to all five classes, for both new and existing configurations that omit the
+field. This preserves read/write behavior; omission is not a deny default.
+An account override of `None`/omitted inherits the global list. An explicit
+account list replaces it, never unions with it; `[]` means read-only. An empty
+global list likewise denies mutations for inheriting accounts. Unknown classes
+are invalid. This policy is independent of endpoint capability and recipient,
+sender, attachment, and lifecycle constraints: a grant does not waive them.
+The effect-to-class mapping and Sent-copy exception are owned by spec 07.
+Legacy environment composition accepts global `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`
+and environment-account `MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS` as CSV
+lists, including empty for no grants. The latter applies only to the account
+created/replaced by the environment; omission inherits. `inherit` is a CLI
+sentinel, not an environment grant. `MCP_EMAIL_SERVER_DRAFTS_MAILBOX` sets that
+environment account's exact draft destination; omission selects discovery.
+These overlays do not override managed catalog authority.
+
+`drafts_mailbox` is an optional non-secret account field in managed and legacy
+configuration. When present it names the existing draft mailbox exactly; when
+absent, `save_draft` resolves the unique mailbox advertising the special-use
+`\Drafts` attribute. There is no name guessing, mailbox creation, or arbitrary
+MCP destination parameter for this tool. Missing or ambiguous discovery fails
+with guidance to configure `drafts_mailbox`. The management UI and CLI expose
+these fields without adding a mail composer or mutation route.
+
 Policy updates are revisioned. Recipient entries accept exact addresses (with
 legacy display-name extraction) or bare glob patterns, preserving glob syntax.
 Both are trimmed, lowercased, empty-filtered, and stably deduplicated; sender glob patterns are
@@ -183,8 +211,12 @@ case-insensitive whole-address glob match (`*`, `?`, and bracket expressions,
 as for sender policy). A literal `*` or `*@*` explicitly permits all valid
 recipients for all three operations, not just drafts; no implicit unrestricted
 mode exists. Patterns apply to the extracted address, never the display name.
-An initially empty recipient policy is rejected before opening a provider,
-including before a forward source is read. Permissive changes do not bypass
+An initially empty recipient policy is rejected for recipient-bearing compose
+requests before opening a provider,
+including before a forward source is read. `save_draft` also permits an explicit
+recipientless draft: no To, CC, or BCC addresses means no recipient match is
+required, even with an empty allowlist. Any supplied recipient must match the
+same policy; recipientless permission is not permission to send. Permissive changes do not bypass
 capability or input validation. Restrictive changes take effect on the next
 independent effect because authority is revalidated at operation boundaries.
 
@@ -355,6 +387,13 @@ provider connectivity. Results expose categories and remediation, never values,
 SQL, raw provider responses, or reusable locators.
 
 ## Acceptance Criteria
+
+- Omitted mutation settings preserve all five grants for new and old managed and
+  legacy configurations; account null/omission inherits, explicit lists replace,
+  and explicit empty lists are read-only. Persistence/import and CLI/UI preserve
+  this distinction and reject unknown classes.
+- Account draft destinations round-trip in managed and legacy mode; recipientless
+  `save_draft` and recipient-bearing allowlist enforcement remain distinct.
 
 1. Missing bootstrap retains only the historical implicit-legacy rule; explicit
    managed selection fails closed with no fallback.

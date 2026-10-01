@@ -32,7 +32,7 @@ test('reload resumes a cookie session and opens progressively disclosed settings
   expect(screen.getByText('Sending & attachment safety')).toBeInTheDocument()
   expect(screen.getByText('Troubleshooting')).toBeInTheDocument()
   expect(api.previewImport).not.toHaveBeenCalled()
-  expect(api.policy).not.toHaveBeenCalled()
+  expect(api.policy).toHaveBeenCalledOnce() // Account permissions load global defaults; the settings editor stays closed.
 })
 
 test('logout invalidates the UI session and removes settings controls', async () => {

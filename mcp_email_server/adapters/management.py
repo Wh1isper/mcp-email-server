@@ -28,6 +28,7 @@ from mcp_email_server.application.management import (
     SecretSourceClass,
     validate_endpoint,
 )
+from mcp_email_server.application.mutation_policy import DEFAULT_ALLOWED_MUTATIONS, parse_mutations, validate_mutations
 from mcp_email_server.bootstrap import (
     BootstrapError,
     BootstrapRevisionError,
@@ -264,6 +265,8 @@ class LocalManagementBackend:
             outgoing_secret_source=outgoing_source,
             save_to_sent=account.save_to_sent,
             sent_folder_name=account.sent_folder_name,
+            allowed_mutations=tuple(account.allowed_mutations) if account.allowed_mutations is not None else None,
+            drafts_mailbox=account.drafts_mailbox,
             tags=account.tags,
         )
         cls._validate_legacy_account_snapshot(snapshot)
@@ -372,6 +375,18 @@ class LocalManagementBackend:
                 imap_password=_PREVIEW_REDACTED,
                 save_to_sent=cls._bool_environment("MCP_EMAIL_SERVER_SAVE_TO_SENT", True),
                 sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
+                drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
+                allowed_mutations=(
+                    list(
+                        parse_mutations([
+                            item.strip()
+                            for item in os.environ["MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS"].split(",")
+                            if item.strip()
+                        ])
+                    )
+                    if "MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS" in os.environ
+                    else None
+                ),
             )
         except (ValidationError, ValueError, TypeError) as exc:
             raise ManagementError("Effective legacy environment account is invalid") from exc
@@ -417,6 +432,13 @@ class LocalManagementBackend:
         except (ValidationError, ValueError) as exc:
             raise ManagementError("Stored legacy provider accounts are invalid") from exc
 
+        mutations = raw.get("allowed_mutations", list(DEFAULT_ALLOWED_MUTATIONS))
+        env_mutations = os.getenv("MCP_EMAIL_SERVER_ALLOWED_MUTATIONS")
+        if env_mutations is not None:
+            mutations = [value.strip() for value in env_mutations.split(",") if value.strip()]
+        if not isinstance(mutations, list):
+            raise ManagementError("Stored legacy mutation policy is invalid")
+        validate_mutations(mutations)
         recipients = raw.get("allowed_recipients", [])
         senders = raw.get("allowed_senders", [])
         attachment_download = raw.get("enable_attachment_download", False)
@@ -477,6 +499,7 @@ class LocalManagementBackend:
             enable_attachment_download=attachment_download,
             enable_attachment_content=attachment_content,
             allowed_recipients=tuple(normalized_recipients),
+            allowed_mutations=parse_mutations(mutations),
             allowed_senders=tuple(normalized_senders),
             report_blocked_mutations=report_blocked,
         )

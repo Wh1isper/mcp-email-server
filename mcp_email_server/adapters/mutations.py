@@ -1,25 +1,28 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.policy import SMTP as SMTP_POLICY
 from email.policy import SMTPUTF8 as SMTPUTF8_POLICY
+from email.utils import getaddresses
 from pathlib import Path
 from typing import TypeVar
 
 from mcp_email_server.adapters.authority import resolve_local_account
 from mcp_email_server.application.management import BindingRole
 from mcp_email_server.application.metadata import RuntimeMode
+from mcp_email_server.application.mutation_policy import MutationClass, require_mutation
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     BatchMutationOutcome,
     ComposeCommand,
     DeleteCommand,
     DeliveryMutationOutcome,
+    DraftAppendCommand,
     ForwardCommand,
     ForwardSource,
     ForwardSourcePart,
@@ -35,6 +38,7 @@ from mcp_email_server.application.mutations import (
     SentCopyMutationOutcome,
     SetEmailFlagsCommand,
     SetEmailTagsCommand,
+    _validate_recipient_policy,
 )
 from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ClassicEmailHandler, _validate_flags
@@ -72,14 +76,48 @@ class _ResolvedMutationAccount:
 class ClassicMutationProvider:
     """Adapt classic SMTP/IMAP primitives to effect-aware mutation ports."""
 
-    def __init__(self, handler: ClassicEmailHandler) -> None:
+    def __init__(
+        self, handler: ClassicEmailHandler, fresh_authority: Callable[[], MutationAccountSnapshot] | None = None
+    ) -> None:
         self._handler = handler
+        self._fresh_authority = fresh_authority
+
+    def _guard(
+        self,
+        account: MutationAccountSnapshot,
+        grant: MutationClass,
+        command: ComposeCommand | None = None,
+        *,
+        check_tags: bool = False,
+    ) -> None:
+        def check() -> None:
+            try:
+                current = self._fresh_authority() if self._fresh_authority is not None else account
+            except (ValueError, RuntimeError) as exc:
+                raise PermissionError("Mutation account authority is unavailable; retry") from exc
+            require_mutation(current.allowed_mutations, grant)
+            if (
+                grant in ("organize", "delete") or isinstance(command, ForwardCommand)
+            ) and current.allowed_senders != account.allowed_senders:
+                raise PermissionError("Mutation sender policy changed; retry")
+            if check_tags and current.tag_registry != account.tag_registry:
+                raise PermissionError("Mutation tag policy changed; retry")
+            if command is not None and self._fresh_authority is not None:
+                _validate_recipient_policy(command, current)
+            if grant == "draft" and current.drafts_mailbox != account.drafts_mailbox:
+                raise PermissionError("Draft mailbox authority changed; retry")
+
+        check()
+        self._handler.incoming_client.mutation_guard = check
+        if self._handler.outgoing_client is not None:
+            self._handler.outgoing_client.mutation_guard = check
 
     async def set_flags(
         self,
         command: SetEmailFlagsCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome:
+        self._guard(account, "organize")
         return await _bounded_mutation_call(
             self._handler.incoming_client.set_email_flags_with_outcome(
                 list(command.email_ids),
@@ -96,6 +134,7 @@ class ClassicMutationProvider:
         command: SetEmailTagsCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome:
+        self._guard(account, "organize", check_tags=True)
         return await _bounded_mutation_call(
             self._handler.incoming_client.set_email_tags_with_outcome(
                 list(command.email_ids),
@@ -112,7 +151,7 @@ class ClassicMutationProvider:
         command: SaveToMailboxCommand,
         account: MutationAccountSnapshot,
     ) -> AppendMutationOutcome:
-        del account
+        self._guard(account, "draft" if isinstance(command, DraftAppendCommand) else "append", command)
         message = self._handler.incoming_client.compose_message(
             list(command.recipients),
             command.subject,
@@ -140,6 +179,7 @@ class ClassicMutationProvider:
         command: DeleteCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome:
+        self._guard(account, "delete")
         return await _bounded_mutation_call(
             self._handler.incoming_client.delete_emails_with_outcome(
                 list(command.email_ids),
@@ -154,6 +194,7 @@ class ClassicMutationProvider:
         command: MoveCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome:
+        self._guard(account, "organize")
         return await _bounded_mutation_call(
             self._handler.incoming_client.move_emails_with_outcome(
                 list(command.email_ids),
@@ -163,6 +204,18 @@ class ClassicMutationProvider:
                 account.report_blocked_mutations,
             )
         )
+
+    async def find_drafts_mailbox(self) -> str:
+        mailboxes = await _bounded_mutation_call(self._handler.incoming_client.list_mailboxes())
+        drafts = [
+            mailbox.name
+            for mailbox in mailboxes
+            if any(flag.casefold() == r"\drafts" for flag in mailbox.flags)
+            and not any(flag.casefold() == r"\noselect" for flag in mailbox.flags)
+        ]
+        if len(drafts) != 1:
+            raise ValueError("Configure drafts_mailbox or provide exactly one special-use Drafts mailbox")
+        return drafts[0]
 
     async def find_archive_mailbox(self, source_mailbox: str) -> str:
         archive_mailbox = await _bounded_mutation_call(self._handler._find_archive_folder())
@@ -208,7 +261,7 @@ class ClassicMutationProvider:
         command: SendCommand,
         account: MutationAccountSnapshot,
     ) -> DeliveryMutationOutcome:
-        del account
+        self._guard(account, "send", command)
         return await self._submit(command, reply_to=command.reply_to)
 
     async def _read_forward_source(
@@ -253,6 +306,7 @@ class ClassicMutationProvider:
         source: ForwardSource,
         account: MutationAccountSnapshot,
     ) -> DeliveryMutationOutcome:
+        self._guard(account, "send", command)
         del account
         extra_parts: list[Message] = []
         for part in source.parts:
@@ -273,6 +327,20 @@ class ClassicMutationProvider:
             return SentCopyMutationOutcome("skipped")
         if not isinstance(sent_message, (MIMEText, MIMEMultipart)):
             raise MutationProviderError("provider_failure: sent message evidence is invalid")
+        if self._fresh_authority is not None:
+            try:
+                account = self._fresh_authority()
+            except (ValueError, RuntimeError) as exc:
+                raise PermissionError("Mutation account authority is unavailable; retry") from exc
+            recipients = (
+                tuple(
+                    address
+                    for _, address in getaddresses([*sent_message.get_all("To", []), *sent_message.get_all("Cc", [])])
+                )
+                + bcc
+            )
+            evidence = SendCommand(account.account_name, recipients, "Sent copy", "Sent copy")
+            self._guard(account, "send", evidence)
         # BCC belongs only in the local copy and must be added after SMTP submission.
         if bcc and sent_message["Bcc"] is None:
             sent_message["Bcc"] = ", ".join(bcc)
@@ -329,6 +397,12 @@ class LocalMutationBackend:
                 # Endpoint presence is authority metadata, not a secret: resolving
                 # it here does not read any outgoing credential.
                 can_send=resolved.account.can_send,
+                allowed_mutations=tuple(
+                    resolved.settings.allowed_mutations
+                    if resolved.account.allowed_mutations is None
+                    else resolved.account.allowed_mutations
+                ),
+                drafts_mailbox=resolved.account.drafts_mailbox,
             ),
         )
 
@@ -349,9 +423,13 @@ class LocalMutationBackend:
     ) -> MutationProviderAccess:
         roles: tuple[BindingRole, ...] = ("outgoing",) if purpose == "outgoing" else ("incoming",)
         resolved = self._resolve(account_name, roles=roles, expected_mode=expected_mode)
+        handler = ClassicEmailHandler(resolved.account)
+        provider = ClassicMutationProvider(handler, lambda: self.resolve(account_name, expected_mode=expected_mode))
+        if purpose == "sent-copy":
+            provider._guard(resolved.snapshot, "send")
         return MutationProviderAccess(
             account=resolved.snapshot,
-            provider=ClassicMutationProvider(ClassicEmailHandler(resolved.account)),
+            provider=provider,
         )
 
     async def open_projection(self, account: MutationAccountSnapshot) -> MutationProjection:

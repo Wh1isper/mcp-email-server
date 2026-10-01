@@ -3,6 +3,7 @@ import { Plus, Save, Trash2 } from 'lucide-react'
 
 import type { ManagementApi } from '../api'
 import type { CatalogTarget, ManagedPolicy } from '../types'
+import { grantSummary, MutationGrants } from './MutationGrants'
 import { ConflictNotice, errorMessage, StatusMessage } from './Feedback'
 
 function ItemEditor({
@@ -115,13 +116,16 @@ export function PolicyPanel({ api, target, onRevision }: { api: ManagementApi; t
           } catch (caught) { setError(caught) } finally { setBusy(false) }
         })()
       }}>
+        <MutationGrants id="global-grants" value={policy.allowed_mutations} onChange={(grants) => setPolicy({ ...policy, allowed_mutations: grants })} />
+        <p className="hint">Global permissions: {grantSummary(policy.allowed_mutations)}.</p>
+        <p className="hint">Global defaults apply to accounts that inherit. Account overrides replace this list; an explicit empty account list remains read-only regardless of global defaults.</p>
         <div className="item-editor-grid">
           <ItemEditor
             id="allowed-recipients"
             title="Allowed recipients"
             itemLabel="Recipient"
             addLabel="Add recipient"
-            help="Add addresses or glob patterns such as *@example.com. * allows all recipients for sending, forwarding, and drafts. Empty disables these operations."
+            help="Add addresses or glob patterns such as *@example.com. * allows all recipients for sending, forwarding, and drafts. Empty blocks sending and any supplied draft recipients; recipientless drafts remain allowed."
             values={recipients}
             onChange={setRecipients}
           />

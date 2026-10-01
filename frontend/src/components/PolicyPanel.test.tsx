@@ -16,6 +16,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
     allowed_recipients: ['first@example.test'],
     allowed_senders: ['*@example.test'],
     report_blocked_mutations: false,
+    allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
   })
   vi.mocked(api.updatePolicy).mockImplementation((policy) => Promise.resolve({ ...policy, revision: 5 }))
   render(<PolicyPanel api={api} target={target} />)
@@ -43,6 +44,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
     allowed_recipients: ['*@example.test'],
     allowed_senders: ['*@example.test', 'alerts@example.test'],
     report_blocked_mutations: false,
+    allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
   }, target))
   expect(await screen.findByText('Safety settings saved.')).toBeVisible()
 })
@@ -51,8 +53,21 @@ test('explains the distinct empty-list behavior', async () => {
   const api = createMockApi()
   render(<PolicyPanel api={api} target={target} />)
 
-  expect(await screen.findByText(/Empty disables these operations/)).toBeVisible()
+  expect(await screen.findByText(/Empty blocks sending and any supplied draft recipients/)).toBeVisible()
   expect(screen.getByText(/\* allows all recipients for sending, forwarding, and drafts/)).toBeVisible()
   expect(screen.getByText(/Empty means all senders may be read/)).toBeVisible()
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+})
+
+test('global grant edits persist the list, not a separate preset policy', async () => {
+  const user = userEvent.setup()
+  const api = createMockApi()
+  vi.mocked(api.updatePolicy).mockImplementation((policy) => Promise.resolve({ ...policy, revision: 2 }))
+  render(<PolicyPanel api={api} target={target} />)
+  const preset = await screen.findByLabelText('Permission preset')
+  expect(preset).toHaveValue('read-write')
+  await user.selectOptions(preset, 'organizer')
+  await user.click(screen.getByRole('button', { name: 'Save safety settings' }))
+  await waitFor(() => expect(api.updatePolicy).toHaveBeenCalledWith(expect.objectContaining({ allowed_mutations: ['draft', 'organize'] }), target))
+  expect(vi.mocked(api.updatePolicy).mock.calls[0]?.[0]).not.toHaveProperty('preset')
 })

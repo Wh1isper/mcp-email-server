@@ -24,6 +24,12 @@ from pydantic_settings import (
 
 from mcp_email_server import keyring_store
 from mcp_email_server.application.limits import APPLICATION_LIMITS
+from mcp_email_server.application.mutation_policy import (
+    DEFAULT_ALLOWED_MUTATIONS,
+    MutationClass,
+    parse_mutations,
+    validate_mutations,
+)
 from mcp_email_server.bootstrap import (
     Bootstrap,
     Mode,
@@ -312,9 +318,17 @@ class EmailSettings(AccountAttributes):
     save_to_sent: bool = True  # Save sent emails to IMAP Sent folder
     sent_folder_name: str | None = None  # Override Sent folder name (auto-detect if None)
     tags: tuple[ImapKeywordTag, ...] = ()
+    allowed_mutations: list[MutationClass] | None = None
+    drafts_mailbox: str | None = None
 
     @model_validator(mode="after")
     def validate_tags(self) -> EmailSettings:
+        if self.allowed_mutations is not None:
+            validate_mutations(self.allowed_mutations)
+        if self.drafts_mailbox is not None:
+            from mcp_email_server.application.mutations import validate_mailbox_name
+
+            validate_mailbox_name(self.drafts_mailbox)
         ImapKeywordAccount(tags=self.tags)
         return self
 
@@ -348,6 +362,8 @@ class EmailSettings(AccountAttributes):
         smtp_password: str | None = None,
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
+        allowed_mutations: list[MutationClass] | None = None,
+        drafts_mailbox: str | None = None,
     ) -> EmailSettings:
         for candidate in (password, imap_password, smtp_password):
             if candidate == keyring_store.SENTINEL:
@@ -385,6 +401,8 @@ class EmailSettings(AccountAttributes):
             ),
             save_to_sent=save_to_sent,
             sent_folder_name=sent_folder_name,
+            allowed_mutations=allowed_mutations,
+            drafts_mailbox=drafts_mailbox,
         )
 
     @classmethod
@@ -452,6 +470,18 @@ class EmailSettings(AccountAttributes):
                 imap_password=os.getenv("MCP_EMAIL_SERVER_IMAP_PASSWORD", password),
                 save_to_sent=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),
                 sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
+                drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
+                allowed_mutations=(
+                    list(
+                        parse_mutations([
+                            item.strip()
+                            for item in os.environ["MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS"].split(",")
+                            if item.strip()
+                        ])
+                    )
+                    if "MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS" in os.environ
+                    else None
+                ),
             )
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to create email settings from environment variables: {e}")
@@ -491,6 +521,7 @@ class Settings(BaseSettings):
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
     enable_attachment_content: bool = False
+    allowed_mutations: list[MutationClass] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_MUTATIONS))
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
     report_blocked_mutations: bool = False
@@ -533,6 +564,7 @@ class Settings(BaseSettings):
 
         # TOML normalisation is unconditional (safe during migration loads too): it
         # only reshapes values already in the file, independent of env state.
+        validate_mutations(self.allowed_mutations)
         if self.allowed_recipients:
             self.allowed_recipients = normalize_recipient_patterns(self.allowed_recipients)
         if self.allowed_senders:
@@ -568,6 +600,12 @@ class Settings(BaseSettings):
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
         )
+        raw_mutations = os.getenv("MCP_EMAIL_SERVER_ALLOWED_MUTATIONS")
+        if raw_mutations is not None:
+            self.allowed_mutations = list(
+                parse_mutations([value.strip() for value in raw_mutations.split(",") if value.strip()])
+            )
+        validate_mutations(self.allowed_mutations)
         self._inject_env_account()
 
     def _inject_env_account(self) -> None:

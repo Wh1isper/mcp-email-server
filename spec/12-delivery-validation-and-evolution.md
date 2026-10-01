@@ -33,7 +33,25 @@ before release.
 | agent integration and safe setup handoff           | 11                     | Codex/Claude Code install fixtures, scenario, drift, and no-secret tests                        |
 | release artifacts and container delivery           | 12                     | exact source/version, restricted image, raw stdio, multi-platform, and publication gates        |
 
-### Checked Delivery References
+### Mutation-class policy delivery gate
+
+This accepted alternative to #209 is not declared shipped by this specification.
+Before release, link concrete implementation and verification for:
+
+| Contract                                                                                                     | Owner  | Implementation/doc surfaces                                                                                           | Required verification                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed-five read/write defaults for new and old settings; global/account inheritance and explicit replacement | 04     | `config.py`, `application/accounts.py`, catalog/import, `cli.py`, frontend grant editors; configuration/security docs | omitted/null/empty/subset/unknown cases, round-trip and legacy/managed parity                                                                |
+| Optional account draft destination                                                                           | 04     | account DTO/persistence/editor; configuration/getting-started docs                                                    | configured exact name and unique special-use discovery; missing/ambiguous mailbox failure without creation/guessing                          |
+| Effect grants and fresh checks                                                                               | 07     | mutation service/provider adapters; tools/security docs                                                               | every class and explicit/implicit mark-read; revocation at independent effects; sender/recipient constraints; no bare expunge under organize |
+| Independent draft tool and common MIME APPEND                                                                | 07, 10 | `app.py`, `application/mutations.py`, `adapters/mutations.py`, shared MIME append; tools/guides docs                  | static complete catalog, no draft mailbox/flags inputs, recipientless and supplied-recipient cases, MIME/UTF-8/attachments/APPEND ambiguity  |
+| Narrow successful-message Sent copy under send, not append                                                   | 07     | `application/mutations.py`, `adapters/mutations.py`; tools/security docs                                              | send-only copy succeeds, failed/unknown SMTP has no copy, revoke send before copy, copy failure preserves SMTP success                       |
+| Management convenience and parity                                                                            | 09     | CLI/UI; transports/troubleshooting docs                                                                               | inheritance vs explicit empty editor and conflict handling; documented CLI fields match implemented options                                  |
+
+Unit, catalog-contract, frontend, strict documentation, and GreenMail checks must
+be recorded by the integrating reviewer. This table states required evidence,
+not an assertion that those checks have passed.
+
+## Checked Delivery References
 
 The following checked-in matrix records evidence for this implementation branch;
 it is not a claim about an already released version. An acceptance-ID range

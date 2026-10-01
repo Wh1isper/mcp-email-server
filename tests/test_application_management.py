@@ -709,6 +709,7 @@ def test_import_with_unsupported_provider_keeps_legacy_selected() -> None:
     assert report.mode == "legacy"
     assert report.restart_required is False
     catalog.update_policy.assert_called_once_with(
+        allowed_mutations=("draft", "organize", "delete", "send", "append"),
         expected_revision=5,
         enable_attachment_download=False,
         enable_attachment_content=True,
@@ -893,6 +894,7 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
     assert result.allowed_recipients == ("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test")
     assert result.allowed_senders == ("*@example.test",)
     catalog.update_policy.assert_called_once_with(
+        allowed_mutations=("draft", "organize", "delete", "send", "append"),
         expected_revision=7,
         enable_attachment_download=True,
         enable_attachment_content=True,

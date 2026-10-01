@@ -15,12 +15,34 @@ MCP_EMAIL_SERVER_LOG_LEVEL=DEBUG mcp-email-server stdio
 
 Restart the server after changing configuration paths or environment variables.
 
+## A mail write is denied by mutation policy
+
+Check global `allowed_mutations` and the account override. Omission/null on an
+account inherits; an explicit list replaces the defaults; `[]` is read-only.
+Omitted global settings enable all five classes for existing and fresh setups.
+Choose only the needed classes in the policy/account editors. Adding SMTP does
+not grant `send`, and setting recipients does not grant any mutation class.
+Tools remain visible even when their calls are denied. See the
+[effect mapping](tools.md#mail-mutation-permissions). For a read-only account,
+read bodies without `mark_as_read=true`.
+
+## Draft mailbox is missing or ambiguous
+
+`save_draft` uses the account's `drafts_mailbox` or a unique special-use
+`\Drafts` mailbox. If none or several advertise that attribute, use
+`list_mailboxes` and set the exact existing name in account configuration. The
+tool does not guess `Drafts`, create a mailbox, or accept a caller destination
+or flag list. It requires `draft`; general `save_to_mailbox` requires `append`.
+For a draft without recipients, pass an explicit empty recipient list. If any
+To/CC/BCC addresses are supplied, all must match the recipient allowlist.
+
 ## Recipient allowlist errors
 
 If sending or saving reports `Recipient(s) not in allowlist`, check that every
 To, CC, and BCC address matches an entry in `allowed_recipients`. An empty list
 blocks `send_email`, `forward_email`, and `save_to_mailbox`, even when SMTP or
-IMAP credentials work. This applies in both managed and legacy mode. Earlier
+IMAP credentials work. Recipientless `save_draft` is permitted when the account
+has `draft`; supplied draft recipients still require a match. This applies in both managed and legacy mode. Earlier
 implementations incorrectly allowed any recipient for an empty list; see the
 [upgrade note](security.md#recipient-policy-upgrade-note).
 

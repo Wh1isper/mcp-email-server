@@ -1069,6 +1069,104 @@ async def test_recipient_globs_against_greenmail(tmp_path: Path, pattern: str) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("grants", [None, [], ["draft"], ["send"]])
+async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants: list[str] | None) -> None:
+    """Keep read/write defaults while account restrictions govern real effects."""
+    _wait_until_ready()
+    _ensure_empty_mailboxes(ALICE, ["INBOX", "Drafts", "Sent"])
+    _ensure_empty_mailboxes(BOB, ["INBOX"])
+    subject = f"mutation-grants-{uuid.uuid4().hex}"
+    _seed_message_as(BOB, ALICE[0], subject, "Synthetic source")
+    source = _wait_for_message(ALICE, "INBOX", subject)
+    account_fields = 'drafts_mailbox = "Drafts"\n'
+    if grants is not None:
+        account_fields += f"allowed_mutations = {json.dumps(grants)}\n"
+    config = CONFIG_TEMPLATE.replace('account_name = "alice"\n', f'account_name = "alice"\n{account_fields}')
+    # A non-empty account override replaces even a read-only global policy.
+    if grants is not None:
+        config = "allowed_mutations = []\n" + config
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(config)
+    config_path.chmod(0o600)
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+    })
+    server = StdioServerParameters(
+        command=str(Path(sys.executable).with_name("mcp-email-server")),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream, read_timeout_seconds=timedelta(seconds=15)) as session:
+            await session.initialize()
+            tool_names = {tool.name for tool in (await session.list_tools()).tools}
+            assert {"save_draft", "save_to_mailbox", "send_email", "set_email_flags"} <= tool_names
+            assert (await _metadata_for_subject(session, "alice", subject))["email_id"] == source.uid
+
+            draft_subject = f"draft-{subject}"
+            draft = await session.call_tool(
+                "save_draft",
+                arguments={"account_name": "alice", "subject": draft_subject, "body": "Recipientless draft"},
+            )
+            if grants is None or "draft" in grants:
+                assert draft.isError is not True, _text_content(draft)
+                observed = _wait_for_message(ALICE, "Drafts", draft_subject)
+                assert r"\Draft" in observed.flags
+                assert observed.message.get("To") is None
+            else:
+                assert draft.isError is True
+                assert _find_message(ALICE, "Drafts", draft_subject) is None
+
+            send_subject = f"send-{subject}"
+            sent = await session.call_tool(
+                "send_email",
+                arguments={
+                    "account_name": "alice",
+                    "recipients": [BOB[0]],
+                    "subject": send_subject,
+                    "body": "A send-only grant also permits this Sent copy",
+                },
+            )
+            if grants is None or "send" in grants:
+                assert sent.isError is not True, _text_content(sent)
+                _wait_for_message(BOB, "INBOX", send_subject)
+                _wait_for_message(ALICE, "Sent", send_subject)
+            else:
+                assert sent.isError is True
+                assert _find_message(BOB, "INBOX", send_subject) is None
+                assert _find_message(ALICE, "Sent", send_subject) is None
+
+            append_subject = f"append-{subject}"
+            appended = await session.call_tool(
+                "save_to_mailbox",
+                arguments={
+                    "account_name": "alice",
+                    "recipients": [BOB[0]],
+                    "subject": append_subject,
+                    "body": "General append",
+                    "mailbox": "INBOX",
+                },
+            )
+            marked = await session.call_tool(
+                "set_email_flags",
+                arguments={"account_name": "alice", "email_ids": [source.uid], "operation": "add", "flags": [r"\Seen"]},
+            )
+            if grants is None:
+                assert appended.isError is not True, _text_content(appended)
+                _wait_for_message(ALICE, "INBOX", append_subject)
+                assert marked.isError is not True, _text_content(marked)
+                assert r"\Seen" in _wait_for_message(ALICE, "INBOX", subject).flags
+            else:
+                assert appended.isError is True
+                assert marked.isError is True
+                assert _find_message(ALICE, "INBOX", append_subject) is None
+                assert r"\Seen" not in _wait_for_message(ALICE, "INBOX", subject).flags
+
+
+@pytest.mark.asyncio
 async def test_current_stdio_server_against_greenmail(tmp_path: Path) -> None:
     """Exercise the current public MCP/CLI/config boundary against real mail sockets."""
     _wait_until_ready()

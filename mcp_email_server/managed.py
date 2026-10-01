@@ -35,6 +35,7 @@ from mcp_email_server.application.management import (
     ManagementError,
     RevisionConflictError,
 )
+from mcp_email_server.application.mutation_policy import DEFAULT_ALLOWED_MUTATIONS, MutationClass, validate_mutations
 from mcp_email_server.config import EmailServer, EmailSettings, Settings
 from mcp_email_server.imap_keywords import ImapKeywordAccount, ImapKeywordTag
 from mcp_email_server.log import logger
@@ -49,12 +50,34 @@ from mcp_email_server.windows_security import (
     windows_security_supported,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _MIGRATION_SOURCE_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
 MAX_CREDENTIAL_CLEANUP_ROWS = APPLICATION_LIMITS.credential_cleanup_rows
+
+
+def _validate_account_mutation_policy(
+    allowed_mutations: tuple[MutationClass, ...] | None, drafts_mailbox: str | None
+) -> None:
+    if allowed_mutations is not None:
+        validate_mutations(allowed_mutations)
+    if drafts_mailbox is not None:
+        from mcp_email_server.application.mutations import validate_mailbox_name
+
+        validate_mailbox_name(drafts_mailbox)
+
+
+def _parse_mutations_json(raw: str) -> tuple[MutationClass, ...]:
+    try:
+        value = json.loads(raw)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError("invalid grants")  # noqa: TRY301
+        validate_mutations(value)
+        return tuple(value)
+    except (ValueError, TypeError) as exc:
+        raise ManagedCatalogError("Managed mutation policy is invalid") from exc
 
 
 def _normalize_account_name(name: str) -> str:
@@ -102,6 +125,8 @@ class _ManagedAuthoritySnapshot:
     save_to_sent: bool
     sent_folder_name: str | None
     tags: tuple[ImapKeywordTag, ...]
+    allowed_mutations: tuple[MutationClass, ...] | None
+    drafts_mailbox: str | None
     incoming: EndpointSummary
     outgoing: EndpointSummary | None
     binding_ids: tuple[tuple[BindingRole, str], ...]
@@ -659,7 +684,13 @@ ALTER TABLE managed_account
 """
 
 _SCHEMA_V3 = _AUTHORITY_SCHEMA + _OPERATIONAL_SCHEMA
-_SCHEMA = _AUTHORITY_SCHEMA + _SCHEMA_V4_ADDITIONS + _OPERATIONAL_SCHEMA
+_SCHEMA_V4 = _AUTHORITY_SCHEMA + _SCHEMA_V4_ADDITIONS + _OPERATIONAL_SCHEMA
+_SCHEMA_V5_ADDITIONS = """
+ALTER TABLE catalog ADD COLUMN allowed_mutations_json TEXT NOT NULL DEFAULT '["draft","organize","delete","send","append"]';
+ALTER TABLE managed_account ADD COLUMN allowed_mutations_json TEXT;
+ALTER TABLE managed_account ADD COLUMN drafts_mailbox TEXT;
+"""
+_SCHEMA = _SCHEMA_V4 + _SCHEMA_V5_ADDITIONS
 _OPERATIONAL_DATABASE_SCHEMA = (
     """
 CREATE TABLE schema_metadata (
@@ -819,6 +850,8 @@ class ManagedCatalog:
             raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
         if version == SCHEMA_VERSION:
             _validate_managed_schema(connection, _SCHEMA)
+        elif version == 4:
+            _validate_managed_schema(connection, _SCHEMA_V4)
         elif version == _MIGRATION_SOURCE_VERSION:
             _validate_managed_schema(connection, _SCHEMA_V3)
         else:
@@ -826,7 +859,7 @@ class ManagedCatalog:
         return version
 
     @staticmethod
-    def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    def _migrate_to_current_schema(connection: sqlite3.Connection) -> None:
         connection.execute("BEGIN IMMEDIATE")
         try:
             version = _read_schema_version(connection)
@@ -835,14 +868,19 @@ class ManagedCatalog:
                 _validate_managed_invariants(connection)
                 connection.commit()
                 return
-            _require_migration_source(version)
-            _validate_managed_schema(connection, _SCHEMA_V3)
-            _execute_schema(connection, _SCHEMA_V4_ADDITIONS)
+            if version == 3:
+                _validate_managed_schema(connection, _SCHEMA_V3)
+                _execute_schema(connection, _SCHEMA_V4_ADDITIONS)
+            elif version == 4:
+                _validate_managed_schema(connection, _SCHEMA_V4)
+            else:
+                _require_migration_source(version)
+            _execute_schema(connection, _SCHEMA_V5_ADDITIONS)
             _validate_managed_schema(connection, _SCHEMA)
             _validate_managed_invariants(connection)
             updated = connection.execute(
                 "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?",
-                (SCHEMA_VERSION, _MIGRATION_SOURCE_VERSION),
+                (SCHEMA_VERSION, version),
             )
             _require_migration_update(updated)
             connection.commit()
@@ -855,8 +893,8 @@ class ManagedCatalog:
         with _connect(self.path, enable_wal=False) as connection:
             version = self._preflight_schema_ownership(connection)
         with _connect(self.path) as connection:
-            if version == _MIGRATION_SOURCE_VERSION:
-                self._migrate_v3_to_v4(connection)
+            if version in (3, 4):
+                self._migrate_to_current_schema(connection)
             self._validate_schema(connection)
             yield connection
 
@@ -929,6 +967,7 @@ class ManagedCatalog:
             enable_attachment_download=bool(row["enable_attachment_download"]),
             enable_attachment_content=bool(row["enable_attachment_content"]),
             allowed_recipients=tuple(allowed_recipients),
+            allowed_mutations=_parse_mutations_json(row["allowed_mutations_json"]),
             allowed_senders=tuple(allowed_senders),
             report_blocked_mutations=bool(row["report_blocked_mutations"]),
         )
@@ -949,7 +988,9 @@ class ManagedCatalog:
         allowed_senders: tuple[str, ...],
         report_blocked_mutations: bool,
         enable_attachment_content: bool = False,
+        allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS,
     ) -> int:
+        validate_mutations(allowed_mutations)
         if expected_revision < 1:
             raise ManagedCatalogError("Expected catalog revision must be positive")
         if any(not item.strip() for item in (*allowed_recipients, *allowed_senders)):
@@ -967,7 +1008,8 @@ class ManagedCatalog:
                        enable_attachment_content = ?,
                        allowed_recipients_json = ?,
                        allowed_senders_json = ?,
-                       report_blocked_mutations = ?
+                       report_blocked_mutations = ?,
+                       allowed_mutations_json = ?
                    WHERE id = 'local' AND revision = ?""",
                 (
                     int(enable_attachment_download),
@@ -975,6 +1017,7 @@ class ManagedCatalog:
                     json.dumps(list(allowed_recipients)),
                     json.dumps(list(allowed_senders)),
                     int(report_blocked_mutations),
+                    json.dumps(allowed_mutations),
                     expected_revision,
                 ),
             )
@@ -995,8 +1038,11 @@ class ManagedCatalog:
         save_to_sent: bool = True,
         sent_folder_name: str | None = None,
         tags: tuple[ImapKeywordTag, ...] = (),
+        allowed_mutations: tuple[MutationClass, ...] | None = None,
+        drafts_mailbox: str | None = None,
         expected_revision: int | None = None,
     ) -> str:
+        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
         if not name.strip() or not full_name.strip() or not email_address.strip():
             raise ManagedCatalogError("Account name, full name, and email address are required")
         account_id = uuid.uuid4().hex
@@ -1045,6 +1091,14 @@ class ManagedCatalog:
                         int(save_to_sent),
                         sent_folder_name,
                         json.dumps([tag.model_dump(mode="json") for tag in validated_tags]),
+                    ),
+                )
+                connection.execute(
+                    "UPDATE managed_account SET allowed_mutations_json = ?, drafts_mailbox = ? WHERE id = ?",
+                    (
+                        json.dumps(allowed_mutations) if allowed_mutations is not None else None,
+                        drafts_mailbox,
+                        account_id,
                     ),
                 )
                 self._insert_endpoint(connection, account_id, "incoming", incoming)
@@ -1351,6 +1405,10 @@ class ManagedCatalog:
             save_to_sent=bool(account["save_to_sent"]),
             sent_folder_name=account["sent_folder_name"],
             tags=_parse_tags_json(account["tags_json"]),
+            allowed_mutations=_parse_mutations_json(account["allowed_mutations_json"])
+            if account["allowed_mutations_json"] is not None
+            else None,
+            drafts_mailbox=account["drafts_mailbox"],
             incoming=incoming,
             outgoing=endpoints.get("outgoing"),
             incoming_binding=bindings.get("incoming", "MISSING"),
@@ -1378,7 +1436,7 @@ class ManagedCatalog:
                 reason="account_name_exists",
             )
 
-    def update_account(
+    def update_account(  # noqa: C901 - one bounded optimistic transaction
         self,
         name: str,
         *,
@@ -1393,7 +1451,12 @@ class ManagedCatalog:
         sent_folder_name: str | None = None,
         update_sent_folder: bool = False,
         tags: tuple[ImapKeywordTag, ...] | None = None,
+        allowed_mutations: tuple[MutationClass, ...] | None = None,
+        update_allowed_mutations: bool = False,
+        drafts_mailbox: str | None = None,
+        update_drafts_mailbox: bool = False,
     ) -> int:
+        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
         if expected_revision < 1:
             raise ManagedCatalogError("Expected account revision must be positive")
         if new_name is not None and not new_name.strip():
@@ -1415,6 +1478,8 @@ class ManagedCatalog:
             save_to_sent is not None,
             update_sent_folder,
             validated_tags is not None,
+            update_allowed_mutations,
+            update_drafts_mailbox,
         )):
             raise ManagedCatalogError("Account update did not specify any changes")
 
@@ -1438,6 +1503,22 @@ class ManagedCatalog:
                     update_sent_folder=update_sent_folder,
                     tags=validated_tags,
                 )
+                if update_allowed_mutations or update_drafts_mailbox:
+                    row = connection.execute(
+                        "SELECT id FROM managed_account WHERE normalized_name = ?",
+                        (_normalize_account_name(new_name or name),),
+                    ).fetchone()
+                    if update_allowed_mutations:
+                        if allowed_mutations is not None:
+                            validate_mutations(allowed_mutations)
+                        connection.execute(
+                            "UPDATE managed_account SET allowed_mutations_json = ? WHERE id = ?",
+                            (json.dumps(allowed_mutations) if allowed_mutations is not None else None, row["id"]),
+                        )
+                    if update_drafts_mailbox:
+                        connection.execute(
+                            "UPDATE managed_account SET drafts_mailbox = ? WHERE id = ?", (drafts_mailbox, row["id"])
+                        )
                 connection.commit()
             except sqlite3.IntegrityError as exc:
                 connection.rollback()
@@ -1937,6 +2018,10 @@ class ManagedCatalog:
             save_to_sent=bool(account["save_to_sent"]),
             sent_folder_name=account["sent_folder_name"],
             tags=_parse_tags_json(account["tags_json"]),
+            allowed_mutations=_parse_mutations_json(account["allowed_mutations_json"])
+            if account["allowed_mutations_json"] is not None
+            else None,
+            drafts_mailbox=account["drafts_mailbox"],
             incoming=self._endpoint_summary(incoming_row),
             outgoing=self._endpoint_summary(outgoing_row) if outgoing_row is not None else None,
             binding_ids=tuple((role, bindings[role]["id"]) for role in sorted(bindings)),
@@ -1988,6 +2073,8 @@ class ManagedCatalog:
                 outgoing=outgoing,
                 save_to_sent=current.save_to_sent,
                 sent_folder_name=current.sent_folder_name,
+                allowed_mutations=list(current.allowed_mutations) if current.allowed_mutations is not None else None,
+                drafts_mailbox=current.drafts_mailbox,
                 tags=current.tags,
             ),
             policy=current.policy,
@@ -2049,6 +2136,10 @@ class ManagedCatalog:
                         save_to_sent=bool(account["save_to_sent"]),
                         sent_folder_name=account["sent_folder_name"],
                         tags=_parse_tags_json(account["tags_json"]),
+                        allowed_mutations=list(_parse_mutations_json(account["allowed_mutations_json"]))
+                        if account["allowed_mutations_json"] is not None
+                        else None,
+                        drafts_mailbox=account["drafts_mailbox"],
                     )
                 )
             policy = self._policy_from_row(catalog)
@@ -2061,6 +2152,7 @@ class ManagedCatalog:
             enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
+            allowed_mutations=list(policy.allowed_mutations),
             report_blocked_mutations=policy.report_blocked_mutations,
             credential_storage="keyring",
         )

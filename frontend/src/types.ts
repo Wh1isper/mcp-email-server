@@ -1,3 +1,5 @@
+export type MutationClass = 'draft' | 'organize' | 'delete' | 'send' | 'append'
+
 export type ManagementMode = 'legacy' | 'managed'
 
 export interface CatalogTarget {
@@ -55,6 +57,8 @@ export interface AccountTag {
 }
 
 export interface AccountSummary {
+  allowed_mutations?: MutationClass[] | null
+  drafts_mailbox?: string | null
   name: string
   email_address: string
   enabled: boolean
@@ -74,6 +78,8 @@ export interface AccountDetails extends AccountSummary {
 }
 
 export interface AccountInput {
+  allowed_mutations?: MutationClass[] | null
+  drafts_mailbox?: string | null
   name: string
   full_name: string
   email_address: string
@@ -89,6 +95,7 @@ export interface AccountUpdate extends AccountInput {
 }
 
 export interface ManagedPolicy {
+  allowed_mutations: MutationClass[]
   revision: number
   enable_attachment_download: boolean
   enable_attachment_content: boolean

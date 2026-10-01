@@ -28,20 +28,20 @@ bounded, rebuildable observations.
 
 ## Domain Map
 
-| Spec                                                                                                   | Owning concern                                                                                |
-| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| [`01-system-context.md`](01-system-context.md)                                                         | actors, scope, process model, trust boundaries, and global invariants                         |
-| [`02-domain-model-and-authority.md`](02-domain-model-and-authority.md)                                 | domain language, identities, sources of truth, revisions, and policy ownership                |
-| [`03-application-architecture.md`](03-application-architecture.md)                                     | layers, services, ports, composition, request boundaries, and resource lifecycle              |
-| [`04-configuration-and-managed-catalog.md`](04-configuration-and-managed-catalog.md)                   | bootstrap, legacy/managed selection, catalog authority, account lifecycle, policy, and import |
-| [`05-credentials-and-secret-lifecycle.md`](05-credentials-and-secret-lifecycle.md)                     | secret authority, late resolution, candidate rotation, removal, cleanup, and redaction        |
-| [`06-mail-read-model-and-metadata-index.md`](06-mail-read-model-and-metadata-index.md)                 | mailbox discovery, metadata projection, coverage, provider fallback, bodies, and attachments  |
-| [`07-mail-mutations-and-provider-effects.md`](07-mail-mutations-and-provider-effects.md)               | mark, append, move, archive, delete, SMTP, sent-copy, cancellation, and uncertain outcomes    |
-| [`08-sqlite-persistence-and-filesystem-security.md`](08-sqlite-persistence-and-filesystem-security.md) | logical schema, transactions, migrations, exact ownership, WAL, permissions, and retention    |
-| [`09-local-management-ui.md`](09-local-management-ui.md)                                               | React UI scope, loopback server, bootstrap/session security, concurrency, and packaging       |
-| [`10-mcp-interface-and-compatibility.md`](10-mcp-interface-and-compatibility.md)                       | stdio baseline, mail-only catalog, schemas, compatibility, bounds, and errors                 |
-| [`11-agent-integration-and-safe-setup.md`](11-agent-integration-and-safe-setup.md)                     | Codex/Claude Code integration, safe CLI/UI handoff, installation, and no-secret agent rules   |
-| [`12-delivery-validation-and-evolution.md`](12-delivery-validation-and-evolution.md)                   | verification map, test layers, package/release gates, documentation, and future change rules  |
+| Spec                                                                                                   | Owning concern                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`01-system-context.md`](01-system-context.md)                                                         | actors, scope, process model, trust boundaries, and global invariants                                                                       |
+| [`02-domain-model-and-authority.md`](02-domain-model-and-authority.md)                                 | domain language, identities, sources of truth, revisions, and policy ownership                                                              |
+| [`03-application-architecture.md`](03-application-architecture.md)                                     | layers, services, ports, composition, request boundaries, and resource lifecycle                                                            |
+| [`04-configuration-and-managed-catalog.md`](04-configuration-and-managed-catalog.md)                   | bootstrap, legacy/managed selection, catalog authority, account lifecycle, mutation-grant defaults/overrides, draft destination, and import |
+| [`05-credentials-and-secret-lifecycle.md`](05-credentials-and-secret-lifecycle.md)                     | secret authority, late resolution, candidate rotation, removal, cleanup, and redaction                                                      |
+| [`06-mail-read-model-and-metadata-index.md`](06-mail-read-model-and-metadata-index.md)                 | mailbox discovery, metadata projection, coverage, provider fallback, bodies, and attachments                                                |
+| [`07-mail-mutations-and-provider-effects.md`](07-mail-mutations-and-provider-effects.md)               | mutation-class effects, draft/append, scoped organize/delete, SMTP/Sent copy, and uncertain outcomes                                        |
+| [`08-sqlite-persistence-and-filesystem-security.md`](08-sqlite-persistence-and-filesystem-security.md) | logical schema, transactions, migrations, exact ownership, WAL, permissions, and retention                                                  |
+| [`09-local-management-ui.md`](09-local-management-ui.md)                                               | React UI scope, loopback server, bootstrap/session security, concurrency, and packaging                                                     |
+| [`10-mcp-interface-and-compatibility.md`](10-mcp-interface-and-compatibility.md)                       | stdio baseline, mail-only catalog, schemas, compatibility, bounds, and errors                                                               |
+| [`11-agent-integration-and-safe-setup.md`](11-agent-integration-and-safe-setup.md)                     | Codex/Claude Code integration, safe CLI/UI handoff, installation, and no-secret agent rules                                                 |
+| [`12-delivery-validation-and-evolution.md`](12-delivery-validation-and-evolution.md)                   | verification map, test layers, package/release gates, documentation, and future change rules                                                |
 
 Cross-references point to the owning document rather than duplicating its full
 contract. This README is the only ordered navigation map.

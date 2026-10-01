@@ -1180,6 +1180,7 @@ class EmailClient:
         sender_name: str | None = None,
         sender_address: str | None = None,
     ):
+        self.mutation_guard: Callable[[], None] | None = None
         self.email_server = email_server
         raw_sender = sender or email_server.user_name
         if sender_name is not None and sender_address is not None:
@@ -1207,6 +1208,10 @@ class EmailClient:
         self.smtp_use_tls = self.email_server.use_ssl
         self.smtp_start_tls = self.email_server.start_ssl
         self.smtp_verify_ssl = self.email_server.verify_ssl
+
+    def _check_mutation_authority(self) -> None:
+        if self.mutation_guard is not None:
+            self.mutation_guard()
 
     @property
     def envelope_sender(self) -> str:
@@ -2788,6 +2793,14 @@ class EmailClient:
             if not accepted_indexes:
                 return DeliveryMutationOutcome(tuple(item for item in outcomes if item is not None), None)
 
+            try:
+                self._check_mutation_authority()
+            except PermissionError:
+                for accepted_index in accepted_indexes:
+                    outcomes[accepted_index] = TargetMutationOutcome(
+                        all_recipients[accepted_index], "failed", "mutation-policy"
+                    )
+                return DeliveryMutationOutcome(tuple(item for item in outcomes if item is not None), None)
             accepted_status: MutationStatus
             try:
                 await smtp.data(message_bytes)
@@ -3025,6 +3038,10 @@ class EmailClient:
                 if _imap_status(select_result) != "OK":
                     continue
                 try:
+                    self._check_mutation_authority()
+                except PermissionError:
+                    return SentCopyMutationOutcome("failed", folder, "mutation-policy")
+                try:
                     append_result = await _append_message(
                         imap,
                         msg,
@@ -3078,6 +3095,7 @@ class EmailClient:
             select_result = await imap.select(_quote_mailbox(mailbox, utf8=append_mode.session_utf8_enabled))
             if _imap_status(select_result) != "OK":
                 return AppendMutationOutcome("failed", message_id, mailbox=mailbox, detail="mailbox-unavailable")
+            self._check_mutation_authority()
             try:
                 append_result = await _append_message(
                     imap,
@@ -3216,7 +3234,11 @@ class EmailClient:
                 store_cancelled = False
                 for index, email_id in enumerate(permitted):
                     try:
+                        self._check_mutation_authority()
                         response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    except PermissionError:
+                        outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
+                        continue
                     except asyncio.CancelledError:
                         outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "store-unknown")
                         for remaining_id in permitted[index + 1 :]:
@@ -3240,7 +3262,11 @@ class EmailClient:
                 if pending_expunge and not store_cancelled:
                     expunge_detail = "expunge-unknown"
                     try:
+                        self._check_mutation_authority()
                         response = await imap.uid("expunge", ",".join(pending_expunge))
+                    except PermissionError:
+                        response = None
+                        expunge_detail = "mutation-policy-cleanup-pending"
                     except asyncio.CancelledError:
                         response = None
                     except Exception:
@@ -3289,7 +3315,11 @@ class EmailClient:
                     )
                     continue
                 try:
+                    self._check_mutation_authority()
                     response = await imap.uid("store", email_id, store_operation, formatted_flags)
+                except PermissionError:
+                    outcomes.append(TargetMutationOutcome(email_id, "failed", "mutation-policy"))
+                    continue
                 except asyncio.CancelledError:
                     outcomes.append(TargetMutationOutcome(email_id, "unknown", "store-unknown"))
                     for remaining_id in email_ids[index + 1 :]:
@@ -3365,6 +3395,7 @@ class EmailClient:
                     )
                     continue
                 try:
+                    self._check_mutation_authority()
                     response = await imap.uid("store", email_id, store_operation, formatted_tags)
                     status = _imap_effect_status(response)
                     outcomes.append(
@@ -3392,6 +3423,8 @@ class EmailClient:
                         else:
                             outcomes.append(TargetMutationOutcome(remaining_id, "failed", "not-attempted"))
                     break
+                except PermissionError:
+                    outcomes.append(TargetMutationOutcome(email_id, "failed", "mutation-policy"))
                 except Exception:
                     outcomes.append(TargetMutationOutcome(email_id, "unknown", "tag-store-unknown"))
         finally:
@@ -3451,7 +3484,11 @@ class EmailClient:
             elif has_move:
                 for index, email_id in enumerate(permitted):
                     try:
+                        self._check_mutation_authority()
                         response = await imap.uid("move", email_id, _quote_mailbox(destination_mailbox))
+                    except PermissionError:
+                        outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
+                        continue
                     except asyncio.CancelledError:
                         outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "move-unknown")
                         for remaining_id in permitted[index + 1 :]:
@@ -3475,7 +3512,11 @@ class EmailClient:
                 stopped = False
                 for index, email_id in enumerate(permitted):
                     try:
+                        self._check_mutation_authority()
                         copy_response = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                    except PermissionError:
+                        outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
+                        continue
                     except asyncio.CancelledError:
                         outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-unknown")
                         for remaining_id in permitted[index + 1 :]:
@@ -3494,7 +3535,13 @@ class EmailClient:
                         )
                         continue
                     try:
+                        self._check_mutation_authority()
                         store_response = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    except PermissionError:
+                        outcomes[email_id] = TargetMutationOutcome(
+                            email_id, "unknown", "copy-succeeded-policy-cleanup-pending"
+                        )
+                        continue
                     except asyncio.CancelledError:
                         outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-succeeded-store-unknown")
                         for remaining_id in permitted[index + 1 :]:
@@ -3523,7 +3570,11 @@ class EmailClient:
                 elif pending_expunge:
                     expunge_detail = "expunge-after-copy-unknown"
                     try:
+                        self._check_mutation_authority()
                         expunge_response = await imap.uid("expunge", ",".join(pending_expunge))
+                    except PermissionError:
+                        expunge_response = None
+                        expunge_detail = "mutation-policy-cleanup-pending"
                     except asyncio.CancelledError:
                         expunge_response = None
                     except Exception:

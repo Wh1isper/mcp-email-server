@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
@@ -8,14 +9,17 @@ import pytest
 from mcp_email_server.application.management import (
     AccountCreationResult,
     AccountDetails,
+    BootstrapSnapshot,
     CatalogInitializationResult,
     CredentialMutationResult,
     EndpointSummary,
+    ManagedAccountService,
     ManagedPolicy,
     ManagementError,
     RevisionConflictError,
 )
 from mcp_email_server.imap_keywords import ImapKeywordTag
+from mcp_email_server.managed import ManagedCatalog
 from mcp_email_server.web_ui.app import LocalUiState, create_local_ui_app
 from mcp_email_server.web_ui.models import ApplyImportRequest
 
@@ -198,6 +202,58 @@ async def test_create_account_passes_secret_once_and_never_echoes_it() -> None:
             writable=True,
         ),
     )
+
+
+@pytest.mark.parametrize("grants", [None, [], ["draft"]])
+@pytest.mark.asyncio
+async def test_create_account_persists_mutation_grants_and_drafts_mailbox(
+    tmp_path: Path, grants: list[str] | None
+) -> None:
+    catalog = ManagedCatalog.initialize(tmp_path / "catalog.sqlite3")
+    backend = MagicMock()
+    backend.read_bootstrap.return_value = BootstrapSnapshot(mode="managed", db_path=catalog.path, revision=2)
+    backend.open_catalog.return_value = catalog
+    management = MagicMock()
+    state, client, csrf = await _authenticated(management, port=8780)
+    # Use the real service/catalog behind the HTTP adapter: request-only frontend
+    # assertions cannot detect fields dropped while building the create command.
+    management.accounts = ManagedAccountService(backend)
+    try:
+        response = await client.post(
+            f"{state.route_prefix}/api/accounts/create",
+            headers=_mutation_headers(state, csrf),
+            json=_target_payload(
+                expected_catalog=catalog.path.as_posix(),
+                expected_catalog_revision=1,
+                name="alice",
+                full_name="Alice",
+                email_address="alice@example.test",
+                save_to_sent=True,
+                sent_folder_name=None,
+                incoming={
+                    "host": "imap.example.test",
+                    "port": 993,
+                    "use_ssl": True,
+                    "start_ssl": False,
+                    "verify_ssl": True,
+                    "user_name": "alice@example.test",
+                },
+                outgoing=None,
+                credentials={"incoming": "synthetic-password", "outgoing": None},
+                allowed_mutations=grants,
+                drafts_mailbox="Localized Drafts",
+            ),
+        )
+        assert response.status_code == 200, response.text
+        readback = await client.get(f"{state.route_prefix}/api/accounts/alice")
+        assert readback.status_code == 200, readback.text
+    finally:
+        await client.aclose()
+    assert readback.json()["allowed_mutations"] == grants
+    assert readback.json()["drafts_mailbox"] == "Localized Drafts"
+    persisted = catalog.show_account("alice")
+    assert persisted.allowed_mutations == (tuple(grants) if grants is not None else None)
+    assert persisted.drafts_mailbox == "Localized Drafts"
 
 
 @pytest.mark.asyncio

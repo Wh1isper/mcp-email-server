@@ -65,6 +65,27 @@ absent from Local Email App V2 rather than renamed. See
 [Upgrading to Local Email App V2](getting-started.md#upgrading-to-local-email-app-v2)
 for client discovery and configuration migration steps.
 
+## Mail mutation permissions
+
+All tools remain in the static catalog; permissions are checked when called and
+freshly before independent provider effects. Global `allowed_mutations` defaults
+to all five classes for old and new configurations. Account omission/null
+inherits; an explicit list replaces; `[]` means read-only.
+
+| Class      | Workflows                                                                      |
+| ---------- | ------------------------------------------------------------------------------ |
+| `draft`    | `save_draft` with fixed destination resolution and `\Draft` flag               |
+| `organize` | mark-read/unread, `set_email_flags`, `set_email_tags`, move and archive        |
+| `delete`   | `delete_emails` and its scoped deletion/expunge                                |
+| `send`     | `send_email`, `forward_email`, and narrowly their successful-message Sent copy |
+| `append`   | `save_to_mailbox` with caller mailbox and flags                                |
+
+`get_emails_content(mark_as_read=true)` also requires `organize`; use the
+non-marking read option for a read-only account. Organization cannot perform
+unrestricted expunge. Sending does not grant arbitrary APPEND, and draft-only
+access does not permit caller-selected mailbox/flags. Recipient, sender,
+attachment, account lifecycle, and provider constraints still apply.
+
 ## Agent planning annotations
 
 Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
@@ -75,7 +96,7 @@ Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 | `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders`, `list_email_tags` | yes       | no          | yes        | no         |
 | `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                              | yes       | no          | yes        | yes        |
 | `get_emails_content`                                                                            | no        | no          | yes        | yes        |
-| `send_email`, `forward_email`, `save_to_mailbox`                                                | no        | no          | no         | yes        |
+| `send_email`, `forward_email`, `save_draft`, `save_to_mailbox`                                  | no        | no          | no         | yes        |
 | `set_email_flags`, `set_email_tags`, `mark_emails_as_read`                                      | no        | no          | yes        | yes        |
 | `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`                         | no        | yes         | no         | yes        |
 
@@ -325,16 +346,35 @@ parts to downgrade them. Both transport failures occur before `MAIL FROM`,
 
 Saving the Sent copy is a second IMAP effect and is reported in its own
 `sent-copy` section; a failed or unknown copy never changes an accepted delivery
-into a failure. Do not retry the whole send to repair a Sent copy. Sent-copy
+into a failure. A successful-message-only Sent copy is permitted by `send`
+without a separate `append` grant, but the effective `send` grant and other policy
+are checked again before copying. Do not retry the whole send to repair a Sent copy. Sent-copy
 APPEND payloads use CRLF line endings for compatibility with strict IMAP
 providers. An internationalized Sent copy additionally requires RFC 6855
 `ENABLE` plus `UTF8=ACCEPT` or `UTF8=ONLY`; unsupported negotiation is reported
 as `utf8-append-unsupported` without changing the successful SMTP outcome.
 
+### `save_draft`
+
+Composes and saves a draft without SMTP. It requires `draft`, not `append`.
+Pass the account and compose fields (recipients, subject, body, optional CC/BCC,
+attachments and threading headers). An explicit empty recipient list is allowed;
+every supplied recipient must match the recipient allowlist.
+
+This tool has no mailbox or flags parameter. It uses the account's optional
+`drafts_mailbox`, or the unique mailbox advertising special-use `\Drafts`,
+and sets only `\Draft`. Missing or ambiguous discovery requires configuring
+the account field; no mailbox is guessed or created. It shares the MIME/CRLF,
+UTF-8 negotiation, attachment limits, and APPEND evidence behavior described
+below for `save_to_mailbox`. A successful APPEND can have an unknown assigned
+UID; an ambiguous result must not be replayed automatically.
+
 ### `save_to_mailbox`
 
 Composes a message and appends it to an IMAP mailbox instead of sending it. It
-works without SMTP and is useful for drafts or templates. It shares recipient,
+works without SMTP and requires `append`, even for a draft destination. Use
+`save_draft` for draft-only permission; this general tool is useful for templates
+or explicit placements. It shares recipient,
 body, attachment, and threading fields with `send_email`, adds `mailbox` and
 `flags`, and does not support `reply_to`. For both compose tools, simple
 Message-IDs in `in_reply_to` and `references` may be supplied with or without
@@ -352,7 +392,8 @@ complete MIME payload is serialized with CRLF line endings before IMAP APPEND fo
 compatibility with strict providers. Saved-message flags may be system flags or
 provider keywords, but each must be one valid IMAP atom; legal values such as
 `$Forwarded`, `project.name`, and `123flag` are accepted, while whitespace,
-controls, and IMAP protocol specials are rejected.
+controls, and IMAP protocol specials are rejected. `\Deleted` is rejected even
+with `append` permission; use the scoped `delete_emails` workflow instead.
 
 The server refreshes capabilities before mailbox selection. A message with
 internationalized address or thread-header syntax requires RFC 6855, and a
@@ -624,7 +665,8 @@ always advertised. Account existence, enabled state, SMTP capability, and
 current policies are enforced when each tool is called. The allowlist tools have
 distinct empty semantics: an empty recipient list denies `send_email`,
 `forward_email`, and `save_to_mailbox`, while an empty sender list does not
-restrict reading. Recipient entries support case-insensitive, whole-address glob
+restrict reading. A recipientless `save_draft` remains permitted by `draft`;
+any supplied recipient requires a match. Recipient entries support case-insensitive, whole-address glob
 matching (`*`, `?`, and bracket expressions), such as `*@example.com`.
 `*` or `*@*` explicitly permits all valid recipients for sending, forwarding,
 and draft saves; this is not draft-only permission. Recipient denial errors

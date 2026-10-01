@@ -77,6 +77,7 @@ describe('bootstrap and API security behavior', () => {
       allowed_recipients: [],
       allowed_senders: [],
       report_blocked_mutations: false,
+    allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
     }, { expected_bootstrap_revision: 4, expected_catalog: '/private/catalog.sqlite3' })
 
     const body = fetcher.mock.calls[1]?.[1]?.body
@@ -89,12 +90,13 @@ describe('bootstrap and API security behavior', () => {
       allowed_recipients: [],
       allowed_senders: [],
       report_blocked_mutations: false,
+    allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
       expected_bootstrap_revision: 4,
       expected_catalog: '/private/catalog.sqlite3',
     })
   })
 
-  test('serializes account tags in create and update payloads', async () => {
+  test('serializes account grants, draft destination and tags in create and update payloads', async () => {
     window.history.replaceState(null, '', '/route/')
     const fetcher = vi
       .fn<typeof fetch>()
@@ -104,6 +106,8 @@ describe('bootstrap and API security behavior', () => {
     const api = createApi(fetcher)
     await api.session()
     const input = {
+      allowed_mutations: null,
+      drafts_mailbox: 'Drafts/Assistant',
       name: 'work',
       full_name: 'Alice Example',
       email_address: 'alice@example.test',
@@ -119,7 +123,7 @@ describe('bootstrap and API security behavior', () => {
     const target = { expected_bootstrap_revision: 4, expected_catalog: '/private/catalog.sqlite3' }
 
     await api.createAccount(input, { incoming: 'secret', outgoing: null }, 6, target)
-    await api.updateAccount('work', { ...input, expected_revision: 7 }, target)
+    await api.updateAccount('work', { ...input, allowed_mutations: [], expected_revision: 7 }, target)
 
     const createBody = fetcher.mock.calls[1]?.[1]?.body
     const updateBody = fetcher.mock.calls[2]?.[1]?.body
@@ -127,12 +131,16 @@ describe('bootstrap and API security behavior', () => {
     expect(typeof updateBody).toBe('string')
     if (typeof createBody !== 'string' || typeof updateBody !== 'string') throw new Error('Expected JSON request bodies')
     expect(JSON.parse(createBody)).toEqual(expect.objectContaining({
+      allowed_mutations: null,
+      drafts_mailbox: 'Drafts/Assistant',
       tags: input.tags,
       credentials: { incoming: 'secret', outgoing: null },
       expected_catalog_revision: 6,
       ...target,
     }))
     expect(JSON.parse(updateBody)).toEqual(expect.objectContaining({
+      allowed_mutations: [],
+      drafts_mailbox: 'Drafts/Assistant',
       tags: input.tags,
       expected_revision: 7,
       ...target,

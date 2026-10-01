@@ -44,7 +44,7 @@ export function SettingsPanel({
 }) {
   return (
     <section aria-labelledby="settings-heading">
-      <div className="page-heading"><p className="eyebrow">Optional controls</p><h1 id="settings-heading">Settings &amp; help</h1><p className="lede">Most people do not need anything here. Open a section only when you want to copy earlier settings, restrict sending, or troubleshoot.</p></div>
+      <div className="page-heading"><p className="eyebrow">Optional controls</p><h1 id="settings-heading">Settings &amp; help</h1><p className="lede">Most people do not need anything here. Open a section only when you want to copy earlier settings, adjust permissions, restrict sending, or troubleshoot.</p></div>
       <div className="settings-list">
         <SettingsDisclosure
           icon={<Import size={19} />}
@@ -57,7 +57,7 @@ export function SettingsPanel({
         <SettingsDisclosure
           icon={<ShieldCheck size={19} />}
           title="Sending & attachment safety"
-          description="Control who can send and receive, or allow attachments to be saved as files."
+          description="Set default mutation grants, restrict senders and recipients, or allow attachment files."
         >
           <PolicyPanel api={api} target={target} onRevision={onPolicyRevision} />
         </SettingsDisclosure>
