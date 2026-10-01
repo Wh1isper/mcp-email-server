@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -246,15 +247,16 @@ def test_v4_migration_preserves_full_default_and_inheritance(tmp_path):
     from tests.test_managed_catalog import _v3_catalog
 
     catalog = _v3_catalog(tmp_path)
-    with sqlite3.connect(catalog.path) as connection:
+    with closing(sqlite3.connect(catalog.path)) as connection:
         connection.executescript(managed_module._SCHEMA_V4_ADDITIONS)
         connection.execute("UPDATE schema_metadata SET version = 4")
+        connection.commit()
     migrated = ManagedCatalog(catalog.path)
     assert migrated.policy().allowed_mutations == DEFAULT_ALLOWED_MUTATIONS
     assert migrated.show_account("alice").allowed_mutations is None
     assert migrated.show_account("alice").drafts_mailbox is None
     assert migrated.policy().allowed_recipients == ("bob@example.test",)
-    with sqlite3.connect(catalog.path) as connection:
+    with closing(sqlite3.connect(catalog.path)) as connection:
         assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 5
 
 
