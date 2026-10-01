@@ -420,6 +420,7 @@ export function AccountsPanel({ api, target, onChanged }: { api: ManagementApi; 
   const [globalGrants, setGlobalGrants] = useState<MutationClass[]>(ALL_MUTATIONS)
   const [accounts, setAccounts] = useState<AccountSummary[]>([])
   const [catalogRevision, setCatalogRevision] = useState(0)
+  const [loaded, setLoaded] = useState(false)
   const [cleanupRequired, setCleanupRequired] = useState(0)
   const [cleanupBusy, setCleanupBusy] = useState(false)
   const [editor, setEditor] = useState<'new' | AccountDetails | null>(null)
@@ -444,6 +445,7 @@ export function AccountsPanel({ api, target, onChanged }: { api: ManagementApi; 
       setCatalogRevision(statusAfter.report?.catalog_revision ?? 0)
       setCleanupRequired(statusAfter.report?.cleanup_required_bindings ?? 0)
       setRefreshFailed(false)
+      setLoaded(true)
       setError(null)
       return true
     } catch (caught) {
@@ -532,13 +534,17 @@ export function AccountsPanel({ api, target, onChanged }: { api: ManagementApi; 
     )
   }
 
+  if (!loaded && !refreshFailed) {
+    return <section aria-label="Email accounts"><p role="status">Loading email accounts…</p></section>
+  }
+
   if (editor) {
     return <section aria-label="Email account editor"><AccountEditor api={api} current={editor === 'new' ? null : editor} catalogRevision={catalogRevision} globalGrants={globalGrants} target={target} onCancel={() => setEditor(null)} onSaved={async (message) => { const refreshed = await reloadAll(); setEditor(null); if (refreshed) setNotice(message) }} /></section>
   }
 
   return (
     <section aria-labelledby="accounts-heading">
-      <div className="section-heading page-heading"><div><h1 id="accounts-heading">Email accounts</h1><p className="lede">Add an inbox or update its account and password settings.</p></div>{accounts.length ? <button type="button" className="with-icon" onClick={() => setEditor('new')}><Plus size={17} aria-hidden="true" />Add email account</button> : null}</div>
+      <div className="section-heading page-heading"><div><h1 id="accounts-heading">Email accounts</h1><p className="lede">Add an inbox or update its account and password settings.</p></div>{accounts.length ? <button type="button" className="with-icon" disabled={!loaded} onClick={() => setEditor('new')}><Plus size={17} aria-hidden="true" />Add email account</button> : null}</div>
       <StatusMessage message={notice} />
       {error && !(error instanceof Error && error.name === 'RevisionConflictError') ? <StatusMessage message={errorMessage(error)} error /> : null}
       <ConflictNotice error={error} onDismiss={() => setError(null)} />
@@ -550,7 +556,7 @@ export function AccountsPanel({ api, target, onChanged }: { api: ManagementApi; 
         </div>
       ) : null}
       {accounts.length === 0 ? (
-        <div className="empty account-empty"><div className="empty-mark" aria-hidden="true"><Mail size={22} /></div><h2>No email accounts yet</h2><p>Start with your email address and password. Connection settings are filled in automatically and remain editable.</p><button type="button" className="with-icon" onClick={() => setEditor('new')}><Plus size={17} aria-hidden="true" />Add your first account</button></div>
+        <div className="empty account-empty"><div className="empty-mark" aria-hidden="true"><Mail size={22} /></div><h2>No email accounts yet</h2><p>Start with your email address and password. Connection settings are filled in automatically and remain editable.</p><button type="button" className="with-icon" disabled={!loaded} onClick={() => setEditor('new')}><Plus size={17} aria-hidden="true" />Add your first account</button></div>
       ) : (
         <div className="account-list">
           {accounts.map((account) => {

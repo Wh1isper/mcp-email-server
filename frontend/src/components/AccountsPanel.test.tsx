@@ -7,6 +7,30 @@ import { AccountsPanel } from './AccountsPanel'
 
 const target = { expected_bootstrap_revision: 1, expected_catalog: '/private/managed.sqlite3' }
 
+test('waits for catalog revision and global grants before offering account creation', async () => {
+  const user = userEvent.setup()
+  const api = createMockApi()
+  let finishPolicy!: (policy: Awaited<ReturnType<typeof api.policy>>) => void
+  const policy = await api.policy()
+  vi.mocked(api.policy).mockImplementationOnce(() => new Promise((resolve) => { finishPolicy = resolve }))
+  render(<AccountsPanel api={api} target={target} />)
+  await waitFor(() => expect(finishPolicy).toBeDefined())
+  expect(screen.getByRole('status')).toHaveTextContent('Loading email accounts')
+  expect(screen.queryByRole('button', { name: 'Add your first account' })).not.toBeInTheDocument()
+  act(() => { finishPolicy({ ...policy, allowed_mutations: ['draft'] }) })
+  await user.click(await screen.findByRole('button', { name: 'Add your first account' }))
+  expect(screen.getByText('Effective permissions: Read + draft.')).toBeInTheDocument()
+  await user.type(screen.getByLabelText('Email address'), 'ready@example.test')
+  await user.type(screen.getByLabelText('Password or app password'), 'synthetic-secret')
+  await user.click(screen.getByRole('button', { name: 'Add account' }))
+  await waitFor(() => expect(api.createAccount).toHaveBeenCalledWith(
+    expect.objectContaining({ allowed_mutations: null }),
+    { incoming: 'synthetic-secret', outgoing: null },
+    1,
+    target,
+  ))
+})
+
 test('starts with email and password, then derives editable connection details', async () => {
   const user = userEvent.setup()
   const api = createMockApi()

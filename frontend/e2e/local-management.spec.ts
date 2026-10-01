@@ -373,7 +373,8 @@ test('real browser persists mutation presets, inheritance, readonly and drafts m
     await expect(page.getByLabel('Permission preset')).toBeDisabled()
     const creationResponse = page.waitForResponse((response) => response.url().endsWith('/api/accounts/create'))
     await page.getByRole('button', { name: 'Add account' }).click()
-    expect((await creationResponse).status()).toBe(200)
+    const created = await creationResponse
+    expect(created.status(), await created.text()).toBe(200)
     await expect(page.getByRole('heading', { name: 'permissions@example.test' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Settings & help' }).click()

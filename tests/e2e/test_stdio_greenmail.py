@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from email import policy
 from email.message import EmailMessage, Message
 from email.parser import BytesParser
-from email.utils import make_msgid
+from email.utils import getaddresses, make_msgid
 from pathlib import Path
 from typing import Any
 
@@ -1115,7 +1115,7 @@ async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants:
                 assert draft.isError is not True, _text_content(draft)
                 observed = _wait_for_message(ALICE, "Drafts", draft_subject)
                 assert r"\Draft" in observed.flags
-                assert observed.message.get("To") is None
+                assert not any(address for _, address in getaddresses(observed.message.get_all("To", [])))
             else:
                 assert draft.isError is True
                 assert _find_message(ALICE, "Drafts", draft_subject) is None

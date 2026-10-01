@@ -117,7 +117,9 @@ and per-account semantic tags, and **Settings & help** for importing earlier
 settings, sending/attachment safety, and bounded troubleshooting checks. The
 attachment settings distinguish saving files on the server from returning bytes
 through MCP for clients such as ChatGPT apps. Ordinary labels and errors use task language;
-storage and concurrency terms are kept out of the primary workflow. Optional
+storage and concurrency terms are kept out of the primary workflow. Account creation
+becomes available after the account list and inherited permissions finish loading.
+Optional
 settings are loaded only when their disclosure
 is opened. On Linux and Windows, managed credentials default to the private
 `managed_secret` table in the managed SQLite database. macOS uses the
