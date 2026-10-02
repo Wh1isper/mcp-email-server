@@ -554,11 +554,39 @@ message. Standard flags and unrelated provider keywords are preserved.
 
 ### `move_emails`
 
-Moves messages from `source_mailbox`, which defaults to `INBOX`, to a required
-`destination_mailbox`. Native IMAP `MOVE` is preferred. The COPY-and-delete
-fallback is available only when the server advertises `UIDPLUS`, allowing the
-source to be removed with target-scoped `UID EXPUNGE`; otherwise the operation
-fails before copying a message.
+Moves messages from `source_mailbox`, which defaults to `INBOX`. Specify exactly
+one destination: an exact `destination_mailbox`, or `destination_role="junk"`
+to discover the Junk folder. Existing explicit-destination calls and their
+result sentences are unchanged. The resolved destination is returned on success
+and also in partial/unknown results for role-based moves.
+
+Junk discovery prefers one selectable mailbox with the RFC 6154 `\Junk`
+attribute. Without one, it accepts one selectable common-name match: `Junk`,
+`Spam`, `[Gmail]/Spam`, `Junk E-mail`, or `Junk Email`. Matching is
+case-insensitive and preserves the actual server name. `\Noselect` mailboxes
+are excluded; missing or multiple candidates require `list_mailboxes` and an
+explicit destination. No folder is created, and moving to the source itself is
+rejected. Discovery and the subsequent move both require `organize`; authority
+is reopened after discovery and checked freshly before provider effects.
+
+Native IMAP `MOVE` is preferred. The COPY-and-delete fallback is available only
+when the server advertises `UIDPLUS`, allowing the source to be removed with
+target-scoped `UID EXPUNGE`; otherwise the operation fails before copying.
+
+#### Move to Junk and restore
+
+1. List the source mailbox with `list_emails_metadata`; its UIDs belong to that
+   mailbox only. Move selected IDs with `source_mailbox` and
+   `destination_role="junk"` (omit `destination_mailbox`).
+2. To restore, list messages in the resolved Junk mailbox again. Pass those
+   current Junk UIDs to `move_emails`, with that exact `source_mailbox` and
+   `destination_mailbox="INBOX"`.
+
+Do not reuse a pre-move UID in another mailbox: destination UIDs can differ.
+The caller decides which messages are spam or not spam. This workflow requests
+mailbox moves only; it does not guarantee provider-side training or reporting.
+Partial/unknown moves are not retried automatically. No separate spam/ham tools
+are needed.
 
 ### `archive_emails`
 

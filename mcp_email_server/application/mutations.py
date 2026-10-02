@@ -5,7 +5,7 @@ import json
 from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar, cast
 
 from mcp_email_server.application.limits import (
     APPLICATION_LIMITS,
@@ -239,12 +239,19 @@ class MoveCommand:
     account_name: str
     email_ids: tuple[str, ...]
     source_mailbox: str
-    destination_mailbox: str
+    destination_mailbox: str | None = None
+    destination_role: Literal["junk"] | None = None
 
     def validate(self) -> None:
         _validate_account_name(self.account_name)
         _validate_email_ids(self.email_ids)
         validate_mailbox_name(self.source_mailbox)
+        if (self.destination_mailbox is None) == (self.destination_role is None):
+            raise ValueError("Specify exactly one of destination_mailbox or destination_role")
+        if self.destination_mailbox is None:
+            if self.destination_role != "junk":
+                raise ValueError("destination_role must be 'junk'")
+            return
         validate_mailbox_name(self.destination_mailbox)
         same_reserved_inbox = (
             self.source_mailbox.casefold() == "inbox" and self.destination_mailbox.casefold() == "inbox"
@@ -467,6 +474,8 @@ class MutationProvider(Protocol):
     async def find_drafts_mailbox(self) -> str: ...
 
     async def find_archive_mailbox(self, source_mailbox: str) -> str: ...
+
+    async def find_junk_mailbox(self) -> str: ...
 
     async def send(
         self,
@@ -1157,27 +1166,49 @@ class DeleteService(_MutationWorkflow):
         )
 
 
+@dataclass(frozen=True)
+class MoveMutationOutcome:
+    batch: BatchMutationOutcome
+    destination_mailbox: str
+
+
 class MoveService(_MutationWorkflow):
-    async def execute(self, command: MoveCommand) -> BatchMutationOutcome:
+    async def execute(self, command: MoveCommand) -> MoveMutationOutcome:
         command.validate()
         account = self._resolve(command.account_name)
         require_mutation(account.allowed_mutations, "organize")
         access = self._open(account)
         require_mutation(access.account.allowed_mutations, "organize")
+        if command.destination_role == "junk":
+            try:
+                destination = await _bounded_provider_effect(access.provider.find_junk_mailbox())
+            except TimeoutError:
+                raise MutationProviderError("junk mailbox discovery timed out") from None
+            command = replace(command, destination_mailbox=destination, destination_role=None)
+            command.validate()
+            # Discovery does not authorize the subsequent move effect.
+            access = self._open(account)
+            require_mutation(access.account.allowed_mutations, "organize")
+        destination_mailbox = cast(str, command.destination_mailbox)
         try:
             outcome = _validate_batch_result(
                 await _bounded_provider_effect(access.provider.move(command, access.account))
             )
         except TimeoutError:
             outcome = _validate_batch_result(_timeout_batch(command.email_ids))
-        if not outcome.effect_may_have_started:
-            return outcome
-        invalidated = await self._invalidate(access.account, (command.source_mailbox, command.destination_mailbox))
-        return _validate_batch_result(
-            BatchMutationOutcome(
-                outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+        if outcome.effect_may_have_started:
+            invalidated = await self._invalidate(access.account, (command.source_mailbox, destination_mailbox))
+            outcome = _validate_batch_result(
+                BatchMutationOutcome(
+                    outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+                )
             )
-        )
+        _validate_result_payload({
+            "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+            "reconciliation_needed": outcome.reconciliation_needed,
+            "destination_mailbox": destination_mailbox,
+        })
+        return MoveMutationOutcome(outcome, destination_mailbox)
 
 
 @dataclass(frozen=True)

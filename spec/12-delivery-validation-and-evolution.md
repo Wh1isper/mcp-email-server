@@ -61,6 +61,18 @@ Unit, catalog-contract, frontend, strict documentation, and GreenMail checks mus
 be recorded by the integrating reviewer. This table states required evidence,
 not an assertion that those checks have passed.
 
+### Junk/restore workflow delivery gate
+
+The #254 workflow is absorbed through `move_emails` without adding public tool
+names. Spec 07 owns its behavior; spec 10 owns the additive input contract.
+`application/mutations.py`, `adapters/mutations.py`, `emails/classic.py`, and
+`app.py` must agree with `docs/tools.md`. Regression coverage in
+`tests/test_junk_move.py`, the catalog snapshot/MCP tests, and GreenMail must
+prove selectable unique discovery with special-use priority and common-name
+fallback, explicit source ownership, newly listed destination UIDs on restore,
+selector validation, unchanged explicit-move results, organize revocation,
+stale-UID outcomes, discovery/effect timeouts, and projection-failure behavior.
+
 ## Checked Delivery References
 
 The following checked-in matrix records evidence for this implementation branch;

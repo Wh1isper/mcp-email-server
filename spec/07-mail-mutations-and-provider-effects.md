@@ -160,6 +160,26 @@ A move uses native UID MOVE when the provider advertises and supports it. A
 fallback may use UID COPY followed by a deletion/expunge sequence only when the
 provider offers a scoped primitive that cannot expunge unrelated messages.
 
+`move_emails` accepts exactly one of an explicit `destination_mailbox` or
+`destination_role="junk"`. Existing explicit-destination calls retain their
+success and partial-result literals. Role-based moves return the resolved
+mailbox even in partial/unknown results. Only the destination is discovered;
+the source remains caller-selected and the supplied UIDs must have been listed
+in that source mailbox. Restoring from Junk uses newly listed Junk UIDs and an
+explicit move to INBOX, never the original pre-move UID.
+
+Junk discovery prefers exactly one selectable special-use `\Junk` mailbox,
+then exactly one selectable common-name match (`Junk`, `Spam`, `[Gmail]/Spam`,
+`Junk E-mail`, `Junk Email`). Exclude `\Noselect`, preserve the server's actual
+name, reject missing/ambiguous discovery or a source-equal destination, and
+never create a mailbox. Explicit destinations remain available when discovery
+cannot decide. Require `organize` before discovery and reopen current
+selected-mode authority before moving; reuse the same scoped MOVE pipeline,
+per-target evidence, timeout handling, and projection invalidation. A discovery
+timeout fails before mutation; a move-effect timeout remains unknown and is
+not replayed. This requests a mailbox move, not guaranteed provider-side spam
+training or reporting. No separate spam/ham tool or rule engine is introduced.
+
 Archive resolves an explicit destination policy and then follows the same move
 contract. Destination creation, if supported, is a separate effect with its own
 policy and evidence; it is not silently attempted after an unsafe fallback.
@@ -372,6 +392,11 @@ enter public errors.
 - Draft-only authority exposes no caller mailbox/flags, chooses only configured
   or unique special-use Drafts, never creates/guesses a mailbox, and shares MIME
   serialization/UTF-8/attachment/APPEND evidence with the existing append path.
+- Junk moves preserve explicit-destination compatibility, reject conflicting
+  selectors and non-selectable/ambiguous discovery, reopen authority before
+  moving, report resolved placement, and restore with newly listed source UIDs.
+  Tests cover missing/stale UIDs, discovery versus effect timeouts, revoked
+  organize permission, and projection failure without replay or bare EXPUNGE.
 
 1. Every mutation revalidates current authority before each independent provider
    effect and resolves only the needed account/role secret. Tests prove that a

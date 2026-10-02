@@ -36,6 +36,7 @@ from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
+    MoveMutationOutcome,
     RecipientPolicyDeniedError,
     SendMutationOutcome,
     SentCopyMutationOutcome,
@@ -665,7 +666,9 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_move_emails(self):
-        command_handler = AsyncMock(return_value=_batch_outcome(succeeded=("12345", "12346")))
+        command_handler = AsyncMock(
+            return_value=MoveMutationOutcome(_batch_outcome(succeeded=("12345", "12346")), "Archive")
+        )
         with patch("mcp_email_server.app.move_emails_command", command_handler):
             result = await move_emails("test_account", ["12345", "12346"], "Archive")
         assert result == "Successfully moved 2 email(s) to Archive"
@@ -694,7 +697,7 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_move_emails_with_source_mailbox(self):
-        command_handler = AsyncMock(return_value=_batch_outcome(succeeded=("12345",)))
+        command_handler = AsyncMock(return_value=MoveMutationOutcome(_batch_outcome(succeeded=("12345",)), "INBOX"))
         with patch("mcp_email_server.app.move_emails_command", command_handler):
             result = await move_emails("test_account", ["12345"], "INBOX", "Trash")
         assert result == "Successfully moved 1 email(s) to INBOX"
@@ -702,7 +705,9 @@ class TestMcpTools:
 
     @pytest.mark.asyncio
     async def test_move_emails_with_failures(self):
-        command_handler = AsyncMock(return_value=_batch_outcome(succeeded=("12345",), failed=("12346", "12347")))
+        command_handler = AsyncMock(
+            return_value=MoveMutationOutcome(_batch_outcome(succeeded=("12345",), failed=("12346", "12347")), "Archive")
+        )
         with patch("mcp_email_server.app.move_emails_command", command_handler):
             result = await move_emails("test_account", ["12345", "12346", "12347"], "Archive")
         assert result == "Move result [succeeded: 12345; failed: 12346, 12347]"

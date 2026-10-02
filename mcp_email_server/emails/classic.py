@@ -364,6 +364,7 @@ _IMAP_CAPABILITY_TIMEOUT_SECONDS = 30.0
 
 # Common Archive folder names, used as a fallback when no RFC 6154 \Archive flag is found.
 _ARCHIVE_FOLDER_CANDIDATES = ("Archive", "Archives", "[Gmail]/All Mail")
+_JUNK_FOLDER_CANDIDATES = ("Junk", "Spam", "[Gmail]/Spam", "Junk E-mail", "Junk Email")
 
 
 # RFC 3501 atoms exclude controls and these protocol-special characters.
@@ -4051,6 +4052,22 @@ class ClassicEmailHandler(EmailHandler):
             allowed_senders=settings.allowed_senders,
             report_blocked_mutations=settings.report_blocked_mutations,
         )
+
+    async def _find_junk_folder(self) -> str | None:
+        """Find one selectable Junk mailbox; never choose by LIST order."""
+        mailboxes = await self.incoming_client.list_mailboxes()
+        selectable = [
+            mailbox for mailbox in mailboxes if not any(flag.casefold() == r"\noselect" for flag in mailbox.flags)
+        ]
+        candidates = [
+            mailbox.name for mailbox in selectable if any(flag.casefold() == r"\junk" for flag in mailbox.flags)
+        ]
+        if not candidates:
+            common_names = {name.casefold() for name in _JUNK_FOLDER_CANDIDATES}
+            candidates = [mailbox.name for mailbox in selectable if mailbox.name.casefold() in common_names]
+        if len(candidates) > 1:
+            raise ValueError("Junk mailbox is ambiguous; use list_mailboxes and specify destination_mailbox")
+        return candidates[0] if candidates else None
 
     async def _find_archive_folder(self) -> str | None:
         """Locate the Archive folder via the RFC 6154 ``\\Archive`` flag, then common names."""

@@ -66,6 +66,43 @@ failed before changing their flags. When the provider also lacks native `MOVE`,
 `move_emails` rejects its COPY-and-delete fallback before copying anything. Use
 the provider's own client or an IMAP server that supports `MOVE` or `UIDPLUS`.
 
+## Move suspected spam to Junk and restore it
+
+Use `move_emails` for both directions; this requires `organize` permission.
+First list messages in the source mailbox. For a UID listed in `INBOX`, call:
+
+```json
+{
+  "account_name": "work",
+  "email_ids": ["42"],
+  "source_mailbox": "INBOX",
+  "destination_role": "junk"
+}
+```
+
+Do not also pass `destination_mailbox`. The result names the resolved folder,
+which may be localized rather than named `Junk`. If discovery is missing or
+ambiguous, inspect `list_mailboxes` and use an exact `destination_mailbox`
+instead. See [Junk discovery](tools.md#move_emails) for the selection rules.
+
+To restore, list messages again in that resolved folder. If the newly listed
+UID is `73` and the folder was `Junk`, call:
+
+```json
+{
+  "account_name": "work",
+  "email_ids": ["73"],
+  "source_mailbox": "Junk",
+  "destination_mailbox": "INBOX"
+}
+```
+
+The example UIDs are illustrative; use values from the actual source listing,
+not the old pre-move UID. The caller decides whether a message is spam. These
+calls request mailbox moves and do not guarantee service-provider training or
+reporting. Inspect partial/unknown results before deciding what to do next;
+never replay an ambiguous move automatically.
+
 ## ProtonMail Bridge and self-signed TLS
 
 Local bridges commonly expose IMAP through STARTTLS with a locally issued

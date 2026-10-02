@@ -1703,7 +1703,7 @@
         },
         {
             "name": "move_emails",
-            "description": "Move one or more emails between IMAP folders by email_id. Use list_emails_metadata and list_mailboxes first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried.",
+            "description": "Move emails between IMAP folders using UIDs from list_emails_metadata in source_mailbox. Specify exactly one of destination_mailbox or destination_role='junk' to discover the Junk folder via \\Junk, then common names. Missing or ambiguous discovery requires an explicit destination; no folder is created. To restore from Junk, list it again for current UIDs and move to INBOX with that explicit source_mailbox. This requests a move, not guaranteed spam training or reporting. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried.",
             "inputSchema": {
                 "properties": {
                     "account_name": {
@@ -1725,24 +1725,42 @@
                         "type": "array"
                     },
                     "destination_mailbox": {
-                        "description": "The destination mailbox/folder to move emails to.",
-                        "maxLength": 1024,
-                        "title": "Destination Mailbox",
-                        "type": "string"
+                        "anyOf": [
+                            {
+                                "maxLength": 1024,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Exact destination mailbox. Omit only when destination_role='junk' is supplied.",
+                        "title": "Destination Mailbox"
                     },
                     "source_mailbox": {
                         "default": "INBOX",
-                        "description": "The source mailbox containing the emails.",
+                        "description": "Mailbox in which email_ids were listed; UIDs are not transferable across mailboxes.",
                         "maxLength": 1024,
                         "title": "Source Mailbox",
                         "type": "string"
+                    },
+                    "destination_role": {
+                        "anyOf": [
+                            {
+                                "const": "junk",
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Discover the Junk destination. Mutually exclusive with destination_mailbox.",
+                        "title": "Destination Role"
                     }
                 },
-                "required": [
-                    "account_name",
-                    "email_ids",
-                    "destination_mailbox"
-                ],
+                "required": ["account_name", "email_ids"],
                 "title": "move_emailsArguments",
                 "type": "object"
             },

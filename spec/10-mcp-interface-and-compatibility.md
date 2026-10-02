@@ -24,6 +24,13 @@ time and returns a bounded typed denial.
 its destination and mutation authority are owned by specs 04 and 07. The complete
 catalog remains advertised for read-only and selectively granted accounts too.
 
+Junk/restore workflows reuse `move_emails`, not new spam/ham tool names. Its
+optional `destination_role="junk"` is mutually exclusive with the now-optional
+`destination_mailbox`; all previous valid explicit-destination calls remain
+valid. Source-mailbox/UID ownership and destination discovery are owned by
+spec 07. The catalog snapshot locks the additive input change, unchanged output
+schema, and role-based resolved-mailbox result wording.
+
 This preserves client discovery caches while ensuring a permissive startup state
 does not authorize a later effect. Tool list callbacks MUST NOT resolve secrets,
 contact providers, or scan mailboxes.

@@ -197,6 +197,8 @@ class ClassicMutationProvider:
         command: MoveCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome:
+        if command.destination_mailbox is None or command.destination_role is not None:
+            raise ValueError("Move destination must be resolved before provider access")
         self._guard(account, "organize")
         return await _bounded_mutation_call(
             self._handler.incoming_client.move_emails_with_outcome(
@@ -219,6 +221,12 @@ class ClassicMutationProvider:
         if len(drafts) != 1:
             raise ValueError("Configure drafts_mailbox or provide exactly one special-use Drafts mailbox")
         return drafts[0]
+
+    async def find_junk_mailbox(self) -> str:
+        junk_mailbox = await _bounded_mutation_call(self._handler._find_junk_folder())
+        if junk_mailbox is None:
+            raise ValueError("No selectable Junk folder found; use list_mailboxes and specify destination_mailbox")
+        return junk_mailbox
 
     async def find_archive_mailbox(self, source_mailbox: str) -> str:
         archive_mailbox = await _bounded_mutation_call(self._handler._find_archive_folder())

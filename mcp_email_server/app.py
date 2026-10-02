@@ -25,6 +25,7 @@ from mcp_email_server.application.mutations import (
     ForwardCommand,
     MarkReadCommand,
     MoveCommand,
+    MoveMutationOutcome,
     MutableEmailFlag,
     RecipientPolicyDeniedError,
     SaveDraftCommand,
@@ -100,7 +101,7 @@ async def mark_read_command(command: MarkReadCommand) -> BatchMutationOutcome:
     return await get_application_runtime().mutations.mark_read.execute(command)
 
 
-async def move_emails_command(command: MoveCommand) -> BatchMutationOutcome:
+async def move_emails_command(command: MoveCommand) -> MoveMutationOutcome:
     return await get_application_runtime().mutations.move.execute(command)
 
 
@@ -1124,8 +1125,12 @@ async def mark_emails_as_read(
 
 @mcp.tool(
     description=(
-        "Move one or more emails between IMAP folders by email_id. Use list_emails_metadata and list_mailboxes "
-        "first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried."
+        "Move emails between IMAP folders using UIDs from list_emails_metadata in source_mailbox. "
+        "Specify exactly one of destination_mailbox or destination_role='junk' to discover the Junk folder "
+        "via \\Junk, then common names. Missing or ambiguous discovery requires an explicit destination; "
+        "no folder is created. To restore from Junk, list it again for current UIDs and move to INBOX with "
+        "that explicit source_mailbox. This requests a move, not guaranteed spam training or reporting. "
+        "Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried."
     ),
     annotations=_DESTRUCTIVE_REMOTE_MUTATION,
 )
@@ -1142,28 +1147,33 @@ async def move_emails(
         ),
     ],
     destination_mailbox: Annotated[
-        str,
+        str | None,
         Field(
             max_length=APPLICATION_LIMITS.mailbox_bytes,
-            description="The destination mailbox/folder to move emails to.",
+            description="Exact destination mailbox. Omit only when destination_role='junk' is supplied.",
         ),
-    ],
+    ] = None,
     source_mailbox: Annotated[
         str,
         Field(
             default="INBOX",
             max_length=APPLICATION_LIMITS.mailbox_bytes,
-            description="The source mailbox containing the emails.",
+            description="Mailbox in which email_ids were listed; UIDs are not transferable across mailboxes.",
         ),
     ] = "INBOX",
+    destination_role: Annotated[
+        Literal["junk"] | None,
+        Field(description="Discover the Junk destination. Mutually exclusive with destination_mailbox."),
+    ] = None,
 ) -> str:
     outcome = await move_emails_command(
-        MoveCommand(account_name, tuple(email_ids), source_mailbox, destination_mailbox)
+        MoveCommand(account_name, tuple(email_ids), source_mailbox, destination_mailbox, destination_role)
     )
-    succeeded = outcome.targets("succeeded")
-    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
-        return f"Successfully moved {len(succeeded)} email(s) to {destination_mailbox}"
-    return f"Move result [{_tagged_batch_result(outcome)}]"
+    succeeded = outcome.batch.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.batch.reconciliation_needed:
+        return f"Successfully moved {len(succeeded)} email(s) to {outcome.destination_mailbox}"
+    placement = f"; mailbox: {outcome.destination_mailbox}" if destination_role is not None else ""
+    return f"Move result [{_tagged_batch_result(outcome.batch)}{placement}]"
 
 
 @mcp.tool(
