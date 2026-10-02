@@ -15,7 +15,12 @@ from mcp_email_server.application.limits import (
     validate_serialized_result,
 )
 from mcp_email_server.application.metadata import RuntimeMode
-from mcp_email_server.application.mutation_policy import DEFAULT_ALLOWED_MUTATIONS, MutationClass, require_mutation
+from mcp_email_server.application.mutation_policy import (
+    DEFAULT_ALLOWED_MUTATIONS,
+    MutationClass,
+    require_append_permissions,
+    require_mutation,
+)
 from mcp_email_server.imap_keywords import ImapKeywordRegistry
 
 MutationStatus = Literal["succeeded", "failed", "unknown"]
@@ -336,8 +341,6 @@ class SaveToMailboxCommand(ComposeCommand):
         super().validate()
         validate_mailbox_name(self.mailbox)
         if self.flags is not None:
-            if any(flag.casefold() == r"\deleted" for flag in self.flags if isinstance(flag, str)):
-                raise ValueError("APPEND flags must not include the Deleted flag; use delete_emails")
             if any(not isinstance(flag, str) for flag in self.flags):
                 raise ValueError("flags must contain strings")
             if len(self.flags) > APPLICATION_LIMITS.flags:
@@ -1062,10 +1065,10 @@ class SaveToMailboxService(_MutationWorkflow):
     async def execute(self, command: SaveToMailboxCommand) -> AppendMutationOutcome:
         command.validate()
         account = self._resolve(command.account_name)
-        require_mutation(account.allowed_mutations, "append")
+        require_append_permissions(account.allowed_mutations, command.flags)
         _validate_recipient_policy(command, account)
         access = self._open(account)
-        require_mutation(access.account.allowed_mutations, "append")
+        require_append_permissions(access.account.allowed_mutations, command.flags)
         _validate_recipient_policy(command, access.account)
         _preflight_attachment_sizes(command.attachments)
         try:

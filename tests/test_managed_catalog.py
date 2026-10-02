@@ -272,7 +272,7 @@ def test_initialize_rejects_foreign_existing_file_without_modifying_it(tmp_path:
     assert path.read_bytes() == original
 
 
-def test_v3_catalog_migrates_to_v4_without_losing_accounts_policy_or_secrets(tmp_path: Path) -> None:
+def test_v3_catalog_migrates_to_v5_without_losing_accounts_policy_or_secrets(tmp_path: Path) -> None:
     catalog = _v3_catalog(tmp_path)
 
     assert catalog.catalog_revision() == 7
@@ -295,7 +295,7 @@ def test_v3_catalog_migrates_to_v4_without_losing_accounts_policy_or_secrets(tmp
         assert connection.execute("SELECT tags_json FROM managed_account").fetchone()[0] == "[]"
 
 
-def test_v3_migration_rolls_back_before_advertising_v4(monkeypatch, tmp_path: Path) -> None:
+def test_v3_migration_rolls_back_before_advertising_v5(monkeypatch, tmp_path: Path) -> None:
     catalog = _v3_catalog(tmp_path)
 
     def fail_after_first_addition(connection: sqlite3.Connection, _schema: str) -> None:
@@ -335,7 +335,7 @@ def test_unsupported_pre_release_schema_version_is_rejected_without_mutation(tmp
         assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 1
 
 
-def test_v4_open_rejects_persistent_invariant_corruption(tmp_path: Path) -> None:
+def test_current_schema_open_rejects_persistent_invariant_corruption(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path, FakeSecretStore())
     with closing(sqlite3.connect(catalog.path)) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")

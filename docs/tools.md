@@ -392,8 +392,11 @@ complete MIME payload is serialized with CRLF line endings before IMAP APPEND fo
 compatibility with strict providers. Saved-message flags may be system flags or
 provider keywords, but each must be one valid IMAP atom; legal values such as
 `$Forwarded`, `project.name`, and `123flag` are accepted, while whitespace,
-controls, and IMAP protocol specials are rejected. `\Deleted` is rejected even
-with `append` permission; use the scoped `delete_emails` workflow instead.
+controls, and IMAP protocol specials are rejected. A case-insensitive `\Deleted`
+flag additionally requires `delete` permission. Default full-grant accounts
+retain the historical ability to append with this flag; `append` alone does not
+permit it. This only flags the newly appended message and does not delete or
+expunge any existing UID; use `delete_emails` for existing messages.
 
 The server refreshes capabilities before mailbox selection. A message with
 internationalized address or thread-header syntax requires RFC 6855, and a

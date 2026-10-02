@@ -148,9 +148,88 @@ async def test_draft_discovery_requires_unique_special_use(flags):
 
 
 @pytest.mark.parametrize("flag", [r"\Deleted", r"\deleted"])
-def test_append_cannot_smuggle_deleted_flag(flag):
-    with pytest.raises(ValueError, match="Deleted"):
-        SaveToMailboxCommand("primary", ("recipient@example.test",), "s", "b", flags=(flag,)).validate()
+@pytest.mark.asyncio
+async def test_full_grant_append_preserves_deleted_flag(flag):
+    command = SaveToMailboxCommand("primary", ("recipient@example.test",), "s", "b", flags=(flag,))
+    command.validate()
+    provider = MagicMock()
+    provider.save_to_mailbox = AsyncMock(
+        return_value=AppendMutationOutcome("succeeded", "message-id", mailbox="Drafts")
+    )
+    services, _, _, _ = _services(provider=provider)
+    result = await services.save_to_mailbox.execute(command)
+    assert result.status == "succeeded"
+    assert provider.save_to_mailbox.await_args.args[0].flags == (flag,)
+
+
+@pytest.mark.parametrize("flag", [r"\Deleted", r"\deleted"])
+@pytest.mark.parametrize("grants", [("append",), ("delete",), ()])
+@pytest.mark.asyncio
+async def test_deleted_append_requires_both_grants_before_provider_open(flag, grants):
+    services, _, factory, _ = _services(account=_account(allowed_mutations=grants))
+    with pytest.raises(PermissionError, match="not allowed"):
+        await services.save_to_mailbox.execute(
+            SaveToMailboxCommand("primary", ("recipient@example.test",), "s", "b", flags=(flag,))
+        )
+    factory.open.assert_not_called()
+
+
+@pytest.mark.parametrize("flags", [None, (), (r"\Seen",)])
+@pytest.mark.asyncio
+async def test_ordinary_append_does_not_require_delete_grant(flags):
+    provider = MagicMock()
+    provider.save_to_mailbox = AsyncMock(
+        return_value=AppendMutationOutcome("succeeded", "message-id", mailbox="Drafts")
+    )
+    services, _, _, _ = _services(account=_account(allowed_mutations=("append",)), provider=provider)
+    result = await services.save_to_mailbox.execute(
+        SaveToMailboxCommand("primary", ("recipient@example.test",), "s", "b", flags=flags)
+    )
+    assert result.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_deleted_append_rechecks_opened_account_grants():
+    account = _account(allowed_mutations=("append", "delete"))
+    services, _, factory, _ = _services(account=account)
+    provider = MagicMock()
+    provider.save_to_mailbox = AsyncMock()
+    factory.open.return_value = MutationProviderAccess(replace(account, allowed_mutations=("append",)), provider)
+    with pytest.raises(PermissionError, match="delete"):
+        await services.save_to_mailbox.execute(
+            SaveToMailboxCommand("primary", ("recipient@example.test",), "s", "b", flags=(r"\Deleted",))
+        )
+    provider.save_to_mailbox.assert_not_awaited()
+
+
+@pytest.mark.parametrize("revoke_delete", [False, True])
+@pytest.mark.asyncio
+async def test_deleted_append_checks_delete_at_provider_effect(email_settings, revoke_delete):
+    from mcp_email_server.emails.classic import ClassicEmailHandler
+
+    snapshot = _account(allowed_mutations=("append", "delete"))
+    fresh = MagicMock(return_value=snapshot)
+    handler = ClassicEmailHandler(email_settings)
+    provider = ClassicMutationProvider(handler, fresh)
+    imap = _imap()
+
+    async def connected(*args, **kwargs):
+        if revoke_delete:
+            fresh.return_value = replace(snapshot, allowed_mutations=("append",))
+        return imap
+
+    command = SaveToMailboxCommand("primary", ("recipient@example.test",), "s", "b", flags=(r"\Deleted",))
+    with patch.object(handler.incoming_client, "_connect_imap_server", AsyncMock(side_effect=connected)):
+        if revoke_delete:
+            with pytest.raises(PermissionError, match="delete"):
+                await provider.save_to_mailbox(command, snapshot)
+            imap.append.assert_not_awaited()
+        else:
+            result = await provider.save_to_mailbox(command, snapshot)
+            assert result.status == "succeeded"
+            assert imap.append.await_args.kwargs["flags"] == r"(\Deleted)"
+    imap.uid.assert_not_awaited()
+    imap.expunge.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -240,7 +319,59 @@ def test_fresh_resolution_denial_is_permission_error(error):
         provider._guard(_account(), "organize")
 
 
-def test_v4_migration_preserves_full_default_and_inheritance(tmp_path):
+@pytest.mark.parametrize("source_version", [3, 4])
+def test_migration_preserves_full_default_inheritance_and_existing_rows(tmp_path, source_version):
+    import json
+    import sqlite3
+
+    from mcp_email_server import managed as managed_module
+    from tests.test_managed_catalog import _tag, _v3_catalog
+
+    catalog = _v3_catalog(tmp_path)
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        connection.row_factory = sqlite3.Row
+        if source_version == 4:
+            connection.executescript(managed_module._SCHEMA_V4_ADDITIONS)
+            connection.execute("UPDATE schema_metadata SET version = 4")
+            connection.execute("UPDATE catalog SET enable_attachment_content = 1")
+            connection.execute("UPDATE managed_account SET tags_json = ?", (json.dumps([_tag().model_dump()]),))
+        connection.commit()
+        original = {
+            query: connection.execute(query).fetchall()
+            for query in (
+                "SELECT * FROM catalog",
+                "SELECT * FROM managed_account",
+                "SELECT * FROM endpoint",
+                "SELECT * FROM secret_binding",
+                "SELECT * FROM managed_secret",
+            )
+        }
+    store = MagicMock()
+    migrated = ManagedCatalog(catalog.path, secret_store=store)
+    policy = migrated.policy()
+    account = migrated.show_account("alice")
+    assert policy.allowed_mutations == DEFAULT_ALLOWED_MUTATIONS
+    assert account.allowed_mutations is None
+    assert account.drafts_mailbox is None
+    assert policy.allowed_recipients == ("bob@example.test",)
+    assert policy.enable_attachment_content is (source_version == 4)
+    assert account.tags == ((_tag(),) if source_version == 4 else ())
+    store.get.assert_not_called()
+    store.put.assert_not_called()
+    store.delete.assert_not_called()
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        connection.row_factory = sqlite3.Row
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 5
+        for query, old_rows in original.items():
+            new_rows = connection.execute(query).fetchall()
+            columns = tuple(old_rows[0].keys())
+            assert [tuple(row[key] for key in columns) for row in new_rows] == [tuple(row) for row in old_rows]
+    assert ManagedCatalog(catalog.path, secret_store=store).policy() == policy
+    assert migrated.show_account("alice") == account
+
+
+@pytest.mark.parametrize("source_version", [3, 4])
+def test_v5_migration_failure_rolls_back_source_schema_and_can_retry(monkeypatch, tmp_path, source_version):
     import sqlite3
 
     from mcp_email_server import managed as managed_module
@@ -248,16 +379,32 @@ def test_v4_migration_preserves_full_default_and_inheritance(tmp_path):
 
     catalog = _v3_catalog(tmp_path)
     with closing(sqlite3.connect(catalog.path)) as connection:
-        connection.executescript(managed_module._SCHEMA_V4_ADDITIONS)
-        connection.execute("UPDATE schema_metadata SET version = 4")
-        connection.commit()
-    migrated = ManagedCatalog(catalog.path)
-    assert migrated.policy().allowed_mutations == DEFAULT_ALLOWED_MUTATIONS
-    assert migrated.show_account("alice").allowed_mutations is None
-    assert migrated.show_account("alice").drafts_mailbox is None
-    assert migrated.policy().allowed_recipients == ("bob@example.test",)
+        connection.row_factory = sqlite3.Row
+        if source_version == 4:
+            connection.executescript(managed_module._SCHEMA_V4_ADDITIONS)
+            connection.execute("UPDATE schema_metadata SET version = 4")
+            connection.commit()
+        original_schema = managed_module._schema_objects(connection)
+    execute_schema = managed_module._execute_schema
+
+    def fail_during_v5(connection, schema):
+        if schema == managed_module._SCHEMA_V5_ADDITIONS:
+            connection.execute("ALTER TABLE managed_account ADD COLUMN drafts_mailbox TEXT")
+            raise RuntimeError("synthetic v5 migration failure")
+        execute_schema(connection, schema)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(managed_module, "_execute_schema", fail_during_v5)
+        with pytest.raises(RuntimeError, match="synthetic v5 migration failure"):
+            catalog.policy()
     with closing(sqlite3.connect(catalog.path)) as connection:
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 5
+        connection.row_factory = sqlite3.Row
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == source_version
+        assert managed_module._schema_objects(connection) == original_schema
+        assert connection.execute("SELECT revision FROM catalog").fetchone()[0] == 7
+        assert connection.execute("SELECT revision FROM managed_account").fetchone()[0] == 5
+        assert connection.execute("SELECT secret_value FROM managed_secret").fetchone()[0] == "stored-secret"
+    assert catalog.policy().allowed_mutations == DEFAULT_ALLOWED_MUTATIONS
 
 
 @pytest.mark.asyncio

@@ -121,8 +121,11 @@ accepted the request against the opened authority snapshot. APPEND flags accept 
 and provider keywords only when each is one complete IMAP atom; legal keyword
 forms such as `$Forwarded`, dotted names, and leading digits are not narrowed by
 a local identifier grammar, while controls and protocol specials are rejected.
-General APPEND MUST reject `\Deleted` case-insensitively, even with `append`
-granted; deletion stays in the scoped delete workflow.
+General APPEND with a case-insensitive `\Deleted` flag additionally requires
+`delete`, checked before provider access and freshly before APPEND. Full-grant
+accounts retain their historical ability to append messages with this flag;
+`append` alone does not authorize it. The flag applies only to the new message:
+modifying or expunging existing UIDs remains owned by the scoped delete workflow.
 Every APPEND path serializes the complete MIME message with CRLF line endings and
 does not emit bare LF or CR line breaks, including draft and sent-copy placement.
 When composing `In-Reply-To` or `References`, a simple whitespace-separated list

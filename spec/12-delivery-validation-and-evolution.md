@@ -47,6 +47,16 @@ Before release, link concrete implementation and verification for:
 | Narrow successful-message Sent copy under send, not append                                                   | 07     | `application/mutations.py`, `adapters/mutations.py`; tools/security docs                                              | send-only copy succeeds, failed/unknown SMTP has no copy, revoke send before copy, copy failure preserves SMTP success                       |
 | Management convenience and parity                                                                            | 09     | CLI/UI; transports/troubleshooting docs                                                                               | inheritance vs explicit empty editor and conflict handling; documented CLI fields match implemented options                                  |
 
+Compatibility verification additionally covers full-grant APPEND with
+`\Deleted`, append-only denial before provider access and after grant revocation,
+and ordinary APPEND without `delete`. Schema verification covers both v3/v4
+sources, unchanged accounts/policy/secrets/revisions, rollback after partial v5
+DDL, and idempotent reopen. Published v5 upgrade instructions must explain
+coordinated restart, private consistent backups, and package-only downgrade
+incompatibility. Concrete regression coverage belongs in
+`tests/test_mutation_class_policy.py`, `tests/test_managed_catalog.py`, and the
+GreenMail stdio suite.
+
 Unit, catalog-contract, frontend, strict documentation, and GreenMail checks must
 be recorded by the integrating reviewer. This table states required evidence,
 not an assertion that those checks have passed.

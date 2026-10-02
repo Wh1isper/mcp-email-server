@@ -484,16 +484,35 @@ Managed storage uses one exact current schema for account authority, the
 platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
-original and never treat the catalog as a non-secret database. Schema v3 is the
-only declared pre-release migration source: the first v4 open validates the exact
-v3 shape, transactionally adds empty account tag mappings and the disabled
-attachment-content policy, verifies the resulting schema and invariants, and
-records v4 only after those checks pass. Account, policy, binding, and secret
-rows are preserved. Other unsupported versions, corrupt storage, and insecure
-storage fail closed. Legacy TOML, environment, and keyring sources remain
-supported through explicit import. In legacy mode, an unavailable or unsafe
-operational database produces a bounded warning and the metadata query uses its
-bounded IMAP fallback instead.
+original and never treat the catalog as a non-secret database. Schema v3 and v4
+catalogs migrate automatically to v5 on the first catalog access. The transaction
+preserves accounts, policy, bindings, secrets, and revisions; it adds all five
+global mutation grants, inheriting account overrides, and an unset draft
+mailbox. A v3 source also receives empty account tag mappings and the disabled
+attachment-content policy. Exact schema and invariant checks finish before v5
+is recorded; failure leaves the original version intact. Other unsupported
+versions, corrupt storage, and insecure storage fail closed. Legacy TOML,
+environment, and keyring sources remain supported through explicit import. In
+legacy mode, an unavailable or unsafe operational database produces a bounded
+warning and the metadata query uses its bounded IMAP fallback instead.
+
+### Upgrading a managed catalog to v5
+
+1. Stop every MCP, UI, and CLI process using the selected catalog before opening
+   it with the new application. Even an inspection command can trigger migration.
+2. Keep a private, consistent pre-upgrade backup of the catalog and its matching
+   bootstrap selection. Use a SQLite-aware backup that includes committed WAL
+   data; copying only a live main database file is not a reliable backup. On
+   macOS, preserve the corresponding keyring entries as well.
+3. Upgrade UI, CLI, and MCP together to the same release, then restart each MCP
+   client. Do not leave an older process sharing the newly migrated catalog.
+
+Versions that only understand v3/v4 cannot open v5. Downgrading only the package
+is therefore insufficient: stop the new processes and restore the matching
+pre-upgrade catalog and bootstrap with the older application. This restores
+local configuration to the backup point, not provider-side email effects or
+later keyring changes. Keep both database copies private. No automatic downgrade
+or destructive catalog recreation is performed.
 
 ## Legacy configuration precedence
 

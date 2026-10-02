@@ -115,12 +115,16 @@ backups include plaintext `managed_secret.secret_value` values. Keep every copy
 under protection equivalent to the private original; do not upload, share, or
 treat it as a non-secret account database.
 
-The declared v3-to-v4 catalog migration runs only after the existing catalog and
-sidecars pass the same private-file checks as a normal managed open. One bounded
-SQLite write transaction validates the exact v3 schema, adds default-disabled
-attachment content and empty tag mappings, validates the resulting v4 schema and
-invariants, and records version 4 last. It neither selects nor copies secret
-values; failure rolls back without changing the advertised schema version.
+The declared v3/v4-to-v5 catalog migration runs only after the existing catalog
+and sidecars pass the same private-file checks as a normal managed open. One
+bounded SQLite write transaction validates the exact source schema, adds the
+fixed-five global grants, inheriting account overrides, and unset draft mailbox.
+A v3 source also receives default-disabled attachment content and empty tag
+mappings. It validates the resulting v5 schema and invariants and records version
+5 last. It neither resolves nor copies secret values; failure rolls back without
+changing the advertised source version. Older runtimes reject v5. Stop all
+catalog users and retain a private, consistent backup before the first new-version
+open; see [managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v5).
 
 A create or rotation stores a new immutable value and commits it as active only
 if the reviewed account revision still matches. On Linux and Windows, inserting

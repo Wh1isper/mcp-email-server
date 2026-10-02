@@ -165,12 +165,19 @@ sidecar itself is unparseable, repair or restore that sidecar manually; `reset`
 cannot safely infer its mode and therefore does not unlink the independent legacy
 source.
 
-Schema v3 is the only supported pre-release managed-catalog migration source.
-The first v4 open performs that migration transactionally, preserving account,
-policy, binding, and secret rows while initializing empty tag mappings and a
-disabled attachment-content policy. If startup was attempted before upgrading
-the application, restart it after checking out the v4-capable version. A failed
-migration rolls back without advertising v4.
+Schemas v3 and v4 are supported managed-catalog migration sources for v5.
+The first new-version catalog access migrates transactionally, preserving account,
+policy, binding, secret rows, and revisions. Both sources receive full global
+mutation grants and inheriting account overrides; v3 also receives empty tag
+mappings and a disabled attachment-content policy. A failed migration leaves the
+source version intact.
+
+An older MCP process will reject the catalog after another new-version UI, CLI,
+or MCP process migrates it. Upgrade all catalog users together and restart every
+MCP client. If rolling back the package, restore the consistent pre-migration
+catalog backup too; do not edit the schema version manually, delete the catalog,
+or re-enter all accounts as a routine upgrade fix. Follow the
+[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v5).
 
 Other older development schemas are still rejected. For those versions, select
 legacy mode, preserve the old file for rollback, and initialize a fresh

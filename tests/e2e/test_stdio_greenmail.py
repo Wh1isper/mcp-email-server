@@ -1069,7 +1069,7 @@ async def test_recipient_globs_against_greenmail(tmp_path: Path, pattern: str) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("grants", [None, [], ["draft"], ["send"]])
+@pytest.mark.parametrize("grants", [None, [], ["draft"], ["send"], ["append"], ["append", "delete"]])
 async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants: list[str] | None) -> None:
     """Keep read/write defaults while account restrictions govern real effects."""
     _wait_until_ready()
@@ -1154,16 +1154,38 @@ async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants:
                 "set_email_flags",
                 arguments={"account_name": "alice", "email_ids": [source.uid], "operation": "add", "flags": [r"\Seen"]},
             )
-            if grants is None:
+            if grants is None or "append" in grants:
                 assert appended.isError is not True, _text_content(appended)
                 _wait_for_message(ALICE, "INBOX", append_subject)
+            else:
+                assert appended.isError is True
+                assert _find_message(ALICE, "INBOX", append_subject) is None
+            if grants is None or "organize" in grants:
                 assert marked.isError is not True, _text_content(marked)
                 assert r"\Seen" in _wait_for_message(ALICE, "INBOX", subject).flags
             else:
-                assert appended.isError is True
                 assert marked.isError is True
-                assert _find_message(ALICE, "INBOX", append_subject) is None
                 assert r"\Seen" not in _wait_for_message(ALICE, "INBOX", subject).flags
+
+            deleted_subject = f"deleted-append-{subject}"
+            deleted_append = await session.call_tool(
+                "save_to_mailbox",
+                arguments={
+                    "account_name": "alice",
+                    "recipients": [BOB[0]],
+                    "subject": deleted_subject,
+                    "body": "Only this new message receives the Deleted flag",
+                    "mailbox": "INBOX",
+                    "flags": [r"\Deleted"],
+                },
+            )
+            if grants is None or {"append", "delete"} <= set(grants):
+                assert deleted_append.isError is not True, _text_content(deleted_append)
+                assert r"\Deleted" in _wait_for_message(ALICE, "INBOX", deleted_subject).flags
+            else:
+                assert deleted_append.isError is True
+                assert _find_message(ALICE, "INBOX", deleted_subject) is None
+            assert r"\Deleted" not in _wait_for_message(ALICE, "INBOX", subject).flags
 
 
 @pytest.mark.asyncio

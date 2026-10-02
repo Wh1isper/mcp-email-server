@@ -60,16 +60,26 @@ A new catalog is created at the current exact schema version. Opening:
 - leaves no partially advertised version on rollback or crash.
 
 No startup path silently drops/recreates authoritative tables. Projection-only
-rebuild is explicit and isolated. Schema v3 is the sole declared pre-release
-migration source for v4. Opening a v3 catalog first validates its exact schema,
-then uses one bounded `BEGIN IMMEDIATE` transaction to add the disabled
-attachment-content policy and empty account tag mappings. It validates the exact
-v4 schema and invariants before recording version 4 as the final write. Failure
-or process interruption rolls back both additions and leaves the catalog
-advertised as v3; account, policy, binding, secret, and projection rows retain
-their identifiers and revisions. Other pre-release schema versions remain
-unsupported without a general compatibility promise. Legacy TOML, environment,
-and keyring import remains supported through the explicit spec 04 workflow.
+rebuild is explicit and isolated. Schemas v3 and v4 are the declared migration
+sources for v5. Opening either source first validates its exact schema, then uses
+one bounded `BEGIN IMMEDIATE` transaction. A v3 source first receives the disabled
+attachment-content policy and empty account tag mappings from v4. Both sources
+receive the fixed-five global mutation grants, nullable account overrides that
+inherit, and an unset draft destination. The exact v5 schema and invariants are
+validated before recording version 5 as the final write. Failure or process
+interruption rolls back all additions and leaves the original source version
+advertised; account, policy, binding, secret, and projection rows retain their
+identifiers and revisions. Migration does not resolve or copy secret values.
+Other schema versions remain unsupported without a general compatibility promise.
+Legacy TOML, environment, and keyring import remains supported through the
+explicit spec 04 workflow.
+
+Older runtimes cannot read a migrated v5 catalog. Published upgrade guidance MUST
+require stopping all catalog users, privately backing up the catalog before its
+first new-version open, and upgrading UI, CLI, and MCP together. A package-only
+downgrade is not a catalog rollback: recovery requires the matching pre-migration
+catalog and application version. Do not introduce a silent downgrade or weaken
+exact-schema validation to support mixed-version processes.
 
 ## Filesystem Layout and Locking
 

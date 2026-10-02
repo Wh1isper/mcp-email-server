@@ -15,7 +15,7 @@ from typing import TypeVar
 from mcp_email_server.adapters.authority import resolve_local_account
 from mcp_email_server.application.management import BindingRole
 from mcp_email_server.application.metadata import RuntimeMode
-from mcp_email_server.application.mutation_policy import MutationClass, require_mutation
+from mcp_email_server.application.mutation_policy import MutationClass, require_append_permissions, require_mutation
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     BatchMutationOutcome,
@@ -95,7 +95,10 @@ class ClassicMutationProvider:
                 current = self._fresh_authority() if self._fresh_authority is not None else account
             except (ValueError, RuntimeError) as exc:
                 raise PermissionError("Mutation account authority is unavailable; retry") from exc
-            require_mutation(current.allowed_mutations, grant)
+            if grant == "append" and isinstance(command, SaveToMailboxCommand):
+                require_append_permissions(current.allowed_mutations, command.flags)
+            else:
+                require_mutation(current.allowed_mutations, grant)
             if (
                 grant in ("organize", "delete") or isinstance(command, ForwardCommand)
             ) and current.allowed_senders != account.allowed_senders:

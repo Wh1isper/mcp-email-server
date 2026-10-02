@@ -68,6 +68,16 @@ are included with the same replacement/precedence rules used by legacy runtime.
 Credential values remain absent from preview and are read only during confirmed
 apply. Do not pass them through MCP or chat.
 
+### Upgrading an existing managed catalog
+
+Managed v3/v4 catalogs migrate to v5 on the first access by the new application.
+Existing accounts retain full mutation grants by default; no permission reset
+or account re-entry is required. Stop all older catalog users, keep a private
+consistent backup, and upgrade UI, CLI, and MCP together before restarting the
+clients. An older runtime cannot read v5, so a package-only downgrade is not a
+rollback. See the [managed upgrade steps](configuration.md#upgrading-a-managed-catalog-to-v5).
+Legacy TOML/environment users are not automatically switched to managed mode.
+
 ## Configure an account with the UI
 
 Run one of the V2 commands in [Version availability](#version-availability).
