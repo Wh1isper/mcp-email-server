@@ -146,6 +146,14 @@ atomic-write coverage. Do not add a weaker path-only fallback for Windows;
 UNC/network/device/alternate-stream and non-NTFS storage remain explicit
 fail-closed boundaries.
 
+Running the suite on Windows without elevation or Developer Mode skips the
+cases that need to create symlinks or assign another owner, with the reason in
+the skip message. Create test symlinks through the `symlink_or_skip` fixture so
+that only the missing privilege skips. Set
+`MCP_EMAIL_SERVER_REQUIRE_WINDOWS_SYMLINK_TESTS=1`, as the `windows-latest` job
+does, to turn the symlink skips into failures. Locally, Developer Mode enables
+the symlink cases; the foreign-owner case needs an elevated shell.
+
 The CI pipeline runs quality and strict documentation checks, the unit test
 suite against every supported Python version, a full native Windows suite, the
 locked frontend and real-browser management E2E, the GreenMail baseline, and a

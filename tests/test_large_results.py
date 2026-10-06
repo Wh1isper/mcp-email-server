@@ -98,28 +98,30 @@ async def test_large_result_writer_removes_root_after_consumer_already_removed_a
 
 
 @pytest.mark.asyncio
-async def test_large_result_writer_rejects_precreated_symlink() -> None:
+async def test_large_result_writer_rejects_precreated_symlink(symlink_or_skip) -> None:
     writer = LocalLargeResultWriter()
     root, _identity = writer._ensure_root()
     target = root / "outside.json"
-    target.write_text("outside")
-    target.chmod(0o600)
-    name = "email-content-aaaaaaaaaaaaaaaa.json"
-    (root / name).symlink_to(target)
+    link = root / "email-content-aaaaaaaaaaaaaaaa.json"
+    try:
+        target.write_text("outside")
+        target.chmod(0o600)
+        symlink_or_skip(link, target)
 
-    with (
-        patch(
-            "mcp_email_server.large_results.uuid.uuid4",
-            return_value=SimpleNamespace(hex="a" * 32),
-        ),
-        pytest.raises(FileExistsError),
-    ):
-        await writer.write(prefix="email-content", content=b"secret")
+        with (
+            patch(
+                "mcp_email_server.large_results.uuid.uuid4",
+                return_value=SimpleNamespace(hex="a" * 32),
+            ),
+            pytest.raises(FileExistsError),
+        ):
+            await writer.write(prefix="email-content", content=b"secret")
 
-    assert target.read_text() == "outside"
-    (root / name).unlink()
-    target.unlink()
-    await writer.aclose()
+        assert target.read_text() == "outside"
+    finally:
+        link.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        await writer.aclose()
 
 
 @pytest.mark.asyncio

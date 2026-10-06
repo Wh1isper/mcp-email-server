@@ -229,3 +229,29 @@ def broken_keyring():
     finally:
         keyring.set_keyring(previous)
         keyring_store.keyring_usable.cache_clear()
+
+
+# ERROR_PRIVILEGE_NOT_HELD: creating a symlink needs SeCreateSymbolicLinkPrivilege
+# (elevation or Developer Mode) on Windows. Any other failure is a real error.
+_ERROR_PRIVILEGE_NOT_HELD = 1314
+
+
+@pytest.fixture
+def symlink_or_skip():
+    """Create a symlink, or skip when only the Windows symlink privilege is missing.
+
+    With MCP_EMAIL_SERVER_REQUIRE_WINDOWS_SYMLINK_TESTS=1 (the native Windows CI
+    job) the missing privilege fails the test instead of skipping it.
+    """
+
+    def create(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != _ERROR_PRIVILEGE_NOT_HELD:
+                raise
+            if os.getenv("MCP_EMAIL_SERVER_REQUIRE_WINDOWS_SYMLINK_TESTS") == "1":
+                pytest.fail(f"native Windows CI must support the symlink security proof: {exc}")
+            pytest.skip(f"symlink privilege unavailable: {exc}")
+
+    return create

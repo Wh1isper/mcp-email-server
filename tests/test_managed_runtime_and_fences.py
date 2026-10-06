@@ -39,7 +39,7 @@ def test_transport_adapters_do_not_import_legacy_provider_or_catalog_bypasses() 
     discovered: set[tuple[str, str]] = set()
     cli_modules: set[str] = set()
     for relative_path in ("mcp_email_server/app.py", "mcp_email_server/cli.py"):
-        tree = ast.parse((project_root / relative_path).read_text())
+        tree = ast.parse((project_root / relative_path).read_bytes())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and isinstance(node.module, str):
                 discovered.update((node.module, alias.name) for alias in node.names)

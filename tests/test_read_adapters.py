@@ -462,14 +462,11 @@ async def test_artifact_writer_fails_closed_without_pinned_traversal(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp_path: Path) -> None:
+async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp_path: Path, symlink_or_skip) -> None:
     target = tmp_path / "target.txt"
     target.write_text("preserve")
     destination = tmp_path / "download.txt"
-    try:
-        destination.symlink_to(target)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    symlink_or_skip(destination, target)
 
     with pytest.raises(PermissionError):
         await LocalArtifactWriter().preflight(str(destination), "download.txt")
@@ -483,14 +480,11 @@ async def test_artifact_writer_rejects_symlink_destination_without_overwrite(tmp
 
 
 @pytest.mark.asyncio
-async def test_artifact_writer_rejects_symlink_parent(tmp_path: Path) -> None:
+async def test_artifact_writer_rejects_symlink_parent(tmp_path: Path, symlink_or_skip) -> None:
     real_parent = tmp_path / "real"
     real_parent.mkdir()
     linked_parent = tmp_path / "linked"
-    try:
-        linked_parent.symlink_to(real_parent, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    symlink_or_skip(linked_parent, real_parent, target_is_directory=True)
 
     with pytest.raises(PermissionError):
         await LocalArtifactWriter().write(

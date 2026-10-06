@@ -43,10 +43,14 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="native Windows NTFS sec
 
 if os.name == "nt":  # pragma: win32 cover
     import ntsecuritycon
+    import pywintypes
     import win32security
+    import winerror
 else:
     ntsecuritycon: Any = None
+    pywintypes: Any = None
     win32security: Any = None
+    winerror: Any = None
 
 _GENERIC_ACE_RIGHTS = [ntsecuritycon.GENERIC_READ, ntsecuritycon.GENERIC_EXECUTE] if os.name == "nt" else []
 
@@ -56,12 +60,6 @@ def _private_root(tmp_path: Path) -> Path:
     ensure_private_parent(root / "placeholder")
     validate_private_directory(root)
     return root
-
-
-def _symlink_unavailable(exc: OSError) -> None:
-    if os.getenv("MCP_EMAIL_SERVER_REQUIRE_WINDOWS_SYMLINK_TESTS") == "1":
-        pytest.fail(f"native Windows CI must support the symlink security proof: {exc}")
-    pytest.skip(f"file symlink privilege unavailable: {exc}")
 
 
 def _wait_for(path: Path, process: subprocess.Popen[str], timeout: float = 10.0) -> None:
@@ -321,15 +319,12 @@ def test_windows_backend_uses_real_local_ntfs(tmp_path: Path) -> None:
     assert identity.file_index > 0
 
 
-def test_windows_private_creation_rejects_file_and_directory_reparse_points(tmp_path: Path) -> None:
+def test_windows_private_creation_rejects_file_and_directory_reparse_points(tmp_path: Path, symlink_or_skip) -> None:
     root = _private_root(tmp_path)
     target = root / "target.txt"
     atomic_write_private(target, b"preserve")
     file_link = root / "file-link.txt"
-    try:
-        file_link.symlink_to(target)
-    except OSError as exc:
-        _symlink_unavailable(exc)
+    symlink_or_skip(file_link, target)
 
     with pytest.raises(WindowsSecurityError, match="reparse"):
         validate_private_file(file_link)
@@ -338,10 +333,7 @@ def test_windows_private_creation_rejects_file_and_directory_reparse_points(tmp_
     real_directory = root / "real-directory"
     ensure_private_parent(real_directory / "placeholder")
     directory_link = root / "directory-link"
-    try:
-        directory_link.symlink_to(real_directory, target_is_directory=True)
-    except OSError as exc:
-        _symlink_unavailable(exc)
+    symlink_or_skip(directory_link, real_directory, target_is_directory=True)
     with pytest.raises(WindowsSecurityError, match="reparse"):
         validate_private_directory(directory_link)
 
@@ -525,7 +517,11 @@ def test_windows_foreign_owner_is_rejected(tmp_path: Path) -> None:
             None,
             None,
         )
-    except OSError as exc:
+    except pywintypes.error as exc:
+        # The token cannot assign Administrators as owner: deny-only under UAC,
+        # absent for a standard user.
+        if exc.winerror not in (winerror.ERROR_INVALID_OWNER, winerror.ERROR_PRIVILEGE_NOT_HELD):
+            raise
         pytest.skip(f"runner cannot assign an alternate token owner: {exc}")
     with pytest.raises(WindowsSecurityError, match="ownership"):
         validate_private_file(target)
@@ -756,15 +752,12 @@ def test_windows_cleanup_candidate_enumeration_has_a_hard_bound(
     assert examined == windows_security_module._MAX_STALE_ENTRIES_EXAMINED
 
 
-def test_windows_stale_cleanup_does_not_follow_substituted_reparse_entry(tmp_path: Path) -> None:
+def test_windows_stale_cleanup_does_not_follow_substituted_reparse_entry(tmp_path: Path, symlink_or_skip) -> None:
     root = _private_root(tmp_path)
     outside = root / "outside.txt"
     atomic_write_private(outside, b"preserve")
     remnant = root / f"{_ATTACHMENT_TEMP_PREFIX}{'a' * 32}.tmp"
-    try:
-        remnant.symlink_to(outside)
-    except OSError as exc:
-        _symlink_unavailable(exc)
+    symlink_or_skip(remnant, outside)
 
     assert (
         cleanup_stale_files(
@@ -890,7 +883,9 @@ async def test_windows_large_result_identity_race_preserves_replacement(
     assert not artifact.parent.exists()
 
 
-def test_windows_managed_and_bootstrap_probes_reject_network_paths_and_reparse_parents(tmp_path: Path) -> None:
+def test_windows_managed_and_bootstrap_probes_reject_network_paths_and_reparse_parents(
+    tmp_path: Path, symlink_or_skip
+) -> None:
     unc_catalog = Path(r"\\127.0.0.1\unreachable-share\catalog.sqlite3")
     with pytest.raises(ManagedCatalogSecurityError):
         ManagedCatalog(unc_catalog).catalog_revision()
@@ -899,10 +894,7 @@ def test_windows_managed_and_bootstrap_probes_reject_network_paths_and_reparse_p
 
     root = _private_root(tmp_path)
     network_parent = root / "network-parent"
-    try:
-        network_parent.symlink_to(Path(r"\\127.0.0.1\unreachable-share"), target_is_directory=True)
-    except OSError as exc:
-        _symlink_unavailable(exc)
+    symlink_or_skip(network_parent, Path(r"\\127.0.0.1\unreachable-share"), target_is_directory=True)
     with pytest.raises(ManagedCatalogSecurityError):
         ManagedCatalog(network_parent / "catalog.sqlite3").catalog_revision()
 

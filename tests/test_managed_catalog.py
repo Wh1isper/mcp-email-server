@@ -1215,14 +1215,11 @@ def test_managed_catalog_fails_closed_without_secure_filesystem_primitives(monke
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink and ancestor-permission contract")
-def test_managed_catalog_rejects_symlinked_and_writable_ancestor_chain(tmp_path: Path) -> None:
+def test_managed_catalog_rejects_symlinked_and_writable_ancestor_chain(tmp_path: Path, symlink_or_skip) -> None:
     real = tmp_path / "real"
     real.mkdir(mode=0o700)
     linked = tmp_path / "linked"
-    try:
-        linked.symlink_to(real, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    symlink_or_skip(linked, real, target_is_directory=True)
 
     with pytest.raises(ManagedCatalogSecurityError, match="parent chain"):
         ManagedCatalog.initialize(linked / "catalog.sqlite3")
@@ -1250,17 +1247,14 @@ def test_insecure_database_permissions_are_rejected(tmp_path):
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink error contract")
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", ".lock"])
-def test_catalog_sidecar_and_lock_symlinks_are_rejected(tmp_path: Path, suffix: str) -> None:
+def test_catalog_sidecar_and_lock_symlinks_are_rejected(tmp_path: Path, suffix: str, symlink_or_skip) -> None:
     catalog = _catalog(tmp_path)
     entry = Path(f"{catalog.path}{suffix}")
     entry.unlink(missing_ok=True)
     target = catalog.path.parent / f"target-{suffix.removeprefix('.').removeprefix('-')}"
     target.write_bytes(b"preserve")
     target.chmod(0o600)
-    try:
-        entry.symlink_to(target)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    symlink_or_skip(entry, target)
 
     with pytest.raises(ManagedCatalogSecurityError, match="symlink"):
         catalog.catalog_revision()
@@ -1312,13 +1306,10 @@ def test_catalog_sidecar_and_lock_non_regular_entries_are_rejected(tmp_path: Pat
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink error contract")
-def test_database_symlink_is_rejected(tmp_path):
+def test_database_symlink_is_rejected(tmp_path, symlink_or_skip):
     catalog = _catalog(tmp_path)
     link = catalog.path.parent / "link.sqlite3"
-    try:
-        link.symlink_to(catalog.path)
-    except OSError:
-        pytest.skip("symlinks unavailable")
+    symlink_or_skip(link, catalog.path)
 
     with pytest.raises(ManagedCatalogSecurityError, match="symlink"):
         ManagedCatalog(link).catalog_revision()
