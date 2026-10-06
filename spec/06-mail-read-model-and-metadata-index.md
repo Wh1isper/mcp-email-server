@@ -173,6 +173,12 @@ Body reads:
 - decode text parts independently and fall back to UTF-8 with replacement for an
   unknown or invalid declared charset, so one bad part cannot hide the rest of a
   readable message;
+- resolve GB2312 charset labels to GB18030 as the WHATWG Encoding Standard does,
+  in both MIME bodies and RFC 2047 encoded words (only A1A4 and A1AA change
+  meaning, to their WHATWG code points), and decode `gbk`/`big5` bodies with the
+  declared codec first and GB18030/Big5-HKSCS only after it fails, so text that
+  strict GBK or Big5 decoding accepts is never changed; `gbk`, the Windows code
+  page names, and `big5` keep their strict codec;
 - sanitize decode/parser errors and never persist bodies, thread headers from
   full-content reads, or raw MIME in SQLite.
 
@@ -286,7 +292,9 @@ catalog authority or secret binding state.
 7. Projection failure cannot turn known provider read evidence into a false mail
    failure, and rebuild cannot alter catalog or credential state.
 8. Interoperability tests cover quoted and grouped address fields, attachment
-   subtree pruning, unknown MIME charsets, all English IMAP month tokens, exact
+   subtree pruning, unknown MIME charsets, GB18030 decoding of GB2312 labels in
+   bodies and encoded words, strict-first GBK/Big5 body fallback without
+   regressing strictly decodable text, all English IMAP month tokens, exact
    ASCII astring escaping, multi-literal UTF-8 SEARCH continuations and failure
    framing, LIST completion filtering and literal lengths, and case-insensitive
    special-use attributes.

@@ -171,7 +171,8 @@ managed selection, read/mutation evidence, exact same-day timezone-aware
 `INTERNALDATE` filtering before total and pagination, RFC 5321/RFC 5322 sender
 separation when a display name contains address-special characters, and ordinary
 ASCII APPEND/search behavior. Deterministic protocol tests additionally exercise
-quoted/grouped RFC 5322 addresses, MIME attachment subtrees and charset failure,
+quoted/grouped RFC 5322 addresses, MIME attachment subtrees, charset failure and
+legacy CJK superset decoding,
 exact IMAP LIST and multi-literal SEARCH framing, SMTPUTF8 decisions, SMTP DATA
 7-bit/8-bit/binary transport classification, and RFC 6855 APPEND because the
 GreenMail fixture does not advertise every extension. The E2E

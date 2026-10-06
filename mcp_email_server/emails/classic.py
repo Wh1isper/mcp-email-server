@@ -60,7 +60,7 @@ from mcp_email_server.application.mutations import (
     validate_mailbox_name,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, get_settings, sender_allowed
-from mcp_email_server.emails import EmailHandler
+from mcp_email_server.emails import EmailHandler, charsets
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailBodyResponse,
@@ -70,6 +70,9 @@ from mcp_email_server.emails.models import (
     MailboxInfo,
 )
 from mcp_email_server.log import logger
+
+# GB2312 labels decode as GB18030, including in encoded-word headers (see charsets).
+charsets.install_gb2312_superset_aliases()
 
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
@@ -1366,11 +1369,7 @@ class EmailClient:
         payload = _decoded_payload(part)
         if not payload:
             return ""
-        charset = part.get_content_charset("utf-8")
-        try:
-            return payload.decode(charset)
-        except (LookupError, UnicodeDecodeError):
-            return payload.decode("utf-8", errors="replace")
+        return charsets.decode_text(payload, part.get_content_charset("utf-8"))
 
     def _parse_email_data(  # noqa: C901
         self,

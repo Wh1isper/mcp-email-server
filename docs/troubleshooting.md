@@ -477,6 +477,27 @@ have succeeded. Do not resend; inspect the provider-managed Sent folder, disable
 the extra copy when the provider already saves one, or use an IMAP endpoint that
 supports `ENABLE` with `UTF8=ACCEPT`/`UTF8=ONLY`.
 
+## Chinese text shows replacement characters
+
+The server decodes GB2312 labels with GB18030 and falls back from strict GBK
+and Big5 to GB18030 and Big5-HKSCS for message bodies; see
+[MIME body extraction in MCP Tools](tools.md). These cases still show
+replacement characters:
+
+- an RFC 2047 encoded word labelled `gbk` that contains a GB18030-only character,
+  or one labelled `big5` that contains an HKSCS character, because only bodies
+  get the superset fallback;
+- a body labelled `cp950` that contains an HKSCS character;
+- a part whose bytes are invalid in the declared charset and its superset, for
+  example mail mislabelled as `utf-8`, or a Windows code page 936 euro sign
+  (byte 0x80), which Python's GBK and GB18030 codecs reject.
+
+The GB2312-to-GB18030 mapping is a process-wide codec alias. It changes how
+anything in the server process decodes or encodes the `gb2312` label. The
+previously unknown WHATWG labels `x-gbk`, `cn-big5`, and `x-x-big5` now resolve
+to the strict `gbk` and `big5` codecs, which, like `cp936`, are otherwise
+unchanged. Outgoing mail is always encoded as UTF-8.
+
 ## IMAP reports a malformed `ID` command
 
 `mcp-email-server` sends at most one compact RFC 2971 `ID` command after login,

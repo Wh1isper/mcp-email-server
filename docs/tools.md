@@ -244,7 +244,23 @@ MIME body extraction does not descend into attachment subtrees. In particular,
 the body of an attached or forwarded `message/rfc822` message is never merged
 into the containing message body, even when that part has no filename. If one
 text part declares an unknown charset or contains invalid bytes, it falls back
-to UTF-8 replacement decoding without hiding the other readable parts.
+to UTF-8 replacement decoding without hiding the other readable parts. Legacy
+Chinese labels are widened as follows:
+
+- GB2312 labels decode with GB18030, as the WHATWG Encoding Standard maps them,
+  in bodies and RFC 2047 encoded words alike. A `gb2312` subject or body that
+  contains GBK-only characters is therefore read correctly. Two GB2312 byte
+  pairs change meaning: A1A4 now reads as U+00B7 and A1AA as U+2014, the WHATWG
+  code points.
+- A body whose label resolves to the `gbk` codec (including `cp936`) or to
+  `big5` is decoded with that codec first and, only if it fails, with GB18030 or
+  Big5-HKSCS respectively, so text that decoded before is unchanged and
+  four-byte GB18030 and HKSCS characters are read correctly. `cp950` has no
+  fallback.
+- Encoded words labelled `gbk` or `big5` keep strict decoding, because a label
+  alias would also change Python's process-wide codecs and Big5-HKSCS maps some
+  kana and Cyrillic differently. A GB18030-only or HKSCS character there still
+  degrades that word to replacement characters.
 
 A request accepts 1 to 500 canonical positive decimal ASCII IMAP UIDs; zero,
 leading zero, non-ASCII digits, signs, ranges, sets, and values above the IMAP UID
