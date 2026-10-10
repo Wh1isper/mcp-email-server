@@ -3832,6 +3832,10 @@ class EmailClient:
             response = await imap.list('""', quoted)  # pyright: ignore[reportArgumentType]
             _raise_for_imap_error(response, "LIST mailbox before CREATE")
             for existing in _parse_list_responses(response[1]):
+                # \Noselect/\NonExistent entries are hierarchy placeholders, not
+                # mailboxes; CREATE is what turns them into real ones.
+                if any(flag.casefold() in (r"\noselect", r"\nonexistent") for flag in existing.flags):
+                    continue
                 if existing.name == mailbox or existing.name.casefold() == "inbox" == mailbox.casefold():
                     return "already_exists"
             self._check_mutation_authority()

@@ -545,7 +545,8 @@ and must not contain the LIST wildcards `*` or `%`. The result reports
 `status`:
 
 - `created` — the provider accepted `CREATE`;
-- `already_exists` — the mailbox was already listed, or the provider answered
+- `already_exists` — the mailbox was already listed as a selectable mailbox
+  (a `\Noselect` hierarchy placeholder does not count), or the provider answered
   with RFC 5530 `[ALREADYEXISTS]`; nothing changed;
 - `unknown` — the connection was interrupted after `CREATE` may have been sent;
   `reconciliation_needed` is true. Check `list_mailboxes` before calling again.

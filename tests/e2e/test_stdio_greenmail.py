@@ -1219,10 +1219,17 @@ async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants:
                 assert _find_message(ALICE, "Junk", subject) is None
                 assert _wait_for_message(ALICE, "INBOX", subject).uid == source.uid
 
-            folder = f"Projects/create-{uuid.uuid4().hex[:8]}"
+            initial = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
+            delimiter = next(mailbox["delimiter"] for mailbox in initial["result"] if mailbox["name"] == "INBOX")
+            assert delimiter
+            parent = f"Projects-{uuid.uuid4().hex[:8]}"
+            folder = f"{parent}{delimiter}create"
             unicode_folder = f"Účty-{uuid.uuid4().hex[:8]}"
-            created = await session.call_tool("create_mailbox", {"account_name": "alice", "mailbox": folder})
+            created = await session.call_tool("create_mailbox", {"account_name": "alice", "mailbox": parent})
             if grants is None or "organize" in grants:
+                assert created.isError is not True, _text_content(created)
+                assert created.structuredContent["status"] == "created"
+                created = await session.call_tool("create_mailbox", {"account_name": "alice", "mailbox": folder})
                 assert created.isError is not True, _text_content(created)
                 assert created.structuredContent == {
                     "mailbox": folder,
@@ -1237,11 +1244,11 @@ async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants:
                 assert unicode_created["status"] == "created"
                 listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
                 names = {mailbox["name"] for mailbox in listed["result"]}
-                assert {folder, unicode_folder} <= names
+                assert {parent, folder, unicode_folder} <= names
             else:
                 assert created.isError is True
                 listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
-                assert folder not in {mailbox["name"] for mailbox in listed["result"]}
+                assert parent not in {mailbox["name"] for mailbox in listed["result"]}
 
 
 @pytest.mark.asyncio

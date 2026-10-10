@@ -12,8 +12,8 @@ from mcp_email_server.application.mutations import (
     CreateMailboxOutcome,
     MutationProviderError,
 )
-from mcp_email_server.config import EmailServer
-from mcp_email_server.emails.classic import EmailClient
+from mcp_email_server.config import EmailServer, EmailSettings
+from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
 from mcp_email_server.emails.models import CreateMailboxResult
 from tests.test_mutation_application import _account, _services
 
@@ -75,6 +75,14 @@ async def test_inbox_is_case_insensitive(client, requested):
     mock = _mock_imap(list_lines=[b'(\\HasNoChildren) "/" "INBOX"'])
     assert await _create(client, mock, requested) == "already_exists"
     mock.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [b"\\Noselect", b"\\NoSelect", b"\\NonExistent"])
+async def test_non_selectable_placeholder_is_not_existence(client, flag):
+    mock = _mock_imap(list_lines=[b"(" + flag + b' \\HasChildren) "/" "business"'])
+    assert await _create(client, mock, "business") == "created"
+    mock.create.assert_awaited_once_with('"business"')
 
 
 @pytest.mark.asyncio
@@ -250,3 +258,36 @@ async def test_tool_returns_structured_result():
     assert result == CreateMailboxResult(mailbox="business/techem", status="created", reconciliation_needed=False)
     command = handler.await_args.args[0]
     assert (command.account_name, command.mailbox) == ("Gmail", "business/techem")
+
+
+# ---------------------------------------------------------------------------
+# No other workflow creates mailboxes (spec 07 acceptance 15)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capabilities", [("IMAP4rev1", "MOVE"), ("IMAP4rev1", "UIDPLUS")])
+async def test_move_to_missing_destination_never_creates(client, capabilities):
+    mock = _mock_imap()
+    mock.protocol = MagicMock(capabilities=capabilities)
+    mock.protocol.capability = AsyncMock()
+    mock.select = AsyncMock(return_value=("OK", []))
+    mock.uid = AsyncMock(return_value=("NO", [b"[TRYCREATE] Mailbox does not exist"]))
+    mock.expunge = AsyncMock(return_value=("OK", []))
+    with patch.object(client, "imap_class", return_value=mock):
+        outcome = await client.move_emails_with_outcome(["1"], "INBOX", "Missing")
+    assert not outcome.targets("succeeded")
+    mock.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finder", ["_find_junk_folder", "_find_archive_folder"])
+async def test_destination_discovery_never_creates(finder):
+    server = EmailServer(user_name="u", password="p", host="imap.example.com", port=993, use_ssl=True)
+    handler = ClassicEmailHandler(
+        EmailSettings(account_name="a", full_name="A", email_address="a@example.com", incoming=server)
+    )
+    mock = _mock_imap(list_lines=[b'(\\HasNoChildren) "/" "INBOX"'])
+    with patch.object(handler.incoming_client, "imap_class", return_value=mock):
+        assert await getattr(handler, finder)() is None
+    mock.create.assert_not_awaited()

@@ -200,7 +200,8 @@ RFC 3501 modified UTF-7.
 The workflow validates the request, requires `organize`, opens the provider, and
 requires `organize` again. It then checks existence with an exact
 `LIST "" <name>`; a returned entry with the same name (case-insensitive only for
-`INBOX`) yields `already_exists` without any write. Otherwise the grant is
+`INBOX`) yields `already_exists` without any write. Entries flagged `\Noselect`
+or `\NonExistent` are hierarchy placeholders, not mailboxes, and do not count. Otherwise the grant is
 revalidated immediately before a single `CREATE`. Evidence maps as follows:
 
 | Provider evidence                    | Result                                    |
