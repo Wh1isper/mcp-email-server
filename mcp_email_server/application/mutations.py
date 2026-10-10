@@ -261,6 +261,21 @@ class MoveCommand:
             raise ValueError("source_mailbox and destination_mailbox must differ")
 
 
+_MAILBOX_LIST_WILDCARDS = frozenset("*%")
+
+
+@dataclass(frozen=True)
+class CreateMailboxCommand:
+    account_name: str
+    mailbox: str
+
+    def validate(self) -> None:
+        _validate_account_name(self.account_name)
+        validate_mailbox_name(self.mailbox)
+        if _MAILBOX_LIST_WILDCARDS & set(self.mailbox):
+            raise ValueError("mailbox must not contain IMAP LIST wildcards '*' or '%'")
+
+
 @dataclass(frozen=True)
 class ArchiveCommand:
     account_name: str
@@ -471,6 +486,12 @@ class MutationProvider(Protocol):
         command: MoveCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome: ...
+
+    async def create_mailbox(
+        self,
+        command: CreateMailboxCommand,
+        account: MutationAccountSnapshot,
+    ) -> MailboxCreationStatus: ...
 
     async def find_drafts_mailbox(self) -> str: ...
 
@@ -1267,6 +1288,37 @@ class ArchiveService(_MutationWorkflow):
         return result
 
 
+@dataclass(frozen=True)
+class CreateMailboxOutcome:
+    mailbox: str
+    status: MailboxCreationStatus
+    reconciliation_needed: bool
+
+
+class CreateMailboxService(_MutationWorkflow):
+    async def execute(self, command: CreateMailboxCommand) -> CreateMailboxOutcome:
+        command.validate()
+        account = self._resolve(command.account_name)
+        require_mutation(account.allowed_mutations, "organize")
+        access = self._open(account)
+        require_mutation(access.account.allowed_mutations, "organize")
+        status: MailboxCreationStatus
+        try:
+            status = await _bounded_provider_effect(access.provider.create_mailbox(command, access.account))
+        except TimeoutError:
+            # CREATE may already have reached the server; never replay.
+            status = "unknown"
+        if status not in ("created", "already_exists", "unknown"):
+            raise MutationProviderError("provider_failure: invalid mailbox creation status")
+        outcome = CreateMailboxOutcome(command.mailbox, status, reconciliation_needed=status == "unknown")
+        _validate_result_payload({
+            "mailbox": outcome.mailbox,
+            "status": outcome.status,
+            "reconciliation_needed": outcome.reconciliation_needed,
+        })
+        return outcome
+
+
 class SendService(_MutationWorkflow):
     async def execute(self, command: SendCommand) -> SendMutationOutcome:
         command.validate()
@@ -1353,6 +1405,7 @@ class MutationServices:
     delete: DeleteService
     move: MoveService
     archive: ArchiveService
+    create_mailbox: CreateMailboxService
     send: SendService
     forward: ForwardService
 
@@ -1374,6 +1427,7 @@ class MutationServices:
             delete=DeleteService(*arguments),
             move=MoveService(*arguments),
             archive=ArchiveService(*arguments),
+            create_mailbox=CreateMailboxService(*arguments),
             send=SendService(*arguments),
             forward=ForwardService(*arguments),
         )

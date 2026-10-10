@@ -5,8 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mcp_email_server.adapters.mutations import ClassicMutationProvider
+from mcp_email_server.application.mutations import CreateMailboxCommand, MutationProviderError
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.classic import EmailClient
+from tests.test_mutation_application import _account, _services
 
 
 def _mock_imap(*, list_lines=(), create=("OK", [b"CREATE completed"])):
@@ -121,3 +124,97 @@ async def test_list_failure_is_pre_effect_error(client):
     with pytest.raises(RuntimeError):
         await _create(client, mock, "techem")
     mock.create.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Application service, adapter, and grant enforcement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["", "   ", "a*b", "a%b", "x\x00y", "x" * 1025])
+def test_command_rejects_invalid_names(name):
+    with pytest.raises(ValueError):
+        CreateMailboxCommand("primary", name).validate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["created", "already_exists"])
+async def test_service_reports_provider_status(status):
+    provider = MagicMock()
+    provider.create_mailbox = AsyncMock(return_value=status)
+    services, _, _, projection = _services(provider=provider)
+    outcome = await services.create_mailbox.execute(CreateMailboxCommand("primary", "business/techem"))
+    assert (outcome.mailbox, outcome.status, outcome.reconciliation_needed) == ("business/techem", status, False)
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_service_unknown_sets_reconciliation():
+    provider = MagicMock()
+    provider.create_mailbox = AsyncMock(return_value="unknown")
+    services, _, _, _ = _services(provider=provider)
+    outcome = await services.create_mailbox.execute(CreateMailboxCommand("primary", "techem"))
+    assert outcome.status == "unknown"
+    assert outcome.reconciliation_needed is True
+
+
+@pytest.mark.asyncio
+async def test_service_timeout_is_unknown_without_replay():
+    provider = MagicMock()
+    provider.create_mailbox = AsyncMock(side_effect=TimeoutError())
+    services, _, _, _ = _services(provider=provider)
+    outcome = await services.create_mailbox.execute(CreateMailboxCommand("primary", "techem"))
+    assert (outcome.status, outcome.reconciliation_needed) == ("unknown", True)
+    provider.create_mailbox.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_service_denies_without_organize_before_provider_open():
+    services, _, factory, _ = _services(account=_account(allowed_mutations=("draft", "append")))
+    with pytest.raises(PermissionError, match="not allowed"):
+        await services.create_mailbox.execute(CreateMailboxCommand("primary", "techem"))
+    factory.open.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_invalid_name_before_resolve():
+    services, authority, factory, _ = _services()
+    with pytest.raises(ValueError):
+        await services.create_mailbox.execute(CreateMailboxCommand("primary", "a*"))
+    authority.resolve.assert_not_called()
+    factory.open.assert_not_called()
+
+
+def _handler(create_mailbox: AsyncMock) -> MagicMock:
+    handler = MagicMock()
+    handler.incoming_client.create_mailbox = create_mailbox
+    handler.outgoing_client = None
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_adapter_guards_organize_and_calls_client():
+    handler = _handler(AsyncMock(return_value="created"))
+    result = await ClassicMutationProvider(handler).create_mailbox(
+        CreateMailboxCommand("primary", "techem"), _account()
+    )
+    assert result == "created"
+    handler.incoming_client.create_mailbox.assert_awaited_once_with("techem")
+    assert callable(handler.incoming_client.mutation_guard)
+
+
+@pytest.mark.asyncio
+async def test_adapter_denies_without_organize_before_client():
+    handler = _handler(AsyncMock(return_value="created"))
+    with pytest.raises(PermissionError):
+        await ClassicMutationProvider(handler).create_mailbox(
+            CreateMailboxCommand("primary", "techem"), _account(allowed_mutations=("append",))
+        )
+    handler.incoming_client.create_mailbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_bounds_unexpected_client_errors():
+    handler = _handler(AsyncMock(side_effect=RuntimeError("CREATE mailbox failed (NO)")))
+    with pytest.raises(MutationProviderError, match="provider_failure"):
+        await ClassicMutationProvider(handler).create_mailbox(CreateMailboxCommand("primary", "techem"), _account())

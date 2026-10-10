@@ -20,12 +20,14 @@ from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     BatchMutationOutcome,
     ComposeCommand,
+    CreateMailboxCommand,
     DeleteCommand,
     DeliveryMutationOutcome,
     DraftAppendCommand,
     ForwardCommand,
     ForwardSource,
     ForwardSourcePart,
+    MailboxCreationStatus,
     MoveCommand,
     MutationAccountSnapshot,
     MutationProjection,
@@ -209,6 +211,14 @@ class ClassicMutationProvider:
                 account.report_blocked_mutations,
             )
         )
+
+    async def create_mailbox(
+        self,
+        command: CreateMailboxCommand,
+        account: MutationAccountSnapshot,
+    ) -> MailboxCreationStatus:
+        self._guard(account, "organize")
+        return await _bounded_mutation_call(self._handler.incoming_client.create_mailbox(command.mailbox))
 
     async def find_drafts_mailbox(self) -> str:
         mailboxes = await _bounded_mutation_call(self._handler.incoming_client.list_mailboxes())
