@@ -73,6 +73,20 @@ fallback, explicit source ownership, newly listed destination UIDs on restore,
 selector validation, unchanged explicit-move results, organize revocation,
 stale-UID outcomes, discovery/effect timeouts, and projection-failure behavior.
 
+### Mailbox creation delivery gate
+
+`create_mailbox` adds one public tool name. Spec 07 owns its effect semantics
+under `organize`; spec 10 owns the additive catalog contract. `app.py`,
+`application/mutations.py`, `adapters/mutations.py`, and `emails/classic.py`
+must agree with `docs/tools.md` and `docs/security.md`. Regression coverage in
+`tests/test_create_mailbox.py`, `tests/test_mutation_class_policy.py`, the
+catalog snapshot/MCP tests, and GreenMail must prove exact-name and nested
+creation, modified UTF-7 names, idempotent `already_exists` from LIST and
+`[ALREADYEXISTS]`, bounded failures, unknown-without-replay timeouts, name
+validation, organize denial and revocation, and that move/archive/Junk/draft
+paths still never create a mailbox. This table states required evidence, not an
+assertion that those checks have passed.
+
 ## Checked Delivery References
 
 The following checked-in matrix records evidence for this implementation branch;

@@ -15,7 +15,7 @@ mutation route. The static MCP catalog does not change with effective grants.
 | Class      | Effects authorized                                                                             |
 | ---------- | ---------------------------------------------------------------------------------------------- |
 | `draft`    | `save_draft` only: append composed MIME to the resolved draft mailbox with fixed `\Draft` flag |
-| `organize` | mark-read/unread, approved flags and semantic tags, move and archive                           |
+| `organize` | mark-read/unread, approved flags and semantic tags, move, archive, and mailbox creation        |
 | `delete`   | explicit delete and its UID-scoped deletion/expunge effects                                    |
 | `send`     | send/forward SMTP submission and narrowly their successful-message Sent copy                   |
 | `append`   | general `save_to_mailbox`, including caller-selected mailbox and flags                         |
@@ -183,6 +183,37 @@ training or reporting. No separate spam/ham tool or rule engine is introduced.
 Archive resolves an explicit destination policy and then follows the same move
 contract. Destination creation, if supported, is a separate effect with its own
 policy and evidence; it is not silently attempted after an unsafe fallback.
+
+## Mailbox Creation
+
+`create_mailbox` is the only workflow that creates a mailbox. It is an explicit,
+caller-requested effect under `organize`; move, archive, Junk discovery, draft
+resolution, and append never create a mailbox implicitly.
+
+The caller supplies the exact server mailbox name, including any hierarchy
+delimiter and namespace prefix as reported by `list_mailboxes`. The service does
+not split, join, or guess hierarchy; intermediate levels are created only as the
+server's own CREATE semantics allow. Names are bounded like other mailbox names
+and reject empty values and the LIST wildcards `*` and `%`. Names are sent in
+RFC 3501 modified UTF-7.
+
+The workflow validates the request, requires `organize`, opens the provider, and
+requires `organize` again. It then checks existence with an exact
+`LIST "" <name>`; a returned entry with the same name (case-insensitive only for
+`INBOX`) yields `already_exists` without any write. Otherwise the grant is
+revalidated immediately before a single `CREATE`. Evidence maps as follows:
+
+| Provider evidence                    | Result                                    |
+| ------------------------------------ | ----------------------------------------- |
+| `OK`                                 | `created`                                 |
+| `NO` with RFC 5530 `[ALREADYEXISTS]` | `already_exists`                          |
+| other `NO` or `BAD`                  | bounded provider failure, no raw response |
+| timeout or interrupted connection    | `unknown`, `reconciliation_needed=true`   |
+
+The tool is idempotent by contract: repeating it for an existing mailbox reports
+`already_exists`. An `unknown` CREATE is not replayed automatically; the caller
+reconciles with `list_mailboxes`. Creation does not SUBSCRIBE the mailbox. The
+mailbox list is not projected, so creation requires no metadata invalidation.
 
 ## Delete and Scoped Expunge
 
@@ -455,3 +486,10 @@ enter public errors.
     multiple UIDs, non-writable rejection, and preservation of system,
     read-only, and unknown keywords with the same effect evidence and metadata
     invalidation rules as other mailbox mutations.
+15. Mailbox creation tests prove exact-name CREATE with modified UTF-7 encoding,
+    `already_exists` from both the pre-effect LIST and `[ALREADYEXISTS]`
+    without a second write, bounded failure for other `NO`/`BAD`, `unknown`
+    with `reconciliation_needed` and no replay on timeout, wildcard/empty name
+    rejection before provider access, `organize` denial before provider access,
+    revocation between existence check and CREATE, and that no other workflow
+    issues CREATE.
