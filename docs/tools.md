@@ -72,13 +72,13 @@ freshly before independent provider effects. Global `allowed_mutations` defaults
 to all five classes for old and new configurations. Account omission/null
 inherits; an explicit list replaces; `[]` means read-only.
 
-| Class      | Workflows                                                                      |
-| ---------- | ------------------------------------------------------------------------------ |
-| `draft`    | `save_draft` with fixed destination resolution and `\Draft` flag               |
-| `organize` | mark-read/unread, `set_email_flags`, `set_email_tags`, move and archive        |
-| `delete`   | `delete_emails` and its scoped deletion/expunge                                |
-| `send`     | `send_email`, `forward_email`, and narrowly their successful-message Sent copy |
-| `append`   | `save_to_mailbox` with caller mailbox and flags                                |
+| Class      | Workflows                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| `draft`    | `save_draft` with fixed destination resolution and `\Draft` flag                           |
+| `organize` | mark-read/unread, `set_email_flags`, `set_email_tags`, move, archive, and `create_mailbox` |
+| `delete`   | `delete_emails` and its scoped deletion/expunge                                            |
+| `send`     | `send_email`, `forward_email`, and narrowly their successful-message Sent copy             |
+| `append`   | `save_to_mailbox` with caller mailbox and flags                                            |
 
 `get_emails_content(mark_as_read=true)` also requires `organize`; use the
 non-marking read option for a read-only account. Organization cannot perform
@@ -97,7 +97,7 @@ Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 | `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                              | yes       | no          | yes        | yes        |
 | `get_emails_content`                                                                            | no        | no          | yes        | yes        |
 | `send_email`, `forward_email`, `save_draft`, `save_to_mailbox`                                  | no        | no          | no         | yes        |
-| `set_email_flags`, `set_email_tags`, `mark_emails_as_read`                                      | no        | no          | yes        | yes        |
+| `set_email_flags`, `set_email_tags`, `mark_emails_as_read`, `create_mailbox`                    | no        | no          | yes        | yes        |
 | `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`                         | no        | yes         | no         | yes        |
 
 `get_emails_content` is conservatively non-read-only because
@@ -521,8 +521,8 @@ For a worked example, see
 ### `list_mailboxes`
 
 Lists IMAP mailboxes with their names, hierarchy delimiters, and flags. Call it
-before moving or saving messages when provider-specific folder names are not
-known.
+before moving, saving, or creating mailboxes when provider-specific folder names
+or delimiters are not known.
 
 `pattern` defaults to `*`, and `reference` defaults to an empty string. The
 account name and both IMAP LIST values are validated before provider access;
@@ -531,6 +531,29 @@ account name and both IMAP LIST values are validated before provider access;
 length, tagged LIST completion text is not returned as a mailbox, and malformed
 literal framing fails the request. Special-use flags such as `\Sent` are matched
 case-insensitively for folder discovery.
+
+### `create_mailbox`
+
+Creates one mailbox by its exact server name. Use the hierarchy delimiter and
+namespace prefix shown by `list_mailboxes`, for example `Archive/Projects` on a
+`/` server or `INBOX.Projects` on a `.` server. The server does not split names
+or guess hierarchy; parent levels are created only when the provider's own
+`CREATE` does so.
+
+Requires `organize`. The name must be non-empty, at most 1,024 UTF-8 bytes,
+and must not contain the LIST wildcards `*` or `%`. The result reports
+`status`:
+
+- `created` — the provider accepted `CREATE`;
+- `already_exists` — the mailbox was already listed as a selectable mailbox
+  (a `\Noselect` hierarchy placeholder does not count), or the provider answered
+  with RFC 5530 `[ALREADYEXISTS]`; nothing changed;
+- `unknown` — the connection was interrupted after `CREATE` may have been sent;
+  `reconciliation_needed` is true. Check `list_mailboxes` before calling again.
+
+Other provider rejections fail with a bounded error. The new mailbox is not
+subscribed. No other tool creates mailboxes: `move_emails`, `archive_emails`,
+Junk discovery, and `save_draft` still require an existing destination.
 
 ### `set_email_flags`
 

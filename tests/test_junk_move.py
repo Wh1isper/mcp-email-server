@@ -244,7 +244,7 @@ async def test_mcp_junk_move_reports_resolved_mailbox_and_preserves_order(status
 @pytest.mark.asyncio
 async def test_move_schema_is_additive_without_new_tools():
     tools = {tool.name: tool for tool in await app_module.mcp.list_tools()}
-    assert len(tools) == 19
+    assert len(tools) == 20
     assert not {"mark_as_spam", "mark_as_ham"} & tools.keys()
     schema = tools["move_emails"].inputSchema
     assert schema["required"] == ["account_name", "email_ids"]

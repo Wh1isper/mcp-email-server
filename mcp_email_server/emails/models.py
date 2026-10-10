@@ -84,6 +84,18 @@ class MailboxInfo(BaseModel):
     flags: list[str]
 
 
+class CreateMailboxResult(BaseModel):
+    """Outcome of an explicit mailbox creation request"""
+
+    mailbox: str = Field(description="The exact mailbox name that was requested.")
+    status: Literal["created", "already_exists", "unknown"] = Field(
+        description="created: CREATE succeeded; already_exists: no change; unknown: the effect may have happened."
+    )
+    reconciliation_needed: bool = Field(
+        description="True when status is unknown; verify with list_mailboxes before retrying."
+    )
+
+
 class AttachmentDownloadResponse(BaseModel):
     """Attachment download response"""
 
