@@ -24,6 +24,7 @@ from mcp_email_server.application.mutation_policy import (
 from mcp_email_server.imap_keywords import ImapKeywordRegistry
 
 MutationStatus = Literal["succeeded", "failed", "unknown"]
+MailboxCreationStatus = Literal["created", "already_exists", "unknown"]
 MutationProviderPurpose = Literal["incoming", "outgoing", "sent-copy"]
 SentCopyStatus = Literal["skipped", "succeeded", "failed", "unknown"]
 FlagOperation = Literal["add", "remove"]
