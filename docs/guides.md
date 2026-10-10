@@ -103,6 +103,18 @@ calls request mailbox moves and do not guarantee service-provider training or
 reporting. Inspect partial/unknown results before deciding what to do next;
 never replay an ambiguous move automatically.
 
+## Create a folder and file messages into it
+
+1. Call `list_mailboxes` and note the hierarchy delimiter and any `INBOX.` prefix.
+2. Call `create_mailbox` with the exact name, such as `business/techem`. This
+   requires `organize` permission. Repeating the call is safe and reports
+   `already_exists`.
+3. Move messages there with `move_emails` and an explicit `destination_mailbox`.
+
+If the provider does not create missing parent levels, create the parent first
+(`business`) and then the child. See [`create_mailbox`](tools.md#create_mailbox)
+for result statuses.
+
 ## ProtonMail Bridge and self-signed TLS
 
 Local bridges commonly expose IMAP through STARTTLS with a locally issued

@@ -562,7 +562,8 @@ authorizes only that successful message's Sent copy, not general APPEND.
 `organize` cannot expunge unrelated deleted messages. `draft` authorizes only
 `save_draft` with a configured or unique special-use draft destination and fixed
 `\Draft` flag; the caller cannot choose a mailbox or flags. No mailbox is
-created or guessed. These restrictions need no approval tokens or extra ledger.
+created or guessed by these workflows; mailbox creation happens only through the
+explicit `create_mailbox` tool under `organize`. These restrictions need no approval tokens or extra ledger.
 
 A recipientless `save_draft` is valid even with an empty recipient allowlist.
 Every supplied To/CC/BCC address still requires a match before attachments are
