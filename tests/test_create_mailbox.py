@@ -5,10 +5,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mcp_email_server import app as app_module
 from mcp_email_server.adapters.mutations import ClassicMutationProvider
-from mcp_email_server.application.mutations import CreateMailboxCommand, MutationProviderError
+from mcp_email_server.application.mutations import (
+    CreateMailboxCommand,
+    CreateMailboxOutcome,
+    MutationProviderError,
+)
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.classic import EmailClient
+from mcp_email_server.emails.models import CreateMailboxResult
 from tests.test_mutation_application import _account, _services
 
 
@@ -218,3 +224,29 @@ async def test_adapter_bounds_unexpected_client_errors():
     handler = _handler(AsyncMock(side_effect=RuntimeError("CREATE mailbox failed (NO)")))
     with pytest.raises(MutationProviderError, match="provider_failure"):
         await ClassicMutationProvider(handler).create_mailbox(CreateMailboxCommand("primary", "techem"), _account())
+
+
+# ---------------------------------------------------------------------------
+# MCP tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_is_advertised_with_idempotent_annotations():
+    tools = {tool.name: tool for tool in await app_module.mcp.list_tools()}
+    tool = tools["create_mailbox"]
+    assert tool.inputSchema["required"] == ["account_name", "mailbox"]
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is True
+    assert tool.annotations.openWorldHint is True
+
+
+@pytest.mark.asyncio
+async def test_tool_returns_structured_result():
+    handler = AsyncMock(return_value=CreateMailboxOutcome("business/techem", "created", False))
+    with patch("mcp_email_server.app.create_mailbox_command", handler):
+        result = await app_module.create_mailbox(account_name="Gmail", mailbox="business/techem")
+    assert result == CreateMailboxResult(mailbox="business/techem", status="created", reconciliation_needed=False)
+    command = handler.await_args.args[0]
+    assert (command.account_name, command.mailbox) == ("Gmail", "business/techem")

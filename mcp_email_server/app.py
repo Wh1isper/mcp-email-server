@@ -20,6 +20,8 @@ from mcp_email_server.application.mutations import (
     ArchiveCommand,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
+    CreateMailboxCommand,
+    CreateMailboxOutcome,
     DeleteCommand,
     FlagOperation,
     ForwardCommand,
@@ -43,6 +45,7 @@ from mcp_email_server.application.reads import (
 )
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
+    CreateMailboxResult,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
     MailboxInfo,
@@ -107,6 +110,10 @@ async def move_emails_command(command: MoveCommand) -> MoveMutationOutcome:
 
 async def archive_emails_command(command: ArchiveCommand) -> ArchiveMutationOutcome:
     return await get_application_runtime().mutations.archive.execute(command)
+
+
+async def create_mailbox_command(command: CreateMailboxCommand) -> CreateMailboxOutcome:
+    return await get_application_runtime().mutations.create_mailbox.execute(command)
 
 
 async def get_email_content_query(query: GetEmailContentQuery) -> EmailContentBatchResponse:
@@ -1238,6 +1245,33 @@ async def list_mailboxes(
 ) -> list[MailboxInfo]:
     return await list_mailboxes_query(
         ListMailboxesQuery(account_name=account_name, pattern=pattern, reference=reference)
+    )
+
+
+@mcp.tool(
+    description="Create one mailbox/folder by its exact server name, including the hierarchy delimiter "
+    "reported by list_mailboxes (for example 'Archive/Projects' or 'INBOX.Projects'). Requires the "
+    "organize permission. Idempotent: an existing mailbox reports already_exists without changes. "
+    "Parent levels are created only if the server does so itself. An unknown status is not retried "
+    "automatically; verify with list_mailboxes.",
+    annotations=_IDEMPOTENT_REMOTE_MUTATION,
+)
+async def create_mailbox(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    mailbox: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="Exact mailbox name to create; must not contain the LIST wildcards '*' or '%'.",
+        ),
+    ],
+) -> CreateMailboxResult:
+    outcome = await create_mailbox_command(CreateMailboxCommand(account_name, mailbox))
+    return CreateMailboxResult(
+        mailbox=outcome.mailbox, status=outcome.status, reconciliation_needed=outcome.reconciliation_needed
     )
 
 

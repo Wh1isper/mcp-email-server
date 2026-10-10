@@ -1912,6 +1912,60 @@
             }
         },
         {
+            "name": "create_mailbox",
+            "description": "Create one mailbox/folder by its exact server name, including the hierarchy delimiter reported by list_mailboxes (for example 'Archive/Projects' or 'INBOX.Projects'). Requires the organize permission. Idempotent: an existing mailbox reports already_exists without changes. Parent levels are created only if the server does so itself. An unknown status is not retried automatically; verify with list_mailboxes.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "mailbox": {
+                        "description": "Exact mailbox name to create; must not contain the LIST wildcards '*' or '%'.",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "title": "Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": ["account_name", "mailbox"],
+                "title": "create_mailboxArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "description": "Outcome of an explicit mailbox creation request",
+                "properties": {
+                    "mailbox": {
+                        "description": "The exact mailbox name that was requested.",
+                        "title": "Mailbox",
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "created: CREATE succeeded; already_exists: no change; unknown: the effect may have happened.",
+                        "enum": ["created", "already_exists", "unknown"],
+                        "title": "Status",
+                        "type": "string"
+                    },
+                    "reconciliation_needed": {
+                        "description": "True when status is unknown; verify with list_mailboxes before retrying.",
+                        "title": "Reconciliation Needed",
+                        "type": "boolean"
+                    }
+                },
+                "required": ["mailbox", "status", "reconciliation_needed"],
+                "title": "CreateMailboxResult",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "get_attachment_content",
             "description": "Read one email attachment as an MCP embedded binary resource without writing a local file. This independent transfer mode requires enable_attachment_content=true.",
             "inputSchema": {
