@@ -109,7 +109,10 @@ never replay an ambiguous move automatically.
 2. Call `create_mailbox` with the exact name, such as `business/techem`, without
    a trailing hierarchy delimiter. This requires `organize` permission. Repeating the call is safe and reports
    `already_exists`.
-3. Move messages there with `move_emails` and an explicit `destination_mailbox`.
+3. File messages there with an explicit `destination_mailbox`: `move_emails`
+   removes them from the source, while `copy_emails` keeps the originals in
+   place. Copying again creates duplicates, so list the folder first when
+   repeating the workflow.
 
 If the provider does not create missing parent levels, create the parent first
 (`business`) and then the child. See [`create_mailbox`](tools.md#create_mailbox)

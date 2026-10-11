@@ -563,7 +563,8 @@ authorizes only that successful message's Sent copy, not general APPEND.
 `save_draft` with a configured or unique special-use draft destination and fixed
 `\Draft` flag; the caller cannot choose a mailbox or flags. No mailbox is
 created or guessed by these workflows; mailbox creation happens only through the
-explicit `create_mailbox` tool under `organize`. These restrictions need no approval tokens or extra ledger.
+explicit `create_mailbox` tool under `organize`. Copying with `copy_emails` also
+requires `organize`; it never deletes, expunges, or creates mailboxes. These restrictions need no approval tokens or extra ledger.
 
 A recipientless `save_draft` is valid even with an empty recipient allowlist.
 Every supplied To/CC/BCC address still requires a match before attachments are

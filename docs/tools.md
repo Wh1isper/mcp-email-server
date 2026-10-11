@@ -72,13 +72,13 @@ freshly before independent provider effects. Global `allowed_mutations` defaults
 to all five classes for old and new configurations. Account omission/null
 inherits; an explicit list replaces; `[]` means read-only.
 
-| Class      | Workflows                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------------ |
-| `draft`    | `save_draft` with fixed destination resolution and `\Draft` flag                           |
-| `organize` | mark-read/unread, `set_email_flags`, `set_email_tags`, move, archive, and `create_mailbox` |
-| `delete`   | `delete_emails` and its scoped deletion/expunge                                            |
-| `send`     | `send_email`, `forward_email`, and narrowly their successful-message Sent copy             |
-| `append`   | `save_to_mailbox` with caller mailbox and flags                                            |
+| Class      | Workflows                                                                                                 |
+| ---------- | --------------------------------------------------------------------------------------------------------- |
+| `draft`    | `save_draft` with fixed destination resolution and `\Draft` flag                                          |
+| `organize` | mark-read/unread, `set_email_flags`, `set_email_tags`, move, archive, `copy_emails`, and `create_mailbox` |
+| `delete`   | `delete_emails` and its scoped deletion/expunge                                                           |
+| `send`     | `send_email`, `forward_email`, and narrowly their successful-message Sent copy                            |
+| `append`   | `save_to_mailbox` with caller mailbox and flags                                                           |
 
 `get_emails_content(mark_as_read=true)` also requires `organize`; use the
 non-marking read option for a read-only account. Organization cannot perform
@@ -96,7 +96,7 @@ Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 | `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders`, `list_email_tags` | yes       | no          | yes        | no         |
 | `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                              | yes       | no          | yes        | yes        |
 | `get_emails_content`                                                                            | no        | no          | yes        | yes        |
-| `send_email`, `forward_email`, `save_draft`, `save_to_mailbox`                                  | no        | no          | no         | yes        |
+| `send_email`, `forward_email`, `save_draft`, `save_to_mailbox`, `copy_emails`                   | no        | no          | no         | yes        |
 | `set_email_flags`, `set_email_tags`, `mark_emails_as_read`, `create_mailbox`                    | no        | no          | yes        | yes        |
 | `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`                         | no        | yes         | no         | yes        |
 
@@ -555,7 +555,7 @@ have no delimiter restriction. The result reports `status`:
   `reconciliation_needed` is true. Check `list_mailboxes` before calling again.
 
 Other provider rejections fail with a bounded error. The new mailbox is not
-subscribed. No other tool creates mailboxes: `move_emails`, `archive_emails`,
+subscribed. No other tool creates mailboxes: `move_emails`, `copy_emails`, `archive_emails`,
 Junk discovery, and `save_draft` still require an existing destination.
 
 ### `set_email_flags`
@@ -629,6 +629,22 @@ The caller decides which messages are spam or not spam. This workflow requests
 mailbox moves only; it does not guarantee provider-side training or reporting.
 Partial/unknown moves are not retried automatically. No separate spam/ham tools
 are needed.
+
+### `copy_emails`
+
+Copies messages from `source_mailbox` (default `INBOX`) into another existing
+mailbox of the same account. The originals stay in the source with their flags
+and UIDs unchanged; nothing is deleted or expunged. Pass the exact
+`destination_mailbox` name from `list_mailboxes`. A missing destination is not
+created: the copy fails for those IDs, and you can call `create_mailbox` first.
+Source and destination must differ.
+
+Requires `organize`. Sender allowlists apply exactly as for `move_emails`.
+Each ID is copied with IMAP `UID COPY` and reported as `succeeded`, `failed`,
+or `unknown`. Copying is not idempotent: repeating a call creates further
+copies, so after an `unknown` result, list the destination with
+`list_emails_metadata` before trying again. Destination UIDs are not returned;
+list the destination to work with the copies.
 
 ### `archive_emails`
 
