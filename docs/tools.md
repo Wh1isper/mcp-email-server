@@ -541,8 +541,11 @@ or guess hierarchy; parent levels are created only when the provider's own
 `CREATE` does so.
 
 Requires `organize`. The name must be non-empty, at most 1,024 UTF-8 bytes,
-and must not contain the LIST wildcards `*` or `%`. The result reports
-`status`:
+and must not contain the LIST wildcards `*` or `%`. A name ending with the
+server's hierarchy delimiter is rejected before creation (for example `Projects/`
+on a `/` server or `Projects.` on a `.` server). The tool discovers the delimiter
+for the requested namespace; it never trims or rewrites the name. Flat namespaces
+have no delimiter restriction. The result reports `status`:
 
 - `created` — the provider accepted `CREATE`;
 - `already_exists` — the mailbox was already listed as a selectable mailbox

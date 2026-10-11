@@ -1,7 +1,7 @@
 """create_mailbox provider, service, adapter, and policy tests (spec 07 Mailbox Creation)."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -18,7 +18,7 @@ from mcp_email_server.emails.models import CreateMailboxResult
 from tests.test_mutation_application import _account, _services
 
 
-def _mock_imap(*, list_lines=(), create=("OK", [b"CREATE completed"])):
+def _mock_imap(*, list_lines=(), delimiter=b'"/"', create=("OK", [b"CREATE completed"])):
     mock = AsyncMock()
     mock._client_task = asyncio.Future()
     mock._client_task.set_result(None)
@@ -27,7 +27,13 @@ def _mock_imap(*, list_lines=(), create=("OK", [b"CREATE completed"])):
     mock.logout = AsyncMock()
     mock.protocol = MagicMock(capabilities=("IMAP4rev1",))
     mock.protocol.capability = AsyncMock()
-    mock.list = AsyncMock(return_value=("OK", [*list_lines, b"LIST completed"]))
+
+    def list_response(reference, pattern):
+        if pattern == '""':
+            return "OK", [b"(\\Noselect) " + delimiter + b' ""', b"LIST completed"]
+        return "OK", [*list_lines, b"LIST completed"]
+
+    mock.list = AsyncMock(side_effect=list_response)
     if isinstance(create, BaseException):
         mock.create = AsyncMock(side_effect=create)
     else:
@@ -50,9 +56,40 @@ async def _create(client, mock, name):
 async def test_creates_nested_name_exactly(client):
     mock = _mock_imap()
     assert await _create(client, mock, "business/techem") == "created"
-    mock.list.assert_awaited_once_with('""', '"business/techem"')
+    assert mock.list.await_args_list == [
+        call('"business/techem"', '""'),
+        call('""', '"business/techem"'),
+    ]
     mock.create.assert_awaited_once_with('"business/techem"')
     mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delimiter,name", [(b'"/"', "business/"), (b'"."', "INBOX.Projects.")])
+async def test_trailing_server_delimiter_rejected_before_create(client, delimiter, name):
+    mock = _mock_imap(delimiter=delimiter)
+    with pytest.raises(ValueError, match="must not end with the server's hierarchy delimiter"):
+        await _create(client, mock, name)
+    mock.list.assert_awaited_once_with(f'"{name}"', '""')
+    mock.create.assert_not_awaited()
+    mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delimiter,name", [(b'"."', "business/"), (b'"/"', "business."), (b"NIL", "business/")])
+async def test_non_delimiter_suffix_is_preserved(client, delimiter, name):
+    mock = _mock_imap(delimiter=delimiter)
+    assert await _create(client, mock, name) == "created"
+    mock.create.assert_awaited_once_with(f'"{name}"')
+
+
+@pytest.mark.asyncio
+async def test_missing_hierarchy_response_fails_before_create(client):
+    mock = _mock_imap()
+    mock.list.side_effect = [("OK", [b"LIST completed"])]
+    with pytest.raises(RuntimeError, match="no unique delimiter"):
+        await _create(client, mock, "business/")
+    mock.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -116,6 +153,15 @@ async def test_interrupted_create_is_unknown(client, error):
 
 
 @pytest.mark.asyncio
+async def test_create_cancellation_propagates(client):
+    mock = _mock_imap(create=asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await _create(client, mock, "techem")
+    mock.create.assert_awaited_once()
+    mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_bye_response_is_unknown(client):
     mock = _mock_imap(create=("BYE", [b"closing"]))
     assert await _create(client, mock, "techem") == "unknown"
@@ -127,14 +173,17 @@ async def test_guard_revoked_between_list_and_create(client):
     client.mutation_guard = MagicMock(side_effect=PermissionError("Mutation class 'organize' is not allowed"))
     with pytest.raises(PermissionError):
         await _create(client, mock, "techem")
-    mock.list.assert_awaited_once()
+    assert mock.list.await_count == 2
     mock.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_list_failure_is_pre_effect_error(client):
+@pytest.mark.parametrize("fail_hierarchy", [True, False])
+async def test_list_failure_is_pre_effect_error(client, fail_hierarchy):
     mock = _mock_imap()
-    mock.list = AsyncMock(return_value=("NO", [b"denied"]))
+    mock.list.side_effect = (
+        [("NO", [b"denied"])] if fail_hierarchy else [("OK", [b'(\\Noselect) "/" ""']), ("NO", [b"denied"])]
+    )
     with pytest.raises(RuntimeError):
         await _create(client, mock, "techem")
     mock.create.assert_not_awaited()

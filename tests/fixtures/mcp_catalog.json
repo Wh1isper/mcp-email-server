@@ -1923,7 +1923,7 @@
                         "type": "string"
                     },
                     "mailbox": {
-                        "description": "Exact mailbox name to create; must not contain the LIST wildcards '*' or '%'.",
+                        "description": "Exact mailbox name to create; must not contain the LIST wildcards '*' or '%' or end with the server's hierarchy delimiter.",
                         "maxLength": 1024,
                         "minLength": 1,
                         "title": "Mailbox",

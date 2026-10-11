@@ -106,8 +106,8 @@ never replay an ambiguous move automatically.
 ## Create a folder and file messages into it
 
 1. Call `list_mailboxes` and note the hierarchy delimiter and any `INBOX.` prefix.
-2. Call `create_mailbox` with the exact name, such as `business/techem`. This
-   requires `organize` permission. Repeating the call is safe and reports
+2. Call `create_mailbox` with the exact name, such as `business/techem`, without
+   a trailing hierarchy delimiter. This requires `organize` permission. Repeating the call is safe and reports
    `already_exists`.
 3. Move messages there with `move_emails` and an explicit `destination_mailbox`.
 

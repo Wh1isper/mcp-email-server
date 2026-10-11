@@ -198,8 +198,12 @@ and reject empty values and the LIST wildcards `*` and `%`. Names are sent in
 RFC 3501 modified UTF-7.
 
 The workflow validates the request, requires `organize`, opens the provider, and
-requires `organize` again. It then checks existence with an exact
-`LIST "" <name>`; a returned entry with the same name (case-insensitive only for
+requires `organize` again. In the same session, `LIST <name> ""` discovers the
+requested namespace's hierarchy delimiter, including for a nonexistent mailbox.
+A name ending in that delimiter is rejected before CREATE, not silently trimmed;
+a NIL delimiter denotes a flat namespace and imposes no suffix restriction.
+Failure to discover a unique delimiter fails before CREATE. The workflow then
+checks existence with an exact `LIST "" <name>`; a returned entry with the same name (case-insensitive only for
 `INBOX`) yields `already_exists` without any write. Entries flagged `\Noselect`
 or `\NonExistent` are hierarchy placeholders, not mailboxes, and do not count. Otherwise the grant is
 revalidated immediately before a single `CREATE`. Evidence maps as follows:
@@ -491,6 +495,8 @@ enter public errors.
     `already_exists` from both the pre-effect LIST and `[ALREADYEXISTS]`
     without a second write, bounded failure for other `NO`/`BAD`, `unknown`
     with `reconciliation_needed` and no replay on timeout, wildcard/empty name
-    rejection before provider access, `organize` denial before provider access,
+    rejection before provider access, namespace-specific trailing-delimiter
+    rejection without CREATE or normalization, preservation of non-delimiter
+    suffixes and flat namespaces, `organize` denial before provider access,
     revocation between existence check and CREATE, and that no other workflow
     issues CREATE.

@@ -1265,7 +1265,8 @@ async def create_mailbox(
         Field(
             min_length=1,
             max_length=APPLICATION_LIMITS.mailbox_bytes,
-            description="Exact mailbox name to create; must not contain the LIST wildcards '*' or '%'.",
+            description="Exact mailbox name to create; must not contain the LIST wildcards '*' or '%' "
+            "or end with the server's hierarchy delimiter.",
         ),
     ],
 ) -> CreateMailboxResult:

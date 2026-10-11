@@ -3829,6 +3829,16 @@ class EmailClient:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             quoted = _quote_mailbox(mailbox)
+            # An empty LIST pattern discovers the reference namespace's delimiter
+            # even when the requested mailbox does not exist (RFC 3501 6.3.8).
+            hierarchy = await imap.list(quoted, '""')  # pyright: ignore[reportArgumentType]
+            _raise_for_imap_error(hierarchy, "LIST mailbox hierarchy before CREATE")
+            roots = _parse_list_responses(hierarchy[1])
+            if len(roots) != 1:
+                raise RuntimeError("LIST mailbox hierarchy returned no unique delimiter")
+            delimiter = roots[0].delimiter
+            if delimiter and mailbox.endswith(delimiter):
+                raise ValueError("mailbox must not end with the server's hierarchy delimiter")
             response = await imap.list('""', quoted)  # pyright: ignore[reportArgumentType]
             _raise_for_imap_error(response, "LIST mailbox before CREATE")
             for existing in _parse_list_responses(response[1]):
@@ -3841,8 +3851,6 @@ class EmailClient:
             self._check_mutation_authority()
             try:
                 created = await imap.create(quoted)
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 return "unknown"
             status = _imap_effect_status(created)

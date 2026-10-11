@@ -1245,6 +1245,19 @@ async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants:
                 listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
                 names = {mailbox["name"] for mailbox in listed["result"]}
                 assert {parent, folder, unicode_folder} <= names
+                trailing_parent = f"{parent}-trailing"
+                rejected = await session.call_tool(
+                    "create_mailbox", {"account_name": "alice", "mailbox": f"{trailing_parent}{delimiter}"}
+                )
+                assert rejected.isError is True
+                assert "must not end with the server's hierarchy delimiter" in _text_content(rejected)
+                repeated = await session.call_tool(
+                    "create_mailbox", {"account_name": "alice", "mailbox": f"{trailing_parent}{delimiter}"}
+                )
+                assert repeated.isError is True
+                assert _text_content(repeated) == _text_content(rejected)
+                listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
+                assert trailing_parent not in {mailbox["name"] for mailbox in listed["result"]}
             else:
                 assert created.isError is True
                 listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
