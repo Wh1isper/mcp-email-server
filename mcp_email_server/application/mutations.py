@@ -235,6 +235,12 @@ class DeleteCommand:
         validate_mailbox_name(self.mailbox)
 
 
+def _validate_distinct_mailboxes(source_mailbox: str, destination_mailbox: str) -> None:
+    same_reserved_inbox = source_mailbox.casefold() == "inbox" and destination_mailbox.casefold() == "inbox"
+    if source_mailbox == destination_mailbox or same_reserved_inbox:
+        raise ValueError("source_mailbox and destination_mailbox must differ")
+
+
 @dataclass(frozen=True)
 class MoveCommand:
     account_name: str
@@ -254,11 +260,22 @@ class MoveCommand:
                 raise ValueError("destination_role must be 'junk'")
             return
         validate_mailbox_name(self.destination_mailbox)
-        same_reserved_inbox = (
-            self.source_mailbox.casefold() == "inbox" and self.destination_mailbox.casefold() == "inbox"
-        )
-        if self.source_mailbox == self.destination_mailbox or same_reserved_inbox:
-            raise ValueError("source_mailbox and destination_mailbox must differ")
+        _validate_distinct_mailboxes(self.source_mailbox, self.destination_mailbox)
+
+
+@dataclass(frozen=True)
+class CopyCommand:
+    account_name: str
+    email_ids: tuple[str, ...]
+    source_mailbox: str
+    destination_mailbox: str
+
+    def validate(self) -> None:
+        _validate_account_name(self.account_name)
+        _validate_email_ids(self.email_ids)
+        validate_mailbox_name(self.source_mailbox)
+        validate_mailbox_name(self.destination_mailbox)
+        _validate_distinct_mailboxes(self.source_mailbox, self.destination_mailbox)
 
 
 _MAILBOX_LIST_WILDCARDS = frozenset("*%")
@@ -484,6 +501,12 @@ class MutationProvider(Protocol):
     async def move(
         self,
         command: MoveCommand,
+        account: MutationAccountSnapshot,
+    ) -> BatchMutationOutcome: ...
+
+    async def copy(
+        self,
+        command: CopyCommand,
         account: MutationAccountSnapshot,
     ) -> BatchMutationOutcome: ...
 
@@ -1233,6 +1256,35 @@ class MoveService(_MutationWorkflow):
         return MoveMutationOutcome(outcome, destination_mailbox)
 
 
+class CopyService(_MutationWorkflow):
+    async def execute(self, command: CopyCommand) -> BatchMutationOutcome:
+        command.validate()
+        account = self._resolve(command.account_name)
+        require_mutation(account.allowed_mutations, "organize")
+        access = self._open(account)
+        require_mutation(access.account.allowed_mutations, "organize")
+        try:
+            outcome = _validate_batch_result(
+                await _bounded_provider_effect(access.provider.copy(command, access.account))
+            )
+        except TimeoutError:
+            outcome = _validate_batch_result(_timeout_batch(command.email_ids))
+        if outcome.effect_may_have_started:
+            # The source mailbox is unchanged; only the destination gains messages.
+            invalidated = await self._invalidate(access.account, (command.destination_mailbox,))
+            outcome = _validate_batch_result(
+                BatchMutationOutcome(
+                    outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+                )
+            )
+        _validate_result_payload({
+            "outcomes": [_outcome_payload(item) for item in outcome.outcomes],
+            "reconciliation_needed": outcome.reconciliation_needed,
+            "destination_mailbox": command.destination_mailbox,
+        })
+        return outcome
+
+
 @dataclass(frozen=True)
 class ArchiveMutationOutcome:
     batch: BatchMutationOutcome
@@ -1404,6 +1456,7 @@ class MutationServices:
     save_to_mailbox: SaveToMailboxService
     delete: DeleteService
     move: MoveService
+    copy: CopyService
     archive: ArchiveService
     create_mailbox: CreateMailboxService
     send: SendService
@@ -1426,6 +1479,7 @@ class MutationServices:
             save_to_mailbox=SaveToMailboxService(*arguments),
             delete=DeleteService(*arguments),
             move=MoveService(*arguments),
+            copy=CopyService(*arguments),
             archive=ArchiveService(*arguments),
             create_mailbox=CreateMailboxService(*arguments),
             send=SendService(*arguments),

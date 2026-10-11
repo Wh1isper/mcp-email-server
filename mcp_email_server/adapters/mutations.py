@@ -20,6 +20,7 @@ from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     BatchMutationOutcome,
     ComposeCommand,
+    CopyCommand,
     CreateMailboxCommand,
     DeleteCommand,
     DeliveryMutationOutcome,
@@ -204,6 +205,22 @@ class ClassicMutationProvider:
         self._guard(account, "organize")
         return await _bounded_mutation_call(
             self._handler.incoming_client.move_emails_with_outcome(
+                list(command.email_ids),
+                command.source_mailbox,
+                command.destination_mailbox,
+                list(account.allowed_senders),
+                account.report_blocked_mutations,
+            )
+        )
+
+    async def copy(
+        self,
+        command: CopyCommand,
+        account: MutationAccountSnapshot,
+    ) -> BatchMutationOutcome:
+        self._guard(account, "organize")
+        return await _bounded_mutation_call(
+            self._handler.incoming_client.copy_emails_with_outcome(
                 list(command.email_ids),
                 command.source_mailbox,
                 command.destination_mailbox,

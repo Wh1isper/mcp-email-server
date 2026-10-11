@@ -5,8 +5,18 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from mcp_email_server.adapters.mutations import ClassicMutationProvider
+from mcp_email_server.application.mutations import (
+    BatchMutationOutcome,
+    CopyCommand,
+    MoveCommand,
+    MutationProviderAccess,
+    MutationProviderError,
+    TargetMutationOutcome,
+)
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.classic import EmailClient
+from tests.test_mutation_application import _account, _services
 
 
 def _mock_imap(*, uid=("OK", [b"COPY completed"])):
@@ -144,3 +154,145 @@ async def test_select_failure_is_pre_effect_error(client):
         await _copy(client, mock, ["1"])
     mock.uid.assert_not_awaited()
     mock.logout.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Command, application service, adapter, and grant enforcement
+# ---------------------------------------------------------------------------
+
+
+def _ok(*ids):
+    return BatchMutationOutcome(tuple(TargetMutationOutcome(i, "succeeded") for i in ids))
+
+
+@pytest.mark.parametrize(("source", "destination"), [("INBOX", "INBOX"), ("INBOX", "inbox"), ("Archive", "Archive")])
+@pytest.mark.parametrize("command_type", [CopyCommand, MoveCommand])
+def test_same_mailbox_is_rejected(command_type, source, destination):
+    with pytest.raises(ValueError, match="must differ"):
+        command_type("primary", ("1",), source, destination).validate()
+
+
+def test_non_inbox_case_variant_is_a_different_mailbox():
+    CopyCommand("primary", ("1",), "Archive", "archive").validate()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        CopyCommand("primary", (), "INBOX", "Other"),
+        CopyCommand("primary", ("1",), "INBOX", ""),
+        CopyCommand("primary", ("1",), "", "Other"),
+    ],
+)
+def test_command_rejects_invalid_input(command):
+    with pytest.raises(ValueError):
+        command.validate()
+
+
+@pytest.mark.asyncio
+async def test_service_invalidates_only_destination():
+    provider = MagicMock()
+    provider.copy = AsyncMock(return_value=_ok("1"))
+    services, _, _, projection = _services(provider=provider)
+    outcome = await services.copy.execute(CopyCommand("primary", ("1",), "INBOX", "techem"))
+    assert outcome.targets("succeeded") == ["1"]
+    assert outcome.reconciliation_needed is False
+    projection.invalidate.assert_awaited_once_with(("techem",))
+
+
+@pytest.mark.asyncio
+async def test_service_skips_invalidation_when_nothing_started():
+    provider = MagicMock()
+    provider.copy = AsyncMock(
+        return_value=BatchMutationOutcome((TargetMutationOutcome("1", "failed", "copy-rejected"),))
+    )
+    services, _, _, projection = _services(provider=provider)
+    await services.copy.execute(CopyCommand("primary", ("1",), "INBOX", "techem"))
+    projection.invalidate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_service_projection_failure_keeps_success_and_flags_reconciliation():
+    provider = MagicMock()
+    provider.copy = AsyncMock(return_value=_ok("1"))
+    projection = MagicMock()
+    projection.invalidate = AsyncMock(side_effect=RuntimeError("index locked"))
+    services, _, _, _ = _services(provider=provider, projection=projection)
+    outcome = await services.copy.execute(CopyCommand("primary", ("1",), "INBOX", "techem"))
+    assert outcome.targets("succeeded") == ["1"]
+    assert outcome.reconciliation_needed is True
+
+
+@pytest.mark.asyncio
+async def test_service_timeout_is_unknown_without_replay():
+    provider = MagicMock()
+    provider.copy = AsyncMock(side_effect=TimeoutError())
+    services, _, _, _ = _services(provider=provider)
+    outcome = await services.copy.execute(CopyCommand("primary", ("1", "2"), "INBOX", "techem"))
+    assert _summary(outcome) == [("1", "unknown", "provider-timeout"), ("2", "unknown", "provider-timeout")]
+    assert outcome.reconciliation_needed is True
+    provider.copy.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_service_denies_without_organize_before_provider_open():
+    services, _, factory, _ = _services(account=_account(allowed_mutations=("draft", "append")))
+    with pytest.raises(PermissionError, match="not allowed"):
+        await services.copy.execute(CopyCommand("primary", ("1",), "INBOX", "techem"))
+    factory.open.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_service_rechecks_organize_after_open():
+    provider = MagicMock()
+    provider.copy = AsyncMock(return_value=_ok("1"))
+    services, _, factory, _ = _services(provider=provider)
+    factory.open.return_value = MutationProviderAccess(_account(allowed_mutations=("append",)), provider)
+    with pytest.raises(PermissionError, match="not allowed"):
+        await services.copy.execute(CopyCommand("primary", ("1",), "INBOX", "techem"))
+    provider.copy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_invalid_command_before_resolve():
+    services, authority, factory, _ = _services()
+    with pytest.raises(ValueError):
+        await services.copy.execute(CopyCommand("primary", ("1",), "INBOX", "INBOX"))
+    authority.resolve.assert_not_called()
+    factory.open.assert_not_called()
+
+
+def _handler(copy: AsyncMock) -> MagicMock:
+    handler = MagicMock()
+    handler.incoming_client.copy_emails_with_outcome = copy
+    handler.outgoing_client = None
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_adapter_guards_organize_and_passes_sender_policy():
+    handler = _handler(AsyncMock(return_value=_ok("1")))
+    account = _account(allowed_senders=("ok@example.com",), report_blocked_mutations=True)
+    result = await ClassicMutationProvider(handler).copy(CopyCommand("primary", ("1",), "INBOX", "techem"), account)
+    assert result.targets("succeeded") == ["1"]
+    handler.incoming_client.copy_emails_with_outcome.assert_awaited_once_with(
+        ["1"], "INBOX", "techem", ["ok@example.com"], True
+    )
+    assert callable(handler.incoming_client.mutation_guard)
+
+
+@pytest.mark.asyncio
+async def test_adapter_denies_without_organize_before_client():
+    handler = _handler(AsyncMock(return_value=_ok("1")))
+    with pytest.raises(PermissionError):
+        await ClassicMutationProvider(handler).copy(
+            CopyCommand("primary", ("1",), "INBOX", "techem"), _account(allowed_mutations=("append",))
+        )
+    handler.incoming_client.copy_emails_with_outcome.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_bounds_unexpected_client_errors():
+    handler = _handler(AsyncMock(side_effect=RuntimeError("SELECT source mailbox INBOX failed")))
+    with pytest.raises(MutationProviderError, match="provider_failure"):
+        await ClassicMutationProvider(handler).copy(CopyCommand("primary", ("1",), "INBOX", "techem"), _account())

@@ -13,6 +13,7 @@ from mcp_email_server.application.mutation_policy import DEFAULT_ALLOWED_MUTATIO
 from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     ArchiveCommand,
+    CopyCommand,
     CreateMailboxCommand,
     DeleteCommand,
     DraftAppendCommand,
@@ -78,6 +79,7 @@ def test_toml_roundtrip_and_env_preserve_readonly(tmp_path, monkeypatch, email_s
         ("mark_read", MarkReadCommand("primary", ("1",))),
         ("delete", DeleteCommand("primary", ("1",))),
         ("move", MoveCommand("primary", ("1",), "INBOX", "Other")),
+        ("copy", CopyCommand("primary", ("1",), "INBOX", "Other")),
         ("archive", ArchiveCommand("primary", ("1",))),
         ("create_mailbox", CreateMailboxCommand("primary", "Other")),
         ("save_to_mailbox", SaveToMailboxCommand("primary", ("recipient@example.test",), "subject", "body")),
