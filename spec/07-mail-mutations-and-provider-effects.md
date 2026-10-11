@@ -243,6 +243,7 @@ a fresh authority check and one `UID COPY`. Evidence maps per target:
 
 | Provider evidence                       | Target result                                        |
 | --------------------------------------- | ---------------------------------------------------- |
+| UID absent from the source (UID SEARCH) | `failed`, detail `not-found`, no COPY issued         |
 | `OK`                                    | `succeeded`                                          |
 | `NO` or `BAD` (including `[TRYCREATE]`) | `failed`, detail `copy-rejected`                     |
 | authority revoked before the COPY       | `failed`, detail `mutation-policy`                   |

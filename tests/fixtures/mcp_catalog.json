@@ -833,7 +833,7 @@
         },
         {
             "name": "list_allowed_senders",
-            "description": "List the configured inbound sender allowlist — the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment, and forward_email's source read) and eligible for the mutation tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an empty list when unrestricted.",
+            "description": "List the configured inbound sender allowlist — the address patterns whose mail the server will read or act on. When configured, only these senders' mail is visible to the read tools (list_emails_metadata, get_emails_content, download_attachment, and forward_email's source read) and eligible for the mutation tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, copy_emails, archive_emails). Returns an empty list when unrestricted.",
             "inputSchema": {
                 "properties": {},
                 "title": "list_allowed_sendersArguments",

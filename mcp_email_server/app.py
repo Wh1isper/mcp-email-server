@@ -567,7 +567,8 @@ async def list_allowed_recipients() -> PolicyDiscoveryResult:
         "will read or act on. When configured, only these senders' mail is visible to the read tools "
         "(list_emails_metadata, get_emails_content, download_attachment, and forward_email's source read) "
         "and eligible for the mutation "
-        "tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, archive_emails). Returns an "
+        "tools (delete_emails, set_email_flags, mark_emails_as_read, move_emails, copy_emails, archive_emails). "
+        "Returns an "
         "empty list "
         "when unrestricted."
     ),

@@ -3603,6 +3603,20 @@ class EmailClient:
             await _best_effort_imap_logout(imap)
         return BatchMutationOutcome(tuple(outcomes[email_id] for email_id in email_ids))
 
+    @staticmethod
+    async def _absent_uids(
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        email_ids: list[str],
+        mailbox: str,
+    ) -> set[str]:
+        """UIDs not present in the selected mailbox; UID COPY of those completes OK without copying."""
+        if not email_ids:
+            return set()
+        search_response = await imap.uid_search("UID", ",".join(email_ids), charset=None)
+        _raise_for_imap_command_failure(search_response, f"SEARCH source mailbox {mailbox}")
+        present = set(_normalize_search_uids(search_response[1]))
+        return {email_id for email_id in email_ids if email_id not in present}
+
     async def copy_emails_with_outcome(
         self,
         email_ids: list[str],
@@ -3631,6 +3645,10 @@ class EmailClient:
                     )
                 else:
                     permitted.append(email_id)
+            absent = await self._absent_uids(imap, permitted, source_mailbox)
+            for email_id in absent:
+                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "not-found")
+            permitted = [email_id for email_id in permitted if email_id not in absent]
             for index, email_id in enumerate(permitted):
                 try:
                     self._check_mutation_authority()

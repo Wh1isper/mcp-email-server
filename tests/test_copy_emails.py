@@ -30,6 +30,9 @@ def _mock_imap(*, uid=("OK", [b"COPY completed"])):
     mock.protocol = MagicMock(capabilities=("IMAP4rev1", "UIDPLUS", "MOVE"))
     mock.protocol.capability = AsyncMock()
     mock.select = AsyncMock(return_value=("OK", [b"SELECT completed"]))
+    mock.uid_search = AsyncMock(
+        side_effect=lambda criterion, uids, charset=None: ("OK", [uids.replace(",", " ").encode(), b"SEARCH done"])
+    )
     mock.create = AsyncMock()
     mock.expunge = AsyncMock()
     if isinstance(uid, list | BaseException):
@@ -145,6 +148,25 @@ async def test_sender_policy_matches_move(client, report, expected):
         )
     assert _summary(outcome) == [("1", "succeeded", None), expected]
     mock.uid.assert_awaited_once_with("copy", "1", '"business/techem"')
+
+
+@pytest.mark.asyncio
+async def test_uid_missing_from_source_fails_without_copy(client):
+    mock = _mock_imap()
+    mock.uid_search = AsyncMock(return_value=("OK", [b"1", b"SEARCH done"]))
+    outcome = await _copy(client, mock, ["1", "2"])
+    assert _summary(outcome) == [("1", "succeeded", None), ("2", "failed", "not-found")]
+    mock.uid_search.assert_awaited_once_with("UID", "1,2", charset=None)
+    mock.uid.assert_awaited_once_with("copy", "1", '"business/techem"')
+
+
+@pytest.mark.asyncio
+async def test_uid_search_failure_is_pre_effect_error(client):
+    mock = _mock_imap()
+    mock.uid_search = AsyncMock(return_value=("NO", [b"search failed"]))
+    with pytest.raises(RuntimeError):
+        await _copy(client, mock, ["1"])
+    mock.uid.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -340,3 +362,9 @@ async def test_tool_reports_partial_result_per_id():
     assert result.startswith("Copy result [")
     assert "7" in result
     assert "reconciliation needed" in result
+
+
+@pytest.mark.asyncio
+async def test_sender_allowlist_description_names_copy_emails():
+    tools = {tool.name: tool for tool in await app_module.mcp.list_tools()}
+    assert "copy_emails" in tools["list_allowed_senders"].description

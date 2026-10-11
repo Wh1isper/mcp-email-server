@@ -641,7 +641,8 @@ Source and destination must differ.
 
 Requires `organize`. Sender allowlists apply exactly as for `move_emails`.
 Each ID is copied with IMAP `UID COPY` and reported as `succeeded`, `failed`,
-or `unknown`. Copying is not idempotent: repeating a call creates further
+or `unknown`; an ID that is no longer in the source mailbox fails as
+`not-found` without a copy. Copying is not idempotent: repeating a call creates further
 copies, so after an `unknown` result, list the destination with
 `list_emails_metadata` before trying again. Destination UIDs are not returned;
 list the destination to work with the copies.

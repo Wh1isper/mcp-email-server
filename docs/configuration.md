@@ -679,6 +679,7 @@ IMAP-only does not mean read-only. These tools can still change mailbox state:
 - `set_email_flags`
 - `mark_emails_as_read`
 - `move_emails`
+- `copy_emails`
 - `archive_emails`
 - `delete_emails`
 
