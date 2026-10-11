@@ -1258,10 +1258,38 @@ async def test_account_mutation_grants_against_greenmail(tmp_path: Path, grants:
                 assert _text_content(repeated) == _text_content(rejected)
                 listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
                 assert trailing_parent not in {mailbox["name"] for mailbox in listed["result"]}
+                inbox_metadata = await _metadata_for_subject_in_mailbox(session, "alice", "INBOX", subject)
+                copied = await _call_tool(
+                    session,
+                    "copy_emails",
+                    {
+                        "account_name": "alice",
+                        "email_ids": [inbox_metadata["email_id"]],
+                        "source_mailbox": "INBOX",
+                        "destination_mailbox": folder,
+                    },
+                )
+                assert copied["result"] == f"Successfully copied 1 email(s) to {folder}"
+                _wait_for_message(ALICE, folder, subject)
+                original = _wait_for_message(ALICE, "INBOX", subject)
+                assert str(original.uid) == str(inbox_metadata["email_id"])
+                assert r"\Deleted" not in original.flags
             else:
                 assert created.isError is True
                 listed = await _call_tool(session, "list_mailboxes", {"account_name": "alice"})
                 assert parent not in {mailbox["name"] for mailbox in listed["result"]}
+                denied_copy = await session.call_tool(
+                    "copy_emails",
+                    {
+                        "account_name": "alice",
+                        "email_ids": [source.uid],
+                        "source_mailbox": "INBOX",
+                        "destination_mailbox": "Junk",
+                    },
+                )
+                assert denied_copy.isError is True
+                assert _find_message(ALICE, "Junk", subject) is None
+                assert _wait_for_message(ALICE, "INBOX", subject).uid == source.uid
 
 
 @pytest.mark.asyncio
