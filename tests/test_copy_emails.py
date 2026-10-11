@@ -151,6 +151,16 @@ async def test_sender_policy_matches_move(client, report, expected):
 
 
 @pytest.mark.asyncio
+async def test_all_blocked_skips_search_and_copy(client):
+    mock = _mock_imap()
+    with patch.object(client, "_blocked_uids", AsyncMock(return_value={"1", "2"})):
+        outcome = await _copy(client, mock, ["1", "2"], allowed_senders=["ok@example.com"])
+    assert _summary(outcome) == [("1", "succeeded", None), ("2", "succeeded", None)]
+    mock.uid_search.assert_not_awaited()
+    mock.uid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_uid_missing_from_source_fails_without_copy(client):
     mock = _mock_imap()
     mock.uid_search = AsyncMock(return_value=("OK", [b"1", b"SEARCH done"]))
@@ -324,6 +334,17 @@ async def test_adapter_bounds_unexpected_client_errors():
 # ---------------------------------------------------------------------------
 # MCP tool
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_copy_command_dispatches_to_runtime_service():
+    outcome = _ok("1")
+    runtime = MagicMock()
+    runtime.mutations.copy.execute = AsyncMock(return_value=outcome)
+    command = CopyCommand("primary", ("1",), "INBOX", "techem")
+    with patch("mcp_email_server.app.get_application_runtime", return_value=runtime):
+        assert await app_module.copy_emails_command(command) is outcome
+    runtime.mutations.copy.execute.assert_awaited_once_with(command)
 
 
 @pytest.mark.asyncio
