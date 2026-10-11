@@ -15,7 +15,7 @@ mutation route. The static MCP catalog does not change with effective grants.
 | Class      | Effects authorized                                                                             |
 | ---------- | ---------------------------------------------------------------------------------------------- |
 | `draft`    | `save_draft` only: append composed MIME to the resolved draft mailbox with fixed `\Draft` flag |
-| `organize` | mark-read/unread, approved flags and semantic tags, move, archive, and mailbox creation        |
+| `organize` | mark-read/unread, approved flags and semantic tags, move, archive, copy, and mailbox creation  |
 | `delete`   | explicit delete and its UID-scoped deletion/expunge effects                                    |
 | `send`     | send/forward SMTP submission and narrowly their successful-message Sent copy                   |
 | `append`   | general `save_to_mailbox`, including caller-selected mailbox and flags                         |
@@ -187,8 +187,8 @@ policy and evidence; it is not silently attempted after an unsafe fallback.
 ## Mailbox Creation
 
 `create_mailbox` is the only workflow that creates a mailbox. It is an explicit,
-caller-requested effect under `organize`; move, archive, Junk discovery, draft
-resolution, and append never create a mailbox implicitly.
+caller-requested effect under `organize`; move, archive, copy, Junk discovery,
+draft resolution, and append never create a mailbox implicitly.
 
 The caller supplies the exact server mailbox name, including any hierarchy
 delimiter and namespace prefix as reported by `list_mailboxes`. The service does
@@ -219,6 +219,43 @@ The tool is idempotent by contract: repeating it for an existing mailbox reports
 `already_exists`. An `unknown` CREATE is not replayed automatically; the caller
 reconciles with `list_mailboxes`. Creation does not SUBSCRIBE the mailbox. The
 mailbox list is not projected, so creation requires no metadata invalidation.
+
+## Copy Within One Account
+
+`copy_emails` duplicates selected messages from a caller-selected source mailbox
+into an existing, exactly named destination mailbox of the same account. It is
+an explicit effect under `organize`: a copy changes no source message, and an
+account that may move messages may already place them in any of its mailboxes.
+The source mailbox, its UIDs, and every original message and flag remain
+unchanged; the workflow never issues `STORE`, `EXPUNGE`, or `CREATE`.
+
+The request validates like an explicit-destination move: account name, bounded
+non-empty unique UIDs listed in the source mailbox, bounded mailbox names, and a
+destination that differs from the source (case-insensitive only for `INBOX`).
+There is no role-based destination. A missing destination is not created; the
+caller uses `create_mailbox` first.
+
+The workflow requires `organize`, opens the provider, requires `organize` again,
+selects the source, and applies the same sender-policy filtering as move:
+blocked UIDs are privacy-preserving no-ops reported as succeeded unless
+`report_blocked_mutations` reports them as failed. Each permitted UID then gets
+a fresh authority check and one `UID COPY`. Evidence maps per target:
+
+| Provider evidence                       | Target result                                        |
+| --------------------------------------- | ---------------------------------------------------- |
+| `OK`                                    | `succeeded`                                          |
+| `NO` or `BAD` (including `[TRYCREATE]`) | `failed`, detail `copy-rejected`                     |
+| authority revoked before the COPY       | `failed`, detail `mutation-policy`                   |
+| exception or interrupted connection     | `unknown`, detail `copy-unknown`                     |
+| cancellation                            | current `unknown`; remaining `failed/not-attempted`  |
+| whole-effect timeout                    | every target `unknown`, `reconciliation_needed=true` |
+
+COPY is not idempotent: repeating a call creates further copies, and the
+workflow performs no Message-ID deduplication. An `unknown` target is not
+replayed; the caller reconciles by listing the destination mailbox. The result
+reports source-mailbox targets only; destination UIDs (UIDPLUS `COPYUID`) are
+not returned. When an effect may have started, only the destination mailbox's
+projection is invalidated, because the source mailbox is unchanged.
 
 ## Delete and Scoped Expunge
 
@@ -400,8 +437,8 @@ bytes or a mutation command may have reached a provider, interrupted evidence is
 classified unknown unless the protocol proves success or failure.
 
 Retries are allowed only for operations proven idempotent under the same current
-authority and request identity. Non-idempotent APPEND, SMTP delivery, move, or
-delete is not automatically replayed after unknown. Every public aggregate that
+authority and request identity. Non-idempotent APPEND, SMTP delivery, move, copy,
+or delete is not automatically replayed after unknown. Every public aggregate that
 contains an `unknown` target, APPEND, delivery, or sent-copy outcome sets
 `reconciliation_needed=true` as a model invariant; successful projection
 invalidation cannot clear provider ambiguity.
@@ -500,3 +537,10 @@ enter public errors.
     suffixes and flat namespaces, `organize` denial before provider access,
     revocation between existence check and CREATE, and that no other workflow
     issues CREATE.
+16. Copy tests prove per-UID `UID COPY` from the selected source into the exact
+    destination with originals, flags, and source UIDs untouched; no `STORE`,
+    `EXPUNGE`, or `CREATE`; `failed` for rejected COPY including `[TRYCREATE]`;
+    `unknown` with `reconciliation_needed` and no replay on timeout or
+    interruption; sender-policy filtering identical to move; `organize` denial
+    before provider access and revocation between targets; same-mailbox
+    rejection; and destination-only projection invalidation.

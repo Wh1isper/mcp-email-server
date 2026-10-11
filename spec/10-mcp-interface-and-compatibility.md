@@ -108,7 +108,7 @@ The stable mail catalog may expose these compatibility families:
 - flag/read-state mutations;
 - semantic keyword discovery, filtering, and explicitly authorized tag
   mutations;
-- save/append, move, archive, delete, and explicit mailbox creation;
+- save/append, move, archive, copy, delete, and explicit mailbox creation;
 - SMTP send and sent-copy behavior.
 
 Exact names and schemas are owned by the checked contract snapshot. Their
@@ -246,3 +246,8 @@ plane.
     non-destructive, idempotent, open-world tool whose structured result reports
     the mailbox, a `created`/`already_exists`/`unknown` status, and
     `reconciliation_needed`, with no change to existing tool schemas.
+12. The catalog and raw stdio tests cover `copy_emails` as an additive,
+    non-destructive, non-idempotent, open-world tool taking `account_name`,
+    `email_ids`, an exact `destination_mailbox`, and `source_mailbox` defaulting
+    to `INBOX`, whose text result follows the `move_emails` success and
+    tagged partial-result literals, with no change to existing tool schemas.
