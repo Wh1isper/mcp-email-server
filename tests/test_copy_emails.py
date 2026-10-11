@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from mcp_email_server import app as app_module
 from mcp_email_server.adapters.mutations import ClassicMutationProvider
 from mcp_email_server.application.mutations import (
     BatchMutationOutcome,
@@ -296,3 +297,46 @@ async def test_adapter_bounds_unexpected_client_errors():
     handler = _handler(AsyncMock(side_effect=RuntimeError("SELECT source mailbox INBOX failed")))
     with pytest.raises(MutationProviderError, match="provider_failure"):
         await ClassicMutationProvider(handler).copy(CopyCommand("primary", ("1",), "INBOX", "techem"), _account())
+
+
+# ---------------------------------------------------------------------------
+# MCP tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_is_advertised_as_non_destructive_non_idempotent():
+    tools = {tool.name: tool for tool in await app_module.mcp.list_tools()}
+    tool = tools["copy_emails"]
+    assert tool.inputSchema["required"] == ["account_name", "email_ids", "destination_mailbox"]
+    assert tool.inputSchema["properties"]["source_mailbox"]["default"] == "INBOX"
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is False
+    assert tool.annotations.openWorldHint is True
+
+
+@pytest.mark.asyncio
+async def test_tool_reports_full_success():
+    handler = AsyncMock(return_value=_ok("5", "7"))
+    with patch("mcp_email_server.app.copy_emails_command", handler):
+        result = await app_module.copy_emails(
+            account_name="Gmail", email_ids=["5", "7"], destination_mailbox="business/techem"
+        )
+    assert result == "Successfully copied 2 email(s) to business/techem"
+    assert handler.await_args.args[0] == CopyCommand("Gmail", ("5", "7"), "INBOX", "business/techem")
+
+
+@pytest.mark.asyncio
+async def test_tool_reports_partial_result_per_id():
+    outcome = BatchMutationOutcome((
+        TargetMutationOutcome("5", "succeeded"),
+        TargetMutationOutcome("7", "unknown", "copy-unknown"),
+    ))
+    with patch("mcp_email_server.app.copy_emails_command", AsyncMock(return_value=outcome)):
+        result = await app_module.copy_emails(
+            account_name="Gmail", email_ids=["5", "7"], destination_mailbox="techem", source_mailbox="Archive"
+        )
+    assert result.startswith("Copy result [")
+    assert "7" in result
+    assert "reconciliation needed" in result

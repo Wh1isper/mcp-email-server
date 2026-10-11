@@ -1783,6 +1783,69 @@
             }
         },
         {
+            "name": "copy_emails",
+            "description": "Copy emails into another existing folder of the same account using UIDs from list_emails_metadata in source_mailbox. Originals stay in place unchanged. destination_mailbox is the exact name from list_mailboxes; a missing folder is not created (call create_mailbox first). Requires organize permission. Repeating a call creates further copies. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried.",
+            "inputSchema": {
+                "properties": {
+                    "account_name": {
+                        "description": "The name of the email account.",
+                        "maxLength": 256,
+                        "title": "Account Name",
+                        "type": "string"
+                    },
+                    "email_ids": {
+                        "description": "List of email_id to copy (obtained from list_emails_metadata).",
+                        "items": {
+                            "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Email Ids",
+                        "type": "array"
+                    },
+                    "destination_mailbox": {
+                        "description": "Exact existing destination mailbox name as reported by list_mailboxes.",
+                        "maxLength": 1024,
+                        "title": "Destination Mailbox",
+                        "type": "string"
+                    },
+                    "source_mailbox": {
+                        "default": "INBOX",
+                        "description": "Mailbox in which email_ids were listed; UIDs are not transferable across mailboxes.",
+                        "maxLength": 1024,
+                        "title": "Source Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "account_name",
+                    "email_ids",
+                    "destination_mailbox"
+                ],
+                "title": "copy_emailsArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "copy_emailsOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "archive_emails",
             "description": "Archive one or more emails by moving them to the account's Archive folder, auto-detected via the RFC 6154 \\Archive flag (falling back to common names like Archive or [Gmail]/All Mail). Use list_emails_metadata first. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
             "inputSchema": {

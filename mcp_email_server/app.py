@@ -20,6 +20,7 @@ from mcp_email_server.application.mutations import (
     ArchiveCommand,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
+    CopyCommand,
     CreateMailboxCommand,
     CreateMailboxOutcome,
     DeleteCommand,
@@ -106,6 +107,10 @@ async def mark_read_command(command: MarkReadCommand) -> BatchMutationOutcome:
 
 async def move_emails_command(command: MoveCommand) -> MoveMutationOutcome:
     return await get_application_runtime().mutations.move.execute(command)
+
+
+async def copy_emails_command(command: CopyCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.copy.execute(command)
 
 
 async def archive_emails_command(command: ArchiveCommand) -> ArchiveMutationOutcome:
@@ -1181,6 +1186,53 @@ async def move_emails(
         return f"Successfully moved {len(succeeded)} email(s) to {outcome.destination_mailbox}"
     placement = f"; mailbox: {outcome.destination_mailbox}" if destination_role is not None else ""
     return f"Move result [{_tagged_batch_result(outcome.batch)}{placement}]"
+
+
+@mcp.tool(
+    description=(
+        "Copy emails into another existing folder of the same account using UIDs from list_emails_metadata "
+        "in source_mailbox. Originals stay in place unchanged. destination_mailbox is the exact name from "
+        "list_mailboxes; a missing folder is not created (call create_mailbox first). Requires organize "
+        "permission. Repeating a call creates further copies. Partial or ambiguous effects report per-ID "
+        "succeeded/failed/unknown status and are not retried."
+    ),
+    annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
+)
+async def copy_emails(
+    account_name: Annotated[
+        str, Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="The name of the email account.")
+    ],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to copy (obtained from list_emails_metadata).",
+        ),
+    ],
+    destination_mailbox: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="Exact existing destination mailbox name as reported by list_mailboxes.",
+        ),
+    ],
+    source_mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="Mailbox in which email_ids were listed; UIDs are not transferable across mailboxes.",
+        ),
+    ] = "INBOX",
+) -> str:
+    outcome = await copy_emails_command(
+        CopyCommand(account_name, tuple(email_ids), source_mailbox, destination_mailbox)
+    )
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        return f"Successfully copied {len(succeeded)} email(s) to {destination_mailbox}"
+    return f"Copy result [{_tagged_batch_result(outcome)}]"
 
 
 @mcp.tool(
