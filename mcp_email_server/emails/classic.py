@@ -3603,6 +3603,63 @@ class EmailClient:
             await _best_effort_imap_logout(imap)
         return BatchMutationOutcome(tuple(outcomes[email_id] for email_id in email_ids))
 
+    async def copy_emails_with_outcome(
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+        allowed_senders: list[str] | None = None,
+        report_blocked_mutations: bool = False,
+    ) -> BatchMutationOutcome:
+        """Copy UIDs with UID COPY; source messages, flags, and UIDs stay untouched."""
+        _validate_imap_uids(email_ids)
+        imap = await self._connect_imap()
+        outcomes: dict[str, TargetMutationOutcome] = {}
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            select_response = await imap.select(_quote_mailbox(source_mailbox))
+            _raise_for_imap_error(select_response, f"SELECT source mailbox {source_mailbox}")
+            blocked = await self._blocked_uids(imap, email_ids, allowed_senders)
+            permitted: list[str] = []
+            for email_id in email_ids:
+                if email_id in blocked:
+                    outcomes[email_id] = TargetMutationOutcome(
+                        email_id,
+                        "failed" if report_blocked_mutations else "succeeded",
+                        "sender-policy" if report_blocked_mutations else None,
+                    )
+                else:
+                    permitted.append(email_id)
+            for index, email_id in enumerate(permitted):
+                try:
+                    self._check_mutation_authority()
+                    response = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
+                except PermissionError:
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
+                    continue
+                except asyncio.CancelledError:
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-unknown")
+                    for remaining_id in permitted[index + 1 :]:
+                        outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
+                    break
+                except Exception:
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-unknown")
+                    continue
+                copy_status = _imap_effect_status(response)
+                outcomes[email_id] = TargetMutationOutcome(
+                    email_id,
+                    copy_status,
+                    None
+                    if copy_status == "succeeded"
+                    else "copy-rejected"
+                    if copy_status == "failed"
+                    else "copy-unknown",
+                )
+        finally:
+            await _best_effort_imap_logout(imap)
+        return BatchMutationOutcome(tuple(outcomes[email_id] for email_id in email_ids))
+
     async def delete_emails(
         self,
         email_ids: list[str],
