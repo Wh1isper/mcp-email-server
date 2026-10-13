@@ -7,8 +7,8 @@ import re
 import ssl
 import time
 import unicodedata
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email import encoders
@@ -50,6 +50,9 @@ from mcp_email_server.application.mutations import (
     MUTABLE_EMAIL_FLAGS,
     AppendMutationOutcome,
     BatchMutationOutcome,
+    CopyAppendEvidence,
+    CopySourceInventory,
+    CopySourceMessage,
     DeliveryMutationOutcome,
     FlagOperation,
     MailboxCreationStatus,
@@ -725,14 +728,20 @@ def _imap_effect_status(response: Any) -> MutationStatus:
     return "unknown"
 
 
-def _has_already_exists_code(response: Any) -> bool:
-    """Detect the RFC 5530 ALREADYEXISTS response code without exposing server text."""
+def _has_imap_response_code(response: Any, code: str) -> bool:
+    """Detect one bracketed IMAP response code without exposing server text."""
+    marker = f"[{code}]"
     lines = response[1] if isinstance(response, tuple | list) and len(response) > 1 else getattr(response, "lines", ())
     for line in lines or ():
         text = line.decode("utf-8", "replace") if isinstance(line, bytes | bytearray) else str(line)
-        if text.lstrip().upper().startswith("[ALREADYEXISTS]"):
+        if text.lstrip().upper().startswith(marker):
             return True
     return False
+
+
+def _has_already_exists_code(response: Any) -> bool:
+    """Detect the RFC 5530 ALREADYEXISTS response code without exposing server text."""
+    return _has_imap_response_code(response, "ALREADYEXISTS")
 
 
 async def _best_effort_imap_logout(imap: Any) -> None:
@@ -1070,18 +1079,32 @@ async def _append_message(
         return await imap.append(payload, mailbox=mailbox, flags=flags)
     if not mode.session_utf8_enabled:
         raise ImapUtf8UnsupportedError("UTF8=ACCEPT was not enabled")
+    return await _append_utf8_literal(imap, payload, mailbox=mailbox, flags=flags, date=None, timeout=imap.timeout)
 
+
+async def _append_utf8_literal(
+    imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+    payload: bytes,
+    *,
+    mailbox: str,
+    flags: str,
+    date: str | None,
+    timeout: float,
+) -> Any:
+    """Send one RFC 6855 ``UTF8 (~{n})`` APPEND in an UTF8=ACCEPT session."""
     protocol = imap.protocol
     if protocol is None:
         raise ImapTransportError("IMAP APPEND failed: protocol is not connected")
+    arguments = [mailbox, flags]
+    if date is not None:
+        arguments.append(date)
     command = aioimaplib.Command(
         "APPEND",
         protocol.new_tag(),
-        mailbox,
-        flags,
+        *arguments,
         f"UTF8 (~{{{len(payload)}}}",
         loop=asyncio.get_running_loop(),
-        timeout=imap.timeout,
+        timeout=timeout,
     )
     protocol.literal_data = payload + b")"
     try:
@@ -1100,6 +1123,42 @@ async def _append_message(
         raise ImapTransportError("IMAP APPEND failed (TRANSPORT)") from None
     protocol.literal_data = None
     return response
+
+
+_IMAP_INTERNALDATE = re.compile(
+    r"[ 0-3]?[0-9]-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-[0-9]{4} "
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}",
+    re.IGNORECASE,
+)
+_HEADER_BODY_SEPARATOR = re.compile(rb"\r?\n\r?\n")
+_COPY_INVENTORY_ITEMS = "(UID RFC822.SIZE FLAGS INTERNALDATE)"
+
+
+def _raw_header_requires_utf8(message: bytes) -> bool:
+    """Return whether the raw header section carries 8-bit (RFC 6532) octets."""
+    separator = _HEADER_BODY_SEPARATOR.search(message)
+    header = message if separator is None else message[: separator.start()]
+    return _HIGH_BIT_OCTET.search(header) is not None
+
+
+def _parse_copy_inventory_item(item: bytes) -> CopySourceMessage | None:
+    """Parse one ``UID RFC822.SIZE FLAGS INTERNALDATE`` FETCH response line."""
+    uid = re.search(rb"\bUID ([1-9][0-9]*)", item)
+    if uid is None:
+        return None
+    size = re.search(rb"\bRFC822\.SIZE ([0-9]+)", item)
+    flags = re.search(rb"\bFLAGS \(([^)]*)\)", item)
+    date = re.search(rb'\bINTERNALDATE "([^"]*)"', item)
+    internal_date = date.group(1).decode("ascii", errors="replace") if date is not None else None
+    if internal_date is not None and _IMAP_INTERNALDATE.fullmatch(internal_date) is None:
+        # Never forward an unvalidated quoted string into APPEND; the server assigns its own date.
+        internal_date = None
+    return CopySourceMessage(
+        uid=uid.group(1).decode("ascii"),
+        size=int(size.group(1)) if size is not None else None,
+        flags=tuple(flags.group(1).decode("utf-8", errors="replace").split()) if flags is not None else (),
+        internal_date=internal_date,
+    )
 
 
 async def _prepare_imap_append(
@@ -3836,6 +3895,49 @@ class EmailClient:
 
         return mailboxes
 
+    async def _close_copy_session(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        session: "_ImapCopySource | _ImapCopyTarget | None",
+    ) -> None:
+        # An interrupted literal leaves the stream unframed: abort instead of LOGOUT.
+        if session is not None and session.broken:
+            await self._abort_imap_connection(imap)
+        else:
+            await _best_effort_imap_logout(imap)
+
+    @asynccontextmanager
+    async def open_copy_source(self, mailbox: str) -> AsyncIterator["_ImapCopySource"]:
+        """Open a read-only session for cross-account copy (EXAMINE, never SELECT)."""
+        imap = await self._connect_imap()
+        session: _ImapCopySource | None = None
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            response = await imap.examine(_quote_mailbox(mailbox))
+            _raise_for_imap_error(response, "EXAMINE source mailbox")
+            session = _ImapCopySource(self, imap)
+            yield session
+        finally:
+            await self._close_copy_session(imap, session)
+
+    @asynccontextmanager
+    async def open_copy_target(self, mailbox: str) -> AsyncIterator["_ImapCopyTarget"]:
+        """Open an APPEND-only session for cross-account copy into an existing mailbox."""
+        imap = await self._connect_imap()
+        session: _ImapCopyTarget | None = None
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            capabilities = await _refresh_imap_capabilities(imap)
+            utf8_enabled = "UTF8=ONLY" in capabilities
+            if utf8_enabled:
+                await _enable_imap_utf8_accept(imap, capabilities)
+            session = _ImapCopyTarget(self, imap, mailbox, capabilities, utf8_enabled=utf8_enabled)
+            yield session
+        finally:
+            await self._close_copy_session(imap, session)
+
     async def create_mailbox(self, mailbox: str) -> MailboxCreationStatus:
         """Create one mailbox by exact name; report existence instead of failing.
 
@@ -3882,6 +3984,127 @@ class EmailClient:
             return "unknown"
         finally:
             await _best_effort_imap_logout(imap)
+
+
+class _ImapCopySource:
+    """Read-only cross-account copy source: an EXAMINEd mailbox read with BODY.PEEK[] only."""
+
+    def __init__(self, client: "EmailClient", imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
+        self._client = client
+        self._imap = imap
+        self.broken = False
+
+    async def inventory(self, email_ids: tuple[str, ...], allowed_senders: tuple[str, ...]) -> CopySourceInventory:
+        requested = list(email_ids)
+        _validate_imap_uids(requested)
+        messages: dict[str, CopySourceMessage] = {}
+        try:
+            blocked = await self._client._blocked_uids(self._imap, requested, list(allowed_senders))
+            permitted = [email_id for email_id in requested if email_id not in blocked]
+            if permitted:
+                response = await self._imap.uid("fetch", ",".join(permitted), _COPY_INVENTORY_ITEMS)
+                _raise_for_imap_command_failure(response, f"FETCH copy inventory for {len(permitted)} UIDs")
+                wanted = set(permitted)
+                for item in response[1]:
+                    if not isinstance(item, bytes):
+                        continue
+                    message = _parse_copy_inventory_item(item)
+                    if message is not None and message.uid in wanted:
+                        messages[message.uid] = message
+        except BaseException:
+            self.broken = True
+            raise
+        return CopySourceInventory(messages=messages, blocked=frozenset(blocked))
+
+    async def read(self, email_id: str) -> bytes:
+        validate_imap_uid(email_id)
+        try:
+            response = await self._imap.uid("fetch", email_id, "BODY.PEEK[]")
+        except BaseException:
+            self.broken = True
+            raise
+        raw = self._client._extract_raw_email(response[1]) if _imap_status(response) == "OK" else None
+        if raw is None:
+            raise ValueError(f"Source message {email_id} could not be read")
+        return raw
+
+
+class _ImapCopyTarget:
+    """Cross-account copy target: verbatim APPEND of provider bytes, never SELECT or CREATE."""
+
+    def __init__(
+        self,
+        client: "EmailClient",
+        imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL,
+        mailbox: str,
+        capabilities: set[str],
+        *,
+        utf8_enabled: bool,
+    ) -> None:
+        self._client = client
+        self._imap = imap
+        self._mailbox = mailbox
+        self._capabilities = capabilities
+        self._utf8_enabled = utf8_enabled
+        self._utf8_unavailable = False
+        self.broken = False
+
+    async def _ensure_utf8(self) -> bool:
+        if self._utf8_enabled:
+            return True
+        if self._utf8_unavailable:
+            return False
+        try:
+            await _enable_imap_utf8_accept(self._imap, self._capabilities)
+        except ImapUtf8UnsupportedError:
+            self._utf8_unavailable = True
+            return False
+        except BaseException:
+            self.broken = True
+            raise
+        self._utf8_enabled = True
+        return True
+
+    async def append(
+        self,
+        message: bytes,
+        *,
+        flags: tuple[str, ...],
+        internal_date: str | None,
+    ) -> CopyAppendEvidence:
+        requires_utf8 = _raw_header_requires_utf8(message)
+        if requires_utf8 and not await self._ensure_utf8():
+            return CopyAppendEvidence("failed", "utf8-append-unsupported")
+        mailbox = _quote_mailbox(self._mailbox, utf8=self._utf8_enabled)
+        flag_list = f"({' '.join(flags)})"
+        date = f'"{internal_date}"' if internal_date is not None else None
+        self._client._check_mutation_authority()
+        # Large literals upload without server output, so the aioimaplib default
+        # (10 s without a response line) is too short for one message.
+        timeout = APPLICATION_LIMITS.provider_timeout_seconds
+        protocol = self._imap.protocol
+        if protocol is None:
+            self.broken = True
+            raise ImapTransportError("IMAP APPEND failed: protocol is not connected")
+        try:
+            if requires_utf8:
+                response = await _append_utf8_literal(
+                    self._imap, message, mailbox=mailbox, flags=flag_list, date=date, timeout=timeout
+                )
+            else:
+                response = await protocol.append(message, mailbox, flag_list, date, timeout=timeout)
+        except BaseException:
+            self.broken = True
+            raise
+        status = _imap_status(response)
+        if status == "OK":
+            return CopyAppendEvidence("succeeded")
+        if status in {"NO", "BAD"}:
+            if _has_imap_response_code(response, "TRYCREATE"):
+                return CopyAppendEvidence("failed", "destination-missing")
+            return CopyAppendEvidence("failed", "append-rejected")
+        self.broken = True
+        return CopyAppendEvidence("unknown", "copy-unknown")
 
 
 class ClassicEmailHandler(EmailHandler):

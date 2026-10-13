@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -23,6 +23,8 @@ from mcp_email_server.application.mutations import (
     MutationServices,
     TargetMutationOutcome,
 )
+from mcp_email_server.config import EmailServer
+from mcp_email_server.emails.classic import EmailClient
 from tests.test_mutation_application import _account
 
 RAW = b"From: a@example.test\r\nSubject: s\r\n\r\nbody\r\n"
@@ -419,3 +421,252 @@ async def test_results_never_contain_message_bytes():
     outcome = await services.copy_to_account.execute(_command("1"))
     assert "TOPSECRET" not in repr(outcome)
     assert isinstance(outcome.outcomes[0], TargetMutationOutcome)
+
+
+# --- IMAP sessions (emails/classic.py) -------------------------------------------------------
+
+
+def _copy_imap(*, capabilities=("IMAP4REV1",), fetch=None, append=("OK", [b"APPEND completed"])):
+    mock = AsyncMock()
+    mock._client_task = asyncio.Future()
+    mock._client_task.set_result(None)
+    mock.wait_hello_from_server = AsyncMock()
+    mock.login = AsyncMock(return_value=MagicMock(result="OK", lines=[]))
+    mock.logout = AsyncMock()
+    mock.protocol = MagicMock(capabilities=set(capabilities))
+    mock.protocol.capability = AsyncMock()
+    mock.protocol.append = (
+        AsyncMock(return_value=append) if not isinstance(append, BaseException) else AsyncMock(side_effect=append)
+    )
+    mock.examine = AsyncMock(return_value=("OK", [b"EXAMINE completed"]))
+    mock.select = AsyncMock()
+    mock.enable = AsyncMock(return_value=("OK", [b"ENABLED UTF8=ACCEPT", b"ENABLE completed"]))
+    if fetch is not None:
+        mock.uid = AsyncMock(side_effect=fetch)
+    return mock
+
+
+@pytest.fixture
+def client():
+    server = EmailServer(user_name="u", password="p", host="imap.example.com", port=993, use_ssl=True)
+    return EmailClient(server, sender="Test <test@example.com>")
+
+
+def _inventory_response(*lines: bytes):
+    return "OK", [*lines, b"FETCH completed"]
+
+
+def _body_response(uid: str, raw: bytes):
+    return "OK", [f"1 FETCH (UID {uid} BODY[] {{{len(raw)}}}".encode(), bytearray(raw), b")", b"FETCH completed"]
+
+
+@pytest.mark.asyncio
+async def test_source_session_examines_and_reads_with_peek(client):
+    calls = []
+
+    async def uid(command, *args):
+        calls.append((command, *args))
+        if args[-1] == "(UID RFC822.SIZE FLAGS INTERNALDATE)":
+            return _inventory_response(
+                b'1 FETCH (UID 7 RFC822.SIZE 42 FLAGS (\\Seen $Label) INTERNALDATE "17-Jul-1996 02:44:25 -0700")',
+                b'2 FETCH (UID 99 RFC822.SIZE 1 FLAGS () INTERNALDATE "01-Jan-2000 00:00:00 +0000")',
+                b'3 FETCH (UID 8 RFC822.SIZE 5 FLAGS () INTERNALDATE "bogus")',
+            )
+        return _body_response(args[0], RAW)
+
+    mock = _copy_imap(fetch=uid)
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("Účty") as source:
+            inventory = await source.inventory(("7", "8", "9"), ())
+            raw = await source.read("7")
+
+    mock.examine.assert_awaited_once_with('"&ANoBDQ-ty"')
+    mock.select.assert_not_awaited()
+    assert inventory.blocked == frozenset()
+    assert inventory.messages == {
+        "7": CopySourceMessage("7", 42, (r"\Seen", "$Label"), DATE),
+        "8": CopySourceMessage("8", 5, (), None),
+    }
+    assert raw == RAW
+    assert calls == [
+        ("fetch", "7,8,9", "(UID RFC822.SIZE FLAGS INTERNALDATE)"),
+        ("fetch", "7", "BODY.PEEK[]"),
+    ]
+    assert all("STORE" not in str(call).upper() for call in calls)
+    mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_source_inventory_skips_blocked_uids(client):
+    mock = _copy_imap(fetch=AsyncMock(return_value=_inventory_response()))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(client, "_blocked_uids", AsyncMock(return_value={"2"})) as blocked,
+    ):
+        async with client.open_copy_source("INBOX") as source:
+            inventory = await source.inventory(("1", "2"), ("ok@example.test",))
+    blocked.assert_awaited_once_with(mock, ["1", "2"], ["ok@example.test"])
+    assert inventory.blocked == frozenset({"2"})
+    mock.uid.assert_awaited_once_with("fetch", "1", "(UID RFC822.SIZE FLAGS INTERNALDATE)")
+
+
+@pytest.mark.asyncio
+async def test_source_inventory_all_blocked_skips_fetch(client):
+    mock = _copy_imap(fetch=AsyncMock())
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(client, "_blocked_uids", AsyncMock(return_value={"1"})),
+    ):
+        async with client.open_copy_source("INBOX") as source:
+            inventory = await source.inventory(("1",), ("ok@example.test",))
+    assert inventory.messages == {}
+    mock.uid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_source_examine_failure_raises_and_logs_out(client):
+    mock = _copy_imap()
+    mock.examine.return_value = ("NO", [b"no such mailbox"])
+    with patch.object(client, "imap_class", return_value=mock), pytest.raises(RuntimeError, match="EXAMINE"):
+        async with client.open_copy_source("Missing"):
+            pass
+    mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [("NO", [b"FETCH failed"]), ("OK", [b"FETCH completed"])],
+    ids=["rejected", "no-literal"],
+)
+async def test_source_read_without_message_raises(client, response):
+    mock = _copy_imap(fetch=AsyncMock(return_value=response))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX") as source:
+            with pytest.raises(ValueError, match="could not be read"):
+                await source.read("5")
+    mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_source_interrupted_read_aborts_connection(client):
+    mock = _copy_imap(fetch=AsyncMock(side_effect=asyncio.CancelledError()))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()) as abort,
+    ):
+        async with client.open_copy_source("INBOX") as source:
+            with pytest.raises(asyncio.CancelledError):
+                await source.read("5")
+    abort.assert_awaited_once_with(mock)
+    mock.logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_target_session_appends_verbatim_bytes_with_date_and_flags(client):
+    mock = _copy_imap(append=("OK", [b"[APPENDUID 1 5] APPEND completed"]))
+    guard = MagicMock()
+    client.mutation_guard = guard
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_target("techem") as target:
+            evidence = await target.append(RAW, flags=(r"\Seen", r"\Flagged"), internal_date=DATE)
+            empty = await target.append(RAW, flags=(), internal_date=None)
+    assert evidence == CopyAppendEvidence("succeeded")
+    assert empty == CopyAppendEvidence("succeeded")
+    assert mock.protocol.append.await_args_list == [
+        call(RAW, '"techem"', r"(\Seen \Flagged)", f'"{DATE}"', timeout=APPLICATION_LIMITS.provider_timeout_seconds),
+        call(RAW, '"techem"', "()", None, timeout=APPLICATION_LIMITS.provider_timeout_seconds),
+    ]
+    assert guard.call_count == 2
+    mock.select.assert_not_awaited()
+    mock.enable.assert_not_awaited()
+    mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (("NO", [b"[TRYCREATE] Mailbox does not exist"]), CopyAppendEvidence("failed", "destination-missing")),
+        (("NO", [b"[OVERQUOTA] quota exceeded"]), CopyAppendEvidence("failed", "append-rejected")),
+        (("BAD", [b"syntax"]), CopyAppendEvidence("failed", "append-rejected")),
+        (("BYE", [b"gone"]), CopyAppendEvidence("unknown", "copy-unknown")),
+    ],
+)
+async def test_target_append_classification(client, response, expected):
+    mock = _copy_imap(append=response)
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_target("techem") as target:
+            assert await target.append(RAW, flags=(), internal_date=None) == expected
+
+
+@pytest.mark.asyncio
+async def test_target_guard_refusal_prevents_append(client):
+    mock = _copy_imap()
+    client.mutation_guard = MagicMock(side_effect=PermissionError("revoked"))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_target("techem") as target:
+            with pytest.raises(PermissionError):
+                await target.append(RAW, flags=(), internal_date=None)
+    mock.protocol.append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_target_transport_failure_aborts_connection(client):
+    mock = _copy_imap(append=ConnectionError("reset"))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()) as abort,
+    ):
+        async with client.open_copy_target("techem") as target:
+            with pytest.raises(ConnectionError):
+                await target.append(RAW, flags=(), internal_date=None)
+    abort.assert_awaited_once_with(mock)
+    mock.logout.assert_not_awaited()
+
+
+UTF8_RAW = "From: a@example.test\r\nSubject: Vyúčtování\r\n\r\nbody\r\n".encode()
+
+
+@pytest.mark.asyncio
+async def test_target_utf8_header_enables_utf8_and_uses_utf8_literal(client):
+    mock = _copy_imap(capabilities=("IMAP4REV1", "ENABLE", "UTF8=ACCEPT"))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch("mcp_email_server.emails.classic._append_utf8_literal", AsyncMock(return_value=("OK", []))) as utf8,
+    ):
+        async with client.open_copy_target("Účty") as target:
+            evidence = await target.append(UTF8_RAW, flags=(r"\Seen",), internal_date=DATE)
+            await target.append(RAW, flags=(), internal_date=None)
+    assert evidence == CopyAppendEvidence("succeeded")
+    mock.enable.assert_awaited_once_with("UTF8=ACCEPT")
+    utf8.assert_awaited_once_with(
+        mock,
+        UTF8_RAW,
+        mailbox='"Účty"',
+        flags=r"(\Seen)",
+        date=f'"{DATE}"',
+        timeout=APPLICATION_LIMITS.provider_timeout_seconds,
+    )
+    # A later ASCII message in the UTF-8 session still uses the quoted UTF-8 mailbox name.
+    assert mock.protocol.append.await_args.args[1] == '"Účty"'
+
+
+@pytest.mark.asyncio
+async def test_target_utf8_header_without_support_fails_before_append(client):
+    mock = _copy_imap()
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_target("techem") as target:
+            first = await target.append(UTF8_RAW, flags=(), internal_date=None)
+            second = await target.append(UTF8_RAW, flags=(), internal_date=None)
+    assert first == second == CopyAppendEvidence("failed", "utf8-append-unsupported")
+    mock.protocol.append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_target_utf8_only_server_enables_at_open(client):
+    mock = _copy_imap(capabilities=("IMAP4REV1", "ENABLE", "UTF8=ONLY"))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_target("techem"):
+            pass
+    mock.enable.assert_awaited_once_with("UTF8=ACCEPT")
