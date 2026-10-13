@@ -916,3 +916,156 @@ async def test_target_enable_transport_failure_is_not_started(client):
             with pytest.raises(CopyAppendNotStartedError):
                 await target.append(UTF8_RAW, flags=(), internal_date=None)
     mock.protocol.append.assert_not_awaited()
+
+
+# --- Failure-boundary coverage -----------------------------------------------------------------
+
+
+class _Slow:
+    async def inventory(self, email_ids, allowed_senders):
+        await asyncio.sleep(1)
+
+
+@pytest.mark.asyncio
+async def test_inventory_deadline_fails_without_placing(monkeypatch):
+    monkeypatch.setattr(
+        mutations_module, "APPLICATION_LIMITS", replace(APPLICATION_LIMITS, provider_timeout_seconds=0.01)
+    )
+    services, _, _, projections, _, events = _copy_services(_Slow(), FakeTarget())  # type: ignore[arg-type]
+    with pytest.raises(MutationProviderError, match="inventory timed out"):
+        await services.copy_to_account.execute(_command("1"))
+    assert events == ["source-open", "source-close"]
+    projections.open.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_session_open_deadline_fails_without_placing(monkeypatch):
+    monkeypatch.setattr(
+        mutations_module, "APPLICATION_LIMITS", replace(APPLICATION_LIMITS, provider_timeout_seconds=0.01)
+    )
+    services, _, factory, *_ = _copy_services(FakeSource({}), FakeTarget())
+
+    @asynccontextmanager
+    async def slow_open(*_args):
+        await asyncio.sleep(1)
+        yield FakeSource({})
+
+    factory.open.side_effect("src").provider.open_copy_source.side_effect = slow_open
+    with pytest.raises(MutationProviderError, match="copy source session timed out"):
+        await services.copy_to_account.execute(_command("1"))
+
+
+@pytest.mark.asyncio
+async def test_invalid_append_evidence_is_rejected():
+    source = FakeSource({"1": _message("1")})
+    services, *_ = _copy_services(source, FakeTarget([CopyAppendEvidence("weird")]))  # type: ignore[arg-type]
+    with pytest.raises(MutationProviderError, match="invalid copy evidence"):
+        await services.copy_to_account.execute(_command("1"))
+
+
+@pytest.mark.asyncio
+async def test_source_inventory_failure_aborts_connection(client):
+    mock = _copy_imap(fetch=AsyncMock(return_value=("NO", [b"FETCH failed"])))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()) as abort,
+    ):
+        async with client.open_copy_source("INBOX") as source:
+            with pytest.raises(RuntimeError, match="FETCH copy inventory"):
+                await source.inventory(("1",), ())
+    abort.assert_awaited_once_with(mock)
+
+
+@pytest.mark.asyncio
+async def test_source_inventory_ignores_non_line_items(client):
+    response = ("OK", [bytearray(b"literal"), b'1 FETCH (UID 1 RFC822.SIZE 3 FLAGS () INTERNALDATE "bad")'])
+    mock = _copy_imap(fetch=AsyncMock(return_value=response))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX") as source:
+            inventory = await source.inventory(("1",), ())
+    assert inventory.messages == {"1": CopySourceMessage("1", 3, (), None)}
+
+
+@pytest.mark.asyncio
+async def test_target_utf8_only_session_appends_utf8_header_without_reenabling(client):
+    mock = _copy_imap(capabilities=("IMAP4REV1", "ENABLE", "UTF8=ONLY"))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch("mcp_email_server.emails.classic._append_utf8_literal", AsyncMock(return_value=("OK", []))) as utf8,
+    ):
+        async with client.open_copy_target("techem") as target:
+            assert await target.append(UTF8_RAW, flags=(), internal_date=None) == CopyAppendEvidence("succeeded")
+    mock.enable.assert_awaited_once()
+    utf8.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_target_cancelled_enable_aborts_connection(client):
+    mock = _copy_imap(capabilities=("IMAP4REV1", "ENABLE", "UTF8=ACCEPT"))
+    mock.enable.side_effect = asyncio.CancelledError()
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()) as abort,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            async with client.open_copy_target("techem") as target:
+                await target.append(UTF8_RAW, flags=(), internal_date=None)
+    abort.assert_awaited_once_with(mock)
+
+
+@pytest.mark.asyncio
+async def test_target_disconnected_protocol_is_not_started(client):
+    mock = _copy_imap()
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()) as abort,
+    ):
+        async with client.open_copy_target("techem") as target:
+            mock.protocol = None
+            with pytest.raises(CopyAppendNotStartedError):
+                await target.append(RAW, flags=(), internal_date=None)
+    abort.assert_awaited_once_with(mock)
+
+
+@pytest.mark.asyncio
+async def test_utf8_literal_requires_connected_protocol():
+    from mcp_email_server.emails.classic import ImapTransportError, _append_utf8_literal
+
+    imap = MagicMock(protocol=None)
+    with pytest.raises(ImapTransportError):
+        await _append_utf8_literal(imap, RAW, mailbox='"x"', flags="()", date=None, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_tool_bridge_dispatches_to_runtime_service():
+    runtime = MagicMock()
+    expected = BatchMutationOutcome((TargetMutationOutcome("1", "succeeded"),))
+    runtime.mutations.copy_to_account.execute = AsyncMock(return_value=expected)
+    command = _command("1")
+    with patch("mcp_email_server.app.get_application_runtime", return_value=runtime):
+        assert await app_module.copy_emails_to_account_command(command) is expected
+    runtime.mutations.copy_to_account.execute.assert_awaited_once_with(command)
+
+
+@pytest.mark.asyncio
+async def test_utf8_literal_sends_internaldate_before_literal():
+    from mcp_email_server.emails.classic import _append_utf8_literal
+
+    protocol = MagicMock()
+    protocol.new_tag.return_value = "A1"
+    protocol.execute = AsyncMock(return_value=("OK", []))
+    imap = MagicMock(protocol=protocol)
+    await _append_utf8_literal(imap, UTF8_RAW, mailbox='"x"', flags="()", date=f'"{DATE}"', timeout=1.0)
+    command = protocol.execute.await_args.args[0]
+    assert command.args == ('"x"', "()", f'"{DATE}"', f"UTF8 (~{{{len(UTF8_RAW)}}}")
+    assert protocol.literal_data is None
+
+
+@pytest.mark.asyncio
+async def test_source_read_rejects_truncated_literal_for_requested_uid(client):
+    lines = [b"1 FETCH (UID 5 BODY[] {%d}" % (len(RAW) + 5), bytearray(RAW), b")", b"FETCH completed"]
+    mock = _copy_imap(fetch=AsyncMock(return_value=("OK", lines)))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX") as source:
+            with pytest.raises(ValueError, match="could not be read"):
+                await source.read("5")
