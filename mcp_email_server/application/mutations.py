@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, cast
@@ -288,6 +289,65 @@ class ArchiveCommand:
         validate_mailbox_name(self.source_mailbox)
 
 
+@dataclass(frozen=True)
+class CopyToAccountCommand:
+    source_account: str
+    email_ids: tuple[str, ...]
+    target_account: str
+    target_mailbox: str
+    source_mailbox: str = "INBOX"
+
+    def validate(self) -> None:
+        _validate_account_name(self.source_account)
+        _validate_account_name(self.target_account)
+        if self.source_account == self.target_account:
+            raise ValueError(
+                "source_account and target_account must differ; copy within one account with UID COPY "
+                "through email_command"
+            )
+        _validate_email_ids(self.email_ids)
+        validate_mailbox_name(self.source_mailbox)
+        validate_mailbox_name(self.target_mailbox)
+
+
+@dataclass(frozen=True)
+class CopySourceMessage:
+    """Inventory evidence for one source UID; never carries message bytes."""
+
+    uid: str
+    size: int | None
+    flags: tuple[str, ...]
+    internal_date: str | None
+
+
+@dataclass(frozen=True)
+class CopySourceInventory:
+    messages: dict[str, CopySourceMessage]
+    blocked: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CopyAppendEvidence:
+    status: MutationStatus
+    detail: str | None = None
+
+
+class CopySourceSession(Protocol):
+    async def inventory(self, email_ids: tuple[str, ...], allowed_senders: tuple[str, ...]) -> CopySourceInventory: ...
+
+    async def read(self, email_id: str) -> bytes: ...
+
+
+class CopyTargetSession(Protocol):
+    async def append(
+        self,
+        message: bytes,
+        *,
+        flags: tuple[str, ...],
+        internal_date: str | None,
+    ) -> CopyAppendEvidence: ...
+
+
 def _is_message_id_dot_atom(value: str) -> bool:
     """Return whether value is conservative RFC 5322/RFC 6532 dot-atom text."""
     return all(
@@ -492,6 +552,18 @@ class MutationProvider(Protocol):
         command: CreateMailboxCommand,
         account: MutationAccountSnapshot,
     ) -> MailboxCreationStatus: ...
+
+    def open_copy_source(
+        self,
+        command: CopyToAccountCommand,
+        account: MutationAccountSnapshot,
+    ) -> AbstractAsyncContextManager[CopySourceSession]: ...
+
+    def open_copy_target(
+        self,
+        command: CopyToAccountCommand,
+        account: MutationAccountSnapshot,
+    ) -> AbstractAsyncContextManager[CopyTargetSession]: ...
 
     async def find_drafts_mailbox(self) -> str: ...
 
@@ -1319,6 +1391,165 @@ class CreateMailboxService(_MutationWorkflow):
         return outcome
 
 
+_COPYABLE_SYSTEM_FLAGS = {flag.casefold(): flag for flag in (r"\Seen", r"\Answered", r"\Flagged", r"\Draft")}
+_SessionT = TypeVar("_SessionT")
+
+
+def _copyable_flags(flags: tuple[str, ...]) -> tuple[str, ...]:
+    """Keep only portable system flags; never \\Deleted, \\Recent, or provider keywords."""
+    return tuple(
+        dict.fromkeys(
+            _COPYABLE_SYSTEM_FLAGS[flag.casefold()] for flag in flags if flag.casefold() in _COPYABLE_SYSTEM_FLAGS
+        )
+    )
+
+
+class CopyToAccountService(_MutationWorkflow):
+    """Copy verbatim source messages into another account's existing mailbox.
+
+    The source is only read (EXAMINE plus BODY.PEEK[]) under its sender policy;
+    the target needs ``append``. Each UID is read and appended separately with its
+    own deadline so one slow or ambiguous message never erases evidence for the
+    messages already placed, and at most one message is held in memory.
+    """
+
+    async def execute(self, command: CopyToAccountCommand) -> BatchMutationOutcome:
+        command.validate()
+        source = self._resolve(command.source_account)
+        target = self._resolve(command.target_account)
+        require_mutation(target.allowed_mutations, "append")
+        source_access = self._open(source)
+        target_access = self._open(target)
+        require_mutation(target_access.account.allowed_mutations, "append")
+        outcomes: dict[str, TargetMutationOutcome] = {}
+        placed = False
+        async with AsyncExitStack() as stack:
+            reader = await self._enter(
+                stack, source_access.provider.open_copy_source(command, source_access.account), "copy source"
+            )
+            try:
+                inventory = await _bounded_provider_effect(
+                    reader.inventory(command.email_ids, source_access.account.allowed_senders)
+                )
+            except TimeoutError:
+                raise MutationProviderError("copy source inventory timed out") from None
+            pending = self._classify(command, inventory, source_access.account, outcomes)
+            if pending:
+                writer = await self._enter(
+                    stack, target_access.provider.open_copy_target(command, target_access.account), "copy target"
+                )
+                placed = await self._copy_pending(
+                    command, pending, inventory, reader, writer, source_access.account, outcomes
+                )
+        outcome = BatchMutationOutcome(tuple(outcomes[email_id] for email_id in command.email_ids))
+        if placed:
+            invalidated = await self._invalidate(target_access.account, (command.target_mailbox,))
+            outcome = BatchMutationOutcome(
+                outcome.outcomes, reconciliation_needed=outcome.reconciliation_needed or not invalidated
+            )
+        return _validate_batch_result(outcome)
+
+    @staticmethod
+    async def _enter(
+        stack: AsyncExitStack,
+        session: AbstractAsyncContextManager[_SessionT],
+        name: str,
+    ) -> _SessionT:
+        try:
+            return await _bounded_provider_effect(stack.enter_async_context(session))
+        except TimeoutError:
+            raise MutationProviderError(f"{name} session timed out") from None
+
+    @staticmethod
+    def _classify(
+        command: CopyToAccountCommand,
+        inventory: CopySourceInventory,
+        source: MutationAccountSnapshot,
+        outcomes: dict[str, TargetMutationOutcome],
+    ) -> list[str]:
+        pending: list[str] = []
+        for email_id in command.email_ids:
+            message = inventory.messages.get(email_id)
+            if email_id in inventory.blocked:
+                # Same rule as other mutations: hidden unless the account opts into reporting.
+                outcomes[email_id] = TargetMutationOutcome(
+                    email_id,
+                    "failed" if source.report_blocked_mutations else "succeeded",
+                    "sender-policy" if source.report_blocked_mutations else None,
+                )
+            elif message is None:
+                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "not-found")
+            elif message.size is not None and message.size > APPLICATION_LIMITS.total_attachment_bytes:
+                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "too-large")
+            else:
+                pending.append(email_id)
+        return pending
+
+    def _source_policy_unchanged(self, command: CopyToAccountCommand, source: MutationAccountSnapshot) -> bool:
+        try:
+            current = self._accounts.resolve(command.source_account, expected_mode=source.mode)
+        except (ValueError, RuntimeError, PermissionError):
+            return False
+        return current.allowed_senders == source.allowed_senders
+
+    async def _copy_pending(  # noqa: C901 - explicit per-UID effect-boundary states
+        self,
+        command: CopyToAccountCommand,
+        pending: list[str],
+        inventory: CopySourceInventory,
+        reader: CopySourceSession,
+        writer: CopyTargetSession,
+        source: MutationAccountSnapshot,
+        outcomes: dict[str, TargetMutationOutcome],
+    ) -> bool:
+        placed = False
+        for index, email_id in enumerate(pending):
+            stop = False
+            try:
+                raw = await _bounded_provider_effect(reader.read(email_id))
+            except TimeoutError:
+                # The source stream is no longer framed; nothing was appended.
+                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "source-read-failed")
+                stop = True
+            except Exception:
+                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "source-read-failed")
+                continue
+            else:
+                if len(raw) > APPLICATION_LIMITS.total_attachment_bytes:
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "too-large")
+                    continue
+                if b"\x00" in raw:
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "binary-unsupported")
+                    continue
+                if not self._source_policy_unchanged(command, source):
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
+                    continue
+                message = inventory.messages[email_id]
+                try:
+                    evidence = await _bounded_provider_effect(
+                        writer.append(raw, flags=_copyable_flags(message.flags), internal_date=message.internal_date)
+                    )
+                except PermissionError:
+                    outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
+                    continue
+                except Exception:
+                    # APPEND may have reached the server: never replay it.
+                    evidence = CopyAppendEvidence("unknown", "copy-unknown")
+                del raw
+                if evidence.status not in ("succeeded", "failed", "unknown"):
+                    raise MutationProviderError("provider_failure: invalid copy evidence")
+                outcomes[email_id] = TargetMutationOutcome(
+                    email_id, evidence.status, None if evidence.status == "succeeded" else evidence.detail
+                )
+                placed = placed or evidence.status != "failed"
+                stop = evidence.status == "unknown" or evidence.detail == "destination-missing"
+            if stop:
+                for remaining_id in pending[index + 1 :]:
+                    outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
+                break
+        return placed
+
+
 class SendService(_MutationWorkflow):
     async def execute(self, command: SendCommand) -> SendMutationOutcome:
         command.validate()
@@ -1406,6 +1637,7 @@ class MutationServices:
     move: MoveService
     archive: ArchiveService
     create_mailbox: CreateMailboxService
+    copy_to_account: CopyToAccountService
     send: SendService
     forward: ForwardService
 
@@ -1428,6 +1660,7 @@ class MutationServices:
             move=MoveService(*arguments),
             archive=ArchiveService(*arguments),
             create_mailbox=CreateMailboxService(*arguments),
+            copy_to_account=CopyToAccountService(*arguments),
             send=SendService(*arguments),
             forward=ForwardService(*arguments),
         )
