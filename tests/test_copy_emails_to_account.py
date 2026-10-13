@@ -1069,3 +1069,19 @@ async def test_source_read_rejects_truncated_literal_for_requested_uid(client):
         async with client.open_copy_source("INBOX") as source:
             with pytest.raises(ValueError, match="could not be read"):
                 await source.read("5")
+
+
+@pytest.mark.asyncio
+async def test_source_connection_lost_after_examine_fails_closed(client):
+    from mcp_email_server.emails.classic import ImapTransportError
+
+    mock = _copy_imap()
+
+    async def examine(_mailbox):
+        mock.protocol = None
+        return ("OK", [b"EXAMINE completed"])
+
+    mock.examine = AsyncMock(side_effect=examine)
+    with patch.object(client, "imap_class", return_value=mock), pytest.raises(ImapTransportError):
+        async with client.open_copy_source("INBOX"):
+            pass

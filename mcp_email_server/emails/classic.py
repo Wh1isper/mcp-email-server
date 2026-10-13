@@ -3942,8 +3942,10 @@ class EmailClient:
             # Remove once aioimaplib records EXAMINE as SELECTED itself; the
             # regression test test_source_examine_enters_selected_state_for_uid_commands
             # guards this.
-            if imap.protocol is not None:
-                imap.protocol.state = aioimaplib.SELECTED
+            protocol = imap.protocol
+            if protocol is None:
+                raise ImapTransportError("IMAP connection lost after EXAMINE")
+            protocol.state = aioimaplib.SELECTED
             session = _ImapCopySource(self, imap)
             yield session
         finally:
