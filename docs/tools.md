@@ -773,7 +773,7 @@ the reason in parentheses:
 | `append-rejected`         | The target server refused the APPEND, for example over quota                  |
 | `source-read-failed`      | The source message could not be read; nothing was appended                    |
 | `mutation-policy`         | Target `append` or the source sender policy changed during the call           |
-| `not-attempted`           | Not reached after a stop                                                      |
+| `not-attempted`           | Not reached after a stop, or the target failed before sending it              |
 | `copy-unknown`            | APPEND may have completed; remaining IDs are `not-attempted`                  |
 
 An `unknown` result includes a `reconciliation needed` warning. Check the target

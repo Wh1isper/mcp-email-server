@@ -326,6 +326,10 @@ class CopySourceInventory:
     blocked: frozenset[str]
 
 
+class CopyAppendNotStartedError(RuntimeError):
+    """The target session failed before any APPEND byte was sent and is unusable."""
+
+
 @dataclass(frozen=True)
 class CopyAppendEvidence:
     status: MutationStatus
@@ -1507,13 +1511,15 @@ class CopyToAccountService(_MutationWorkflow):
             stop = False
             try:
                 raw = await _bounded_provider_effect(reader.read(email_id))
-            except TimeoutError:
-                # The source stream is no longer framed; nothing was appended.
-                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "source-read-failed")
-                stop = True
-            except Exception:
+            except ValueError:
+                # A definite per-message refusal on an intact session.
                 outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "source-read-failed")
                 continue
+            except Exception:
+                # Deadline, transport, or protocol timeout: the source stream is no
+                # longer framed and must not be reused. Nothing was appended.
+                outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "source-read-failed")
+                stop = True
             else:
                 if len(raw) > APPLICATION_LIMITS.total_attachment_bytes:
                     outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "too-large")
@@ -1532,6 +1538,9 @@ class CopyToAccountService(_MutationWorkflow):
                 except PermissionError:
                     outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
                     continue
+                except CopyAppendNotStartedError:
+                    evidence = CopyAppendEvidence("failed", "not-attempted")
+                    stop = True
                 except Exception:
                     # APPEND may have reached the server: never replay it.
                     evidence = CopyAppendEvidence("unknown", "copy-unknown")
@@ -1542,7 +1551,7 @@ class CopyToAccountService(_MutationWorkflow):
                     email_id, evidence.status, None if evidence.status == "succeeded" else evidence.detail
                 )
                 placed = placed or evidence.status != "failed"
-                stop = evidence.status == "unknown" or evidence.detail == "destination-missing"
+                stop = stop or evidence.status == "unknown" or evidence.detail == "destination-missing"
             if stop:
                 for remaining_id in pending[index + 1 :]:
                     outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")

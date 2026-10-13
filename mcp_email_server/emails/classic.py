@@ -51,6 +51,7 @@ from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     BatchMutationOutcome,
     CopyAppendEvidence,
+    CopyAppendNotStartedError,
     CopySourceInventory,
     CopySourceMessage,
     DeliveryMutationOutcome,
@@ -1139,6 +1140,25 @@ def _raw_header_requires_utf8(message: bytes) -> bool:
     separator = _HEADER_BODY_SEPARATOR.search(message)
     header = message if separator is None else message[: separator.start()]
     return _HIGH_BIT_OCTET.search(header) is not None
+
+
+def _copy_inventory_completeness(message: CopySourceMessage) -> int:
+    return (message.size is not None) + (message.internal_date is not None)
+
+
+def _copy_literal_for_uid(client: "EmailClient", data: list, email_id: str) -> bytes | None:
+    """Return the BODY[] literal only when its FETCH response names *email_id*."""
+    for index, item in enumerate(data):
+        if not isinstance(item, bytes) or index + 1 >= len(data):
+            continue
+        trailer = data[index + 2] if index + 2 < len(data) and isinstance(data[index + 2], bytes) else b""
+        uid = re.search(rb"\bUID ([1-9][0-9]*)", item) or re.search(rb"\bUID ([1-9][0-9]*)", trailer)
+        if uid is None or uid.group(1).decode("ascii") != email_id:
+            continue
+        raw = client._extract_raw_email([item, data[index + 1]])
+        if raw is not None:
+            return raw
+    return None
 
 
 def _parse_copy_inventory_item(item: bytes) -> CopySourceMessage | None:
@@ -3919,6 +3939,9 @@ class EmailClient:
             # EXAMINE selects the mailbox read-only on the server, but aioimaplib
             # 2.x only records the SELECTED state after SELECT and would refuse
             # UID FETCH. Mirror the server state instead of falling back to SELECT.
+            # Remove once aioimaplib records EXAMINE as SELECTED itself; the
+            # regression test test_source_examine_enters_selected_state_for_uid_commands
+            # guards this.
             if imap.protocol is not None:
                 imap.protocol.state = aioimaplib.SELECTED
             session = _ImapCopySource(self, imap)
@@ -4014,7 +4037,12 @@ class _ImapCopySource:
                     if not isinstance(item, bytes):
                         continue
                     message = _parse_copy_inventory_item(item)
-                    if message is not None and message.uid in wanted:
+                    if message is None or message.uid not in wanted:
+                        continue
+                    # An unsolicited FETCH (for example a concurrent flag change) carries
+                    # fewer items; it must not replace the solicited inventory line.
+                    current = messages.get(message.uid)
+                    if current is None or _copy_inventory_completeness(message) > _copy_inventory_completeness(current):
                         messages[message.uid] = message
         except BaseException:
             self.broken = True
@@ -4023,12 +4051,14 @@ class _ImapCopySource:
 
     async def read(self, email_id: str) -> bytes:
         validate_imap_uid(email_id)
+        if self.broken:
+            raise RuntimeError("Copy source session is broken")
         try:
             response = await self._imap.uid("fetch", email_id, "BODY.PEEK[]")
         except BaseException:
             self.broken = True
             raise
-        raw = self._client._extract_raw_email(response[1]) if _imap_status(response) == "OK" else None
+        raw = _copy_literal_for_uid(self._client, response[1], email_id) if _imap_status(response) == "OK" else None
         if raw is None:
             raise ValueError(f"Source message {email_id} could not be read")
         return raw
@@ -4064,9 +4094,12 @@ class _ImapCopyTarget:
         except ImapUtf8UnsupportedError:
             self._utf8_unavailable = True
             return False
-        except BaseException:
+        except asyncio.CancelledError:
             self.broken = True
             raise
+        except Exception:
+            self.broken = True
+            raise CopyAppendNotStartedError("IMAP ENABLE failed before APPEND") from None
         self._utf8_enabled = True
         return True
 
@@ -4090,7 +4123,7 @@ class _ImapCopyTarget:
         protocol = self._imap.protocol
         if protocol is None:
             self.broken = True
-            raise ImapTransportError("IMAP APPEND failed: protocol is not connected")
+            raise CopyAppendNotStartedError("IMAP APPEND failed: protocol is not connected")
         try:
             if requires_utf8:
                 response = await _append_utf8_literal(

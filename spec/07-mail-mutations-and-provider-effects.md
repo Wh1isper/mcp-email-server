@@ -307,7 +307,8 @@ not copied because their meaning and acceptance differ between providers.
 | APPEND `NO [TRYCREATE]`                       | `failed: destination-missing`, stop |
 | other APPEND `NO` or `BAD`                    | `failed: append-rejected`           |
 | source FETCH fails before any APPEND byte     | `failed: source-read-failed`        |
-| source FETCH deadline expires                 | `failed: source-read-failed`, stop  |
+| source FETCH deadline or transport failure    | `failed: source-read-failed`, stop  |
+| target fails before any APPEND byte is sent   | `failed: not-attempted`, stop       |
 | target grant revoked or source policy changed | `failed: mutation-policy`           |
 | timeout or interruption after APPEND starts   | `unknown: copy-unknown`, stop       |
 | not reached after a stop                      | `failed: not-attempted`             |
@@ -318,7 +319,8 @@ remaining source messages are not downloaded only to be rejected the same way.
 Each read and each APPEND has its own provider deadline; the APPEND command also
 uses that deadline as its protocol timeout, because a large literal uploads
 without server output. `RFC822.SIZE` is only an early filter: the limit is checked
-again on the bytes actually read.
+again on the bytes actually read, and a read is accepted only when its FETCH
+response names the requested UID.
 Any `unknown` sets `reconciliation_needed=true`; the caller reconciles in the
 target mailbox, for example by Message-ID. There is no deduplication: repeating a
 successful request places another copy, like `save_to_mailbox`. The workflow

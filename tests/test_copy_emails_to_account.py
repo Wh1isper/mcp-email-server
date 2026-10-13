@@ -18,6 +18,7 @@ from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
     BatchMutationOutcome,
     CopyAppendEvidence,
+    CopyAppendNotStartedError,
     CopySourceInventory,
     CopySourceMessage,
     CopyToAccountCommand,
@@ -210,7 +211,7 @@ async def test_per_uid_classification_preserves_caller_order():
             "7": _message("7"),
             "8": _message("8"),
         },
-        raw={"4": b"From: a\r\n\r\nnul\x00byte", "5": MutationProviderError("read failed")},
+        raw={"4": b"From: a\r\n\r\nnul\x00byte", "5": ValueError("read failed")},
     )
     target = FakeTarget([
         CopyAppendEvidence("failed", "append-rejected"),
@@ -824,3 +825,94 @@ async def test_tool_hides_unlisted_detail_text():
             source_account="a", email_ids=["1"], target_account="b", target_mailbox="x"
         )
     assert result == "Copy result [failed: 1]"
+
+
+# --- Review regressions -------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unexpected_source_read_failure_stops_batch():
+    source = FakeSource({"1": _message("1"), "2": _message("2")}, raw={"1": RuntimeError("CommandTimeout")})
+    target = FakeTarget()
+    services, *_ = _copy_services(source, target)
+    outcome = await services.copy_to_account.execute(_command("1", "2"))
+    assert _summary(outcome) == [("1", "failed", "source-read-failed"), ("2", "failed", "not-attempted")]
+    assert source.reads == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_failure_before_append_bytes_is_not_attempted_not_unknown():
+    source = FakeSource({"1": _message("1"), "2": _message("2")})
+    target = FakeTarget([CopyAppendNotStartedError("enable failed")])
+    services, *_ = _copy_services(source, target)
+    outcome = await services.copy_to_account.execute(_command("1", "2"))
+    assert _summary(outcome) == [("1", "failed", "not-attempted"), ("2", "failed", "not-attempted")]
+    assert outcome.reconciliation_needed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [b"1 FETCH (UID 8 BODY[] {%d}" % len(RAW), bytearray(RAW), b")"],
+        [b"1 FETCH (BODY[] {%d}" % len(RAW), bytearray(RAW), b" UID 8)"],
+    ],
+    ids=["uid-before", "uid-after"],
+)
+async def test_source_read_rejects_literal_for_another_uid(client, lines):
+    mock = _copy_imap(fetch=AsyncMock(return_value=("OK", [*lines, b"FETCH completed"])))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX") as source:
+            with pytest.raises(ValueError, match="could not be read"):
+                await source.read("5")
+
+
+@pytest.mark.asyncio
+async def test_source_read_accepts_uid_after_literal(client):
+    lines = [b"1 FETCH (BODY[] {%d}" % len(RAW), bytearray(RAW), b" UID 5)", b"FETCH completed"]
+    mock = _copy_imap(fetch=AsyncMock(return_value=("OK", lines)))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX") as source:
+            assert await source.read("5") == RAW
+
+
+@pytest.mark.asyncio
+async def test_source_read_on_broken_session_refuses(client):
+    mock = _copy_imap(fetch=AsyncMock(side_effect=[ConnectionError("reset"), _body_response("6", RAW)]))
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()),
+    ):
+        async with client.open_copy_source("INBOX") as source:
+            with pytest.raises(ConnectionError):
+                await source.read("5")
+            with pytest.raises(RuntimeError, match="broken"):
+                await source.read("6")
+    assert mock.uid.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_flag_fetch_does_not_replace_inventory(client):
+    response = _inventory_response(
+        b'1 FETCH (UID 7 RFC822.SIZE 42 FLAGS (\\Seen) INTERNALDATE "17-Jul-1996 02:44:25 -0700")',
+        b"1 FETCH (UID 7 FLAGS (\\Seen \\Flagged))",
+    )
+    mock = _copy_imap(fetch=AsyncMock(return_value=response))
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX") as source:
+            inventory = await source.inventory(("7",), ())
+    assert inventory.messages["7"] == CopySourceMessage("7", 42, (r"\Seen",), DATE)
+
+
+@pytest.mark.asyncio
+async def test_target_enable_transport_failure_is_not_started(client):
+    mock = _copy_imap(capabilities=("IMAP4REV1", "ENABLE", "UTF8=ACCEPT"))
+    mock.enable.side_effect = ConnectionError("reset")
+    with (
+        patch.object(client, "imap_class", return_value=mock),
+        patch.object(EmailClient, "_abort_imap_connection", AsyncMock()),
+    ):
+        async with client.open_copy_target("techem") as target:
+            with pytest.raises(CopyAppendNotStartedError):
+                await target.append(UTF8_RAW, flags=(), internal_date=None)
+    mock.protocol.append.assert_not_awaited()
