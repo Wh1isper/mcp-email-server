@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from mcp_email_server.adapters.mutations import ClassicMutationProvider
 from mcp_email_server.application import mutations as mutations_module
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
@@ -670,3 +671,74 @@ async def test_target_utf8_only_server_enables_at_open(client):
         async with client.open_copy_target("techem"):
             pass
     mock.enable.assert_awaited_once_with("UTF8=ACCEPT")
+
+
+# --- Adapter (adapters/mutations.py) ----------------------------------------------------------
+
+
+def _adapter(fresh: MutationAccountSnapshot, *, source_session=None, target_session=None, fail_open=None):
+    handler = MagicMock()
+
+    @asynccontextmanager
+    async def opened(session, mailbox):
+        handler.opened_mailboxes.append(mailbox)
+        if fail_open is not None:
+            raise fail_open
+        yield session
+
+    handler.opened_mailboxes = []
+    handler.incoming_client.open_copy_source = lambda mailbox: opened(source_session, mailbox)
+    handler.incoming_client.open_copy_target = lambda mailbox: opened(target_session, mailbox)
+    return ClassicMutationProvider(handler, lambda: fresh), handler
+
+
+@pytest.mark.asyncio
+async def test_adapter_target_installs_append_guard():
+    account = _account(account_name="dst", allowed_mutations=("append",))
+    target = FakeTarget()
+    provider, handler = _adapter(account, target_session=target)
+    async with provider.open_copy_target(_command("1"), account) as session:
+        assert session is target
+    assert handler.opened_mailboxes == ["techem"]
+    handler.incoming_client.mutation_guard()
+
+
+@pytest.mark.asyncio
+async def test_adapter_target_refuses_without_fresh_append_before_connecting():
+    account = _account(account_name="dst", allowed_mutations=("append",))
+    provider, handler = _adapter(replace(account, allowed_mutations=()), target_session=FakeTarget())
+    with pytest.raises(PermissionError):
+        async with provider.open_copy_target(_command("1"), account):
+            pass
+    assert handler.opened_mailboxes == []
+
+
+@pytest.mark.asyncio
+async def test_adapter_source_opens_requested_mailbox_without_guard():
+    account = _account(account_name="src", allowed_mutations=())
+    source = FakeSource({"1": _message("1")})
+    provider, handler = _adapter(account, source_session=source)
+    async with provider.open_copy_source(_command("1", source_mailbox="2025"), account) as session:
+        inventory = await session.inventory(("1",), ())
+        assert await session.read("1") == RAW
+    assert handler.opened_mailboxes == ["2025"]
+    assert inventory.messages == {"1": _message("1")}
+
+
+@pytest.mark.asyncio
+async def test_adapter_sanitizes_provider_failures():
+    account = _account(account_name="src", allowed_mutations=())
+    provider, _ = _adapter(account, fail_open=ConnectionError("imap.secret.example refused"))
+    with pytest.raises(MutationProviderError, match="provider_failure") as raised:
+        async with provider.open_copy_source(_command("1"), account):
+            pass
+    assert "secret" not in str(raised.value)
+
+    class BrokenSource(FakeSource):
+        async def inventory(self, email_ids, allowed_senders):
+            raise RuntimeError("server said secret things")
+
+    provider, _ = _adapter(account, source_session=BrokenSource({}))
+    async with provider.open_copy_source(_command("1"), account) as session:
+        with pytest.raises(MutationProviderError, match="provider_failure"):
+            await session.inventory(("1",), ())

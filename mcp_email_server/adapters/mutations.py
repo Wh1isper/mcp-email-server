@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from email.message import Message
 from email.mime.multipart import MIMEMultipart
@@ -20,6 +21,10 @@ from mcp_email_server.application.mutations import (
     AppendMutationOutcome,
     BatchMutationOutcome,
     ComposeCommand,
+    CopySourceInventory,
+    CopySourceSession,
+    CopyTargetSession,
+    CopyToAccountCommand,
     CreateMailboxCommand,
     DeleteCommand,
     DeliveryMutationOutcome,
@@ -66,6 +71,19 @@ def _forward_part_wire_size(part: Message) -> int:
 
     smtp_size = len(part.as_bytes(policy=SMTP_POLICY))
     return max(smtp_size, len(part.as_bytes(policy=SMTPUTF8_POLICY)))
+
+
+class _SanitizedCopySource:
+    """Bound provider failure text for the inventory read; per-UID reads map to outcomes."""
+
+    def __init__(self, session: CopySourceSession) -> None:
+        self._session = session
+
+    async def inventory(self, email_ids: tuple[str, ...], allowed_senders: tuple[str, ...]) -> CopySourceInventory:
+        return await _bounded_mutation_call(self._session.inventory(email_ids, allowed_senders))
+
+    async def read(self, email_id: str) -> bytes:
+        return await self._session.read(email_id)
 
 
 @dataclass(frozen=True)
@@ -219,6 +237,33 @@ class ClassicMutationProvider:
     ) -> MailboxCreationStatus:
         self._guard(account, "organize")
         return await _bounded_mutation_call(self._handler.incoming_client.create_mailbox(command.mailbox))
+
+    @asynccontextmanager
+    async def open_copy_source(
+        self,
+        command: CopyToAccountCommand,
+        account: MutationAccountSnapshot,
+    ) -> AsyncIterator[CopySourceSession]:
+        # Reading the source changes nothing, so no mutation grant is required;
+        # sender policy is applied by the inventory and revalidated per message.
+        del account
+        async with AsyncExitStack() as stack:
+            session = await _bounded_mutation_call(
+                stack.enter_async_context(self._handler.incoming_client.open_copy_source(command.source_mailbox))
+            )
+            yield _SanitizedCopySource(session)
+
+    @asynccontextmanager
+    async def open_copy_target(
+        self,
+        command: CopyToAccountCommand,
+        account: MutationAccountSnapshot,
+    ) -> AsyncIterator[CopyTargetSession]:
+        self._guard(account, "append")
+        async with AsyncExitStack() as stack:
+            yield await _bounded_mutation_call(
+                stack.enter_async_context(self._handler.incoming_client.open_copy_target(command.target_mailbox))
+            )
 
     async def find_drafts_mailbox(self) -> str:
         mailboxes = await _bounded_mutation_call(self._handler.incoming_client.list_mailboxes())
