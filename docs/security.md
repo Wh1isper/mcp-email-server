@@ -588,6 +588,15 @@ authorizes only that successful message's Sent copy, not general APPEND.
 created or guessed by these workflows; mailbox creation happens only through the
 explicit `create_mailbox` tool under `organize`. These restrictions need no approval tokens or extra ledger.
 
+`copy_emails_to_account` needs `append` on the target account only and no grant
+on the source, which it reads with `EXAMINE` and `BODY.PEEK[]` without changing
+it. The target `append` grant is checked again immediately before every APPEND,
+and a changed source sender policy stops further copies with `mutation-policy`.
+Message bytes go from one provider connection to the other inside the server;
+they never enter the MCP result, logs, or the metadata index. Copying never sets
+`\Deleted`, so it cannot be used to stage a deletion. Same-account copies are
+rejected; that case needs the separately opted-in protocol executor.
+
 A recipientless `save_draft` is valid even with an empty recipient allowlist.
 Every supplied To/CC/BCC address still requires a match before attachments are
 read or the message is appended. This exception does not allow recipientless
@@ -641,6 +650,8 @@ The allowlist protects:
   the read is rechecked before SMTP, so a forward never reveals or delivers it.
 - Deletion and approved flag/read-state mutations.
 - Move and archive operations.
+- The source of `copy_emails_to_account`: a blocked message is never read or
+  copied and follows the mutation reporting rule below.
 
 A blocked message's body and attachments are not fetched or marked as read. By
 default, blocked mutation IDs are returned as successful no-ops so the caller
