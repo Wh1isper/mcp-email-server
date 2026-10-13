@@ -30,7 +30,7 @@ callers; aggregate recipient and payload limits also remain application-owned.
 ## `email_command`: advanced protocol operations
 
 Use the focused tools for ordinary mail workflows. When a needed primitive is
-not wrapped—such as copying messages or renaming a mailbox—`email_command`
+not wrapped—such as copying messages within one account or renaming a mailbox—`email_command`
 runs a short IMAP or SMTP sequence on one automatically authenticated connection.
 All existing tools, including `create_mailbox`, remain available.
 
@@ -58,7 +58,9 @@ advertised server extensions are not necessarily supported by this executor.
 
 Use UIDs obtained from the source mailbox, not these illustrative numbers.
 The destination must already exist: use `create_mailbox` separately if needed.
-There is no automatic creation, retry, MOVE fallback or per-message verification.
+To copy between two configured accounts, use
+[`copy_emails_to_account`](#copy_emails_to_account) instead: one call here is
+scoped to one account. There is no automatic creation, retry, MOVE fallback or per-message verification.
 A tagged `OK` and any `COPYUID` response are server evidence, not an invented
 business result. Selection lasts only within this call.
 
@@ -173,7 +175,7 @@ inherits; an explicit list replaces; `[]` means read-only.
 | `organize` | mark-read/unread, `set_email_flags`, `set_email_tags`, move, archive, and `create_mailbox` |
 | `delete`   | `delete_emails` and its scoped deletion/expunge                                            |
 | `send`     | `send_email`, `forward_email`, and narrowly their successful-message Sent copy             |
-| `append`   | `save_to_mailbox` with caller mailbox and flags                                            |
+| `append`   | `save_to_mailbox` with caller mailbox and flags; target of `copy_emails_to_account`        |
 
 `get_emails_content(mark_as_read=true)` also requires `organize`; use the
 non-marking read option for a read-only account. Organization cannot perform
@@ -191,7 +193,7 @@ Every tool advertises reviewed MCP `readOnlyHint`, `destructiveHint`,
 | `list_available_accounts`, `list_allowed_recipients`, `list_allowed_senders`, `list_email_tags` | yes       | no          | yes        | no         |
 | `list_emails_metadata`, `list_mailboxes`, `get_attachment_content`                              | yes       | no          | yes        | yes        |
 | `get_emails_content`                                                                            | no        | no          | yes        | yes        |
-| `send_email`, `forward_email`, `save_draft`, `save_to_mailbox`                                  | no        | no          | no         | yes        |
+| `send_email`, `forward_email`, `save_draft`, `save_to_mailbox`, `copy_emails_to_account`        | no        | no          | no         | yes        |
 | `set_email_flags`, `set_email_tags`, `mark_emails_as_read`, `create_mailbox`                    | no        | no          | yes        | yes        |
 | `delete_emails`, `move_emails`, `archive_emails`, `download_attachment`                         | no        | yes         | no         | yes        |
 
@@ -732,6 +734,52 @@ Moves messages to the account's archive mailbox. The server first uses the RFC
 `[Gmail]/All Mail`. Archive uses the same native-MOVE or safe UIDPLUS fallback
 rules as `move_emails`.
 
+### `copy_emails_to_account`
+
+Copies messages from `source_mailbox` (default `INBOX`) of `source_account` into
+the existing `target_mailbox` of a different `target_account`. The originals
+stay unchanged. List the source mailbox with `list_emails_metadata` first; its
+UIDs belong to that mailbox only.
+
+The server reads each message with `EXAMINE` and `BODY.PEEK[]`, so the source
+mailbox and its `\Seen` state never change, and APPENDs the exact provider bytes
+to the target with the source INTERNALDATE. Message bytes never reach the MCP
+result, logs, or the local metadata index. Only `\Seen`, `\Answered`,
+`\Flagged`, and `\Draft` are copied; `\Deleted` and provider keywords are not.
+Messages are processed one at a time, so at most one message is held in memory.
+
+- **Permissions:** `append` on the target account only. The source needs an
+  enabled incoming endpoint and no mutation grant, and its sender allowlist
+  applies as for other mutations. Recipient policy does not apply because
+  nothing is composed or delivered. `enable_attachment_content` is not required.
+- **Same account:** rejected before any provider access. Within one account use
+  `email_command` with `UID COPY`, which copies server-side.
+- **Target mailbox:** must exist; it is never created. Use `create_mailbox` first.
+- **Limits:** 1 to 100 UIDs per call; each message is limited to 50 MiB.
+
+A fully successful call returns
+`Successfully copied N email(s) to <mailbox> in <account>`. Otherwise the
+result lists `succeeded`, `failed`, and `unknown` IDs in input order and names
+the reason in parentheses:
+
+| Reason                    | Meaning                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------- |
+| `not-found`               | No message with that UID in the source mailbox                                |
+| `too-large`               | The message exceeds 50 MiB                                                    |
+| `sender-policy`           | Blocked by the source sender allowlist (only with `report_blocked_mutations`) |
+| `binary-unsupported`      | The message contains NUL bytes, which IMAP APPEND cannot carry here           |
+| `utf8-append-unsupported` | 8-bit headers need RFC 6855 `UTF8=ACCEPT`, which the target lacks             |
+| `destination-missing`     | The target mailbox does not exist; remaining IDs are `not-attempted`          |
+| `append-rejected`         | The target server refused the APPEND, for example over quota                  |
+| `source-read-failed`      | The source message could not be read; nothing was appended                    |
+| `mutation-policy`         | Target `append` or the source sender policy changed during the call           |
+| `not-attempted`           | Not reached after a stop, or the target failed before sending it              |
+| `copy-unknown`            | APPEND may have completed; remaining IDs are `not-attempted`                  |
+
+An `unknown` result includes a `reconciliation needed` warning. Check the target
+mailbox, for example by Message-ID, before trying again. The server never
+retries and never deduplicates: repeating a successful call places another copy.
+
 ### `delete_emails`
 
 Deletes one or more messages from the selected mailbox. The provider must
@@ -850,8 +898,8 @@ static for the lifetime of a server process. `send_email`,
 always advertised. Account existence, enabled state, SMTP capability, and
 current policies are enforced when each tool is called. The allowlist tools have
 distinct empty semantics: an empty recipient list denies `send_email`,
-`forward_email`, and `save_to_mailbox`, while an empty sender list does not
-restrict reading. A recipientless `save_draft` remains permitted by `draft`;
+`forward_email`, and `save_to_mailbox` (but not `copy_emails_to_account`, which
+composes nothing), while an empty sender list does not restrict reading. A recipientless `save_draft` remains permitted by `draft`;
 any supplied recipient requires a match. Recipient entries support case-insensitive, whole-address glob
 matching (`*`, `?`, and bracket expressions), such as `*@example.com`.
 `*` or `*@*` explicitly permits all valid recipients for sending, forwarding,

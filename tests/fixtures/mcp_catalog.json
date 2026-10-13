@@ -1966,6 +1966,77 @@
             }
         },
         {
+            "name": "copy_emails_to_account",
+            "description": "Copy emails from one configured account into an existing mailbox of a different configured account. Originals stay unchanged (read with BODY.PEEK[]); the exact message bytes, INTERNALDATE, and the \\Seen/\\Answered/\\Flagged/\\Draft flags are copied server-side and never returned. Requires the append permission on target_account only. Use list_emails_metadata in source_mailbox first; use create_mailbox for a missing target. Within one account use email_command UID COPY instead. Repeating a request places another copy. Partial or ambiguous effects report per-ID succeeded/failed/unknown status and are not retried automatically.",
+            "inputSchema": {
+                "properties": {
+                    "source_account": {
+                        "description": "Account that holds the emails.",
+                        "maxLength": 256,
+                        "title": "Source Account",
+                        "type": "string"
+                    },
+                    "email_ids": {
+                        "description": "List of email_id to copy (obtained from list_emails_metadata in source_mailbox).",
+                        "items": {
+                            "maxLength": 10,
+                            "pattern": "^[1-9][0-9]*$",
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "title": "Email Ids",
+                        "type": "array"
+                    },
+                    "target_account": {
+                        "description": "Different account that receives the copies.",
+                        "maxLength": 256,
+                        "title": "Target Account",
+                        "type": "string"
+                    },
+                    "target_mailbox": {
+                        "description": "Existing mailbox in target_account; it is never created implicitly.",
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "title": "Target Mailbox",
+                        "type": "string"
+                    },
+                    "source_mailbox": {
+                        "default": "INBOX",
+                        "description": "Mailbox in which email_ids were listed; UIDs are not transferable across mailboxes.",
+                        "maxLength": 1024,
+                        "title": "Source Mailbox",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "source_account",
+                    "email_ids",
+                    "target_account",
+                    "target_mailbox"
+                ],
+                "title": "copy_emails_to_accountArguments",
+                "type": "object"
+            },
+            "outputSchema": {
+                "properties": {
+                    "result": {
+                        "title": "Result",
+                        "type": "string"
+                    }
+                },
+                "required": ["result"],
+                "title": "copy_emails_to_accountOutput",
+                "type": "object"
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        },
+        {
             "name": "get_attachment_content",
             "description": "Read one email attachment as an MCP embedded binary resource without writing a local file. This independent transfer mode requires enable_attachment_content=true.",
             "inputSchema": {

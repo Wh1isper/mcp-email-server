@@ -115,6 +115,21 @@ If the provider does not create missing parent levels, create the parent first
 (`business`) and then the child. See [`create_mailbox`](tools.md#create_mailbox)
 for result statuses.
 
+## Collect messages from several accounts into one folder
+
+1. Call `list_mailboxes` on the target account. If the folder is missing, create
+   it with `create_mailbox`, which needs `organize` there.
+2. In each source account, find the messages with `list_emails_metadata` and
+   note the mailbox you searched, for example `[Gmail]/All Mail`.
+3. Call `copy_emails_to_account` once per source mailbox with those IDs,
+   `source_mailbox`, `target_account`, and `target_mailbox`. The target needs
+   `append`; the source can stay read-only (`allowed_mutations = []`).
+
+The originals stay where they are. Gmail exposes one message under several
+labels, so copy from a single mailbox per message to avoid duplicates. Inspect
+`unknown` results in the target mailbox before trying again: a repeated call
+places another copy.
+
 ## ProtonMail Bridge and self-signed TLS
 
 Local bridges commonly expose IMAP through STARTTLS with a locally issued

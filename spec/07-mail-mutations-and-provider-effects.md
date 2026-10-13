@@ -18,7 +18,7 @@ mutation route. The static MCP catalog does not change with effective grants.
 | `organize` | mark-read/unread, approved flags and semantic tags, move, archive, and mailbox creation        |
 | `delete`   | explicit delete and its UID-scoped deletion/expunge effects                                    |
 | `send`     | send/forward SMTP submission and narrowly their successful-message Sent copy                   |
-| `append`   | general `save_to_mailbox`, including caller-selected mailbox and flags                         |
+| `append`   | `save_to_mailbox` with caller mailbox/flags; target of `copy_emails_to_account`                |
 
 Organization may use deletion only as a scoped move fallback; it MUST NOT
 perform unrestricted expunge or expose generic delete capability. A compose
@@ -155,8 +155,9 @@ General APPEND with a case-insensitive `\Deleted` flag additionally requires
 accounts retain their historical ability to append messages with this flag;
 `append` alone does not authorize it. The flag applies only to the new message:
 modifying or expunging existing UIDs remains owned by the scoped delete workflow.
-Every APPEND path serializes the complete MIME message with CRLF line endings and
-does not emit bare LF or CR line breaks, including draft and sent-copy placement.
+Every APPEND path that composes a message serializes the complete MIME message
+with CRLF line endings and does not emit bare LF or CR line breaks, including
+draft and sent-copy placement; cross-account copy forwards provider bytes verbatim.
 When composing `In-Reply-To` or `References`, a simple whitespace-separated list
 of bare or bracketed Message-IDs is normalized to the bracketed RFC 5322 `msg-id`
 form without double-wrapping. Non-simple historical syntax is preserved intact
@@ -217,7 +218,7 @@ policy and evidence; it is not silently attempted after an unsafe fallback.
 
 `create_mailbox` is the only workflow that creates a mailbox. It is an explicit,
 caller-requested effect under `organize`; move, archive, Junk discovery, draft
-resolution, and append never create a mailbox implicitly.
+resolution, append, and cross-account copy never create a mailbox implicitly.
 
 The caller supplies the exact server mailbox name, including any hierarchy
 delimiter and namespace prefix as reported by `list_mailboxes`. The service does
@@ -248,6 +249,83 @@ The tool is idempotent by contract: repeating it for an existing mailbox reports
 `already_exists`. An `unknown` CREATE is not replayed automatically; the caller
 reconciles with `list_mailboxes`. Creation does not SUBSCRIBE the mailbox. The
 mailbox list is not projected, so creation requires no metadata invalidation.
+
+## Copy Between Accounts
+
+`copy_emails_to_account` copies existing messages from a source mailbox of one
+configured account into an existing mailbox of a different configured account.
+Originals stay unchanged. It fills a gap that neither focused tools nor the
+protocol executor cover: the executor is scoped to one account per call, so a
+cross-account copy through it would need the model to relay complete message
+bytes between two calls, beyond its received-response and APPEND data bounds and
+outside its UTF-8 text payload, and would need executor admission (organize,
+delete, append, no sender filter, attachment content) on both accounts.
+
+Same-account requests are rejected before provider access; copying within one
+account remains a server-side `UID COPY` through the protocol executor. Account
+names are compared exactly.
+
+Authority is the minimum for each side. The source account needs an enabled
+incoming endpoint and no mutation grant, because nothing in it changes; its
+sender policy still applies. The target account needs `append`. Message bytes
+never enter model context, results, logs, or the metadata projection, so source
+`enable_attachment_content` is not required. The target's sender policy governs
+later reads and mutations there, not this placement. Recipient policy (spec 04)
+does not apply: nothing is composed, addressed, or delivered, and the copied
+message keeps its original headers.
+
+The workflow:
+
+1. validates the request: distinct accounts, bounded UID list, mailbox names;
+2. resolves both accounts and requires target `append` before opening providers;
+3. opens the source, EXAMINEs the source mailbox, and fetches
+   `UID RFC822.SIZE FLAGS INTERNALDATE` for the requested UIDs. A missing UID is
+   `failed: not-found`. A message larger than the raw-message limit
+   (`MAX_RAW_EMAIL_BYTES`) is `failed: too-large`. Sender-policy blocking follows
+   the existing mutation rule: hidden by default, `failed: sender-policy` when
+   `report_blocked_mutations` is set. None of these is ever placed;
+4. opens the target and applies the common APPEND capability refresh;
+5. for each remaining UID in caller order, checks cancellation, reads the
+   complete message with `UID FETCH <uid> BODY.PEEK[]` (no `\Seen` change), then
+   revalidates source sender policy and target `append` immediately before one
+   APPEND of those exact bytes with the source INTERNALDATE and only the system
+   flags `\Seen`, `\Answered`, `\Flagged`, and `\Draft`;
+6. invalidates the target mailbox's metadata coverage. The source needs none.
+
+Bytes are transferred verbatim: the workflow does not parse, re-serialize,
+normalize line endings, or rewrite headers. A message containing NUL is
+`failed: binary-unsupported` before APPEND, because no BINARY literal is used. A
+message whose headers contain non-ASCII bytes follows the existing RFC 6855 session
+rules and otherwise fails with `utf8-append-unsupported` before APPEND.
+`\Deleted` is never copied: a later EXPUNGE by any client would silently remove
+the new copy, and setting it would require `delete`. Provider keywords are
+not copied because their meaning and acceptance differ between providers.
+
+| Evidence for one UID                          | Result                              |
+| --------------------------------------------- | ----------------------------------- |
+| APPEND `OK`                                   | `succeeded`                         |
+| APPEND `NO [TRYCREATE]`                       | `failed: destination-missing`, stop |
+| other APPEND `NO` or `BAD`                    | `failed: append-rejected`           |
+| source FETCH fails before any APPEND byte     | `failed: source-read-failed`        |
+| source FETCH deadline or transport failure    | `failed: source-read-failed`, stop  |
+| target fails before any APPEND byte is sent   | `failed: not-attempted`, stop       |
+| target grant revoked or source policy changed | `failed: mutation-policy`           |
+| timeout or interruption after APPEND starts   | `unknown: copy-unknown`, stop       |
+| not reached after a stop                      | `failed: not-attempted`             |
+
+A stop leaves later UIDs unattempted. An interrupted command aborts its
+connection instead of logging out. A missing destination stops the batch so the
+remaining source messages are not downloaded only to be rejected the same way.
+Each read and each APPEND has its own provider deadline; the APPEND command also
+uses that deadline as its protocol timeout, because a large literal uploads
+without server output. `RFC822.SIZE` is only an early filter: the limit is checked
+again on the bytes actually read, and a read is accepted only when its FETCH
+response names the requested UID.
+Any `unknown` sets `reconciliation_needed=true`; the caller reconciles in the
+target mailbox, for example by Message-ID. There is no deduplication: repeating a
+successful request places another copy, like `save_to_mailbox`. The workflow
+never creates the target mailbox, never retries automatically, and never changes
+the source mailbox. At most one complete message is held in memory at a time.
 
 ## Delete and Scoped Expunge
 
@@ -496,8 +574,9 @@ enter public errors.
 8. Public numeric IDs are documented and tested as current-mailbox compatibility
    IDs, not durable listing-epoch tokens.
 9. No management UI route can invoke mail mutations in this delivery.
-10. Byte-level tests prove every focused-tool IMAP APPEND path serializes MIME messages with
-    CRLF line endings and emits no bare LF or CR line breaks. Composition tests
+10. Byte-level tests prove every focused-tool IMAP APPEND path that composes MIME
+    serializes it with CRLF line endings and emits no bare LF or CR line breaks;
+    cross-account copy forwards provider bytes verbatim instead. Composition tests
     also prove that bare simple Message-IDs gain RFC angle brackets, already
     bracketed IDs are not double-wrapped, mixed `References` lists normalize as
     one chain, and non-simple historical syntax remains intact.
@@ -537,3 +616,12 @@ enter public errors.
     revocation between existence check and CREATE, and that no other workflow
     issues CREATE. The explicitly opted-in protocol executor is a separate native
     primitive surface, not a focused workflow.
+16. Cross-account copy tests prove same-account rejection before provider
+    access, target `append` denial before provider access and revocation before
+    APPEND, source EXAMINE with `BODY.PEEK[]` and no source mutation, verbatim
+    bytes with source INTERNALDATE and only `\Seen`/`\Answered`/`\Flagged`/
+    `\Draft`, per-UID `not-found`, `too-large`, sender-policy parity,
+    `binary-unsupported`, `destination-missing`, `append-rejected`, and
+    `source-read-failed`, `unknown` without replay plus `not-attempted` after
+    interruption, target-only projection invalidation, and that message bytes
+    never appear in results or logs.
