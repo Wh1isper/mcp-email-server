@@ -1940,3 +1940,146 @@ async def test_protocol_primitives_over_stdio_against_greenmail(tmp_path: Path) 
                 },
             )
             _wait_for_message(BOB, "INBOX", f"smtp-{subject}")
+
+
+def _raw_message_state(credentials: tuple[str, str], mailbox: str, uid: str) -> tuple[bytes, set[str], str]:
+    with _imap_session(credentials) as client:
+        status, _ = client.select(mailbox, readonly=True)
+        assert status == "OK"
+        status, fetched = client.uid("fetch", uid, "(BODY.PEEK[] FLAGS INTERNALDATE)")
+        assert status == "OK"
+    response = next(item for item in fetched if isinstance(item, tuple))
+    metadata, raw_message = response
+    trailer = b" ".join(item for item in fetched if isinstance(item, bytes))
+    combined = metadata + b" " + trailer
+    flag_match = re.search(rb"FLAGS \(([^)]*)\)", combined)
+    date_match = re.search(rb'INTERNALDATE "([^"]+)"', combined)
+    assert date_match is not None
+    flags = set(flag_match.group(1).decode().split()) if flag_match else set()
+    return raw_message, flags, date_match.group(1).decode()
+
+
+def _uids(credentials: tuple[str, str], mailbox: str) -> list[str]:
+    with _imap_session(credentials) as client:
+        status, _ = client.select(mailbox, readonly=True)
+        assert status == "OK"
+        status, data = client.uid("search", None, "ALL")
+        assert status == "OK"
+    return [uid.decode() for uid in (data[0] or b"").split()]
+
+
+@pytest.mark.asyncio
+async def test_cross_account_copy_against_greenmail(tmp_path: Path) -> None:
+    """Copy verbatim bytes between two accounts with source read-only and target append-only."""
+    _wait_until_ready()
+    target_mailbox = f"Copies-{uuid.uuid4().hex[:8]}"
+    _ensure_empty_mailboxes(ALICE, ["INBOX"])
+    _ensure_empty_mailboxes(BOB, ["INBOX", target_mailbox])
+    run_id = uuid.uuid4().hex
+    secret = f"copy-secret-{run_id}"
+    subject = f"Vyúčtování {run_id}"
+    message = EmailMessage()
+    message["From"] = BOB[0]
+    message["To"] = ALICE[0]
+    message["Subject"] = subject
+    message["Message-ID"] = make_msgid(domain="example.test")
+    message.set_content(f"Synthetic body {secret}")
+    message.add_attachment(
+        b"%PDF-1.4 synthetic\xff\xfe" + secret.encode(), maintype="application", subtype="pdf", filename="s.pdf"
+    )
+    # GreenMail parses APPEND date-time hours on a 12-hour clock (12:xx becomes 00:xx),
+    # so the fixed INTERNALDATE avoids the 12 o'clock UTC hour.
+    with _imap_session(ALICE) as client:
+        status, _ = client.append(
+            "INBOX", r"(\Flagged $label4)", '"05-Mar-2024 15:45:07 +0100"', message.as_bytes(policy=policy.SMTP)
+        )
+        assert status == "OK"
+    source = _wait_for_message(ALICE, "INBOX", subject)
+    source_raw, source_flags, source_date = _raw_message_state(ALICE, "INBOX", source.uid)
+    assert r"\Seen" not in source_flags
+
+    # The source needs no grant at all; the target needs only append.
+    config = CONFIG_TEMPLATE.replace('account_name = "alice"\n', 'account_name = "alice"\nallowed_mutations = []\n')
+    config = config.replace('account_name = "bob"\n', 'account_name = "bob"\nallowed_mutations = ["append"]\n')
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(config)
+    config_path.chmod(0o600)
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "DEBUG",
+    })
+    server = StdioServerParameters(
+        command=str(Path(sys.executable).with_name("mcp-email-server")),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+    stderr_path = tmp_path / "stderr.log"
+    with stderr_path.open("w", encoding="utf-8") as errlog:
+        async with stdio_client(server, errlog=errlog) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream, read_timeout_seconds=timedelta(seconds=30)) as session:
+                await session.initialize()
+                copied = await session.call_tool(
+                    "copy_emails_to_account",
+                    {
+                        "source_account": "alice",
+                        "email_ids": [source.uid, "999999"],
+                        "target_account": "bob",
+                        "target_mailbox": target_mailbox,
+                    },
+                )
+                assert copied.isError is not True, _text_content(copied)
+                text = _text_content(copied)
+                assert text == f"Copy result [succeeded: {source.uid}; failed: 999999 (not-found)]"
+                assert secret not in text
+
+                missing = f"Missing-{run_id[:8]}"
+                rejected = await _call_tool(
+                    session,
+                    "copy_emails_to_account",
+                    {
+                        "source_account": "alice",
+                        "email_ids": [source.uid],
+                        "target_account": "bob",
+                        "target_mailbox": missing,
+                    },
+                )
+                assert re.fullmatch(
+                    rf"Copy result \[failed: {source.uid} \((destination-missing|append-rejected)\)\]",
+                    rejected["result"],
+                ), rejected
+
+                same = await session.call_tool(
+                    "copy_emails_to_account",
+                    {
+                        "source_account": "alice",
+                        "email_ids": [source.uid],
+                        "target_account": "alice",
+                        "target_mailbox": "INBOX",
+                    },
+                )
+                assert same.isError is True
+                assert "must differ" in _text_content(same)
+
+                denied = await session.call_tool(
+                    "copy_emails_to_account",
+                    {"source_account": "bob", "email_ids": ["1"], "target_account": "alice", "target_mailbox": "INBOX"},
+                )
+                assert denied.isError is True
+                assert "'append' is not allowed" in _text_content(denied)
+
+                listed = await _call_tool(session, "list_mailboxes", {"account_name": "bob"})
+                assert missing not in {mailbox["name"] for mailbox in listed["result"]}
+
+    copies = _uids(BOB, target_mailbox)
+    assert len(copies) == 1
+    copy_raw, copy_flags, copy_date = _raw_message_state(BOB, target_mailbox, copies[0])
+    assert copy_raw == source_raw
+    assert copy_date == source_date
+    assert r"\Flagged" in copy_flags
+    assert "$label4" not in copy_flags
+    assert r"\Deleted" not in copy_flags
+    after_raw, after_flags, after_date = _raw_message_state(ALICE, "INBOX", source.uid)
+    assert (after_raw, after_flags, after_date) == (source_raw, source_flags, source_date)
+    assert secret not in stderr_path.read_text(encoding="utf-8")
