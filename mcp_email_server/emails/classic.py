@@ -3916,6 +3916,11 @@ class EmailClient:
             await _send_imap_id(imap)
             response = await imap.examine(_quote_mailbox(mailbox))
             _raise_for_imap_error(response, "EXAMINE source mailbox")
+            # EXAMINE selects the mailbox read-only on the server, but aioimaplib
+            # 2.x only records the SELECTED state after SELECT and would refuse
+            # UID FETCH. Mirror the server state instead of falling back to SELECT.
+            if imap.protocol is not None:
+                imap.protocol.state = aioimaplib.SELECTED
             session = _ImapCopySource(self, imap)
             yield session
         finally:

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
+import aioimaplib
 import pytest
 
 from mcp_email_server import app as app_module
@@ -497,6 +498,16 @@ async def test_source_session_examines_and_reads_with_peek(client):
     ]
     assert all("STORE" not in str(call).upper() for call in calls)
     mock.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_source_examine_enters_selected_state_for_uid_commands(client):
+    # aioimaplib only tracks SELECT; UID FETCH is refused in AUTH state after EXAMINE.
+    mock = _copy_imap()
+    mock.protocol.state = aioimaplib.AUTH
+    with patch.object(client, "imap_class", return_value=mock):
+        async with client.open_copy_source("INBOX"):
+            assert mock.protocol.state == aioimaplib.SELECTED
 
 
 @pytest.mark.asyncio
