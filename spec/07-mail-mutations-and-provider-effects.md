@@ -301,17 +301,24 @@ rules and otherwise fails with `utf8-append-unsupported` before APPEND.
 the new copy, and setting it would require `delete`. Provider keywords are
 not copied because their meaning and acceptance differ between providers.
 
-| Evidence for one UID                          | Result                             |
-| --------------------------------------------- | ---------------------------------- |
-| APPEND `OK`                                   | `succeeded`                        |
-| APPEND `NO [TRYCREATE]`                       | `failed: destination-missing`      |
-| other APPEND `NO` or `BAD`                    | `failed: append-rejected`          |
-| source FETCH fails before any APPEND byte     | `failed: source-read-failed`       |
-| target grant revoked or source policy changed | `failed: mutation-policy`          |
-| timeout or interruption after APPEND starts   | `unknown: copy-unknown`, no replay |
-| not reached after an interruption or deadline | `failed: not-attempted`            |
+| Evidence for one UID                          | Result                              |
+| --------------------------------------------- | ----------------------------------- |
+| APPEND `OK`                                   | `succeeded`                         |
+| APPEND `NO [TRYCREATE]`                       | `failed: destination-missing`, stop |
+| other APPEND `NO` or `BAD`                    | `failed: append-rejected`           |
+| source FETCH fails before any APPEND byte     | `failed: source-read-failed`        |
+| source FETCH deadline expires                 | `failed: source-read-failed`, stop  |
+| target grant revoked or source policy changed | `failed: mutation-policy`           |
+| timeout or interruption after APPEND starts   | `unknown: copy-unknown`, stop       |
+| not reached after a stop                      | `failed: not-attempted`             |
 
-An interruption aborts the affected connection; later UIDs are not attempted.
+A stop leaves later UIDs unattempted. An interrupted command aborts its
+connection instead of logging out. A missing destination stops the batch so the
+remaining source messages are not downloaded only to be rejected the same way.
+Each read and each APPEND has its own provider deadline; the APPEND command also
+uses that deadline as its protocol timeout, because a large literal uploads
+without server output. `RFC822.SIZE` is only an early filter: the limit is checked
+again on the bytes actually read.
 Any `unknown` sets `reconciliation_needed=true`; the caller reconciles in the
 target mailbox, for example by Message-ID. There is no deduplication: repeating a
 successful request places another copy, like `save_to_mailbox`. The workflow
