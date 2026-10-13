@@ -414,6 +414,7 @@ class TestMcpTools:
             "mark_emails_as_read",
             "move_emails",
             "archive_emails",
+            "copy_emails_to_account",
         ):
             ids = tools[tool_name]["email_ids"]
             assert ids["maxItems"] == APPLICATION_LIMITS.mutation_uids

@@ -20,6 +20,7 @@ from mcp_email_server.application.mutations import (
     ArchiveCommand,
     ArchiveMutationOutcome,
     BatchMutationOutcome,
+    CopyToAccountCommand,
     CreateMailboxCommand,
     CreateMailboxOutcome,
     DeleteCommand,
@@ -125,6 +126,10 @@ async def create_mailbox_command(command: CreateMailboxCommand) -> CreateMailbox
     return await get_application_runtime().mutations.create_mailbox.execute(command)
 
 
+async def copy_emails_to_account_command(command: CopyToAccountCommand) -> BatchMutationOutcome:
+    return await get_application_runtime().mutations.copy_to_account.execute(command)
+
+
 async def get_email_content_query(query: GetEmailContentQuery) -> EmailContentBatchResponse:
     return await get_application_runtime().reads.content.execute(query)
 
@@ -160,6 +165,19 @@ _PUBLIC_SEND_DETAILS = frozenset({
     "smtp-recipient-rejected",
     "smtp-session-lost-before-data",
     "smtp-utf8-unsupported",
+})
+_PUBLIC_COPY_DETAILS = frozenset({
+    "append-rejected",
+    "binary-unsupported",
+    "copy-unknown",
+    "destination-missing",
+    "mutation-policy",
+    "not-attempted",
+    "not-found",
+    "sender-policy",
+    "source-read-failed",
+    "too-large",
+    "utf8-append-unsupported",
 })
 _PUBLIC_APPEND_DETAILS = frozenset({
     "append-unknown",
@@ -199,6 +217,18 @@ def _ordered_target_sections(
 
 def _tagged_batch_result(outcome: BatchMutationOutcome) -> str:
     sections = _ordered_target_sections(outcome.outcomes, include_unknown_detail=True)
+    if outcome.reconciliation_needed:
+        sections.append("warning: reconciliation needed")
+    return "; ".join(sections)
+
+
+def _tagged_copy_result(outcome: BatchMutationOutcome) -> str:
+    sections = _ordered_target_sections(
+        outcome.outcomes,
+        detail_allowlist=_PUBLIC_COPY_DETAILS,
+        include_failed_detail=True,
+        include_unknown_detail=True,
+    )
     if outcome.reconciliation_needed:
         sections.append("warning: reconciliation needed")
     return "; ".join(sections)
@@ -1335,6 +1365,64 @@ async def create_mailbox(
     return CreateMailboxResult(
         mailbox=outcome.mailbox, status=outcome.status, reconciliation_needed=outcome.reconciliation_needed
     )
+
+
+@mcp.tool(
+    description=(
+        "Copy emails from one configured account into an existing mailbox of a different configured account. "
+        "Originals stay unchanged (read with BODY.PEEK[]); the exact message bytes, INTERNALDATE, and the "
+        "\\Seen/\\Answered/\\Flagged/\\Draft flags are copied server-side and never returned. Requires the "
+        "append permission on target_account only. Use list_emails_metadata in source_mailbox first; use "
+        "create_mailbox for a missing target. Within one account use email_command UID COPY instead. "
+        "Repeating a request places another copy. Partial or ambiguous effects report per-ID "
+        "succeeded/failed/unknown status and are not retried automatically."
+    ),
+    annotations=_NONDESTRUCTIVE_REMOTE_MUTATION,
+)
+async def copy_emails_to_account(
+    source_account: Annotated[
+        str,
+        Field(max_length=APPLICATION_LIMITS.account_name_bytes, description="Account that holds the emails."),
+    ],
+    email_ids: Annotated[
+        list[UidInput],
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mutation_uids,
+            description="List of email_id to copy (obtained from list_emails_metadata in source_mailbox).",
+        ),
+    ],
+    target_account: Annotated[
+        str,
+        Field(
+            max_length=APPLICATION_LIMITS.account_name_bytes,
+            description="Different account that receives the copies.",
+        ),
+    ],
+    target_mailbox: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="Existing mailbox in target_account; it is never created implicitly.",
+        ),
+    ],
+    source_mailbox: Annotated[
+        str,
+        Field(
+            default="INBOX",
+            max_length=APPLICATION_LIMITS.mailbox_bytes,
+            description="Mailbox in which email_ids were listed; UIDs are not transferable across mailboxes.",
+        ),
+    ] = "INBOX",
+) -> str:
+    outcome = await copy_emails_to_account_command(
+        CopyToAccountCommand(source_account, tuple(email_ids), target_account, target_mailbox, source_mailbox)
+    )
+    succeeded = outcome.targets("succeeded")
+    if len(succeeded) == len(email_ids) and not outcome.reconciliation_needed:
+        return f"Successfully copied {len(succeeded)} email(s) to {target_mailbox} in {target_account}"
+    return f"Copy result [{_tagged_copy_result(outcome)}]"
 
 
 @mcp.tool(

@@ -10,10 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from mcp_email_server import app as app_module
 from mcp_email_server.adapters.mutations import ClassicMutationProvider
 from mcp_email_server.application import mutations as mutations_module
 from mcp_email_server.application.limits import APPLICATION_LIMITS
 from mcp_email_server.application.mutations import (
+    BatchMutationOutcome,
     CopyAppendEvidence,
     CopySourceInventory,
     CopySourceMessage,
@@ -742,3 +744,72 @@ async def test_adapter_sanitizes_provider_failures():
     async with provider.open_copy_source(_command("1"), account) as session:
         with pytest.raises(MutationProviderError, match="provider_failure"):
             await session.inventory(("1",), ())
+
+
+# --- MCP tool (app.py) -------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_is_advertised_as_additive_nondestructive_mutation():
+    tools = {tool.name: tool for tool in await app_module.mcp.list_tools()}
+    tool = tools["copy_emails_to_account"]
+    assert tool.inputSchema["required"] == ["source_account", "email_ids", "target_account", "target_mailbox"]
+    properties = tool.inputSchema["properties"]
+    assert properties["source_mailbox"]["default"] == "INBOX"
+    assert properties["email_ids"]["maxItems"] == APPLICATION_LIMITS.mutation_uids
+    for name in ("source_account", "target_account"):
+        assert properties[name]["maxLength"] == APPLICATION_LIMITS.account_name_bytes
+    for name in ("source_mailbox", "target_mailbox"):
+        assert properties[name]["maxLength"] == APPLICATION_LIMITS.mailbox_bytes
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is False
+    assert tool.annotations.openWorldHint is True
+
+
+@pytest.mark.asyncio
+async def test_tool_reports_full_success():
+    handler = AsyncMock(return_value=BatchMutationOutcome((TargetMutationOutcome("7", "succeeded"),)))
+    with patch("mcp_email_server.app.copy_emails_to_account_command", handler):
+        result = await app_module.copy_emails_to_account(
+            source_account="Seznam", email_ids=["7"], target_account="Home", target_mailbox="techem"
+        )
+    assert result == "Successfully copied 1 email(s) to techem in Home"
+    assert handler.await_args.args[0] == CopyToAccountCommand("Seznam", ("7",), "Home", "techem", "INBOX")
+
+
+@pytest.mark.asyncio
+async def test_tool_reports_failed_and_unknown_details_in_order():
+    handler = AsyncMock(
+        return_value=BatchMutationOutcome((
+            TargetMutationOutcome("1", "succeeded"),
+            TargetMutationOutcome("2", "failed", "too-large"),
+            TargetMutationOutcome("3", "unknown", "copy-unknown"),
+            TargetMutationOutcome("4", "failed", "not-attempted"),
+        ))
+    )
+    with patch("mcp_email_server.app.copy_emails_to_account_command", handler):
+        result = await app_module.copy_emails_to_account(
+            source_account="Gmail",
+            email_ids=["1", "2", "3", "4"],
+            target_account="Home",
+            target_mailbox="techem",
+            source_mailbox="[Gmail]/All Mail",
+        )
+    assert result == (
+        "Copy result [succeeded: 1; failed: 2 (too-large); unknown: 3 (copy-unknown); "
+        "failed: 4 (not-attempted); warning: reconciliation needed]"
+    )
+    assert handler.await_args.args[0].source_mailbox == "[Gmail]/All Mail"
+
+
+@pytest.mark.asyncio
+async def test_tool_hides_unlisted_detail_text():
+    handler = AsyncMock(
+        return_value=BatchMutationOutcome((TargetMutationOutcome("1", "failed", "server said something"),))
+    )
+    with patch("mcp_email_server.app.copy_emails_to_account_command", handler):
+        result = await app_module.copy_emails_to_account(
+            source_account="a", email_ids=["1"], target_account="b", target_mailbox="x"
+        )
+    assert result == "Copy result [failed: 1]"
