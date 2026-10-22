@@ -175,13 +175,18 @@ class SQLiteMetadataProjection:
         mailbox: str,
         state: MailboxState,
     ) -> list[dict[str, object]] | None:
+        uidvalidity = state.uidvalidity
+        uidnext = state.uidnext
+        if uidvalidity is None or uidnext is None:
+            # Missing provider identity cannot qualify a stored epoch.
+            return None
         try:
             snapshot = await asyncio.to_thread(
                 self._index.read_complete,
                 self._operational_account_id,
                 mailbox,
-                uidvalidity=state.uidvalidity,
-                uidnext=state.uidnext,
+                uidvalidity=uidvalidity,
+                uidnext=uidnext,
                 message_count=state.message_count,
             )
         except MetadataIndexError as exc:
@@ -225,6 +230,10 @@ class SQLiteMetadataProjection:
         return tuple(dict(email) for email in emails)
 
     async def write_snapshot(self, mailbox: str, snapshot: MailboxMetadataSnapshot) -> None:
+        uidvalidity = snapshot.state.uidvalidity
+        uidnext = snapshot.state.uidnext
+        if uidvalidity is None or uidnext is None:
+            raise MetadataProjectionError("Mailbox observation omitted UIDVALIDITY or UIDNEXT and cannot be reused")
         try:
             await asyncio.to_thread(
                 self._index.write_snapshot,
@@ -232,8 +241,8 @@ class SQLiteMetadataProjection:
                 mailbox,
                 delimiter=snapshot.mailbox.delimiter or None,
                 attributes=snapshot.mailbox.flags,
-                uidvalidity=snapshot.state.uidvalidity,
-                uidnext=snapshot.state.uidnext,
+                uidvalidity=uidvalidity,
+                uidnext=uidnext,
                 message_count=snapshot.state.message_count,
                 emails=[dict(email) for email in snapshot.emails],
                 complete=snapshot.complete,

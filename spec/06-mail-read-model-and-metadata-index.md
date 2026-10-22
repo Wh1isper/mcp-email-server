@@ -76,39 +76,44 @@ updates the projection only with evidence actually observed. Partial scans,
 bounded windows, failed refreshes, or interrupted fetches never delete rows by
 absence and never produce an exact total claim.
 
-`STATUS` must include `MESSAGES`. `UIDVALIDITY` and `UIDNEXT` may be omitted.
-NetEase IMAP (`imap.163.com`, `imap.126.com`, `imap.yeah.net`) returns
-`MESSAGES` and `UIDVALIDITY` and omits `UIDNEXT` from both `STATUS` and
-`SELECT`. The parser used to reject that response, so the snapshot never
-activated and every metadata request used live `UID SEARCH`, which those hosts
-accept and then answer with an empty set. Qualification fills a missing
-`UIDNEXT` from `SELECT` when that response code is present, and otherwise from
-`UID FETCH 1:* (UID)` as one past the highest UID, or 1 when `MESSAGES` is 0.
-The derived value is not the server's allocation counter. Expunged UIDs can
-leave a gap, so the next assigned UID may be higher. The derived value is
-stable while the highest UID is stable, which is enough to qualify a complete
-projection; a newer higher UID changes the derived value and the message count
-together. When `UIDNEXT` was derived, or `UIDVALIDITY` was omitted, the
-snapshot's UID list comes from that same `UID FETCH` rather than from `UID
-SEARCH`. A missing `UIDVALIDITY` becomes a synthetic epoch at `2**32` plus a
-hash of the UID set, which cannot collide with a 32-bit provider epoch. Any
-membership change, including an ordinary append, is a new epoch and forces a
-full rebuild. Append-only incremental sync is not used for that synthetic
-epoch. A reset that reissues the same UID numbers is indistinguishable from an
-unchanged mailbox; that residual risk is why the synthetic value is not
-provider UIDVALIDITY.
+`STATUS` must include `MESSAGES`. `UIDVALIDITY` and `UIDNEXT` may be omitted
+from `STATUS`; the parser then reads the same names from `SELECT` response
+codes. A field that is still absent stays unknown. It is not replaced with
+`max(uid) + 1` or with a hash of the UID set. Some servers, including the
+reported NetEase IMAP responses, return `MESSAGES` and `UIDVALIDITY` while
+omitting `UIDNEXT`, and answer `UID SEARCH` with an empty set. That shape is
+handled by the rules below for every host. The hostname does not select a
+search strategy.
 
-A complete projection whose UIDVALIDITY still matches may be extended by fetching
-only UIDs above its highest cached UID. The extension is complete only when the
+When `UIDNEXT` or `UIDVALIDITY` is unknown, mailbox membership for a snapshot
+comes from `UID FETCH 1:* (UID)`, not from `UID SEARCH`. The inventory may
+contain gaps left by expunged messages. An exact result requires the inventory
+length to equal `MESSAGES`, every UID to lie in the IMAP range, and header plus
+`INTERNALDATE` evidence for every inventoried UID, all inside the existing row,
+byte, and time bounds. A short inventory, a failed batch, or a mailbox above
+the snapshot ceiling is incomplete. It is not reported as an exact empty page.
+
+When `UIDVALIDITY` is unknown, rows from another observation are not reused.
+Retained refresh rows and a complete projection are both ineligible. The fresh
+read may still return an exact result when the coverage rules above hold. That
+observation is not stored as a reusable projection, because there is no provider
+epoch to qualify on a later read. A mailbox reset that reissues the same UID
+numbers therefore cannot return the previous subjects, senders, or Message-IDs.
+
+A stored projection is reusable only when the current `UIDVALIDITY`, `UIDNEXT`,
+and message count are all present and match the stored qualification.
+Append-only extension requires those same provider fields and remains limited
+to UIDs above the highest cached UID. The extension is complete only when the
 provider message count equals the cached count plus those new UIDs and
-UIDVALIDITY, UIDNEXT, and message count remain stable during the fetch. UIDVALIDITY changes, deletions, gaps, and a
-merged row count above the snapshot ceiling fall back to a full bounded refresh.
-Partial windows are not extended by that append-only path, because they are not
-a prefix of the mailbox. A full refresh may resume from a partial same-epoch
-window: the retained rows carry their UIDVALIDITY through the provider boundary
-and are discarded if it differs from the refresh's initial epoch. The refresh
-fetches only UIDs still missing from the newest retained rows, and it
-may mark the merged window complete when the message count, UIDVALIDITY, and
+`UIDVALIDITY`, `UIDNEXT`, and message count remain stable during the fetch.
+`UIDVALIDITY` changes, deletions, gaps, a missing `UIDNEXT`, and a merged row
+count above the snapshot ceiling fall back to a full bounded refresh. Partial
+windows are not extended by that append-only path, because they are not a
+prefix of the mailbox. A full refresh may resume from a partial same-epoch
+window only when both observations carry the same provider `UIDVALIDITY`. The
+retained rows are discarded when that value is missing or different. The
+refresh fetches only UIDs still missing from the newest retained rows, and it
+may mark the merged window complete when the message count, `UIDVALIDITY`, and
 per-row evidence prove full coverage. Until that proof exists the rows stay
 partial and cannot answer an exact total.
 The snapshot ceiling defaults to 1,000 rows and is overridden by
@@ -389,17 +394,23 @@ catalog authority or secret binding state.
     mark only when count and stable-state evidence prove an append-only change.
     Snapshot progress is logged at INFO: partial row counts, a complete
     message count, or the number of UIDs an append-only sync added.
-12. Subject, from, and to search defaults to `auto` via
-    `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or the legacy account field
-    `imap_search_mode` (`server`, `client`, or `auto`). `auto` answers those
-    filters from a complete snapshot for `imap.163.com`, `imap.126.com`, and
-    `imap.yeah.net`, and from IMAP SEARCH elsewhere. A non-empty mailbox whose
-    server SEARCH returns no hits while the complete snapshot has matches
-    switches that account to client filtering for the process and logs the
-    switch once. Matches are case-insensitive substrings of decoded header
-    text, including RFC 2047 encoded words. Body, text, date, flag, tag, and
-    attachment filters stay on IMAP SEARCH. An omitted `UIDNEXT` does not
-    prevent a snapshot; it is derived as one past the highest fetched UID.
-    An omitted `UIDVALIDITY` uses the synthetic UID-set epoch described above
-    and rebuilds when membership changes. `MESSAGES` remains required. A
-    partial snapshot never supplies an exact filtered total.
+12. Subject, from, and to header search has two explicit strategies, `server`
+    (the default) and `local`, set by `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or
+    the legacy account field `imap_search_mode`. Neither strategy depends on
+    the IMAP hostname, and a zero-result SEARCH does not switch strategies.
+    `server` sends the predicates to IMAP SEARCH. `local` answers only a
+    subject, from, and/or to predicate from a qualified complete projection
+    when the provider `UIDVALIDITY` and `UIDNEXT` match it, and otherwise from
+    a bounded fresh UID and header read. Matches are case-insensitive
+    substrings of decoded header text, including RFC 2047 encoded words. To
+    matches the To header only; the display recipient list still combines To
+    and Cc. Body, text, date, flag, tag, and attachment predicates stay on
+    IMAP SEARCH. Combining one of those with subject, from, or to in `local`
+    mode fails before provider access. Incomplete local coverage, or a local
+    read past the row, byte, or time bound, is `query_too_broad` and does not
+    fall back to IMAP SEARCH or to an exact empty page. An omitted `UIDNEXT`
+    stays unknown and coverage uses the UID inventory, including gaps. An
+    omitted `UIDVALIDITY` stays unknown, does not reuse rows across
+    observations, and still allows one fresh read to be exact when coverage
+    is complete. `MESSAGES` remains required. A partial snapshot never
+    supplies an exact filtered total.

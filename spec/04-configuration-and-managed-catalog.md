@@ -232,11 +232,11 @@ same process default, and `auto` still selects quoted SEARCH text for
 `imap.qq.com`. The SEARCH encoding contract and the
 `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` ceiling are owned by spec 06.
 
-Legacy accounts may set `imap_search_mode` to `server`, `client`, or `auto`.
-Omission inherits `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE`, whose default is `auto`.
-Managed accounts do not persist the field; they use that same process default,
-and `auto` still filters subject, from, and to locally for the NetEase IMAP
-hosts named in spec 06.
+Legacy accounts may set `imap_search_mode` to `server` or `local`. Omission
+inherits `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE`, whose default is `server`.
+Managed accounts do not persist the field; they use that same process default.
+The value chooses the header-search strategy owned by spec 06 and does not
+depend on the IMAP hostname.
 
 Policy updates are revisioned. Recipient entries accept exact addresses (with
 legacy display-name extraction) or bare glob patterns, preserving glob syntax.
