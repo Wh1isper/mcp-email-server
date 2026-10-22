@@ -76,6 +76,28 @@ updates the projection only with evidence actually observed. Partial scans,
 bounded windows, failed refreshes, or interrupted fetches never delete rows by
 absence and never produce an exact total claim.
 
+`STATUS` must include `MESSAGES`. `UIDVALIDITY` and `UIDNEXT` may be omitted.
+NetEase IMAP (`imap.163.com`, `imap.126.com`, `imap.yeah.net`) returns
+`MESSAGES` and `UIDVALIDITY` and omits `UIDNEXT` from both `STATUS` and
+`SELECT`. The parser used to reject that response, so the snapshot never
+activated and every metadata request used live `UID SEARCH`, which those hosts
+accept and then answer with an empty set. Qualification fills a missing
+`UIDNEXT` from `SELECT` when that response code is present, and otherwise from
+`UID FETCH 1:* (UID)` as one past the highest UID, or 1 when `MESSAGES` is 0.
+The derived value is not the server's allocation counter. Expunged UIDs can
+leave a gap, so the next assigned UID may be higher. The derived value is
+stable while the highest UID is stable, which is enough to qualify a complete
+projection; a newer higher UID changes the derived value and the message count
+together. When `UIDNEXT` was derived, or `UIDVALIDITY` was omitted, the
+snapshot's UID list comes from that same `UID FETCH` rather than from `UID
+SEARCH`. A missing `UIDVALIDITY` becomes a synthetic epoch at `2**32` plus a
+hash of the UID set, which cannot collide with a 32-bit provider epoch. Any
+membership change, including an ordinary append, is a new epoch and forces a
+full rebuild. Append-only incremental sync is not used for that synthetic
+epoch. A reset that reissues the same UID numbers is indistinguishable from an
+unchanged mailbox; that residual risk is why the synthetic value is not
+provider UIDVALIDITY.
+
 A complete projection whose UIDVALIDITY still matches may be extended by fetching
 only UIDs above its highest cached UID. The extension is complete only when the
 provider message count equals the cached count plus those new UIDs and
@@ -365,3 +387,19 @@ catalog authority or secret binding state.
     and connection establishment is bounded by the refresh timeout. A complete
     same-UIDVALIDITY projection can be extended from UIDs above its high-water
     mark only when count and stable-state evidence prove an append-only change.
+    Snapshot progress is logged at INFO: partial row counts, a complete
+    message count, or the number of UIDs an append-only sync added.
+12. Subject, from, and to search defaults to `auto` via
+    `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or the legacy account field
+    `imap_search_mode` (`server`, `client`, or `auto`). `auto` answers those
+    filters from a complete snapshot for `imap.163.com`, `imap.126.com`, and
+    `imap.yeah.net`, and from IMAP SEARCH elsewhere. A non-empty mailbox whose
+    server SEARCH returns no hits while the complete snapshot has matches
+    switches that account to client filtering for the process and logs the
+    switch once. Matches are case-insensitive substrings of decoded header
+    text, including RFC 2047 encoded words. Body, text, date, flag, tag, and
+    attachment filters stay on IMAP SEARCH. An omitted `UIDNEXT` does not
+    prevent a snapshot; it is derived as one past the highest fetched UID.
+    An omitted `UIDVALIDITY` uses the synthetic UID-set epoch described above
+    and rebuilds when membership changes. `MESSAGES` remains required. A
+    partial snapshot never supplies an exact filtered total.

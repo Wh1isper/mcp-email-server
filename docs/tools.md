@@ -257,13 +257,38 @@ When a sender allowlist is configured, blocked messages are removed before
 pagination, so `total` and page sizes describe only visible messages.
 
 The application keeps a rebuildable SQLite projection for unfiltered mailbox
-pages. It uses that projection only after a small IMAP `STATUS` probe confirms
-the same UIDVALIDITY, UIDNEXT, and message count and the projection covers the
-whole mailbox. Before returning a cached page, it fetches current FLAGS only for
-the UIDs on that page so external tag changes are not hidden by the projection.
-Text, date, address, flag, tag, body, and attachment filters remain on the
-bounded IMAP path so provider-specific search semantics and mutable flags stay
-authoritative. Tag filters resolve configured semantic names before IMAP search
+pages and, when search mode says so, for subject, from, and to filters. It uses
+that projection only after a small IMAP `STATUS` probe confirms the same
+UIDVALIDITY, UIDNEXT, and message count and the projection covers the whole
+mailbox. NetEase IMAP omits `UIDNEXT` from `STATUS` and `SELECT` while still
+returning `MESSAGES` and `UIDVALIDITY`. The probe then runs `UID FETCH 1:* (UID)`
+and uses one past the highest UID as `UIDNEXT`. That derived value is not the
+server's allocation counter: expunged messages can leave a gap, so the next
+real UID may be higher. It stays stable while the highest UID stays stable, so
+a complete projection still qualifies, and a newer higher UID moves `UIDNEXT`
+and the message count together. If `UIDVALIDITY` is omitted too, the probe
+stores a synthetic epoch above the 32-bit range, hashed from the UID set. Any
+membership change, including ordinary new mail, rebuilds the snapshot instead
+of extending it. A reset that reissues the same UIDs cannot be detected without
+a real `UIDVALIDITY`. `MESSAGES` is still required. Before returning a cached
+page, it fetches current FLAGS only for the UIDs on that page so external tag
+changes are not hidden by the projection.
+
+Subject, from, and to use IMAP SEARCH unless
+`MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or the legacy account field `imap_search_mode`
+says otherwise. `auto` (the default) filters those three fields from a complete
+snapshot for `imap.163.com`, `imap.126.com`, and `imap.yeah.net`, because those
+hosts accept `UID SEARCH` and return no hits. Other hosts stay on IMAP SEARCH.
+If that SEARCH returns no hits for a non-empty mailbox whose complete snapshot
+has matches, the process switches that account to client filtering and logs the
+switch once. `client` always filters those fields locally. `server` always uses
+IMAP SEARCH. Matches are case-insensitive substrings of the decoded Subject,
+From, and stored recipient text, including RFC 2047 encoded words such as
+Chinese subjects. The stored recipient list includes To and Cc. Date, flag, tag,
+body, and attachment filters remain on the bounded IMAP path so provider-specific
+search semantics and mutable flags stay authoritative. A mailbox above the
+snapshot row ceiling has no complete snapshot, so those subject, from, and to
+filters use IMAP SEARCH too. Tag filters resolve configured semantic names before IMAP search
 and reject unknown values before provider access. ASCII filter values retain their exact text through IMAP
 atom or quoted-string encoding. Non-ASCII filter values use synchronizing UTF-8
 literals with `CHARSET UTF-8` on every host except `imap.qq.com`, which receives

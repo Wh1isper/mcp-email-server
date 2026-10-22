@@ -291,6 +291,33 @@ sender/INTERNALDATE evidence for every requested UID. The request is rejected
 rather than expanding a UID range or returning an incorrect page; retry after
 the mailbox is stable or report the provider issue.
 
+NetEase mailboxes (`imap.163.com`, `imap.126.com`, and `imap.yeah.net`) accept
+`UID SEARCH` and then return no matches, including for ASCII text that is
+present in the mailbox. Their `STATUS` and `SELECT` responses also omit
+`UIDNEXT`, so a snapshot that insisted on that value never became usable and
+every list fell through to the empty server search. The default `auto` search
+mode builds the snapshot anyway: `UIDNEXT` is one past the highest UID from
+`UID FETCH 1:* (UID)`, and subject, from, and to filters then run against that
+snapshot. The derived `UIDNEXT` is not the server's allocation counter.
+Expunged UIDs can leave a gap, and the next assigned UID may be higher than
+one past the current maximum. The value is stable while the highest UID is
+stable. If a server also omits `UIDVALIDITY`, the snapshot uses a synthetic
+epoch hashed from the UID set. Adding, deleting, or replacing any UID rebuilds
+the snapshot; a mailbox reset that reuses the same UID numbers cannot be told
+apart from an unchanged mailbox. Set `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or the
+legacy account field `imap_search_mode` to `server` to force IMAP SEARCH, or to
+`client` to filter subject, from, and to locally on any host. `auto` on every
+other host keeps server search, and switches that account to client filtering
+for the rest of the process if a non-empty mailbox returns no SEARCH hits while
+the complete snapshot has matches. That switch is logged once at INFO. A
+mailbox larger than the snapshot row ceiling still uses IMAP SEARCH, because a
+partial snapshot cannot prove an exact filtered total. Body, text, date, flag,
+tag, and attachment filters always use IMAP SEARCH.
+
+A metadata refresh logs its progress at INFO: a partial snapshot reports how
+many rows it kept out of the server message count, a complete snapshot reports
+that count, and an append-only sync reports how many UIDs it added.
+
 Non-ASCII subject, body, text, sender, or recipient filters are sent as
 synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`, except for `imap.qq.com`.
 QQ Mail mis-parses `UID SEARCH CHARSET UTF-8 SUBJECT {n}` and can return the

@@ -127,6 +127,45 @@ def resolve_imap_non_ascii_search(
     return mode
 
 
+ImapSearchMode = Literal["server", "client", "auto"]
+ImapSearchExecution = Literal["server", "client"]
+_IMAP_SEARCH_MODES = frozenset({"server", "client", "auto"})
+# NetEase IMAP accepts UID SEARCH and then returns an empty hit list for every
+# criterion, including ASCII. Subject, From, and To are answered from the
+# metadata snapshot instead. Other hosts stay on server SEARCH unless an
+# operator selects client mode or auto observes the same empty-result failure.
+_NETEASE_IMAP_SEARCH_HOSTS = frozenset({"imap.163.com", "imap.126.com", "imap.yeah.net"})
+
+
+def imap_search_mode() -> ImapSearchMode:
+    """Return the process default for subject, from, and to metadata search.
+
+    Unset means ``auto``. An account field overrides this value when present.
+    """
+
+    raw = os.getenv("MCP_EMAIL_SERVER_IMAP_SEARCH_MODE")
+    if raw is None:
+        return "auto"
+    mode = raw.strip().casefold()
+    if mode not in _IMAP_SEARCH_MODES:
+        raise ValueError("MCP_EMAIL_SERVER_IMAP_SEARCH_MODE must be one of: server, client, auto")
+    if mode == "server":
+        return "server"
+    if mode == "client":
+        return "client"
+    return "auto"
+
+
+def resolve_imap_search_mode(host: str, configured: ImapSearchMode | None) -> ImapSearchExecution:
+    """Resolve server SEARCH versus snapshot filtering for one IMAP host."""
+
+    mode = imap_search_mode() if configured is None else configured
+    if mode == "auto":
+        normalized = host.strip().rstrip(".").casefold()
+        return "client" if normalized in _NETEASE_IMAP_SEARCH_HOSTS else "server"
+    return mode
+
+
 def normalize_address(raw: str) -> str:
     """Extract and normalize a bare email address for case-insensitive comparison.
 
@@ -366,6 +405,9 @@ class EmailSettings(AccountAttributes):
     # None inherits MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH, which defaults to auto.
     # Managed accounts leave this unset; auto still quotes imap.qq.com by host.
     imap_non_ascii_search: ImapNonAsciiSearchMode | None = None
+    # None inherits MCP_EMAIL_SERVER_IMAP_SEARCH_MODE, which defaults to auto.
+    # Managed accounts leave this unset; auto still filters NetEase hosts locally.
+    imap_search_mode: ImapSearchMode | None = None
 
     @model_validator(mode="after")
     def validate_tags(self) -> EmailSettings:

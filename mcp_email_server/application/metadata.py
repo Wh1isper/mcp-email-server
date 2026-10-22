@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+import binascii
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from email.errors import HeaderParseError
+from email.header import decode_header, make_header
 from typing import Literal, Protocol, TypeVar
 
 from mcp_email_server.application.limits import (
@@ -13,7 +16,13 @@ from mcp_email_server.application.limits import (
     validate_optional_controlled_string,
     validate_serialized_result,
 )
-from mcp_email_server.config import sender_allowed
+from mcp_email_server.config import (
+    ImapSearchMode,
+    imap_search_mode,
+    resolve_imap_search_mode,
+    sender_allowed,
+)
+from mcp_email_server.emails.charsets import install_gb2312_superset_aliases
 from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, MailboxInfo
 from mcp_email_server.imap_keywords import ImapKeywordRegistry, ImapKeywordTag
 from mcp_email_server.log import log_safe_failure, logger
@@ -190,6 +199,10 @@ class MetadataAccountSnapshot:
     mode: RuntimeMode
     allowed_senders: tuple[str, ...]
     tag_registry: ImapKeywordRegistry = field(default_factory=ImapKeywordRegistry)
+    # Empty host keeps auto mode on server SEARCH. Callers that can filter
+    # subject/from/to locally pass the incoming IMAP host and any account override.
+    imap_host: str = ""
+    imap_search_mode: ImapSearchMode | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +210,13 @@ class MailboxState:
     uidvalidity: int
     uidnext: int
     message_count: int
+    # Observation-only. Persisted qualification still uses the three integers.
+    # ``uidnext_derived`` means the server omitted UIDNEXT and the value is one
+    # past the highest fetched UID, not the server's allocation counter.
+    # ``uidvalidity_unobserved`` means ``uidvalidity`` is a synthetic epoch
+    # outside the 32-bit range, hashed from the UID set.
+    uidnext_derived: bool = False
+    uidvalidity_unobserved: bool = False
 
 
 @dataclass(frozen=True)
@@ -361,6 +381,77 @@ def _email_flag_set(email: dict[str, object]) -> set[str]:
     if not isinstance(raw, list) or any(not isinstance(flag, str) for flag in raw):
         raise MetadataProviderObservationError("Provider metadata flags are invalid")
     return set(raw)
+
+
+def _is_header_text_query(query: ListEmailMetadataQuery) -> bool:
+    """Subject, From, and To can be answered from snapshot headers.
+
+    Body, full text, dates, flags, tags, and attachment heuristics are not
+    header substrings, so those queries stay on IMAP SEARCH.
+    """
+
+    if not any((query.subject, query.from_address, query.to_address)):
+        return False
+    if query.semantic_tags or query.provider_keywords:
+        return False
+    return all(
+        value is None
+        for value in (
+            query.before,
+            query.since,
+            query.seen,
+            query.flagged,
+            query.answered,
+            query.body,
+            query.text,
+            query.has_attachment,
+        )
+    )
+
+
+def _decoded_header_text(value: object) -> str:
+    """Return header text with RFC 2047 encoded words decoded.
+
+    Snapshot rows already pass through the email parser, which decodes encoded
+    words when it can. Rows that still carry a raw ``=?charset?...?=`` token,
+    including GB2312-labelled Chinese subjects, are decoded before matching.
+    """
+
+    if not isinstance(value, str) or not value:
+        return ""
+    if "=?" not in value:
+        return value
+    install_gb2312_superset_aliases()
+    try:
+        return str(make_header(decode_header(value)))
+    except (HeaderParseError, LookupError, UnicodeError, ValueError, binascii.Error):
+        return value
+
+
+def _header_text_matches(query: ListEmailMetadataQuery, email: dict[str, object]) -> bool:
+    """Case-insensitive substring match, equivalent to IMAP SUBJECT/FROM/TO."""
+
+    subject = _decoded_header_text(email.get("subject", ""))
+    sender = _decoded_header_text(email.get("from", ""))
+    raw_recipients = email.get("to", [])
+    if isinstance(raw_recipients, str):
+        recipients = _decoded_header_text(raw_recipients)
+    elif isinstance(raw_recipients, list):
+        recipients = "\n".join(_decoded_header_text(item) for item in raw_recipients)
+    else:
+        recipients = ""
+    if query.subject and query.subject.casefold() not in subject.casefold():
+        return False
+    if query.from_address and query.from_address.casefold() not in sender.casefold():
+        return False
+    return not query.to_address or query.to_address.casefold() in recipients.casefold()
+
+
+def _rows_for_query(query: ListEmailMetadataQuery, emails: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+    rows = [dict(email) for email in emails]
+    if not _is_header_text_query(query):
+        return rows
+    return [email for email in rows if _header_text_matches(query, email)]
 
 
 def _validate_metadata_response(
@@ -531,6 +622,10 @@ class MetadataQueryService:
         self._accounts = accounts
         self._providers = providers
         self._projections = projections
+        # Accounts whose auto mode has observed server SEARCH returning no hits
+        # while the local snapshot has subject/from/to matches. Process-scoped
+        # because this service lives for the MCP process.
+        self._client_search_accounts: set[str] = set()
 
     def list_tags(self, account_name: str) -> tuple[ImapKeywordTag, ...]:
         return self._accounts.resolve(account_name).tag_registry.tags
@@ -654,6 +749,7 @@ class MetadataQueryService:
             else:
                 merged = _merge_append_only_snapshot(query.mailbox, baseline, delta)
                 if merged is not None:
+                    logger.info(f"Incremental metadata sync added {len(delta.emails)} UIDs")
                     return merged, True, False
         if baseline is not None:
             retained = baseline.emails
@@ -680,6 +776,13 @@ class MetadataQueryService:
         except Exception as exc:
             _log_projection_refresh_failure(exc, incremental=False)
             return None
+        if isinstance(snapshot, MailboxMetadataSnapshot):
+            if snapshot.complete:
+                logger.info(f"Metadata snapshot complete ({snapshot.state.message_count} messages)")
+            else:
+                logger.info(
+                    f"Metadata snapshot partial ({len(snapshot.emails)} of {snapshot.state.message_count} messages)"
+                )
         return snapshot, False, bool(retained)
 
     async def execute(  # noqa: C901 - explicit bounded workflow branches
@@ -693,9 +796,15 @@ class MetadataQueryService:
                 query,
                 provider_keywords=account.tag_registry.resolve(query.semantic_tags),
             )
-        if not query.index_supported:
+        header_client = _is_header_text_query(query) and self._resolved_header_search(account) == "client"
+        if not query.index_supported and not header_client:
             response, current_account = await self._provider_fallback(query, account.mode)
-            return self._decorate(query, response, current_account.tag_registry)
+            decorated = self._decorate(query, response, current_account.tag_registry)
+            if self._should_probe_empty_search(query, account, decorated.total):
+                probed = await self._probe_client_header_search(query, account)
+                if probed is not None:
+                    return probed
+            return decorated
 
         try:
             projection = await self._projections.open(account)
@@ -725,7 +834,11 @@ class MetadataQueryService:
             response, current_account = await self._provider_fallback(query, account.mode)
             return self._decorate(query, response, current_account.tag_registry)
         if indexed is not None:
-            cached = _page_response(current_query, indexed, access.account.allowed_senders)
+            cached = _page_response(
+                current_query,
+                _rows_for_query(current_query, indexed),
+                access.account.allowed_senders,
+            )
             refreshed = await self._refresh_cached_tags(current_query, cached, access.provider)
             return self._decorate(current_query, refreshed, access.account.tag_registry)
 
@@ -749,7 +862,7 @@ class MetadataQueryService:
         if snapshot.complete:
             observed = _page_response(
                 current_query,
-                [dict(email) for email in snapshot.emails],
+                _rows_for_query(current_query, snapshot.emails),
                 access.account.allowed_senders,
                 warnings=("projection_write_failed",) if projection_write_failed else (),
             )
@@ -761,3 +874,68 @@ class MetadataQueryService:
         response, current_account = await self._provider_fallback(query, account.mode)
         response = _with_projection_warning(query, response) if projection_write_failed else response
         return self._decorate(query, response, current_account.tag_registry)
+
+    def _configured_imap_search_mode(self, account: MetadataAccountSnapshot) -> ImapSearchMode:
+        if account.imap_search_mode is not None:
+            return account.imap_search_mode
+        return imap_search_mode()
+
+    def _resolved_header_search(self, account: MetadataAccountSnapshot) -> Literal["server", "client"]:
+        """Return client when this account should filter subject/from/to locally."""
+
+        configured = self._configured_imap_search_mode(account)
+        if configured == "server":
+            return "server"
+        if configured == "client":
+            return "client"
+        if account.account_name in self._client_search_accounts:
+            return "client"
+        return resolve_imap_search_mode(account.imap_host, "auto")
+
+    def _should_probe_empty_search(
+        self,
+        query: ListEmailMetadataQuery,
+        account: MetadataAccountSnapshot,
+        total: int,
+    ) -> bool:
+        return (
+            total == 0
+            and _is_header_text_query(query)
+            and self._configured_imap_search_mode(account) == "auto"
+            and account.account_name not in self._client_search_accounts
+        )
+
+    async def _probe_client_header_search(
+        self,
+        query: ListEmailMetadataQuery,
+        account: MetadataAccountSnapshot,
+    ) -> EmailMetadataPageResponse | None:
+        """Use the snapshot when server SEARCH misses mail the snapshot can match.
+
+        The switch sticks for this process and is logged once. A probe that
+        cannot prove a complete local hit keeps the server result, including a
+        genuine empty page. Managed projection failures still propagate.
+        """
+
+        self._client_search_accounts.add(account.account_name)
+        try:
+            response = await self.execute(query)
+        except MetadataProjectionError:
+            self._client_search_accounts.discard(account.account_name)
+            raise
+        except Exception as exc:
+            self._client_search_accounts.discard(account.account_name)
+            log_safe_failure(
+                "Client-side metadata search probe failed; keeping the IMAP SEARCH result",
+                exc,
+            )
+            return None
+        if response.total > 0:
+            logger.info(
+                "IMAP SEARCH returned no hits for a non-empty mailbox whose metadata "
+                f"snapshot matches the subject, from, or to filter; using client-side "
+                f"filtering for account '{account.account_name}'"
+            )
+            return response
+        self._client_search_accounts.discard(account.account_name)
+        return None

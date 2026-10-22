@@ -266,6 +266,8 @@ class LocalMetadataBackend:
                 mode=resolved.mode,
                 allowed_senders=tuple(resolved.settings.allowed_senders),
                 tag_registry=ImapKeywordRegistry.from_tags(resolved.account.tags),
+                imap_host=resolved.account.incoming.host,
+                imap_search_mode=resolved.account.imap_search_mode,
             ),
         )
 
