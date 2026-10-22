@@ -564,3 +564,54 @@ async def test_partial_refresh_logs_only_value_free_diagnostics(failure_stage: s
     assert "private provider text" not in logged
     assert "synthetic-private-password" not in logged
     assert "user@example.test" not in logged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("mode", ["legacy", "managed"])
+async def test_resume_read_failure_obeys_runtime_mode(partial: bool, mode: str) -> None:
+    from mcp_email_server.application.metadata import MetadataProjectionError
+
+    service, provider, projection = _service()
+    account = service._accounts.resolve.return_value
+    account = replace(account, mode=mode)
+    service._accounts.resolve.return_value = account
+    service._providers.open.return_value = MetadataProviderAccess(account=account, provider=provider)
+    error = MetadataProjectionError("projection read failed")
+    if partial:
+        projection.read_partial_emails.side_effect = error
+    else:
+        projection.read_incremental_baseline.side_effect = error
+    if mode == "managed":
+        with pytest.raises(MetadataProjectionError):
+            await service.execute(ListEmailMetadataQuery(account_name="work"))
+        provider.list_metadata.assert_not_awaited()
+    else:
+        response = await service.execute(ListEmailMetadataQuery(account_name="work"))
+        assert response.total == 0
+        provider.list_metadata.assert_awaited_once()
+    provider.mailbox_snapshot.assert_not_awaited()
+    projection.write_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_delta_rebuilds_from_same_epoch_baseline() -> None:
+    service, provider, projection = _service()
+    mailbox = MailboxInfo(name="INBOX", delimiter="/", flags=[])
+    projection.read_incremental_baseline.return_value = MetadataIncrementalBaseline(
+        state=MailboxState(7, 2, 1), high_uid=1, mailbox=mailbox, emails=(_email(1),)
+    )
+    provider.mailbox_uid_delta.side_effect = TimeoutError("private delta detail")
+    snapshot = MailboxMetadataSnapshot(
+        state=MailboxState(7, 4, 3),
+        mailbox=mailbox,
+        emails=(_email(3), _email(2), _email(1)),
+        complete=True,
+        observed_at=NOW,
+    )
+    provider.mailbox_snapshot.return_value = snapshot
+    response = await service.execute(ListEmailMetadataQuery(account_name="work"))
+    assert response.total == 3
+    provider.mailbox_snapshot.assert_awaited_once_with("INBOX", retained_emails=(_email(1),), retained_uidvalidity=7)
+    provider.list_metadata.assert_not_awaited()
+    projection.write_snapshot.assert_awaited_once_with("INBOX", snapshot)
