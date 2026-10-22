@@ -266,8 +266,13 @@ bounded IMAP path so provider-specific search semantics and mutable flags stay
 authoritative. Tag filters resolve configured semantic names before IMAP search
 and reject unknown values before provider access. ASCII filter values retain their exact text through IMAP
 atom or quoted-string encoding. Non-ASCII filter values use synchronizing UTF-8
-literals with `CHARSET UTF-8`; a provider that rejects that charset returns a
-bounded search failure rather than receiving malformed raw UTF-8 command text.
+literals with `CHARSET UTF-8` on every host except `imap.qq.com`, which receives
+a quoted UTF-8 string on that same charset because QQ Mail mis-parses the
+literal form. Set `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH` or the account field
+`imap_non_ascii_search` to `literal`, `quoted`, or `auto` (the default). Quoted
+mode escapes quotes and backslashes and rejects CR or LF. A provider that
+rejects the charset returns a bounded search failure rather than receiving
+malformed raw UTF-8 command text. ASCII-only searches still omit `CHARSET`.
 Because base IMAP `BEFORE` and `SINCE` ignore the time and timezone components
 of `INTERNALDATE`, date criteria are conservative candidate filters. The server
 widens them across adjacent calendar dates, fetches complete `INTERNALDATE`
@@ -279,9 +284,15 @@ result was returned but its rebuildable projection could not be persisted, the
 response includes `warnings: ["projection_write_failed"]`. It never includes the
 local exception detail.
 
-A refresh stores at most the 1,000 most recent UIDs and claims complete coverage
-only when the whole mailbox fits that window and provider state is unchanged
-across the refresh. Provider fallback accepts at most 10,000 unique canonical
+A refresh stores at most the configured number of most recent UIDs, 1,000 by
+default, and claims complete coverage only when the whole mailbox fits that
+window and provider state is unchanged across the refresh. Set
+`MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` to raise the ceiling, up to 100,000.
+After a complete projection exists for the current UIDVALIDITY, a later refresh
+fetches only UIDs above the highest cached UID when the message count shows
+those messages were appended. Deletions and UIDVALIDITY changes refresh the
+bounded window again. A failed refresh is logged with its exception and
+traceback and then uses the bounded live search. Provider fallback accepts at most 10,000 unique canonical
 single UIDs; ranges, sets, zero, duplicates, and values outside the IMAP UID
 range are rejected before any UID FETCH. Metadata header requests use IMAP
 partial fetches, with limits of 64 KiB per

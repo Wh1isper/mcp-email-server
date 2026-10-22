@@ -292,11 +292,26 @@ rather than expanding a UID range or returning an incorrect page; retry after
 the mailbox is stable or report the provider issue.
 
 Non-ASCII subject, body, text, sender, or recipient filters are sent as
-synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`. If a provider rejects the
-charset, the search fails without rewriting or dropping the filter. Use the
+synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`, except for `imap.qq.com`.
+QQ Mail mis-parses `UID SEARCH CHARSET UTF-8 SUBJECT {n}` and can return the
+wrong messages, so the default `auto` mode sends `CHARSET UTF-8 SUBJECT "…"`.
+Force `literal` or `quoted` for every account with
+`MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`, or set `imap_non_ascii_search` on one
+legacy account. Quoted keywords cannot contain CR or LF. If a provider rejects
+the charset, the search fails without rewriting or dropping the filter. Use the
 provider's supported search syntax or an ASCII/narrower criterion; do not assume
 that changing the process locale will help, because IMAP date months are always
 protocol-defined English tokens.
+
+A mailbox larger than the metadata snapshot ceiling stays a partial projection,
+so every unfiltered list fetches from IMAP again. The default ceiling is 1,000
+rows. `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` accepts 1 through 100,000. The
+4 MiB header budget and the 60-second provider timeout still apply, so a very
+large first refresh can fail even after the ceiling is raised. That failure is
+logged with the exception and traceback as `Metadata projection refresh failed`.
+Once a complete snapshot exists, later mail is fetched by UID above the highest
+cached UID while UIDVALIDITY is unchanged. A UIDVALIDITY change or a deletion
+rebuilds the bounded snapshot.
 
 ## The UI cannot load or authenticate
 

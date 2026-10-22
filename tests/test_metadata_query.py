@@ -75,6 +75,7 @@ def _service(
     providers.open.return_value = MetadataProviderAccess(account=account, provider=provider)
     projection = MagicMock()
     projection.read_complete = AsyncMock(return_value=None)
+    projection.read_incremental_baseline = AsyncMock(return_value=None)
     projection.write_snapshot = AsyncMock()
     projections = MagicMock()
     projections.open = AsyncMock(return_value=projection)

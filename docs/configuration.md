@@ -840,17 +840,30 @@ values are treated as false. Do not add surrounding whitespace to these values.
 
 ### Global variables
 
-| Variable                                      | Default                                  | Description                                                                                           |
-| --------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `MCP_EMAIL_SERVER_CONFIG_PATH`                | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                               |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment file-download access.                                                             |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`  | `false`                                  | Override attachment MCP-content transfer access.                                                      |
-| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Empty                                    | Comma-separated recipients; empty disables sending.                                                   |
-| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                        |
-| `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`          | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts. |
-| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | `false`                                  | Override blocked mutation reporting.                                                                  |
-| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                   |
-| `MCP_EMAIL_SERVER_LOG_LEVEL`                  | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                                           |
+| Variable                                      | Default                                  | Description                                                                                                                                                                      |
+| --------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCP_EMAIL_SERVER_CONFIG_PATH`                | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                                                                                                          |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment file-download access.                                                                                                                                        |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`  | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                 |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                              |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                   |
+| `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`          | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts.                                                                            |
+| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | `false`                                  | Override blocked mutation reporting.                                                                                                                                             |
+| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                                                                                              |
+| `MCP_EMAIL_SERVER_LOG_LEVEL`                  | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                                                                                                                      |
+| `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`      | `auto`                                   | `literal`, `quoted`, or `auto`. `auto` quotes non-ASCII IMAP SEARCH text for `imap.qq.com` and uses synchronizing UTF-8 literals elsewhere. A legacy account field overrides it. |
+| `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS`     | `1000`                                   | Maximum rows in one metadata projection. An integer from 1 through 100000. Mailboxes above this stay partial and are listed from IMAP.                                           |
+
+`MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH` is read when a search runs. It is not
+copied onto an environment-created account. A legacy `[[emails]]` entry can set
+`imap_non_ascii_search = "literal"`, `"quoted"`, or `"auto"` to override it for
+that account only. Managed accounts do not store the field; they follow the
+environment variable, and the default `auto` still uses quoted text for
+`imap.qq.com`.
+
+`MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` is also read when a projection
+refreshes. It does not belong in the account TOML. Values outside 1 through
+100000 are rejected before IMAP work.
 
 HTTP transport variables are documented separately in
 [Transports](transports.md#streamable-http).

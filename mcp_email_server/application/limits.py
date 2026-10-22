@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -46,6 +47,27 @@ class ApplicationLimits:
 
 APPLICATION_LIMITS = ApplicationLimits()
 _CANONICAL_IMAP_UID = re.compile(r"[1-9][0-9]*\Z")
+_MAX_METADATA_SNAPSHOT_ROWS = 100_000
+
+
+def metadata_snapshot_row_limit() -> int:
+    """Return the configured metadata-projection row ceiling.
+
+    The built-in default remains 1,000. ``MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS``
+    overrides it with a decimal integer from 1 through 100,000 so a mailbox
+    larger than the default can still become a complete projection.
+    """
+
+    raw = os.getenv("MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS")
+    if raw is None:
+        return APPLICATION_LIMITS.metadata_snapshot_rows
+    text = raw.strip()
+    if not text.isascii() or not text.isdigit():
+        raise ValueError("MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS must be an integer from 1 to 100000")
+    value = int(text)
+    if not 1 <= value <= _MAX_METADATA_SNAPSHOT_ROWS:
+        raise ValueError("MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS must be an integer from 1 to 100000")
+    return value
 
 
 def validate_imap_uid(value: object, *, field_name: str = "email_id") -> str:

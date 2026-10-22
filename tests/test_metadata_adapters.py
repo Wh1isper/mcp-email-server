@@ -23,7 +23,6 @@ from mcp_email_server.application.metadata import (
     MetadataProviderError,
 )
 from mcp_email_server.config import EmailServer, EmailSettings
-from mcp_email_server.emails.classic import MAX_INDEXED_UID_WINDOW
 from mcp_email_server.emails.models import EmailMetadataPageResponse, MailboxInfo
 from mcp_email_server.metadata_index import IndexedMailboxSnapshot, MetadataIndexError
 
@@ -124,10 +123,7 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
         allowed_senders=["trusted@example.test"],
     )
     handler.incoming_client.get_email_flags.assert_awaited_once_with(["7"], "Archive")
-    handler.incoming_client.get_mailbox_metadata_snapshot.assert_awaited_once_with(
-        "Archive",
-        maximum_window=MAX_INDEXED_UID_WINDOW,
-    )
+    handler.incoming_client.get_mailbox_metadata_snapshot.assert_awaited_once_with("Archive")
 
 
 @pytest.mark.asyncio
