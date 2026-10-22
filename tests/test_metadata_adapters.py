@@ -23,7 +23,6 @@ from mcp_email_server.application.metadata import (
     MetadataProviderError,
 )
 from mcp_email_server.config import EmailServer, EmailSettings
-from mcp_email_server.emails.classic import MAX_INDEXED_UID_WINDOW
 from mcp_email_server.emails.models import EmailMetadataPageResponse, MailboxInfo
 from mcp_email_server.metadata_index import IndexedMailboxSnapshot, MetadataIndexError
 
@@ -124,10 +123,7 @@ async def test_classic_provider_maps_query_and_bounded_snapshot_contract() -> No
         allowed_senders=["trusted@example.test"],
     )
     handler.incoming_client.get_email_flags.assert_awaited_once_with(["7"], "Archive")
-    handler.incoming_client.get_mailbox_metadata_snapshot.assert_awaited_once_with(
-        "Archive",
-        maximum_window=MAX_INDEXED_UID_WINDOW,
-    )
+    handler.incoming_client.get_mailbox_metadata_snapshot.assert_awaited_once_with("Archive")
 
 
 @pytest.mark.asyncio
@@ -260,3 +256,59 @@ async def test_local_backend_revalidates_mode_and_binds_projection_to_concrete_a
     resolve_account.assert_called_once_with("work", expected_mode="managed")
     index_factory.assert_called_once_with(Path(settings.db_location), "managed")
     index.resolve_operational_account.assert_called_once_with(account)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_resume_reads_preserve_epoch_and_coverage(tmp_path: Path) -> None:
+    from mcp_email_server.metadata_index import MetadataIndex
+
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    identity = index.resolve_operational_account(_account())
+    projection = SQLiteMetadataProjection(index, identity)
+    snapshot = MailboxMetadataSnapshot(
+        state=MailboxState(7, 3, 2),
+        mailbox=MailboxInfo(name="INBOX", delimiter="/", flags=["\\Inbox"]),
+        emails=(_email(),),
+        complete=False,
+        observed_at=NOW,
+    )
+    assert await projection.read_partial_emails("INBOX", 7) is None
+    assert await projection.read_incremental_baseline("INBOX", 7) is None
+    await projection.write_snapshot("INBOX", snapshot)
+    rows = await projection.read_partial_emails("INBOX", 7)
+    assert rows is not None
+    assert [row["email_id"] for row in rows] == ["1"]
+    assert await projection.read_partial_emails("INBOX", 8) is None
+    assert await projection.read_incremental_baseline("INBOX", 7) is None
+
+    complete = MailboxMetadataSnapshot(
+        state=MailboxState(7, 2, 1),
+        mailbox=snapshot.mailbox,
+        emails=snapshot.emails,
+        complete=True,
+        observed_at=NOW,
+    )
+    await projection.write_snapshot("INBOX", complete)
+    baseline = await projection.read_incremental_baseline("INBOX", 7)
+    assert baseline is not None
+    assert baseline.state == complete.state
+    assert baseline.high_uid == 1
+    assert baseline.mailbox == complete.mailbox
+    assert baseline.emails[0]["subject"] == "Subject"
+    assert await projection.read_partial_emails("INBOX", 7) is None
+    assert await projection.read_incremental_baseline("INBOX", 8) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True])
+async def test_sqlite_resume_reads_translate_index_errors(partial: bool) -> None:
+    index = MagicMock()
+    index.read_incremental_baseline.side_effect = MetadataIndexError("private diagnostic")
+    index.read_partial_emails.side_effect = MetadataIndexError("private diagnostic")
+    projection = SQLiteMetadataProjection(index, "operational-id")
+    with pytest.raises(MetadataProjectionError, match="projection read failed") as error:
+        if partial:
+            await projection.read_partial_emails("INBOX", 7)
+        else:
+            await projection.read_incremental_baseline("INBOX", 7)
+    assert "private diagnostic" not in str(error.value)

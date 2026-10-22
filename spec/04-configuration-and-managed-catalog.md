@@ -225,6 +225,13 @@ MCP destination parameter for this tool. Missing or ambiguous discovery fails
 with guidance to configure `drafts_mailbox`. The management UI and CLI expose
 these fields without adding a mail composer or mutation route.
 
+Legacy accounts may set `imap_non_ascii_search` to `literal`, `quoted`, or
+`auto`. Omission inherits `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`, whose
+default is `auto`. Managed accounts do not persist the field; they use that
+same process default, and `auto` still selects quoted SEARCH text for
+`imap.qq.com`. The SEARCH encoding contract and the
+`MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` ceiling are owned by spec 06.
+
 Policy updates are revisioned. Recipient entries accept exact addresses (with
 legacy display-name extraction) or bare glob patterns, preserving glob syntax.
 Both are trimmed, lowercased, empty-filtered, and stably deduplicated; sender glob patterns are

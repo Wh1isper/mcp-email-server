@@ -76,6 +76,35 @@ updates the projection only with evidence actually observed. Partial scans,
 bounded windows, failed refreshes, or interrupted fetches never delete rows by
 absence and never produce an exact total claim.
 
+A complete projection whose UIDVALIDITY still matches may be extended by fetching
+only UIDs above its highest cached UID. The extension is complete only when the
+provider message count equals the cached count plus those new UIDs and
+UIDVALIDITY, UIDNEXT, and message count remain stable during the fetch. UIDVALIDITY changes, deletions, gaps, and a
+merged row count above the snapshot ceiling fall back to a full bounded refresh.
+Partial windows are not extended by that append-only path, because they are not
+a prefix of the mailbox. A full refresh may resume from a partial same-epoch
+window: the retained rows carry their UIDVALIDITY through the provider boundary
+and are discarded if it differs from the refresh's initial epoch. The refresh
+fetches only UIDs still missing from the newest retained rows, and it
+may mark the merged window complete when the message count, UIDVALIDITY, and
+per-row evidence prove full coverage. Until that proof exists the rows stay
+partial and cannot answer an exact total.
+The snapshot ceiling defaults to 1,000 rows and is overridden by
+`MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` (an integer from 1 through 100,000).
+A full refresh fetches that window newest-first. Each batch uses
+`MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` (default 60 seconds, from 1
+to 3600) and `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES` (default 4 MiB,
+from 64 KiB through 64 MiB). `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`
+(default 100, from 1 through 1000) is additionally capped so one batch of
+maximum-size headers fits that budget. A failed batch stores the newest rows
+already fetched as a partial snapshot. Connection establishment also has its
+own refresh timeout, including cancellation cleanup. A failed refresh logs the
+causal exception class and at most 20 function-name/line-number traceback
+locations, omitting exception text/chains, source lines, paths, and locals even
+with diagnostic sinks. It then follows the existing legacy fallback or managed
+fail-closed rule. The log is operational; the client-facing error stays the
+sanitized provider failure.
+
 Tag filters accept configured semantic names only, resolve them to provider
 keywords, and issue IMAP `KEYWORD` search before sorting and pagination. `all`
 requires every resolved keyword; `any` builds the exact nested IMAP `OR`
@@ -137,12 +166,18 @@ contract; silent unlimited copying is forbidden.
 Every IMAP SEARCH criterion preserves caller text without changing its semantics.
 ASCII values use an atom/astring only when permitted by the complete IMAP
 grammar and otherwise use a quoted string with exact quote and backslash
-escaping. Non-ASCII values use synchronizing UTF-8 literals with `CHARSET UTF-8`;
-each literal waits for its own continuation, and a definitive rejection sends no
-remaining literal bytes. Cancellation, timeout, or transport failure while a
-synchronizing command is in flight aborts the connection because its framing can
-no longer be reused safely. IMAP dates use fixed English month tokens and never
-depend on the process locale.
+escaping. Non-ASCII values use synchronizing UTF-8 literals with `CHARSET UTF-8`
+unless the account resolves quoted mode. Each literal waits for its own
+continuation, and a definitive rejection sends no remaining literal bytes.
+Quoted mode sends the same charset with one quoted UTF-8 string per value,
+escapes `"` and `\`, and rejects CR or LF before the command is written.
+The process default is `auto`: host `imap.qq.com` uses quoted mode because that
+server mis-parses the synchronizing literal, and every other host keeps the
+literal. An account field or `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH` may force
+`literal`, `quoted`, or `auto`. ASCII-only searches still omit `CHARSET`.
+Cancellation, timeout, or transport failure while a synchronizing command is in
+flight aborts the connection because its framing can no longer be reused safely.
+IMAP dates use fixed English month tokens and never depend on the process locale.
 
 ## Body Retrieval
 
@@ -315,3 +350,18 @@ catalog authority or secret binding state.
 10. Embedded attachment content preserves filename, MIME type, size, opaque URI,
     and bytes exactly once; its independent default-off policy and global
     serialized-result ceiling are proven without writing a local file.
+11. Non-ASCII SEARCH defaults to `auto`: synchronizing UTF-8 literals on every
+    host except `imap.qq.com`, which uses quoted UTF-8 strings. Explicit
+    `literal`, `quoted`, and `auto` overrides remain available. Quoted mode
+    escapes quotes and backslashes and rejects CR/LF. The metadata snapshot row
+    ceiling stays 1,000 unless `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` sets a
+    validated larger bound. A full refresh is batched newest-first. Each batch
+    has its own refresh timeout and header budget, both configurable and
+    defaulting to 60 seconds and 4 MiB. A failed batch persists the newest
+    fetched rows as a partial snapshot, a later refresh can turn that same
+    epoch into a complete snapshot, and a partial snapshot is never treated as
+    complete. Refresh failures retain only the causal exception class and
+    value-free traceback locations. Retained rows cannot cross UIDVALIDITY,
+    and connection establishment is bounded by the refresh timeout. A complete
+    same-UIDVALIDITY projection can be extended from UIDs above its high-water
+    mark only when count and stable-state evidence prove an append-only change.

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
-from mcp_email_server.application.limits import APPLICATION_LIMITS
+from mcp_email_server.application.limits import metadata_snapshot_row_limit
 from mcp_email_server.config import EmailSettings
 from mcp_email_server.managed import (
     _OPERATIONAL_DATABASE_SCHEMA,
@@ -29,7 +29,6 @@ from mcp_email_server.managed import (
 )
 
 IndexMode = Literal["legacy", "managed"]
-MAX_PROJECTED_METADATA_ROWS = APPLICATION_LIMITS.metadata_snapshot_rows
 
 
 class MetadataIndexError(RuntimeError):
@@ -49,6 +48,19 @@ class IndexedMailboxSnapshot:
     observed_at: datetime
 
 
+@dataclass(frozen=True)
+class IndexedIncrementalBaseline:
+    """Complete projection rows for one UIDVALIDITY, even if UIDNEXT has moved."""
+
+    uidvalidity: int
+    uidnext: int
+    message_count: int
+    high_uid: int | None
+    delimiter: str | None
+    attributes: tuple[str, ...]
+    emails: tuple[dict[str, Any], ...]
+
+
 def _utc_text(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
@@ -62,6 +74,60 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _load_projected_emails(
+    connection: sqlite3.Connection,
+    mailbox_id: str,
+    uidvalidity: int,
+) -> list[dict[str, Any]]:
+    """Read one UIDVALIDITY epoch in descending UID order."""
+
+    emails: list[dict[str, Any]] = []
+    cursor: int | None = None
+    while True:
+        if cursor is None:
+            rows = connection.execute(
+                """SELECT * FROM message_metadata_projection
+                   WHERE mailbox_id = ? AND uidvalidity = ?
+                   ORDER BY uid DESC LIMIT 100""",
+                (mailbox_id, uidvalidity),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT * FROM message_metadata_projection
+                   WHERE mailbox_id = ? AND uidvalidity = ? AND uid < ?
+                   ORDER BY uid DESC LIMIT 100""",
+                (mailbox_id, uidvalidity, cursor),
+            ).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            recipients = json.loads(row["recipients_json"])
+            attachments = json.loads(row["attachment_names_json"])
+            flags = json.loads(row["flags_json"])
+            if not (
+                isinstance(recipients, list)
+                and all(isinstance(item, str) for item in recipients)
+                and isinstance(attachments, list)
+                and all(isinstance(item, str) for item in attachments)
+                and isinstance(flags, list)
+                and all(isinstance(item, str) for item in flags)
+            ):
+                _fail("Indexed metadata is malformed")
+            emails.append({
+                "email_id": str(row["uid"]),
+                "message_id": row["message_id"],
+                "subject": row["subject"],
+                "from": row["sender"],
+                "to": recipients,
+                "date": _parse_utc(row["message_date"]),
+                "attachments": attachments,
+                "_internal_date": _parse_utc(row["internal_date"]) if row["internal_date"] else None,
+                "_flags": flags,
+            })
+        cursor = rows[-1]["uid"]
+    return emails
+
+
 def _validate_snapshot_coverage(
     emails: list[dict[str, Any]],
     *,
@@ -69,8 +135,9 @@ def _validate_snapshot_coverage(
     message_count: int,
     complete: bool,
 ) -> list[int]:
-    if len(emails) > MAX_PROJECTED_METADATA_ROWS:
-        _fail(f"Metadata snapshot exceeds the {MAX_PROJECTED_METADATA_ROWS}-row retention bound")
+    row_limit = metadata_snapshot_row_limit()
+    if len(emails) > row_limit:
+        _fail(f"Metadata snapshot exceeds the {row_limit}-row retention bound")
     try:
         observed_uids = [int(email["email_id"]) for email in emails]
     except (KeyError, TypeError, ValueError) as exc:
@@ -309,50 +376,7 @@ class MetadataIndex:
                 ).fetchone()
                 if coverage is None:
                     return None
-                emails: list[dict[str, Any]] = []
-                cursor: int | None = None
-                while True:
-                    if cursor is None:
-                        rows = connection.execute(
-                            """SELECT * FROM message_metadata_projection
-                               WHERE mailbox_id = ? AND uidvalidity = ?
-                               ORDER BY uid DESC LIMIT 100""",
-                            (coverage["mailbox_id"], uidvalidity),
-                        ).fetchall()
-                    else:
-                        rows = connection.execute(
-                            """SELECT * FROM message_metadata_projection
-                               WHERE mailbox_id = ? AND uidvalidity = ? AND uid < ?
-                               ORDER BY uid DESC LIMIT 100""",
-                            (coverage["mailbox_id"], uidvalidity, cursor),
-                        ).fetchall()
-                    if not rows:
-                        break
-                    for row in rows:
-                        recipients = json.loads(row["recipients_json"])
-                        attachments = json.loads(row["attachment_names_json"])
-                        flags = json.loads(row["flags_json"])
-                        if not (
-                            isinstance(recipients, list)
-                            and all(isinstance(item, str) for item in recipients)
-                            and isinstance(attachments, list)
-                            and all(isinstance(item, str) for item in attachments)
-                            and isinstance(flags, list)
-                            and all(isinstance(item, str) for item in flags)
-                        ):
-                            _fail("Indexed metadata is malformed")
-                        emails.append({
-                            "email_id": str(row["uid"]),
-                            "message_id": row["message_id"],
-                            "subject": row["subject"],
-                            "from": row["sender"],
-                            "to": recipients,
-                            "date": _parse_utc(row["message_date"]),
-                            "attachments": attachments,
-                            "_internal_date": _parse_utc(row["internal_date"]) if row["internal_date"] else None,
-                            "_flags": flags,
-                        })
-                    cursor = rows[-1]["uid"]
+                emails = _load_projected_emails(connection, coverage["mailbox_id"], uidvalidity)
                 if len(emails) != message_count:
                     return None
                 return IndexedMailboxSnapshot(
@@ -362,6 +386,98 @@ class MetadataIndex:
                     emails=tuple(emails),
                     observed_at=_parse_utc(coverage["observed_at"]),
                 )
+        except MetadataIndexError:
+            raise
+        except (ManagedCatalogError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise MetadataIndexError("Indexed metadata is unavailable") from exc
+
+    def read_incremental_baseline(
+        self,
+        operational_account_id: str,
+        mailbox: str,
+        *,
+        uidvalidity: int,
+    ) -> IndexedIncrementalBaseline | None:
+        """Return a complete same-epoch projection even when UIDNEXT has moved.
+
+        Partial windows are not a safe prefix: they keep only the newest rows,
+        so UIDs above their high-water mark do not fill the older gap. A
+        UIDVALIDITY mismatch returns None and leaves the caller to refresh.
+        """
+
+        self.ensure_ready()
+        try:
+            with _connect(self.path) as connection:
+                connection.execute("BEGIN")
+                coverage = connection.execute(
+                    """SELECT m.id mailbox_id, m.delimiter, m.attributes_json,
+                              c.uidnext, c.message_count, c.high_uid, c.completeness
+                       FROM mailbox_projection m
+                       JOIN index_coverage c ON c.mailbox_id = m.id
+                       WHERE m.operational_account_id = ? AND m.remote_name = ?
+                         AND m.uidvalidity = ? AND c.uidvalidity = ?""",
+                    (operational_account_id, mailbox, uidvalidity, uidvalidity),
+                ).fetchone()
+                if coverage is None or coverage["completeness"] != "COMPLETE":
+                    return None
+                attributes = json.loads(coverage["attributes_json"])
+                if not isinstance(attributes, list) or any(not isinstance(item, str) for item in attributes):
+                    _fail("Indexed metadata is malformed")
+                emails = _load_projected_emails(connection, coverage["mailbox_id"], uidvalidity)
+                if len(emails) != coverage["message_count"]:
+                    return None
+                observed = [int(email["email_id"]) for email in emails]
+                high_uid = coverage["high_uid"]
+                if observed and (high_uid is None or high_uid != max(observed)):
+                    return None
+                if not observed and high_uid is not None:
+                    return None
+                return IndexedIncrementalBaseline(
+                    uidvalidity=uidvalidity,
+                    uidnext=coverage["uidnext"],
+                    message_count=coverage["message_count"],
+                    high_uid=high_uid,
+                    delimiter=coverage["delimiter"],
+                    attributes=tuple(attributes),
+                    emails=tuple(emails),
+                )
+        except MetadataIndexError:
+            raise
+        except (ManagedCatalogError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise MetadataIndexError("Indexed metadata is unavailable") from exc
+
+    def read_partial_emails(
+        self,
+        operational_account_id: str,
+        mailbox: str,
+        *,
+        uidvalidity: int,
+    ) -> tuple[dict[str, Any], ...] | None:
+        """Return rows from an incomplete same-epoch window.
+
+        COMPLETE coverage is intentionally omitted. Callers resume a refresh
+        from these rows and must not treat them as a complete mailbox.
+        """
+
+        self.ensure_ready()
+        try:
+            with _connect(self.path) as connection:
+                connection.execute("BEGIN")
+                coverage = connection.execute(
+                    """SELECT m.id mailbox_id
+                       FROM mailbox_projection m
+                       JOIN index_coverage c ON c.mailbox_id = m.id
+                       WHERE m.operational_account_id = ? AND m.remote_name = ?
+                         AND m.uidvalidity = ? AND c.uidvalidity = ?
+                         AND c.completeness = 'PARTIAL'""",
+                    (operational_account_id, mailbox, uidvalidity, uidvalidity),
+                ).fetchone()
+                if coverage is None:
+                    return None
+                emails = _load_projected_emails(connection, coverage["mailbox_id"], uidvalidity)
+                if not emails:
+                    return None
+                return tuple(emails)
         except MetadataIndexError:
             raise
         except (ManagedCatalogError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:

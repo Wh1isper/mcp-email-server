@@ -537,3 +537,48 @@ def test_mutation_invalidation_removes_only_selected_coverage(tmp_path: Path, sc
     ) == (scope == "mailbox")
     with closing(sqlite3.connect(index.path)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM message_metadata_projection").fetchone()[0] == 2
+
+
+def test_incremental_baseline_survives_uidnext_change_and_rejects_partial_or_new_epoch(tmp_path: Path) -> None:
+    index = MetadataIndex(tmp_path / "private" / "operational.sqlite3", "legacy")
+    account_id = index.resolve_operational_account(_account())
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=["\\Inbox"],
+        uidvalidity=10,
+        uidnext=4,
+        message_count=3,
+        emails=[_email(1), _email(2), _email(3)],
+        complete=True,
+        observed_at=NOW,
+    )
+
+    assert index.read_complete(account_id, "INBOX", uidvalidity=10, uidnext=5, message_count=4) is None
+    baseline = index.read_incremental_baseline(account_id, "INBOX", uidvalidity=10)
+    assert baseline is not None
+    assert baseline.high_uid == 3
+    assert baseline.message_count == 3
+    assert [email["email_id"] for email in baseline.emails] == ["3", "2", "1"]
+    assert baseline.attributes == ("\\Inbox",)
+    assert index.read_incremental_baseline(account_id, "INBOX", uidvalidity=11) is None
+
+    index.write_snapshot(
+        account_id,
+        "INBOX",
+        delimiter="/",
+        attributes=[],
+        uidvalidity=10,
+        uidnext=5,
+        message_count=4,
+        emails=[_email(4)],
+        complete=False,
+        observed_at=NOW,
+    )
+    assert index.read_incremental_baseline(account_id, "INBOX", uidvalidity=10) is None
+    assert index.read_complete(account_id, "INBOX", uidvalidity=10, uidnext=5, message_count=4) is None
+    partial_rows = index.read_partial_emails(account_id, "INBOX", uidvalidity=10)
+    assert partial_rows is not None
+    assert [email["email_id"] for email in partial_rows] == ["4"]
+    assert index.read_partial_emails(account_id, "INBOX", uidvalidity=11) is None

@@ -85,6 +85,48 @@ def _parse_bool_env(value: str | None, default: bool = False) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
+ImapNonAsciiSearchMode = Literal["literal", "quoted", "auto"]
+ImapNonAsciiSearchEncoding = Literal["literal", "quoted"]
+_IMAP_NON_ASCII_SEARCH_MODES = frozenset({"literal", "quoted", "auto"})
+# QQ Mail mis-parses ``UID SEARCH CHARSET UTF-8 SUBJECT {n}`` synchronizing
+# literals. A quoted UTF-8 string on the same CHARSET command matches. Other
+# hosts, including the Exchange case from #178 and the literal framing from
+# #230, keep synchronizing literals unless an operator opts into quoted mode.
+_QQ_IMAP_SEARCH_HOST = "imap.qq.com"
+
+
+def imap_non_ascii_search_mode() -> ImapNonAsciiSearchMode:
+    """Return the process default for non-ASCII IMAP SEARCH text.
+
+    Unset means ``auto``. An account field overrides this value when present.
+    """
+
+    raw = os.getenv("MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH")
+    if raw is None:
+        return "auto"
+    mode = raw.strip().casefold()
+    if mode not in _IMAP_NON_ASCII_SEARCH_MODES:
+        raise ValueError("MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH must be one of: literal, quoted, auto")
+    if mode == "literal":
+        return "literal"
+    if mode == "quoted":
+        return "quoted"
+    return "auto"
+
+
+def resolve_imap_non_ascii_search(
+    host: str,
+    configured: ImapNonAsciiSearchMode | None,
+) -> ImapNonAsciiSearchEncoding:
+    """Resolve literal versus quoted non-ASCII SEARCH text for one IMAP host."""
+
+    mode = imap_non_ascii_search_mode() if configured is None else configured
+    if mode == "auto":
+        normalized = host.strip().rstrip(".").casefold()
+        return "quoted" if normalized == _QQ_IMAP_SEARCH_HOST else "literal"
+    return mode
+
+
 def normalize_address(raw: str) -> str:
     """Extract and normalize a bare email address for case-insensitive comparison.
 
@@ -321,6 +363,9 @@ class EmailSettings(AccountAttributes):
     allowed_mutations: list[MutationClass] | None = None
     drafts_mailbox: str | None = None
     allow_protocol_commands: bool = False
+    # None inherits MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH, which defaults to auto.
+    # Managed accounts leave this unset; auto still quotes imap.qq.com by host.
+    imap_non_ascii_search: ImapNonAsciiSearchMode | None = None
 
     @model_validator(mode="after")
     def validate_tags(self) -> EmailSettings:

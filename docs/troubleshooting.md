@@ -292,11 +292,38 @@ rather than expanding a UID range or returning an incorrect page; retry after
 the mailbox is stable or report the provider issue.
 
 Non-ASCII subject, body, text, sender, or recipient filters are sent as
-synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`. If a provider rejects the
-charset, the search fails without rewriting or dropping the filter. Use the
+synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`, except for `imap.qq.com`.
+QQ Mail mis-parses `UID SEARCH CHARSET UTF-8 SUBJECT {n}` and can return the
+wrong messages, so the default `auto` mode sends `CHARSET UTF-8 SUBJECT "…"`.
+Force `literal` or `quoted` for every account with
+`MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`, or set `imap_non_ascii_search` on one
+legacy account. Quoted keywords cannot contain CR or LF. If a provider rejects
+the charset, the search fails without rewriting or dropping the filter. Use the
 provider's supported search syntax or an ASCII/narrower criterion; do not assume
 that changing the process locale will help, because IMAP date months are always
 protocol-defined English tokens.
+
+A mailbox larger than the metadata snapshot ceiling stays a partial projection,
+so every unfiltered list fetches from IMAP again. The default ceiling is 1,000
+rows. `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` accepts 1 through 100,000. A
+refresh of a mailbox that fits the ceiling fetches newest UIDs first, in batches
+of `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE` (default 100, capped so one
+batch of maximum-size headers fits the budget). Each batch has its own
+`MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` deadline (default 60) and
+its own `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES` budget (default 4 MiB,
+65536 through 67108864). Those limits do not accumulate across the whole
+mailbox, and they do not change the deadline for other IMAP or SMTP commands.
+If a batch fails, the newest rows already fetched are stored as a partial
+snapshot. That partial result is not a complete cache: the list still falls
+back to a bounded live search, and a later refresh continues at the UIDs that
+are still missing. After a complete snapshot exists, later mail is fetched by
+UID above the highest cached UID when the count proves append-only growth and
+UIDVALIDITY, UIDNEXT, and message count stay stable during the fetch. Concurrent
+changes rebuild the bounded snapshot; retained rows are reused only after their
+UIDVALIDITY matches the refresh's initial state. Connection establishment uses
+the refresh timeout too. A refresh that fails before any row is stored logs
+`Metadata projection refresh failed` with the exception class and value-free
+traceback locations, without exception text, source lines, or frame locals.
 
 ## The UI cannot load or authenticate
 
