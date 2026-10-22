@@ -127,6 +127,29 @@ def resolve_imap_non_ascii_search(
     return mode
 
 
+ImapSearchMode = Literal["server", "local"]
+_IMAP_SEARCH_MODES = frozenset({"server", "local"})
+
+
+def imap_search_mode() -> ImapSearchMode:
+    """Return the process default for subject, from, and to header search.
+
+    Unset means ``server`` (IMAP SEARCH). ``local`` filters those headers from
+    a metadata observation and is never selected from the IMAP hostname. An
+    account field overrides this value when present.
+    """
+
+    raw = os.getenv("MCP_EMAIL_SERVER_IMAP_SEARCH_MODE")
+    if raw is None:
+        return "server"
+    mode = raw.strip().casefold()
+    if mode not in _IMAP_SEARCH_MODES:
+        raise ValueError("MCP_EMAIL_SERVER_IMAP_SEARCH_MODE must be one of: server, local")
+    if mode == "local":
+        return "local"
+    return "server"
+
+
 def normalize_address(raw: str) -> str:
     """Extract and normalize a bare email address for case-insensitive comparison.
 
@@ -366,6 +389,9 @@ class EmailSettings(AccountAttributes):
     # None inherits MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH, which defaults to auto.
     # Managed accounts leave this unset; auto still quotes imap.qq.com by host.
     imap_non_ascii_search: ImapNonAsciiSearchMode | None = None
+    # None inherits MCP_EMAIL_SERVER_IMAP_SEARCH_MODE, which defaults to server.
+    # Managed accounts leave this unset and follow that same process default.
+    imap_search_mode: ImapSearchMode | None = None
 
     @model_validator(mode="after")
     def validate_tags(self) -> EmailSettings:

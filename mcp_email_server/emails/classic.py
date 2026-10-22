@@ -99,6 +99,7 @@ MAX_METADATA_HEADER_BYTES = APPLICATION_LIMITS.header_bytes
 MAX_METADATA_HEADER_TOTAL_BYTES = APPLICATION_LIMITS.aggregate_header_bytes
 MAX_METADATA_HEADER_FETCH_UIDS = MAX_METADATA_HEADER_TOTAL_BYTES // (MAX_METADATA_HEADER_BYTES + 1)
 MAX_IMAP_UID = 2**32 - 1
+_MAILBOX_STATE_NOTICES: set[str] = set()
 MAX_METADATA_UID_SEARCH_BYTES = MAX_METADATA_CANDIDATES * 11
 MAX_ATTACHMENT_BYTES = APPLICATION_LIMITS.attachment_bytes
 MAX_TOTAL_ATTACHMENT_BYTES = APPLICATION_LIMITS.total_attachment_bytes
@@ -700,6 +701,49 @@ def _quote_mailbox(mailbox: str, *, utf8: bool = False) -> str:
     encoded = mailbox if utf8 else encode_mailbox_name(mailbox)
     escaped = encoded.replace("\\", "\\\\").replace('"', r"\"")
     return f'"{escaped}"'
+
+
+def _notice_mailbox_state(key: str, message: str) -> None:
+    """Log one process-wide INFO line for an omitted mailbox-state field."""
+
+    if key in _MAILBOX_STATE_NOTICES:
+        return
+    _MAILBOX_STATE_NOTICES.add(key)
+    logger.info(message)
+
+
+def _uid_belongs_to_epoch(email: dict[str, Any], uidnext: int | None) -> bool:
+    """Return whether one row's UID fits the observed allocation counter.
+
+    A missing UIDNEXT does not invent ``max(uid) + 1``. Any positive UID inside
+    the IMAP range is then eligible, including values separated by expunge gaps.
+    """
+
+    raw_uid = email.get("email_id")
+    if not isinstance(raw_uid, str) or not raw_uid.isdigit():
+        return False
+    uid = int(raw_uid)
+    if uid <= 0 or uid > MAX_IMAP_UID:
+        return False
+    return uidnext is None or uid < uidnext
+
+
+def _observation_identity_changed(before: MailboxState, after: MailboxState) -> bool:
+    """Return whether two observations lack a shared provider UIDVALIDITY.
+
+    ``None`` is not an epoch. A mailbox reset can reissue the same UID numbers,
+    so a missing UIDVALIDITY never matches another observation.
+    """
+
+    if before.uidvalidity is None or after.uidvalidity is None:
+        return True
+    return before.uidvalidity != after.uidvalidity
+
+
+def _same_provider_epoch(retained_uidvalidity: int | None, state: MailboxState) -> bool:
+    """Reuse retained rows only inside one observed UIDVALIDITY value."""
+
+    return state.uidvalidity is not None and retained_uidvalidity == state.uidvalidity
 
 
 def _uid_sort_key(uid: bytes | str) -> int:
@@ -1375,16 +1419,25 @@ class EmailClient:
         return _create_ssl_context(self.smtp_verify_ssl)
 
     @staticmethod
+    def _parse_address_field(email_message: Message, field_name: str) -> list[str]:
+        """Extract one canonical mailbox from a single RFC 5322 address field."""
+
+        return [str(address) for address in _addresses_for_header(email_message, field_name)]
+
+    @staticmethod
     def _parse_recipients(email_message: Message) -> list[str]:
         """Extract one canonical mailbox per To/Cc address.
 
         Address headers are structured RFC 5322 fields: commas can occur inside
         quoted display names and groups can contain multiple mailboxes.  Parsing
         the header registry's ``Address`` objects avoids treating either form as
-        a raw comma-separated string.
+        a raw comma-separated string. The display list still combines To and Cc.
+        Local To search uses :meth:`_parse_address_field` for ``To`` alone.
         """
         return [
-            str(address) for field_name in ("To", "Cc") for address in _addresses_for_header(email_message, field_name)
+            address
+            for field_name in ("To", "Cc")
+            for address in EmailClient._parse_address_field(email_message, field_name)
         ]
 
     @staticmethod
@@ -1514,8 +1567,10 @@ class EmailClient:
         in_reply_to = _first_thread_header(email_message, "In-Reply-To")
         references = _first_thread_header(email_message, "References")
 
-        # Extract recipients and parse date
+        # Extract recipients and parse date. ``to`` remains the display list
+        # (To plus Cc). ``to_addresses`` is only the To header, for local search.
         to_addresses = self._parse_recipients(email_message)
+        header_to = self._parse_address_field(email_message, "To")
         date = self._parse_date(date_str)
 
         # Get body content
@@ -1558,6 +1613,7 @@ class EmailClient:
             "subject": subject,
             "from": sender,
             "to": to_addresses,
+            "to_addresses": header_to,
             "body": body,
             "date": date,
             "attachments": attachments,
@@ -1702,6 +1758,7 @@ class EmailClient:
             message_id = email_message.get("Message-ID")
 
             to_addresses = self._parse_recipients(email_message)
+            header_to = self._parse_address_field(email_message, "To")
             date = self._parse_date(date_str)
 
             return {
@@ -1710,6 +1767,7 @@ class EmailClient:
                 "subject": subject,
                 "from": sender,
                 "to": to_addresses,
+                "to_addresses": header_to,
                 "date": date,
                 "attachments": [],
             }
@@ -1969,31 +2027,192 @@ class EmailClient:
         return {uid for uid in email_ids if not sender_allowed(uid_senders.get(uid, ""), allowed_senders)}
 
     @staticmethod
-    def _parse_mailbox_state(response: Any) -> MailboxState:
+    def _response_bytes(data: Any) -> bytes:
+        if not isinstance(data, list | tuple):
+            return b""
+        parts: list[bytes] = []
+        for item in data:
+            if isinstance(item, bytes):
+                parts.append(item)
+            elif isinstance(item, bytearray):
+                parts.append(bytes(item))
+        return b" ".join(parts)
+
+    @staticmethod
+    def _match_status_int(payload: bytes, name: bytes) -> int | None:
+        match = re.search(rb"\b" + name + rb"\s+(\d+)\b", payload, re.IGNORECASE)
+        if match is None:
+            return None
+        return int(match.group(1))
+
+    @staticmethod
+    def _parse_mailbox_status_fields(response: Any) -> tuple[int | None, int | None, int]:
+        """Return UIDVALIDITY, UIDNEXT, and MESSAGES.
+
+        MESSAGES is required. UIDVALIDITY and UIDNEXT may be omitted.
+        ``None`` means that response did not carry the field. Callers keep the
+        absence instead of inventing an epoch or an allocation counter.
+        """
+
         _raise_for_imap_command_failure(response, "STATUS mailbox")
         _, data = response
-        payload = b" ".join(item for item in data if isinstance(item, bytes))
-        values: dict[bytes, int] = {}
-        for name in (b"UIDVALIDITY", b"UIDNEXT", b"MESSAGES"):
-            match = re.search(rb"\b" + name + rb"\s+(\d+)\b", payload, re.IGNORECASE)
-            if match is None:
-                raise RuntimeError("STATUS mailbox did not return required bounded state")
-            values[name] = int(match.group(1))
-        if values[b"UIDVALIDITY"] < 1 or values[b"UIDNEXT"] < 1 or values[b"MESSAGES"] < 0:
+        payload = EmailClient._response_bytes(data)
+        message_count = EmailClient._match_status_int(payload, b"MESSAGES")
+        if message_count is None:
+            raise RuntimeError("STATUS mailbox did not return required bounded state")
+        uidvalidity = EmailClient._match_status_int(payload, b"UIDVALIDITY")
+        uidnext = EmailClient._match_status_int(payload, b"UIDNEXT")
+        if message_count < 0 or (uidvalidity is not None and uidvalidity < 1) or (uidnext is not None and uidnext < 1):
             raise RuntimeError("STATUS mailbox returned invalid state")
-        return MailboxState(
-            uidvalidity=values[b"UIDVALIDITY"],
-            uidnext=values[b"UIDNEXT"],
-            message_count=values[b"MESSAGES"],
-        )
+        return uidvalidity, uidnext, message_count
+
+    @staticmethod
+    def _parse_select_state_fields(response: Any) -> tuple[int | None, int | None]:
+        """Return UIDVALIDITY and UIDNEXT when SELECT carried them.
+
+        EXISTS is not a substitute for STATUS MESSAGES. A bare untagged count
+        is ignored so a short SELECT payload cannot be mistaken for UIDNEXT.
+        """
+
+        if not isinstance(response, tuple) or len(response) < 2:
+            return None, None
+        payload = EmailClient._response_bytes(response[1])
+        uidvalidity = EmailClient._match_status_int(payload, b"UIDVALIDITY")
+        uidnext = EmailClient._match_status_int(payload, b"UIDNEXT")
+        if uidvalidity is not None and uidvalidity < 1:
+            uidvalidity = None
+        if uidnext is not None and uidnext < 1:
+            uidnext = None
+        return uidvalidity, uidnext
+
+    @staticmethod
+    def _parse_mailbox_state(response: Any) -> MailboxState:
+        """Parse a STATUS response that includes every qualification field.
+
+        Qualification itself uses :meth:`_status_mailbox`, which preserves an
+        omitted UIDNEXT or UIDVALIDITY as unknown. This helper remains strict
+        for callers that already hold a complete response.
+        """
+
+        uidvalidity, uidnext, message_count = EmailClient._parse_mailbox_status_fields(response)
+        if uidvalidity is None or uidnext is None:
+            raise RuntimeError("STATUS mailbox did not return required bounded state")
+        return MailboxState(uidvalidity=uidvalidity, uidnext=uidnext, message_count=message_count)
+
+    async def _fetch_uid_inventory(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        *,
+        maximum_uids: int,
+    ) -> list[str]:
+        """Return every UID from ``UID FETCH 1:* (UID)`` without reading headers.
+
+        Used when STATUS and SELECT omit UIDNEXT or UIDVALIDITY. Coverage is
+        the inventory itself: a gap left by an expunge stays in the UID set and
+        is not turned into ``max(uid) + 1``. The list is not truncated, because
+        a partial inventory cannot prove that every message was observed.
+        """
+
+        if maximum_uids < 1:
+            raise ValueError("Metadata UID inventory limit is invalid")
+        response = await imap.uid("fetch", "1:*", "(UID)")
+        _raise_for_imap_command_failure(response, "FETCH mailbox UID inventory")
+        _, data = response
+        if not isinstance(data, list | tuple):
+            raise MetadataProviderObservationError("Provider returned invalid UID inventory")
+        found: list[str] = []
+        seen: set[str] = set()
+        for item in data:
+            if isinstance(item, bytearray):
+                raw = bytes(item)
+            elif isinstance(item, bytes):
+                raw = item
+            else:
+                continue
+            for match in re.finditer(rb"\bUID\s+([1-9][0-9]*)\b", raw):
+                token = match.group(1).decode("ascii")
+                value = int(token)
+                if value > MAX_IMAP_UID or token in seen:
+                    raise MetadataProviderObservationError("Provider returned invalid UID inventory")
+                seen.add(token)
+                found.append(token)
+                if len(found) > maximum_uids:
+                    raise MetadataQueryTooBroadError(
+                        f"query_too_broad: metadata search exceeded {maximum_uids} candidate UIDs"
+                    )
+        return found
 
     async def _status_mailbox(
         self,
         imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
         mailbox: str,
     ) -> MailboxState:
+        """Read mailbox qualification without inventing omitted provider fields.
+
+        A complete STATUS response is returned unchanged. When UIDNEXT or
+        UIDVALIDITY is missing, SELECT is checked next because some servers
+        put those values only in the SELECT response codes. A field that is
+        still missing stays ``None``.
+
+        Omitted UIDNEXT is not replaced with ``max(uid) + 1``. Snapshot and
+        delta reads use ``UID FETCH 1:* (UID)`` as coverage evidence, so an
+        expunge gap does not change the message count or hide a UID. Omitted
+        UIDVALIDITY is not replaced with a hash of the UID set. Callers must
+        not reuse rows across observations that have no UIDVALIDITY. MESSAGES
+        remains required.
+        """
+
         response = await imap.status(_quote_mailbox(mailbox), "(UIDVALIDITY UIDNEXT MESSAGES)")
-        return self._parse_mailbox_state(response)
+        uidvalidity, uidnext, message_count = self._parse_mailbox_status_fields(response)
+        if uidvalidity is None or uidnext is None:
+            select_response = await imap.select(_quote_mailbox(mailbox))
+            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+            selected_validity, selected_next = self._parse_select_state_fields(select_response)
+            if uidvalidity is None and selected_validity is not None:
+                uidvalidity = selected_validity
+            if uidnext is None and selected_next is not None:
+                uidnext = selected_next
+        if uidnext is None:
+            _notice_mailbox_state(
+                "uidnext",
+                "IMAP STATUS omitted UIDNEXT; coverage uses the UID inventory instead of an allocation counter",
+            )
+        if uidvalidity is None:
+            _notice_mailbox_state(
+                "uidvalidity",
+                "IMAP STATUS omitted UIDVALIDITY; cached rows will not be reused",
+            )
+        return MailboxState(
+            uidvalidity=uidvalidity,
+            uidnext=uidnext,
+            message_count=message_count,
+        )
+
+    async def _snapshot_uid_list(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        state: MailboxState,
+        mailbox: str,
+        *,
+        maximum_uids: int,
+    ) -> list[str]:
+        """List snapshot UIDs, using UID FETCH when qualification is incomplete.
+
+        A server that omits UIDNEXT or UIDVALIDITY does not get ``UID SEARCH``
+        as its membership source. Some of those servers accept SEARCH and then
+        return an empty set for a mailbox that has messages. The UID inventory
+        is the coverage evidence instead. Hosts that return both qualification
+        fields keep SEARCH, including a genuinely empty result.
+        """
+
+        if state.uidnext is None or state.uidvalidity is None:
+            if state.message_count == 0:
+                return []
+            return await self._fetch_uid_inventory(imap, maximum_uids=maximum_uids)
+        search_response = await imap.uid_search("ALL", charset=None)
+        _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
+        _, messages = search_response
+        return _normalize_search_uids(messages, maximum_uids=maximum_uids)
 
     async def get_mailbox_state(self, mailbox: str = "INBOX") -> MailboxState:
         """Read the small provider state needed to qualify a complete projection."""
@@ -2022,9 +2241,10 @@ class EmailClient:
         UIDs are fetched newest-first. Each batch has its own refresh timeout and
         header budget. Connection establishment has the same bounded timeout.
         Rows retained from an earlier snapshot are reused only when their supplied
-        UIDVALIDITY matches the freshly observed mailbox epoch. A batch failure
-        returns those newest rows with ``complete=False`` instead of dropping them. A partial result never
-        claims complete coverage.
+        UIDVALIDITY is a real provider value and matches this observation. A
+        missing UIDVALIDITY never reuses rows. A batch failure returns the newest
+        rows with ``complete=False`` instead of dropping them. A partial result
+        never claims complete coverage.
         """
         if maximum_window is None:
             maximum_window = metadata_snapshot_row_limit()
@@ -2054,17 +2274,14 @@ class EmailClient:
                 state = await self._status_mailbox(imap, mailbox)
                 select_response = await imap.select(_quote_mailbox(mailbox))
                 _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
-                search_response = await imap.uid_search("ALL", charset=None)
-                _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
-                _, messages = search_response
-                email_ids = _normalize_search_uids(messages, maximum_uids=uid_ceiling)
+                email_ids = await self._snapshot_uid_list(imap, state, mailbox, maximum_uids=uid_ceiling)
             if len(email_ids) > uid_ceiling:
                 raise MetadataQueryTooBroadError(
                     f"query_too_broad: metadata search exceeded {uid_ceiling} candidate UIDs"
                 )
             selected_ids = sorted(email_ids, key=_uid_sort_key, reverse=True)[:maximum_window]
             retained = _retained_snapshot_rows(
-                retained_emails if retained_uidvalidity == state.uidvalidity else None,
+                retained_emails if _same_provider_epoch(retained_uidvalidity, state) else None,
                 allowed=set(selected_ids),
             )
             missing = [uid for uid in selected_ids if uid not in retained]
@@ -2119,11 +2336,11 @@ class EmailClient:
                     batch_failed = True
                     log_safe_failure("Metadata snapshot batch failed; keeping the newest fetched rows", exc)
             if not batch_failed and state.uidvalidity != final_state.uidvalidity:
-                # Rows fetched across an epoch transition have no safe namespace.
+                # The two observations disagree, including unknown versus a real
+                # epoch. Two omitted UIDVALIDITY values are one consistent read;
+                # they are still ineligible for reuse on a later request.
                 emails = []
-            valid_epoch_uids = all(
-                email["email_id"].isdigit() and 0 < int(email["email_id"]) < final_state.uidnext for email in emails
-            )
+            valid_epoch_uids = all(_uid_belongs_to_epoch(email, final_state.uidnext) for email in emails)
             complete = (
                 not batch_failed
                 and state == final_state
@@ -2197,16 +2414,22 @@ class EmailClient:
             state = await self._status_mailbox(imap, mailbox)
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+            uid_limit = max(MAX_METADATA_CANDIDATES, metadata_snapshot_row_limit())
             if minimum_exclusive_uid >= MAX_IMAP_UID:
                 email_ids: list[str] = []
+            elif state.uidnext is None or state.uidvalidity is None:
+                # UID SEARCH is not coverage evidence without both qualification
+                # fields. The UID inventory lists messages above the watermark.
+                if state.message_count == 0:
+                    email_ids = []
+                else:
+                    inventory = await self._fetch_uid_inventory(imap, maximum_uids=uid_limit)
+                    email_ids = [uid for uid in inventory if int(uid) > minimum_exclusive_uid]
             else:
                 search_response = await imap.uid_search("UID", f"{minimum_exclusive_uid + 1}:*", charset=None)
                 _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
                 _, messages = search_response
-                email_ids = _normalize_search_uids(
-                    messages,
-                    maximum_uids=max(MAX_METADATA_CANDIDATES, metadata_snapshot_row_limit()),
-                )
+                email_ids = _normalize_search_uids(messages, maximum_uids=uid_limit)
             above_watermark = all(int(uid) > minimum_exclusive_uid for uid in email_ids)
             if not above_watermark or len(email_ids) > maximum_new_messages:
                 final_state = await self._status_mailbox(imap, mailbox)
@@ -2215,7 +2438,7 @@ class EmailClient:
                     mailbox=mailbox_info,
                     emails=(),
                     observed_at=observed_at,
-                    uidvalidity_changed=state.uidvalidity != final_state.uidvalidity,
+                    uidvalidity_changed=_observation_identity_changed(state, final_state),
                     resumable=False,
                 )
             uid_dates = await self._batch_fetch_dates(imap, email_ids)
@@ -2228,15 +2451,16 @@ class EmailClient:
                 metadata["_internal_date"] = uid_dates.get(uid)
                 emails.append(metadata)
             final_state = await self._status_mailbox(imap, mailbox)
-            changed = state.uidvalidity != final_state.uidvalidity
+            changed = _observation_identity_changed(state, final_state)
             resumable = (
-                state == final_state
+                not changed
+                and state.uidnext is not None
+                and final_state.uidnext is not None
+                and state == final_state
                 and len(emails) == len(email_ids)
                 and set(uid_dates) == set(email_ids)
                 and all(isinstance(email.get("_internal_date"), datetime) for email in emails)
-                and all(
-                    email["email_id"].isdigit() and 0 < int(email["email_id"]) < final_state.uidnext for email in emails
-                )
+                and all(_uid_belongs_to_epoch(email, final_state.uidnext) for email in emails)
             )
             if changed:
                 emails = []

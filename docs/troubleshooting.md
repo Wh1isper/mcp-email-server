@@ -291,6 +291,30 @@ sender/INTERNALDATE evidence for every requested UID. The request is rejected
 rather than expanding a UID range or returning an incorrect page; retry after
 the mailbox is stable or report the provider issue.
 
+Some IMAP servers, including NetEase (`imap.163.com`, `imap.126.com`, and
+`imap.yeah.net`), accept `UID SEARCH` and then return no matches, including for
+ASCII text that is present in the mailbox. Their `STATUS` and `SELECT`
+responses can also omit `UIDNEXT` while still returning `MESSAGES` and
+`UIDVALIDITY`. The default `server` header-search mode still sends subject,
+from, and to to IMAP SEARCH, so those filters stay empty on that kind of
+server. Set `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or the legacy account field
+`imap_search_mode` to `local` to filter subject, from, and to from mailbox
+headers instead. `local` uses a complete cached projection only when the server
+supplied both `UIDVALIDITY` and `UIDNEXT`. Otherwise it reads `UID FETCH 1:*
+(UID)` and the headers. Gaps in that UID list are kept as coverage evidence,
+and the omitted `UIDNEXT` stays unknown. If the server also omits
+`UIDVALIDITY`, each request reads the mailbox again, so a reset that issues
+the same UID numbers returns the headers from that read. A mailbox that does not fit the snapshot bounds, or a
+read that cannot prove every message was seen, fails with `query_too_broad`
+instead of an empty page. Body, text, date, flag, tag, and attachment filters
+stay on IMAP SEARCH. A `local` query that mixes those filters with subject,
+from, or to is rejected; run the header filter and the other filter as
+separate requests. To matches the To header only, not Cc.
+
+A metadata refresh logs its progress at INFO: a partial snapshot reports how
+many rows it kept out of the server message count, a complete snapshot reports
+that count, and an append-only sync reports how many UIDs it added.
+
 Non-ASCII subject, body, text, sender, or recipient filters are sent as
 synchronizing UTF-8 IMAP literals with `CHARSET UTF-8`, except for `imap.qq.com`.
 QQ Mail mis-parses `UID SEARCH CHARSET UTF-8 SUBJECT {n}` and can return the

@@ -390,7 +390,20 @@ async def test_snapshot_refresh_is_not_wrapped_in_the_shared_provider_timeout() 
 
 @pytest.mark.asyncio
 async def test_partial_snapshot_becomes_complete_and_then_syncs_incrementally() -> None:
+    from io import StringIO
+
+    from mcp_email_server.log import logger
+
     service, provider, projection = _service()
+    output = StringIO()
+    sink = logger.add(output, level="INFO")
+    try:
+        await _assert_incremental_snapshot_progress(service, provider, projection, output)
+    finally:
+        logger.remove(sink)
+
+
+async def _assert_incremental_snapshot_progress(service, provider, projection, output) -> None:
     mailbox = MailboxInfo(name="INBOX", delimiter="/", flags=[])
     partial = MailboxMetadataSnapshot(
         state=MailboxState(7, 4, 3),
@@ -456,6 +469,10 @@ async def test_partial_snapshot_becomes_complete_and_then_syncs_incrementally() 
     provider.mailbox_uid_delta.assert_awaited_once()
     provider.mailbox_snapshot.assert_not_awaited()
     projection.read_partial_emails.assert_awaited()
+    logged = output.getvalue()
+    assert "Metadata snapshot partial (2 of 3 messages)" in logged
+    assert "Metadata snapshot complete (3 messages)" in logged
+    assert "Incremental metadata sync added 1 UIDs" in logged
 
 
 @pytest.mark.asyncio
