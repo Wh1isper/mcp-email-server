@@ -119,6 +119,12 @@ does not enable a message-content dump. MCP send results may expose only reviewe
 fixed delivery tags; an unrecognized detail is omitted rather than copied from a
 provider response.
 
+Metadata refresh failures log a fixed operation label, the causal exception
+class, and at most 20 function-name/line-number traceback locations. They omit
+exception text and chains, source lines, filesystem paths, and frame locals,
+including when a Loguru sink enables diagnostic tracebacks. Batch failures use
+the same redacted format when keeping a partial snapshot.
+
 ## Managed credential storage
 
 Managed mode never falls back to TOML plaintext. Its default managed secret

@@ -78,12 +78,14 @@ absence and never produce an exact total claim.
 
 A complete projection whose UIDVALIDITY still matches may be extended by fetching
 only UIDs above its highest cached UID. The extension is complete only when the
-provider message count equals the cached count plus those new UIDs and the epoch
-does not change during the fetch. UIDVALIDITY changes, deletions, gaps, and a
+provider message count equals the cached count plus those new UIDs and
+UIDVALIDITY, UIDNEXT, and message count remain stable during the fetch. UIDVALIDITY changes, deletions, gaps, and a
 merged row count above the snapshot ceiling fall back to a full bounded refresh.
 Partial windows are not extended by that append-only path, because they are not
 a prefix of the mailbox. A full refresh may resume from a partial same-epoch
-window: it fetches only UIDs still missing from the newest retained rows, and it
+window: the retained rows carry their UIDVALIDITY through the provider boundary
+and are discarded if it differs from the refresh's initial epoch. The refresh
+fetches only UIDs still missing from the newest retained rows, and it
 may mark the merged window complete when the message count, UIDVALIDITY, and
 per-row evidence prove full coverage. Until that proof exists the rows stay
 partial and cannot answer an exact total.
@@ -95,8 +97,11 @@ to 3600) and `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES` (default 4 MiB,
 from 64 KiB through 64 MiB). `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`
 (default 100, from 1 through 1000) is additionally capped so one batch of
 maximum-size headers fits that budget. A failed batch stores the newest rows
-already fetched as a partial snapshot. A failed refresh logs the causal
-exception and traceback, then follows the existing legacy fallback or managed
+already fetched as a partial snapshot. Connection establishment also has its
+own refresh timeout, including cancellation cleanup. A failed refresh logs the
+causal exception class and at most 20 function-name/line-number traceback
+locations, omitting exception text/chains, source lines, paths, and locals even
+with diagnostic sinks. It then follows the existing legacy fallback or managed
 fail-closed rule. The log is operational; the client-facing error stays the
 sanitized provider failure.
 
@@ -355,6 +360,8 @@ catalog authority or secret binding state.
     defaulting to 60 seconds and 4 MiB. A failed batch persists the newest
     fetched rows as a partial snapshot, a later refresh can turn that same
     epoch into a complete snapshot, and a partial snapshot is never treated as
-    complete. Refresh failures log the causal exception and traceback. A
-    complete same-UIDVALIDITY projection can be extended from UIDs above its
-    high-water mark only when the message count proves an append-only change.
+    complete. Refresh failures retain only the causal exception class and
+    value-free traceback locations. Retained rows cannot cross UIDVALIDITY,
+    and connection establishment is bounded by the refresh timeout. A complete
+    same-UIDVALIDITY projection can be extended from UIDs above its high-water
+    mark only when count and stable-state evidence prove an append-only change.

@@ -132,11 +132,13 @@ class ClassicMetadataProvider:
         mailbox: str,
         *,
         retained_emails: tuple[dict[str, object], ...] = (),
+        retained_uidvalidity: int | None = None,
     ) -> MailboxMetadataSnapshot:
         if retained_emails:
             operation = self._handler.incoming_client.get_mailbox_metadata_snapshot(
                 mailbox,
                 retained_emails=retained_emails,
+                retained_uidvalidity=retained_uidvalidity,
             )
         else:
             operation = self._handler.incoming_client.get_mailbox_metadata_snapshot(mailbox)

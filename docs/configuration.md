@@ -872,7 +872,8 @@ refreshes. It does not belong in the account TOML. Values outside 1 through
 `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES`, and
 `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE` are read the same way. A refresh
 fetches newest UIDs first, and each batch gets its own timeout and header
-budget. Those three variables do not change the deadline used for sending,
+budget. Connection establishment has its own refresh timeout too. Those three
+variables do not change the deadline used for sending,
 reading one message, or an ordinary metadata page.
 
 HTTP transport variables are documented separately in

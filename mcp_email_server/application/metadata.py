@@ -16,7 +16,7 @@ from mcp_email_server.application.limits import (
 from mcp_email_server.config import sender_allowed
 from mcp_email_server.emails.models import EmailMetadata, EmailMetadataPageResponse, MailboxInfo
 from mcp_email_server.imap_keywords import ImapKeywordRegistry, ImapKeywordTag
-from mcp_email_server.log import logger
+from mcp_email_server.log import log_safe_failure, logger
 
 RuntimeMode = Literal["legacy", "managed"]
 ProviderResultT = TypeVar("ProviderResultT")
@@ -253,6 +253,7 @@ class MetadataProvider(Protocol):
         mailbox: str,
         *,
         retained_emails: tuple[dict[str, object], ...] = (),
+        retained_uidvalidity: int | None = None,
     ) -> MailboxMetadataSnapshot: ...
 
     async def mailbox_uid_delta(
@@ -445,7 +446,7 @@ def _with_projection_warning(
 
 
 def _log_projection_refresh_failure(exc: BaseException, *, incremental: bool) -> None:
-    """Record the provider exception that a metadata refresh previously swallowed."""
+    """Record the causal exception type and value-free traceback locations."""
 
     diagnostic: BaseException = exc
     if isinstance(exc, MetadataProviderError) and exc.diagnostic is not None:
@@ -454,7 +455,7 @@ def _log_projection_refresh_failure(exc: BaseException, *, incremental: bool) ->
         message = "Incremental metadata sync failed; refreshing the full snapshot"
     else:
         message = "Metadata projection refresh failed; using bounded provider fallback"
-    logger.opt(exception=diagnostic).warning(message)
+    log_safe_failure(message, diagnostic)
 
 
 def _merge_append_only_snapshot(  # noqa: C901 - explicit append-only UID and coverage checks
@@ -669,7 +670,9 @@ class MetadataQueryService:
             # Batches inside the snapshot carry the refresh timeout. One outer
             # deadline would cancel a large mailbox before a later batch starts.
             snapshot = await _bounded_provider_call(
-                access.provider.mailbox_snapshot(query.mailbox, retained_emails=retained),
+                access.provider.mailbox_snapshot(
+                    query.mailbox, retained_emails=retained, retained_uidvalidity=state.uidvalidity
+                ),
                 timeout=None,
             )
         except MetadataQueryTooBroadError:

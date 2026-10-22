@@ -324,7 +324,9 @@ async def test_retained_partial_rows_resume_newest_first_and_can_become_complete
 
         requested.clear()
         fail_oldest = False
-        resumed = await client.get_mailbox_metadata_snapshot("INBOX", retained_emails=list(partial.emails))
+        resumed = await client.get_mailbox_metadata_snapshot(
+            "INBOX", retained_emails=list(partial.emails), retained_uidvalidity=partial.state.uidvalidity
+        )
 
     assert requested == [["1"]]
     assert resumed.complete is True
@@ -349,7 +351,9 @@ async def test_resume_failure_keeps_the_partial_snapshot(monkeypatch: pytest.Mon
         patch.object(client, "_batch_fetch_dates", AsyncMock(side_effect=lambda _imap, uids: dict.fromkeys(uids, NOW))),
         patch.object(client, "_batch_fetch_headers", headers),
     ):
-        snapshot = await client.get_mailbox_metadata_snapshot("INBOX", retained_emails=[_email(3)])
+        snapshot = await client.get_mailbox_metadata_snapshot(
+            "INBOX", retained_emails=[_email(3)], retained_uidvalidity=77
+        )
 
     assert snapshot.complete is False
     assert [email["email_id"] for email in snapshot.emails] == ["3"]
@@ -367,9 +371,9 @@ async def test_snapshot_refresh_is_not_wrapped_in_the_shared_provider_timeout() 
     )
 
     async def slow_snapshot(
-        mailbox: str, *, retained_emails: tuple[dict[str, object], ...] = ()
+        mailbox: str, *, retained_emails: tuple[dict[str, object], ...] = (), retained_uidvalidity: int | None = None
     ) -> MailboxMetadataSnapshot:
-        del mailbox, retained_emails
+        del mailbox, retained_emails, retained_uidvalidity
         await asyncio.sleep(0.05)
         return snapshot
 
@@ -452,3 +456,111 @@ async def test_partial_snapshot_becomes_complete_and_then_syncs_incrementally() 
     provider.mailbox_uid_delta.assert_awaited_once()
     provider.mailbox_snapshot.assert_not_awaited()
     projection.read_partial_emails.assert_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retained_epoch", [None, 7])
+async def test_snapshot_refetches_rows_without_a_matching_retained_epoch(retained_epoch: int | None) -> None:
+    client = _client()
+    imap = _imap(1)
+    stale = {**_email(1), "subject": "Old epoch content"}
+    headers = AsyncMock(return_value={"1": _email(1)})
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_batch_fetch_dates", AsyncMock(return_value={"1": NOW})),
+        patch.object(client, "_batch_fetch_headers", headers),
+    ):
+        snapshot = await client.get_mailbox_metadata_snapshot(
+            "INBOX", retained_emails=[stale], retained_uidvalidity=retained_epoch
+        )
+    headers.assert_awaited_once()
+    assert snapshot.complete is True
+    assert snapshot.state.uidvalidity == 77
+    assert snapshot.emails[0]["subject"] == "Subject 1"
+
+
+@pytest.mark.asyncio
+async def test_service_preserves_retained_epoch_through_the_classic_adapter() -> None:
+    from mcp_email_server.adapters.metadata import ClassicMetadataProvider
+
+    service, provider, projection = _service()
+    client = _client()
+    imap = _imap(1)
+    projection.read_partial_emails.return_value = ({**_email(1), "subject": "Old epoch content"},)
+    handler = MagicMock()
+    handler.incoming_client = client
+    provider.mailbox_snapshot.side_effect = ClassicMetadataProvider(handler).mailbox_snapshot
+    headers = AsyncMock(return_value={"1": _email(1)})
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_batch_fetch_dates", AsyncMock(return_value={"1": NOW})),
+        patch.object(client, "_batch_fetch_headers", headers),
+    ):
+        response = await service.execute(ListEmailMetadataQuery(account_name="work"))
+    assert provider.mailbox_snapshot.await_args.kwargs["retained_uidvalidity"] == 7
+    assert response.emails[0].subject == "Subject 1"
+    snapshot = projection.write_snapshot.await_args.args[1]
+    assert snapshot.complete is True
+    assert snapshot.state.uidvalidity == 77
+    headers.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refresh_connection_timeout_cancels_and_closes_the_pending_connection() -> None:
+    client = _client()
+    imap = MagicMock()
+    imap._client_task = asyncio.create_task(asyncio.sleep(60))
+    imap.wait_hello_from_server = AsyncMock()
+    with (
+        patch.object(client, "_imap_connect", return_value=imap),
+        patch("mcp_email_server.emails.classic.metadata_refresh_timeout_seconds", return_value=0.01),
+    ):
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(client.get_mailbox_metadata_snapshot("INBOX"), timeout=1)
+    assert imap._client_task.cancelled()
+    imap.protocol.transport.close.assert_called_once()
+    imap.wait_hello_from_server.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["batch", "final_state"])
+async def test_partial_refresh_logs_only_value_free_diagnostics(failure_stage: str) -> None:
+    from io import StringIO
+
+    from mcp_email_server.log import logger
+
+    client = _client()
+    imap = _imap(2)
+    output = StringIO()
+    sink = logger.add(output, level="DEBUG", diagnose=True, backtrace=True)
+
+    async def fail_with_private_data(*args: object, **kwargs: object) -> None:
+        password = "synthetic-private-password"  # noqa: S105 - synthetic log-redaction probe
+        raise TimeoutError(f"private provider text {password}")
+
+    headers = AsyncMock(return_value={"2": _email(2), "1": _email(1)})
+    status = AsyncMock(return_value=MailboxState(77, 3, 2))
+    if failure_stage == "batch":
+        headers.side_effect = fail_with_private_data
+    else:
+        status.side_effect = [MailboxState(77, 3, 2), TimeoutError("private provider text")]
+    try:
+        with (
+            patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+            patch.object(client, "_status_mailbox", status),
+            patch.object(client, "_batch_fetch_dates", AsyncMock(return_value={"1": NOW, "2": NOW})),
+            patch.object(client, "_batch_fetch_headers", headers),
+        ):
+            snapshot = await client.get_mailbox_metadata_snapshot(
+                "INBOX", retained_emails=[_email(2)], retained_uidvalidity=77
+            )
+    finally:
+        logger.remove(sink)
+    assert snapshot.complete is False
+    assert snapshot.emails
+    logged = output.getvalue()
+    assert "TimeoutError" in logged
+    assert "Traceback:" in logged
+    assert "private provider text" not in logged
+    assert "synthetic-private-password" not in logged
+    assert "user@example.test" not in logged

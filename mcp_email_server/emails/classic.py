@@ -85,7 +85,7 @@ from mcp_email_server.emails.models import (
     EmailMetadataPageResponse,
     MailboxInfo,
 )
-from mcp_email_server.log import logger
+from mcp_email_server.log import log_safe_failure, logger
 
 # GB2312 labels decode as GB18030, including in encoded-word headers (see charsets).
 charsets.install_gb2312_superset_aliases()
@@ -2015,13 +2015,15 @@ class EmailClient:
         maximum_window: int | None = None,
         candidate_limit: int = MAX_METADATA_CANDIDATES,
         retained_emails: Sequence[dict[str, Any]] | None = None,
+        retained_uidvalidity: int | None = None,
     ) -> MailboxMetadataSnapshot:
         """Observe one bounded recent UID window without fetching message bodies.
 
         UIDs are fetched newest-first. Each batch has its own refresh timeout and
-        header budget. Rows already retained from an earlier partial snapshot are
-        not fetched again. A batch failure returns those newest rows with
-        ``complete=False`` instead of dropping them. A partial result never
+        header budget. Connection establishment has the same bounded timeout.
+        Rows retained from an earlier snapshot are reused only when their supplied
+        UIDVALIDITY matches the freshly observed mailbox epoch. A batch failure
+        returns those newest rows with ``complete=False`` instead of dropping them. A partial result never
         claims complete coverage.
         """
         if maximum_window is None:
@@ -2031,7 +2033,8 @@ class EmailClient:
         timeout_seconds = metadata_refresh_timeout_seconds()
         batch_limit = metadata_refresh_batch_limit()
         uid_ceiling = max(candidate_limit, maximum_window)
-        imap = await self._connect_imap()
+        async with asyncio.timeout(timeout_seconds):
+            imap = await self._connect_imap()
         observed_at = datetime.now(UTC)
         mailbox_info = MailboxInfo(name=mailbox, delimiter="", flags=[])
         batch_failed = False
@@ -2060,7 +2063,10 @@ class EmailClient:
                     f"query_too_broad: metadata search exceeded {uid_ceiling} candidate UIDs"
                 )
             selected_ids = sorted(email_ids, key=_uid_sort_key, reverse=True)[:maximum_window]
-            retained = _retained_snapshot_rows(retained_emails, allowed=set(selected_ids))
+            retained = _retained_snapshot_rows(
+                retained_emails if retained_uidvalidity == state.uidvalidity else None,
+                allowed=set(selected_ids),
+            )
             missing = [uid for uid in selected_ids if uid not in retained]
             fetched: dict[str, dict[str, Any]] = {}
             uid_dates: dict[str, datetime] = {
@@ -2079,7 +2085,7 @@ class EmailClient:
                     if not any(uid in fetched or uid in retained for uid in selected_ids):
                         raise
                     batch_failed = True
-                    logger.opt(exception=exc).warning("Metadata snapshot batch failed; keeping the newest fetched rows")
+                    log_safe_failure("Metadata snapshot batch failed; keeping the newest fetched rows", exc)
                     break
                 for uid in batch:
                     metadata = metadata_by_uid.get(uid)
@@ -2111,7 +2117,7 @@ class EmailClient:
                     if not emails:
                         raise
                     batch_failed = True
-                    logger.opt(exception=exc).warning("Metadata snapshot batch failed; keeping the newest fetched rows")
+                    log_safe_failure("Metadata snapshot batch failed; keeping the newest fetched rows", exc)
             if not batch_failed and state.uidvalidity != final_state.uidvalidity:
                 # Rows fetched across an epoch transition have no safe namespace.
                 emails = []
@@ -2156,8 +2162,9 @@ class EmailClient:
         A result is resumable only when every returned UID is strictly above the
         watermark and header/INTERNALDATE evidence is complete. Callers still
         have to prove the message count grew by exactly that many UIDs before
-        treating the merge as complete coverage. Deletions and UIDVALIDITY
-        changes are not resumable.
+        treating the merge as complete coverage. UIDVALIDITY, UIDNEXT, and the
+        message count must also remain stable throughout this fetch; otherwise
+        concurrent expunges and arrivals can hide an unobserved replacement.
         """
         if minimum_exclusive_uid < 0 or minimum_exclusive_uid > MAX_IMAP_UID:
             raise ValueError("Incremental metadata UID is invalid")
@@ -2223,7 +2230,7 @@ class EmailClient:
             final_state = await self._status_mailbox(imap, mailbox)
             changed = state.uidvalidity != final_state.uidvalidity
             resumable = (
-                not changed
+                state == final_state
                 and len(emails) == len(email_ids)
                 and set(uid_dates) == set(email_ids)
                 and all(isinstance(email.get("_internal_date"), datetime) for email in emails)

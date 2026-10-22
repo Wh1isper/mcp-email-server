@@ -317,10 +317,13 @@ If a batch fails, the newest rows already fetched are stored as a partial
 snapshot. That partial result is not a complete cache: the list still falls
 back to a bounded live search, and a later refresh continues at the UIDs that
 are still missing. After a complete snapshot exists, later mail is fetched by
-UID above the highest cached UID while UIDVALIDITY is unchanged. A UIDVALIDITY
-change or a deletion rebuilds the bounded snapshot. A refresh that fails before
-any row is stored logs the exception and traceback as
-`Metadata projection refresh failed`.
+UID above the highest cached UID when the count proves append-only growth and
+UIDVALIDITY, UIDNEXT, and message count stay stable during the fetch. Concurrent
+changes rebuild the bounded snapshot; retained rows are reused only after their
+UIDVALIDITY matches the refresh's initial state. Connection establishment uses
+the refresh timeout too. A refresh that fails before any row is stored logs
+`Metadata projection refresh failed` with the exception class and value-free
+traceback locations, without exception text, source lines, or frame locals.
 
 ## The UI cannot load or authenticate
 

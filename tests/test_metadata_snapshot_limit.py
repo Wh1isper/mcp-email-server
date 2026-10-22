@@ -298,7 +298,8 @@ async def test_refresh_failure_logs_the_causal_exception_and_traceback() -> None
     logged = "\n".join(str(record) for record in records)
     assert "Metadata projection refresh failed" in logged
     assert "TimeoutError" in logged
-    assert "metadata snapshot timed out" in logged
+    assert "metadata snapshot timed out" not in logged
+    assert "_raise_snapshot_timeout:" in logged
     assert "Traceback" in logged
     assert "metadata snapshot timed out" not in response.model_dump_json()
     projection.write_snapshot.assert_not_awaited()
@@ -383,3 +384,99 @@ async def test_snapshot_adapter_keeps_the_causal_exception_off_the_public_messag
     assert "slow mailbox" not in str(exc_info.value)
     assert isinstance(exc_info.value.diagnostic, TimeoutError)
     assert "slow mailbox" in str(exc_info.value.diagnostic)
+
+
+@pytest.mark.asyncio
+async def test_refresh_login_timeout_does_not_log_credentials_or_exception_text() -> None:
+    service, provider, projection = _service()
+    client = _client()
+    client.email_server.password = SecretStr("synthetic-refresh-password")
+    imap = _imap(1)
+    imap.login.side_effect = TimeoutError("synthetic-private-provider-detail")
+    handler = MagicMock()
+    handler.incoming_client = client
+    provider.mailbox_snapshot.side_effect = ClassicMetadataProvider(handler).mailbox_snapshot
+    records: list[str] = []
+    # Even a diagnostic sink must not receive the raw exception or its locals.
+    sink_id = logger.add(lambda message: records.append(str(message)), diagnose=True, level="DEBUG")
+    try:
+        with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+            response = await service.execute(ListEmailMetadataQuery(account_name="work"))
+    finally:
+        logger.remove(sink_id)
+
+    logged = "\n".join(records)
+    assert "TimeoutError" in logged
+    assert "_imap_login:" in logged
+    assert "synthetic-refresh-password" not in logged
+    assert "synthetic-private-provider-detail" not in logged
+    assert "user@example.test" not in logged
+    assert response.total == 0
+    projection.write_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "final_status",
+    [
+        b"INBOX (UIDVALIDITY 77 UIDNEXT 5 MESSAGES 3)",  # Expunge UID 1 and append UID 4.
+        b"INBOX (UIDVALIDITY 77 UIDNEXT 5 MESSAGES 4)",  # Append during FETCH.
+        b"INBOX (UIDVALIDITY 77 UIDNEXT 4 MESSAGES 2)",  # Expunge during FETCH.
+    ],
+)
+async def test_uid_delta_rejects_mailbox_changes_during_fetch(final_status: bytes) -> None:
+    client = _client()
+    imap = _imap(3)
+    imap.status.side_effect = [
+        ("OK", [b"INBOX (UIDVALIDITY 77 UIDNEXT 4 MESSAGES 3)"]),
+        ("OK", [final_status]),
+    ]
+    imap.uid_search.return_value = ("OK", [b"3"])
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_batch_fetch_dates", AsyncMock(return_value={"3": NOW})),
+        patch.object(client, "_batch_fetch_headers", AsyncMock(return_value={"3": _email(3)})),
+    ):
+        delta = await client.get_mailbox_uid_delta("INBOX", 2, maximum_new_messages=10)
+
+    assert delta.resumable is False
+    assert delta.uidvalidity_changed is False
+
+
+@pytest.mark.asyncio
+async def test_incremental_replacement_race_refreshes_instead_of_publishing_false_complete() -> None:
+    service, provider, projection = _service()
+    client = _client()
+    imap = _imap(3)
+    imap.status.side_effect = [
+        ("OK", [b"INBOX (UIDVALIDITY 77 UIDNEXT 4 MESSAGES 3)"]),
+        ("OK", [b"INBOX (UIDVALIDITY 77 UIDNEXT 5 MESSAGES 3)"]),
+    ]
+    imap.uid_search.return_value = ("OK", [b"3"])
+    provider.mailbox_state.return_value = MailboxState(77, 4, 3)
+    projection.read_incremental_baseline.return_value = MetadataIncrementalBaseline(
+        state=MailboxState(77, 3, 2),
+        high_uid=2,
+        mailbox=MailboxInfo(name="INBOX", delimiter="/", flags=[]),
+        emails=(_email(1), _email(2)),
+    )
+    provider.mailbox_uid_delta.side_effect = client.get_mailbox_uid_delta
+    provider.mailbox_snapshot.return_value = MailboxMetadataSnapshot(
+        state=MailboxState(77, 5, 3),
+        mailbox=MailboxInfo(name="INBOX", delimiter="/", flags=[]),
+        emails=(_email(2), _email(3), _email(4)),
+        complete=True,
+        observed_at=NOW,
+    )
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_batch_fetch_dates", AsyncMock(return_value={"3": NOW})),
+        patch.object(client, "_batch_fetch_headers", AsyncMock(return_value={"3": _email(3)})),
+    ):
+        response = await service.execute(ListEmailMetadataQuery(account_name="work", page_size=1))
+
+    provider.mailbox_snapshot.assert_awaited_once()
+    assert [email.email_id for email in response.emails] == ["4"]
+    written = projection.write_snapshot.await_args.args[1]
+    assert {email["email_id"] for email in written.emails} == {"2", "3", "4"}
+    assert written.complete is True

@@ -296,10 +296,13 @@ already fetched as a partial snapshot and logs the exception. The next refresh
 continues with the UIDs still missing from that newest window. The partial
 snapshot is never treated as complete coverage. Once the window is complete for
 the current UIDVALIDITY, a later refresh fetches only UIDs above the highest
-cached UID when the message count shows those messages were appended. Deletions
-and UIDVALIDITY changes refresh the bounded window again. A refresh that fails
-before any row is available is logged with its exception and traceback and then
-uses the bounded live search. Provider fallback accepts at most 10,000 unique canonical
+cached UID when the message count proves an append-only change and UIDVALIDITY,
+UIDNEXT, and message count remain stable throughout the fetch. Concurrent changes
+refresh the bounded window again. Retained rows are reused only if their
+UIDVALIDITY matches the new refresh's initial state. Connection establishment
+also has a refresh timeout. A refresh that fails before any row is available
+logs the exception class and value-free traceback locations, then uses the
+bounded live search. Provider fallback accepts at most 10,000 unique canonical
 single UIDs; ranges, sets, zero, duplicates, and values outside the IMAP UID
 range are rejected before any UID FETCH. Metadata header requests use IMAP
 partial fetches, with a limit of 64 KiB per
