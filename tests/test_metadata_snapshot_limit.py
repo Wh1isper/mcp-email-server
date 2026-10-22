@@ -102,6 +102,7 @@ def _service() -> tuple[MetadataQueryService, MagicMock, MagicMock]:
     projection = MagicMock()
     projection.read_complete = AsyncMock(return_value=None)
     projection.read_incremental_baseline = AsyncMock(return_value=None)
+    projection.read_partial_emails = AsyncMock(return_value=None)
     projection.write_snapshot = AsyncMock()
     projections = MagicMock()
     projections.open = AsyncMock(return_value=projection)

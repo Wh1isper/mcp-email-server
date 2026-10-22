@@ -288,15 +288,23 @@ A refresh stores at most the configured number of most recent UIDs, 1,000 by
 default, and claims complete coverage only when the whole mailbox fits that
 window and provider state is unchanged across the refresh. Set
 `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` to raise the ceiling, up to 100,000.
-After a complete projection exists for the current UIDVALIDITY, a later refresh
-fetches only UIDs above the highest cached UID when the message count shows
-those messages were appended. Deletions and UIDVALIDITY changes refresh the
-bounded window again. A failed refresh is logged with its exception and
-traceback and then uses the bounded live search. Provider fallback accepts at most 10,000 unique canonical
+The refresh walks those UIDs newest-first. Each batch, 100 UIDs by default, has
+its own `MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` deadline (60 seconds
+unless overridden) and its own `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES`
+budget (4 MiB unless overridden). A batch that fails keeps the newest rows
+already fetched as a partial snapshot and logs the exception. The next refresh
+continues with the UIDs still missing from that newest window. The partial
+snapshot is never treated as complete coverage. Once the window is complete for
+the current UIDVALIDITY, a later refresh fetches only UIDs above the highest
+cached UID when the message count shows those messages were appended. Deletions
+and UIDVALIDITY changes refresh the bounded window again. A refresh that fails
+before any row is available is logged with its exception and traceback and then
+uses the bounded live search. Provider fallback accepts at most 10,000 unique canonical
 single UIDs; ranges, sets, zero, duplicates, and values outside the IMAP UID
 range are rejected before any UID FETCH. Metadata header requests use IMAP
-partial fetches, with limits of 64 KiB per
-message and 4 MiB total per metadata query or refresh. Each wire FETCH is also
+partial fetches, with a limit of 64 KiB per
+message. A filtered metadata query still applies the header budget once to that
+query. A projection refresh applies it once per UID batch. Each wire FETCH is also
 sized below that aggregate ceiling. Missing, duplicate, or mismatched sender or
 INTERNALDATE evidence is a bounded error because the server cannot otherwise
 prove the exact total or ordering. Transport and protocol failures are mapped to

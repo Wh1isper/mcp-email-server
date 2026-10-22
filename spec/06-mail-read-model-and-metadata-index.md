@@ -81,12 +81,24 @@ only UIDs above its highest cached UID. The extension is complete only when the
 provider message count equals the cached count plus those new UIDs and the epoch
 does not change during the fetch. UIDVALIDITY changes, deletions, gaps, and a
 merged row count above the snapshot ceiling fall back to a full bounded refresh.
-Partial windows are not extended, because they are not a prefix of the mailbox.
+Partial windows are not extended by that append-only path, because they are not
+a prefix of the mailbox. A full refresh may resume from a partial same-epoch
+window: it fetches only UIDs still missing from the newest retained rows, and it
+may mark the merged window complete when the message count, UIDVALIDITY, and
+per-row evidence prove full coverage. Until that proof exists the rows stay
+partial and cannot answer an exact total.
 The snapshot ceiling defaults to 1,000 rows and is overridden by
 `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` (an integer from 1 through 100,000).
-A failed refresh logs the causal exception and traceback, then follows the
-existing legacy fallback or managed fail-closed rule. The log is operational; the
-client-facing error stays the sanitized provider failure.
+A full refresh fetches that window newest-first. Each batch uses
+`MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` (default 60 seconds, from 1
+to 3600) and `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES` (default 4 MiB,
+from 64 KiB through 64 MiB). `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`
+(default 100, from 1 through 1000) is additionally capped so one batch of
+maximum-size headers fits that budget. A failed batch stores the newest rows
+already fetched as a partial snapshot. A failed refresh logs the causal
+exception and traceback, then follows the existing legacy fallback or managed
+fail-closed rule. The log is operational; the client-facing error stays the
+sanitized provider failure.
 
 Tag filters accept configured semantic names only, resolve them to provider
 keywords, and issue IMAP `KEYWORD` search before sorting and pagination. `all`
@@ -338,7 +350,11 @@ catalog authority or secret binding state.
     `literal`, `quoted`, and `auto` overrides remain available. Quoted mode
     escapes quotes and backslashes and rejects CR/LF. The metadata snapshot row
     ceiling stays 1,000 unless `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` sets a
-    validated larger bound. Refresh failures log the causal exception and
-    traceback. A complete same-UIDVALIDITY projection can be extended from UIDs
-    above its high-water mark only when the message count proves an append-only
-    change.
+    validated larger bound. A full refresh is batched newest-first. Each batch
+    has its own refresh timeout and header budget, both configurable and
+    defaulting to 60 seconds and 4 MiB. A failed batch persists the newest
+    fetched rows as a partial snapshot, a later refresh can turn that same
+    epoch into a complete snapshot, and a partial snapshot is never treated as
+    complete. Refresh failures log the causal exception and traceback. A
+    complete same-UIDVALIDITY projection can be extended from UIDs above its
+    high-water mark only when the message count proves an append-only change.

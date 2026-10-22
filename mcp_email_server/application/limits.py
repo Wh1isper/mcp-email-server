@@ -58,16 +58,86 @@ def metadata_snapshot_row_limit() -> int:
     larger than the default can still become a complete projection.
     """
 
-    raw = os.getenv("MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS")
+    return _bounded_decimal_env(
+        "MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS",
+        default=APPLICATION_LIMITS.metadata_snapshot_rows,
+        minimum=1,
+        maximum=_MAX_METADATA_SNAPSHOT_ROWS,
+    )
+
+
+_MIN_METADATA_REFRESH_TIMEOUT_SECONDS = 1.0
+_MAX_METADATA_REFRESH_TIMEOUT_SECONDS = 3_600.0
+_MAX_METADATA_HEADER_BUDGET_BYTES = 64 * 1_024 * 1_024
+_DEFAULT_METADATA_REFRESH_BATCH_SIZE = 100
+_MAX_METADATA_REFRESH_BATCH_SIZE = 1_000
+_DECIMAL_SECONDS = re.compile(r"[0-9]+(?:\.[0-9]+)?\Z")
+
+
+def _bounded_decimal_env(name: str, *, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
     if raw is None:
-        return APPLICATION_LIMITS.metadata_snapshot_rows
+        return default
     text = raw.strip()
     if not text.isascii() or not text.isdigit():
-        raise ValueError("MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS must be an integer from 1 to 100000")
+        raise ValueError(f"{name} must be an integer from {minimum} to {maximum}")
     value = int(text)
-    if not 1 <= value <= _MAX_METADATA_SNAPSHOT_ROWS:
-        raise ValueError("MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS must be an integer from 1 to 100000")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be an integer from {minimum} to {maximum}")
     return value
+
+
+def metadata_refresh_timeout_seconds() -> float:
+    """Return the per-batch deadline for a metadata projection refresh.
+
+    Unset keeps the historical 60-second provider deadline. The value is applied
+    to each UID batch, not to the whole mailbox, so a large refresh can outlive
+    one interval without losing the batches that already finished.
+    """
+
+    raw = os.getenv("MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS")
+    if raw is None:
+        return APPLICATION_LIMITS.provider_timeout_seconds
+    text = raw.strip()
+    if _DECIMAL_SECONDS.fullmatch(text) is None:
+        raise ValueError("MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS must be a number of seconds from 1 to 3600")
+    value = float(text)
+    if not _MIN_METADATA_REFRESH_TIMEOUT_SECONDS <= value <= _MAX_METADATA_REFRESH_TIMEOUT_SECONDS:
+        raise ValueError("MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS must be a number of seconds from 1 to 3600")
+    return value
+
+
+def metadata_header_budget_bytes() -> int:
+    """Return the aggregate raw-header budget for one metadata fetch batch.
+
+    The built-in default remains 4 MiB. A projection refresh applies it to each
+    UID batch. A live filtered metadata query still applies it once to that query.
+    """
+
+    return _bounded_decimal_env(
+        "MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES",
+        default=APPLICATION_LIMITS.aggregate_header_bytes,
+        minimum=APPLICATION_LIMITS.header_bytes,
+        maximum=_MAX_METADATA_HEADER_BUDGET_BYTES,
+    )
+
+
+def metadata_refresh_batch_size() -> int:
+    """Return the configured newest-first UID batch size for a projection refresh."""
+
+    return _bounded_decimal_env(
+        "MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE",
+        default=_DEFAULT_METADATA_REFRESH_BATCH_SIZE,
+        minimum=1,
+        maximum=_MAX_METADATA_REFRESH_BATCH_SIZE,
+    )
+
+
+def metadata_refresh_batch_limit() -> int:
+    """Return a batch size that cannot exceed the header budget at the per-message cap."""
+
+    fitted = max(1, metadata_header_budget_bytes() // (APPLICATION_LIMITS.header_bytes + 1))
+    return min(metadata_refresh_batch_size(), fitted)
 
 
 def validate_imap_uid(value: object, *, field_name: str = "email_id") -> str:

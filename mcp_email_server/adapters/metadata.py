@@ -127,8 +127,20 @@ class ClassicMetadataProvider:
     async def mailbox_state(self, mailbox: str) -> MailboxState:
         return await _bounded_provider_call(self._handler.incoming_client.get_mailbox_state(mailbox))
 
-    async def mailbox_snapshot(self, mailbox: str) -> MailboxMetadataSnapshot:
-        return await _bounded_provider_call(self._handler.incoming_client.get_mailbox_metadata_snapshot(mailbox))
+    async def mailbox_snapshot(
+        self,
+        mailbox: str,
+        *,
+        retained_emails: tuple[dict[str, object], ...] = (),
+    ) -> MailboxMetadataSnapshot:
+        if retained_emails:
+            operation = self._handler.incoming_client.get_mailbox_metadata_snapshot(
+                mailbox,
+                retained_emails=retained_emails,
+            )
+        else:
+            operation = self._handler.incoming_client.get_mailbox_metadata_snapshot(mailbox)
+        return await _bounded_provider_call(operation)
 
     async def mailbox_uid_delta(
         self,
@@ -191,6 +203,24 @@ class SQLiteMetadataProjection:
         except MetadataIndexError as exc:
             raise MetadataProjectionError("Operational metadata projection read failed") from exc
         return _incremental_baseline(mailbox, baseline)
+
+    async def read_partial_emails(
+        self,
+        mailbox: str,
+        uidvalidity: int,
+    ) -> tuple[dict[str, object], ...] | None:
+        try:
+            emails = await asyncio.to_thread(
+                self._index.read_partial_emails,
+                self._operational_account_id,
+                mailbox,
+                uidvalidity=uidvalidity,
+            )
+        except MetadataIndexError as exc:
+            raise MetadataProjectionError("Operational metadata projection read failed") from exc
+        if emails is None:
+            return None
+        return tuple(dict(email) for email in emails)
 
     async def write_snapshot(self, mailbox: str, snapshot: MailboxMetadataSnapshot) -> None:
         try:

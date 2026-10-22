@@ -577,3 +577,8 @@ def test_incremental_baseline_survives_uidnext_change_and_rejects_partial_or_new
         observed_at=NOW,
     )
     assert index.read_incremental_baseline(account_id, "INBOX", uidvalidity=10) is None
+    assert index.read_complete(account_id, "INBOX", uidvalidity=10, uidnext=5, message_count=4) is None
+    partial_rows = index.read_partial_emails(account_id, "INBOX", uidvalidity=10)
+    assert partial_rows is not None
+    assert [email["email_id"] for email in partial_rows] == ["4"]
+    assert index.read_partial_emails(account_id, "INBOX", uidvalidity=11) is None

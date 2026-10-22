@@ -840,19 +840,22 @@ values are treated as false. Do not add surrounding whitespace to these values.
 
 ### Global variables
 
-| Variable                                      | Default                                  | Description                                                                                                                                                                      |
-| --------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MCP_EMAIL_SERVER_CONFIG_PATH`                | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                                                                                                          |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | `false`                                  | Override attachment file-download access.                                                                                                                                        |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`  | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                 |
-| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`         | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                              |
-| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`            | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                   |
-| `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`          | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts.                                                                            |
-| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`   | `false`                                  | Override blocked mutation reporting.                                                                                                                                             |
-| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`         | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                                                                                              |
-| `MCP_EMAIL_SERVER_LOG_LEVEL`                  | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                                                                                                                      |
-| `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`      | `auto`                                   | `literal`, `quoted`, or `auto`. `auto` quotes non-ASCII IMAP SEARCH text for `imap.qq.com` and uses synchronizing UTF-8 literals elsewhere. A legacy account field overrides it. |
-| `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS`     | `1000`                                   | Maximum rows in one metadata projection. An integer from 1 through 100000. Mailboxes above this stay partial and are listed from IMAP.                                           |
+| Variable                                            | Default                                  | Description                                                                                                                                                                      |
+| --------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCP_EMAIL_SERVER_CONFIG_PATH`                      | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                                                                                                          |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD`       | `false`                                  | Override attachment file-download access.                                                                                                                                        |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`        | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                 |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`               | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                              |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`                  | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                   |
+| `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`                | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts.                                                                            |
+| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`         | `false`                                  | Override blocked mutation reporting.                                                                                                                                             |
+| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`               | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                                                                                              |
+| `MCP_EMAIL_SERVER_LOG_LEVEL`                        | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                                                                                                                      |
+| `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`            | `auto`                                   | `literal`, `quoted`, or `auto`. `auto` quotes non-ASCII IMAP SEARCH text for `imap.qq.com` and uses synchronizing UTF-8 literals elsewhere. A legacy account field overrides it. |
+| `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS`           | `1000`                                   | Maximum rows in one metadata projection. An integer from 1 through 100000. Mailboxes above this stay partial and are listed from IMAP.                                           |
+| `MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` | `60`                                     | Per-batch timeout for a metadata projection refresh, from 1 to 3600 seconds. It does not change other IMAP or SMTP deadlines.                                                    |
+| `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES`     | `4194304`                                | Aggregate raw-header budget. 65536 through 67108864 bytes. A refresh applies it to each UID batch; a filtered metadata query applies it once.                                    |
+| `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`      | `100`                                    | Newest-first UID count for one refresh batch, from 1 to 1000. The batch is also capped so maximum-size headers cannot exceed the header budget.                                  |
 
 `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH` is read when a search runs. It is not
 copied onto an environment-created account. A legacy `[[emails]]` entry can set
@@ -864,6 +867,13 @@ environment variable, and the default `auto` still uses quoted text for
 `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` is also read when a projection
 refreshes. It does not belong in the account TOML. Values outside 1 through
 100000 are rejected before IMAP work.
+
+`MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS`,
+`MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES`, and
+`MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE` are read the same way. A refresh
+fetches newest UIDs first, and each batch gets its own timeout and header
+budget. Those three variables do not change the deadline used for sending,
+reading one message, or an ordinary metadata page.
 
 HTTP transport variables are documented separately in
 [Transports](transports.md#streamable-http).

@@ -37,7 +37,14 @@ from aiosmtplib.errors import (
 )
 from bs4 import BeautifulSoup
 
-from mcp_email_server.application.limits import APPLICATION_LIMITS, metadata_snapshot_row_limit, validate_imap_uid
+from mcp_email_server.application.limits import (
+    APPLICATION_LIMITS,
+    metadata_header_budget_bytes,
+    metadata_refresh_batch_limit,
+    metadata_refresh_timeout_seconds,
+    metadata_snapshot_row_limit,
+    validate_imap_uid,
+)
 from mcp_email_server.application.metadata import (
     MailboxMetadataSnapshot,
     MailboxState,
@@ -361,15 +368,50 @@ class ImapUtf8UnsupportedError(RuntimeError):
 
 
 class _MetadataHeaderBudget:
-    def __init__(self) -> None:
+    def __init__(self, *, aggregate_bytes: int | None = None) -> None:
         self.total_bytes = 0
+        self._aggregate_bytes = metadata_header_budget_bytes() if aggregate_bytes is None else aggregate_bytes
 
     def add(self, raw_headers: bytes) -> None:
         if len(raw_headers) > MAX_METADATA_HEADER_BYTES:
             raise MetadataPayloadTooLargeError("provider_payload_too_large: metadata header exceeds 64 KiB")
         self.total_bytes += len(raw_headers)
-        if self.total_bytes > MAX_METADATA_HEADER_TOTAL_BYTES:
-            raise MetadataPayloadTooLargeError("provider_payload_too_large: metadata header query exceeds 4 MiB")
+        if self.total_bytes > self._aggregate_bytes:
+            if self._aggregate_bytes == APPLICATION_LIMITS.aggregate_header_bytes:
+                limit_text = "4 MiB"
+            else:
+                limit_text = f"{self._aggregate_bytes} bytes"
+            raise MetadataPayloadTooLargeError(
+                f"provider_payload_too_large: metadata header query exceeds {limit_text}"
+            )
+
+
+def _header_fetch_uid_limit() -> int:
+    """How many maximum-size headers fit in the current aggregate budget."""
+
+    return max(1, metadata_header_budget_bytes() // (MAX_METADATA_HEADER_BYTES + 1))
+
+
+def _metadata_refresh_batches(uids: list[str], batch_size: int) -> list[list[str]]:
+    return [uids[index : index + batch_size] for index in range(0, len(uids), batch_size)]
+
+
+def _retained_snapshot_rows(
+    rows: Sequence[dict[str, Any]] | None,
+    *,
+    allowed: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Keep already stored rows that still belong in the newest UID window."""
+
+    retained: dict[str, dict[str, Any]] = {}
+    for row in rows or ():
+        uid = row.get("email_id")
+        if not isinstance(uid, str) or uid not in allowed or uid in retained:
+            continue
+        if not isinstance(row.get("_internal_date"), datetime) or not isinstance(row.get("date"), datetime):
+            continue
+        retained[uid] = dict(row)
+    return retained
 
 
 # aioimaplib's protocol-level CAPABILITY command has no built-in timeout.
@@ -1765,7 +1807,7 @@ class EmailClient:
         budget = header_budget or _MetadataHeaderBudget()
         partial = f"<0.{MAX_METADATA_HEADER_BYTES + 1}>"
         fetch_item = f"(FLAGS BODY.PEEK[HEADER]{partial})" if include_flags else f"BODY.PEEK[HEADER]{partial}"
-        chunk_size = min(chunk_size, MAX_METADATA_HEADER_FETCH_UIDS)
+        chunk_size = min(chunk_size, _header_fetch_uid_limit())
         for start in range(0, len(str_ids), chunk_size):
             chunk = str_ids[start : start + chunk_size]
             uid_list = ",".join(chunk)
@@ -1866,7 +1908,7 @@ class EmailClient:
         if not email_ids:
             return {}
 
-        chunk_size = min(chunk_size, MAX_METADATA_HEADER_FETCH_UIDS)
+        chunk_size = min(chunk_size, _header_fetch_uid_limit())
         chunks = [email_ids[i : i + chunk_size] for i in range(0, len(email_ids), chunk_size)]
         senders: dict[str, str] = {}
         budget = header_budget or _MetadataHeaderBudget()
@@ -1972,59 +2014,113 @@ class EmailClient:
         *,
         maximum_window: int | None = None,
         candidate_limit: int = MAX_METADATA_CANDIDATES,
+        retained_emails: Sequence[dict[str, Any]] | None = None,
     ) -> MailboxMetadataSnapshot:
-        """Observe one bounded recent UID window without fetching message bodies."""
+        """Observe one bounded recent UID window without fetching message bodies.
+
+        UIDs are fetched newest-first. Each batch has its own refresh timeout and
+        header budget. Rows already retained from an earlier partial snapshot are
+        not fetched again. A batch failure returns those newest rows with
+        ``complete=False`` instead of dropping them. A partial result never
+        claims complete coverage.
+        """
         if maximum_window is None:
             maximum_window = metadata_snapshot_row_limit()
         if maximum_window < 1 or candidate_limit < 1:
             raise ValueError("Metadata snapshot window is invalid")
+        timeout_seconds = metadata_refresh_timeout_seconds()
+        batch_limit = metadata_refresh_batch_limit()
         uid_ceiling = max(candidate_limit, maximum_window)
         imap = await self._connect_imap()
         observed_at = datetime.now(UTC)
         mailbox_info = MailboxInfo(name=mailbox, delimiter="", flags=[])
+        batch_failed = False
         try:
-            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
-            await _send_imap_id(imap)
-            list_response = await imap.list(
-                '""',
-                _quote_mailbox(mailbox),  # pyright: ignore[reportArgumentType]
-            )
-            if isinstance(list_response, tuple) and str(list_response[0]).upper() == "OK":
-                for parsed in _parse_list_responses(list_response[1]):
-                    if parsed.name == mailbox:
-                        mailbox_info = parsed
-                        break
-            state = await self._status_mailbox(imap, mailbox)
-            select_response = await imap.select(_quote_mailbox(mailbox))
-            _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
-            search_response = await imap.uid_search("ALL", charset=None)
-            _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
-            _, messages = search_response
-            email_ids = _normalize_search_uids(messages, maximum_uids=uid_ceiling)
+            async with asyncio.timeout(timeout_seconds):
+                await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+                await _send_imap_id(imap)
+                list_response = await imap.list(
+                    '""',
+                    _quote_mailbox(mailbox),  # pyright: ignore[reportArgumentType]
+                )
+                if isinstance(list_response, tuple) and str(list_response[0]).upper() == "OK":
+                    for parsed in _parse_list_responses(list_response[1]):
+                        if parsed.name == mailbox:
+                            mailbox_info = parsed
+                            break
+                state = await self._status_mailbox(imap, mailbox)
+                select_response = await imap.select(_quote_mailbox(mailbox))
+                _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
+                search_response = await imap.uid_search("ALL", charset=None)
+                _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
+                _, messages = search_response
+                email_ids = _normalize_search_uids(messages, maximum_uids=uid_ceiling)
             if len(email_ids) > uid_ceiling:
                 raise MetadataQueryTooBroadError(
                     f"query_too_broad: metadata search exceeded {uid_ceiling} candidate UIDs"
                 )
             selected_ids = sorted(email_ids, key=_uid_sort_key, reverse=True)[:maximum_window]
-            uid_dates = await self._batch_fetch_dates(imap, selected_ids)
-            metadata_by_uid = await self._batch_fetch_headers(imap, selected_ids, include_flags=True)
+            retained = _retained_snapshot_rows(retained_emails, allowed=set(selected_ids))
+            missing = [uid for uid in selected_ids if uid not in retained]
+            fetched: dict[str, dict[str, Any]] = {}
+            uid_dates: dict[str, datetime] = {
+                uid: row["_internal_date"]
+                for uid, row in retained.items()
+                if isinstance(row.get("_internal_date"), datetime)
+            }
+            for batch in _metadata_refresh_batches(missing, batch_limit):
+                try:
+                    async with asyncio.timeout(timeout_seconds):
+                        batch_dates = await self._batch_fetch_dates(imap, batch)
+                        metadata_by_uid = await self._batch_fetch_headers(imap, batch, include_flags=True)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if not any(uid in fetched or uid in retained for uid in selected_ids):
+                        raise
+                    batch_failed = True
+                    logger.opt(exception=exc).warning("Metadata snapshot batch failed; keeping the newest fetched rows")
+                    break
+                for uid in batch:
+                    metadata = metadata_by_uid.get(uid)
+                    if not isinstance(metadata, dict):
+                        continue
+                    copied = dict(metadata)
+                    copied["_internal_date"] = batch_dates.get(uid)
+                    fetched[uid] = copied
+                    internal_date = copied["_internal_date"]
+                    if isinstance(internal_date, datetime):
+                        uid_dates[uid] = internal_date
+                    else:
+                        uid_dates.pop(uid, None)
             emails: list[dict[str, Any]] = []
             for uid in selected_ids:
-                metadata = metadata_by_uid.get(uid)
-                if metadata is None:
-                    continue
-                metadata["_internal_date"] = uid_dates.get(uid)
-                emails.append(metadata)
-            final_state = await self._status_mailbox(imap, mailbox)
+                row = fetched.get(uid)
+                if row is None:
+                    row = retained.get(uid)
+                if row is not None:
+                    emails.append(row)
+            final_state = state
+            if not batch_failed:
+                try:
+                    async with asyncio.timeout(timeout_seconds):
+                        final_state = await self._status_mailbox(imap, mailbox)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if not emails:
+                        raise
+                    batch_failed = True
+                    logger.opt(exception=exc).warning("Metadata snapshot batch failed; keeping the newest fetched rows")
+            if not batch_failed and state.uidvalidity != final_state.uidvalidity:
+                # Rows fetched across an epoch transition have no safe namespace.
+                emails = []
             valid_epoch_uids = all(
                 email["email_id"].isdigit() and 0 < int(email["email_id"]) < final_state.uidnext for email in emails
             )
-            same_epoch = state.uidvalidity == final_state.uidvalidity
-            if not same_epoch:
-                # Rows fetched across an epoch transition have no safe namespace.
-                emails = []
             complete = (
-                state == final_state
+                not batch_failed
+                and state == final_state
                 and valid_epoch_uids
                 and len(email_ids) <= maximum_window
                 and set(uid_dates) == set(email_ids)
@@ -2041,7 +2137,10 @@ class EmailClient:
             )
         finally:
             try:
-                await imap.logout()
+                # A cancelled FETCH can leave the connection unusable. Bound logout
+                # so a partial snapshot is still returned to the caller.
+                async with asyncio.timeout(5.0 if batch_failed else timeout_seconds):
+                    await imap.logout()
             except Exception:
                 logger.info("IMAP logout failed")
 

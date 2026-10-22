@@ -305,13 +305,22 @@ protocol-defined English tokens.
 
 A mailbox larger than the metadata snapshot ceiling stays a partial projection,
 so every unfiltered list fetches from IMAP again. The default ceiling is 1,000
-rows. `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` accepts 1 through 100,000. The
-4 MiB header budget and the 60-second provider timeout still apply, so a very
-large first refresh can fail even after the ceiling is raised. That failure is
-logged with the exception and traceback as `Metadata projection refresh failed`.
-Once a complete snapshot exists, later mail is fetched by UID above the highest
-cached UID while UIDVALIDITY is unchanged. A UIDVALIDITY change or a deletion
-rebuilds the bounded snapshot.
+rows. `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` accepts 1 through 100,000. A
+refresh of a mailbox that fits the ceiling fetches newest UIDs first, in batches
+of `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE` (default 100, capped so one
+batch of maximum-size headers fits the budget). Each batch has its own
+`MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` deadline (default 60) and
+its own `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES` budget (default 4 MiB,
+65536 through 67108864). Those limits do not accumulate across the whole
+mailbox, and they do not change the deadline for other IMAP or SMTP commands.
+If a batch fails, the newest rows already fetched are stored as a partial
+snapshot. That partial result is not a complete cache: the list still falls
+back to a bounded live search, and a later refresh continues at the UIDs that
+are still missing. After a complete snapshot exists, later mail is fetched by
+UID above the highest cached UID while UIDVALIDITY is unchanged. A UIDVALIDITY
+change or a deletion rebuilds the bounded snapshot. A refresh that fails before
+any row is stored logs the exception and traceback as
+`Metadata projection refresh failed`.
 
 ## The UI cannot load or authenticate
 

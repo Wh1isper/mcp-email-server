@@ -42,9 +42,30 @@ class MetadataProviderError(RuntimeError):
         self.diagnostic = diagnostic
 
 
-async def _bounded_provider_call(operation: Awaitable[ProviderResultT]) -> ProviderResultT:
+class _DefaultProviderTimeout:
+    """Use the shared provider deadline, read when the call starts."""
+
+
+_DEFAULT_PROVIDER_TIMEOUT = _DefaultProviderTimeout()
+
+
+async def _bounded_provider_call(
+    operation: Awaitable[ProviderResultT],
+    *,
+    timeout: float | _DefaultProviderTimeout | None = _DEFAULT_PROVIDER_TIMEOUT,
+) -> ProviderResultT:
+    """Bound one provider call.
+
+    A metadata snapshot passes ``timeout=None``. Each of its UID batches applies
+    ``MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS`` on its own, so one
+    60-second deadline cannot cancel a refresh that has already stored progress.
+    """
+
+    limit = APPLICATION_LIMITS.provider_timeout_seconds if isinstance(timeout, _DefaultProviderTimeout) else timeout
     try:
-        async with asyncio.timeout(APPLICATION_LIMITS.provider_timeout_seconds):
+        if limit is None:
+            return await operation
+        async with asyncio.timeout(limit):
             return await operation
     except TimeoutError as exc:
         raise MetadataProviderError("provider request timed out", diagnostic=exc) from None
@@ -227,7 +248,12 @@ class MetadataProvider(Protocol):
 
     async def mailbox_state(self, mailbox: str) -> MailboxState: ...
 
-    async def mailbox_snapshot(self, mailbox: str) -> MailboxMetadataSnapshot: ...
+    async def mailbox_snapshot(
+        self,
+        mailbox: str,
+        *,
+        retained_emails: tuple[dict[str, object], ...] = (),
+    ) -> MailboxMetadataSnapshot: ...
 
     async def mailbox_uid_delta(
         self,
@@ -262,6 +288,12 @@ class MetadataProjection(Protocol):
         mailbox: str,
         uidvalidity: int,
     ) -> MetadataIncrementalBaseline | None: ...
+
+    async def read_partial_emails(
+        self,
+        mailbox: str,
+        uidvalidity: int,
+    ) -> tuple[dict[str, object], ...] | None: ...
 
     async def write_snapshot(self, mailbox: str, snapshot: MailboxMetadataSnapshot) -> None: ...
 
@@ -577,20 +609,20 @@ class MetadataQueryService:
         response = await _bounded_provider_call(access.provider.list_metadata(current_query, access.account))
         return _validate_metadata_response(current_query, response), access.account
 
-    async def _load_mailbox_snapshot(
+    async def _load_mailbox_snapshot(  # noqa: C901 - explicit refresh, resume, and fallback branches
         self,
         query: ListEmailMetadataQuery,
         account: MetadataAccountSnapshot,
         projection: MetadataProjection,
         access: MetadataProviderAccess,
         state: MailboxState,
-    ) -> tuple[MailboxMetadataSnapshot, bool] | None:
+    ) -> tuple[MailboxMetadataSnapshot, bool, bool] | None:
         """Refresh one mailbox, preferring UIDs above a complete cached epoch.
 
-        Returns the snapshot and whether it was an append-only extension. None
-        means the full refresh failed after its exception was logged and the
-        caller should use the bounded provider fallback. ``query_too_broad``
-        still propagates.
+        Returns the snapshot, whether it was an append-only extension, and
+        whether resumed rows need a fresh flag read. None means the full refresh
+        failed after its exception was logged and the caller should use the
+        bounded provider fallback. ``query_too_broad`` still propagates.
         """
 
         try:
@@ -621,15 +653,31 @@ class MetadataQueryService:
             else:
                 merged = _merge_append_only_snapshot(query.mailbox, baseline, delta)
                 if merged is not None:
-                    return merged, True
+                    return merged, True, False
+        if baseline is not None:
+            retained = baseline.emails
+        else:
+            try:
+                partial_rows = await projection.read_partial_emails(query.mailbox, state.uidvalidity)
+            except MetadataProjectionError:
+                if account.mode == "managed":
+                    raise
+                logger.warning("Operational metadata index read failed; using bounded provider fallback")
+                return None
+            retained = partial_rows or ()
         try:
-            snapshot = await _bounded_provider_call(access.provider.mailbox_snapshot(query.mailbox))
+            # Batches inside the snapshot carry the refresh timeout. One outer
+            # deadline would cancel a large mailbox before a later batch starts.
+            snapshot = await _bounded_provider_call(
+                access.provider.mailbox_snapshot(query.mailbox, retained_emails=retained),
+                timeout=None,
+            )
         except MetadataQueryTooBroadError:
             raise
         except Exception as exc:
             _log_projection_refresh_failure(exc, incremental=False)
             return None
-        return snapshot, False
+        return snapshot, False, bool(retained)
 
     async def execute(  # noqa: C901 - explicit bounded workflow branches
         self,
@@ -684,7 +732,7 @@ class MetadataQueryService:
         if loaded is None:
             response, current_account = await self._provider_fallback(query, account.mode)
             return self._decorate(query, response, current_account.tag_registry)
-        snapshot, incremental = loaded
+        snapshot, incremental, refresh_flags = loaded
 
         _validate_snapshot(current_query, snapshot)
         projection_write_failed = False
@@ -702,7 +750,7 @@ class MetadataQueryService:
                 access.account.allowed_senders,
                 warnings=("projection_write_failed",) if projection_write_failed else (),
             )
-            if incremental:
+            if incremental or refresh_flags:
                 # Older projected rows can carry stale keywords. Refresh only
                 # the returned page, matching a later complete-cache hit.
                 observed = await self._refresh_cached_tags(current_query, observed, access.provider)

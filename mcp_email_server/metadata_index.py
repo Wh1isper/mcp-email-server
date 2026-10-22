@@ -446,6 +446,43 @@ class MetadataIndex:
         except (ManagedCatalogError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise MetadataIndexError("Indexed metadata is unavailable") from exc
 
+    def read_partial_emails(
+        self,
+        operational_account_id: str,
+        mailbox: str,
+        *,
+        uidvalidity: int,
+    ) -> tuple[dict[str, Any], ...] | None:
+        """Return rows from an incomplete same-epoch window.
+
+        COMPLETE coverage is intentionally omitted. Callers resume a refresh
+        from these rows and must not treat them as a complete mailbox.
+        """
+
+        self.ensure_ready()
+        try:
+            with _connect(self.path) as connection:
+                connection.execute("BEGIN")
+                coverage = connection.execute(
+                    """SELECT m.id mailbox_id
+                       FROM mailbox_projection m
+                       JOIN index_coverage c ON c.mailbox_id = m.id
+                       WHERE m.operational_account_id = ? AND m.remote_name = ?
+                         AND m.uidvalidity = ? AND c.uidvalidity = ?
+                         AND c.completeness = 'PARTIAL'""",
+                    (operational_account_id, mailbox, uidvalidity, uidvalidity),
+                ).fetchone()
+                if coverage is None:
+                    return None
+                emails = _load_projected_emails(connection, coverage["mailbox_id"], uidvalidity)
+                if not emails:
+                    return None
+                return tuple(emails)
+        except MetadataIndexError:
+            raise
+        except (ManagedCatalogError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise MetadataIndexError("Indexed metadata is unavailable") from exc
+
     def invalidate_account(self, operational_account_id: str) -> None:
         """Invalidate coverage after raw protocol effects, retaining the projection."""
         self.ensure_ready()
