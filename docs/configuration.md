@@ -288,6 +288,28 @@ setting or an explicit empty environment override. Older implementations
 incorrectly treated an empty list as unrestricted; see the
 [recipient policy upgrade note](security.md#recipient-policy-upgrade-note).
 
+## Sender identities
+
+By default every composed message uses the account address as `From`. To send or
+draft from other own addresses (aliases), list them as `allowed_from_addresses`
+in legacy TOML or `MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES` in the environment,
+for example `'*@example.com,info@example.org'`. In managed mode use
+`config update-policy --allowed-from-addresses '*@example.com'` or the "Allowed
+From addresses" list in the Web UI; a legacy import carries the list over.
+Matching uses the same case-insensitive, whole-address globs as recipient
+policy. An empty list allows only the account address.
+
+`save_draft`, `send_email` and `forward_email` accept an optional `from_address`
+(bare address or `Name <address>`) that must match the list. A bare address gets
+the account display name. When `save_draft` or `send_email` is a reply
+(`in_reply_to` set) and has no `from_address`, the server looks the replied-to
+Message-ID up (INBOX first, then the other selectable mailboxes) and uses the
+first allowed address from its `To` or `Cc` header, then from the original
+envelope recipient (the bottom-most `X-Original-To`). A display name the message
+showed for that address is kept; otherwise the account display name is used. Forwarding hops and
+`Delivered-To` are ignored. If none matches, the account address stays. The SMTP reverse-path is
+always the account address.
+
 ## Mail mutation permissions
 
 `allowed_mutations` controls mail writes independently of recipient/sender
@@ -847,6 +869,7 @@ values are treated as false. Do not add surrounding whitespace to these values.
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`        | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                 |
 | `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`               | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                              |
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`                  | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                   |
+| `MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES`           | Empty                                    | Comma-separated own From globs for `from_address` and reply derivation; empty keeps the account From.                                                                            |
 | `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`                | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts.                                                                            |
 | `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`         | `false`                                  | Override blocked mutation reporting.                                                                                                                                             |
 | `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`               | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                                                                                              |

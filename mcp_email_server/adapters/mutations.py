@@ -168,6 +168,7 @@ class ClassicMutationProvider:
             command.in_reply_to,
             command.references,
             include_bcc_header=True,
+            from_address=command.from_address,
         )
         flags = r"(\Draft \Seen)" if command.flags is None else _validate_flags(list(command.flags))
         return await _bounded_mutation_call(
@@ -232,6 +233,19 @@ class ClassicMutationProvider:
             raise ValueError("Configure drafts_mailbox or provide exactly one special-use Drafts mailbox")
         return drafts[0]
 
+    async def find_reply_identity(
+        self,
+        in_reply_to: str,
+        account: MutationAccountSnapshot,
+    ) -> str | None:
+        return await _bounded_mutation_call(
+            self._handler.incoming_client.find_reply_identity(
+                in_reply_to,
+                list(account.allowed_from_addresses),
+                list(account.allowed_senders),
+            )
+        )
+
     async def find_junk_mailbox(self) -> str:
         junk_mailbox = await _bounded_mutation_call(self._handler._find_junk_folder())
         if junk_mailbox is None:
@@ -274,6 +288,7 @@ class ClassicMutationProvider:
                 command.references,
                 reply_to,
                 extra_parts=extra_parts,
+                from_address=command.from_address,
             )
         )
 
@@ -424,6 +439,7 @@ class LocalMutationBackend:
                     else resolved.account.allowed_mutations
                 ),
                 drafts_mailbox=resolved.account.drafts_mailbox,
+                allowed_from_addresses=tuple(resolved.settings.allowed_from_addresses),
             ),
         )
 

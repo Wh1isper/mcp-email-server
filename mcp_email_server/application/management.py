@@ -177,6 +177,7 @@ class ManagedPolicy:
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
+    allowed_from_addresses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -361,6 +362,7 @@ class LegacyPolicySnapshot:
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
+    allowed_from_addresses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -373,6 +375,7 @@ class LegacySourceSnapshot:
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
+    allowed_from_addresses: tuple[str, ...] = ()
 
     @property
     def policy(self) -> LegacyPolicySnapshot:
@@ -383,6 +386,7 @@ class LegacySourceSnapshot:
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
             allowed_mutations=self.allowed_mutations,
+            allowed_from_addresses=self.allowed_from_addresses,
         )
 
 
@@ -457,6 +461,7 @@ class ManagedCatalogPort(Protocol):
         allowed_recipients: tuple[str, ...],
         allowed_senders: tuple[str, ...],
         report_blocked_mutations: bool,
+        allowed_from_addresses: tuple[str, ...] = (),
     ) -> int: ...
 
     def validate_ready(self) -> None: ...
@@ -650,6 +655,7 @@ class CatalogService(_ConfiguredCatalogService):
             or source.enable_attachment_download
             or source.allowed_recipients
             or source.allowed_senders
+            or source.allowed_from_addresses
             or source.report_blocked_mutations
         )
 
@@ -764,6 +770,7 @@ class CatalogService(_ConfiguredCatalogService):
                         source.enable_attachment_download
                         or bool(source.allowed_recipients)
                         or bool(source.allowed_senders)
+                        or bool(source.allowed_from_addresses)
                         or source.report_blocked_mutations
                     ),
                 )
@@ -1147,6 +1154,7 @@ class LegacyImportService(_ConfiguredCatalogService):
             and policy.allowed_mutations == source.policy.allowed_mutations
             and policy.allowed_recipients == source.policy.allowed_recipients
             and policy.allowed_senders == source.policy.allowed_senders
+            and policy.allowed_from_addresses == source.policy.allowed_from_addresses
             and policy.report_blocked_mutations == source.policy.report_blocked_mutations
         )
         return LegacyImportPlan(
@@ -1490,6 +1498,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                 allowed_mutations=plan.source_policy.allowed_mutations,
                 allowed_senders=plan.source_policy.allowed_senders,
                 report_blocked_mutations=plan.source_policy.report_blocked_mutations,
+                allowed_from_addresses=plan.source_policy.allowed_from_addresses,
             )
             expected_catalog_revision += 1
         bootstrap = self._backend.read_bootstrap()
@@ -1544,6 +1553,8 @@ class PolicyManagementService(_ConfiguredCatalogService):
             raise ManagementError("Managed recipient policy has too many entries")
         if len(policy.allowed_senders) > APPLICATION_LIMITS.policy_entries:
             raise ManagementError("Managed sender policy has too many entries")
+        if len(policy.allowed_from_addresses) > APPLICATION_LIMITS.policy_entries:
+            raise ManagementError("Managed from address policy has too many entries")
         raw_recipients = tuple(
             validate_controlled_string(
                 item,
@@ -1562,8 +1573,18 @@ class PolicyManagementService(_ConfiguredCatalogService):
             )
             for item in policy.allowed_senders
         )
+        raw_from_addresses = tuple(
+            validate_controlled_string(
+                item,
+                field_name="allowed from address",
+                maximum_bytes=APPLICATION_LIMITS.address_bytes,
+                allow_empty=True,
+            )
+            for item in policy.allowed_from_addresses
+        )
         recipients = tuple(normalize_recipient_patterns(raw_recipients))
         senders = tuple(normalize_pattern_list(raw_senders))
+        from_addresses = tuple(normalize_recipient_patterns(raw_from_addresses))
         revision = self._catalog().update_policy(
             expected_revision=policy.revision,
             enable_attachment_download=policy.enable_attachment_download,
@@ -1572,6 +1593,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             allowed_mutations=policy.allowed_mutations,
             allowed_senders=senders,
             report_blocked_mutations=policy.report_blocked_mutations,
+            allowed_from_addresses=from_addresses,
         )
         return ManagedPolicy(
             revision=revision,
@@ -1581,6 +1603,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             allowed_mutations=policy.allowed_mutations,
             allowed_senders=senders,
             report_blocked_mutations=policy.report_blocked_mutations,
+            allowed_from_addresses=from_addresses,
         )
 
 

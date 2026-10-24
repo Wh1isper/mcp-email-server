@@ -77,6 +77,7 @@ export function PolicyPanel({ api, target, onRevision }: { api: ManagementApi; t
   const [policy, setPolicy] = useState<ManagedPolicy | null>(null)
   const [recipients, setRecipients] = useState<string[]>([])
   const [senders, setSenders] = useState<string[]>([])
+  const [fromAddresses, setFromAddresses] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState<unknown>(null)
@@ -87,6 +88,7 @@ export function PolicyPanel({ api, target, onRevision }: { api: ManagementApi; t
       setPolicy(result)
       setRecipients(result.allowed_recipients)
       setSenders(result.allowed_senders)
+      setFromAddresses(result.allowed_from_addresses)
       setError(null)
     } catch (caught) { setError(caught) }
   }, [api])
@@ -107,10 +109,12 @@ export function PolicyPanel({ api, target, onRevision }: { api: ManagementApi; t
               ...policy,
               allowed_recipients: cleaned(recipients),
               allowed_senders: cleaned(senders),
+              allowed_from_addresses: cleaned(fromAddresses),
             }, target)
             setPolicy(result)
             setRecipients(result.allowed_recipients)
             setSenders(result.allowed_senders)
+            setFromAddresses(result.allowed_from_addresses)
             onRevision?.(result.revision)
             setNotice('Safety settings saved.')
           } catch (caught) { setError(caught) } finally { setBusy(false) }
@@ -137,6 +141,15 @@ export function PolicyPanel({ api, target, onRevision }: { api: ManagementApi; t
             help="Add addresses or patterns to restrict readable senders. Empty means all senders may be read."
             values={senders}
             onChange={setSenders}
+          />
+          <ItemEditor
+            id="allowed-from-addresses"
+            title="Allowed From addresses"
+            itemLabel="From address"
+            addLabel="Add From address"
+            help="Add own addresses or patterns such as *@example.com that may replace the account address in From. Replies use the address the original message was sent to when it matches. Empty keeps the account address."
+            values={fromAddresses}
+            onChange={setFromAddresses}
           />
         </div>
         <div className="checkbox-column">

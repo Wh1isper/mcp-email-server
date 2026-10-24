@@ -162,6 +162,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
+    allowed_from_addresses: tuple[str, ...] = ()
 
     def policy(self) -> ManagedPolicy:
         return ManagedPolicy(
@@ -172,6 +173,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
             allowed_mutations=self.allowed_mutations,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
+            allowed_from_addresses=self.allowed_from_addresses,
         )
 
 

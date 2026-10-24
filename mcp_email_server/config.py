@@ -153,6 +153,21 @@ def sender_allowed(sender: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(addrs[0], pattern.lower()) for pattern in patterns)
 
 
+def from_address_allowed(from_address: str, patterns: Iterable[str]) -> bool:
+    """Return True if a From value names exactly one address on the sender identity allowlist.
+
+    Unlike the read-path sender allowlist, an empty list allows nothing: without
+    configured identities every message keeps the account's own address.
+    """
+    patterns = list(patterns)
+    if not patterns:
+        return False
+    addrs = [addr.strip() for _name, addr in getaddresses([from_address]) if addr.strip()]
+    if len(addrs) != 1 or addrs[0].count("@") != 1:
+        return False
+    return sender_allowed(addrs[0], patterns)
+
+
 def normalize_recipient_patterns(raw: Iterable[str]) -> list[str]:
     """Normalize exact addresses and bare glob patterns without losing glob syntax.
 
@@ -574,6 +589,9 @@ class Settings(BaseSettings):
     allowed_mutations: list[MutationClass] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_MUTATIONS))
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
+    # Addresses or glob patterns compose tools may put in From instead of the
+    # account address (explicit from_address or derived from a replied-to message).
+    allowed_from_addresses: list[str] = []
     report_blocked_mutations: bool = False
     credential_storage: CredentialStorage = "auto"
 
@@ -619,6 +637,8 @@ class Settings(BaseSettings):
             self.allowed_recipients = normalize_recipient_patterns(self.allowed_recipients)
         if self.allowed_senders:
             self.allowed_senders = normalize_pattern_list(self.allowed_senders)
+        if self.allowed_from_addresses:
+            self.allowed_from_addresses = normalize_recipient_patterns(self.allowed_from_addresses)
 
         if not migration_load:
             self._apply_env_overrides()
@@ -650,6 +670,9 @@ class Settings(BaseSettings):
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
         )
+        from_addresses_value = os.getenv("MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES")
+        if from_addresses_value is not None:
+            self.allowed_from_addresses = normalize_recipient_patterns(from_addresses_value.split(","))
         raw_mutations = os.getenv("MCP_EMAIL_SERVER_ALLOWED_MUTATIONS")
         if raw_mutations is not None:
             self.allowed_mutations = list(
@@ -792,6 +815,8 @@ class Settings(BaseSettings):
             raise ValueError(f"Allowed recipients exceed the limit of {APPLICATION_LIMITS.policy_entries}")
         if len(self.allowed_senders) > APPLICATION_LIMITS.policy_entries:
             raise ValueError(f"Allowed senders exceed the limit of {APPLICATION_LIMITS.policy_entries}")
+        if len(self.allowed_from_addresses) > APPLICATION_LIMITS.policy_entries:
+            raise ValueError(f"Allowed from addresses exceed the limit of {APPLICATION_LIMITS.policy_entries}")
         account_names = set()
         for email in self.emails:
             if email.account_name in account_names:

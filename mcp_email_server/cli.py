@@ -346,6 +346,7 @@ def _policy_data(policy: ManagedPolicy) -> dict[str, object]:
         "allowed_recipients": list(policy.allowed_recipients),
         "allowed_mutations": list(policy.allowed_mutations),
         "allowed_senders": list(policy.allowed_senders),
+        "allowed_from_addresses": list(policy.allowed_from_addresses),
         "report_blocked_mutations": policy.report_blocked_mutations,
     }
 
@@ -403,6 +404,7 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
             "enable_attachment_content": plan.source_policy.enable_attachment_content,
             "allowed_recipients": list(plan.source_policy.allowed_recipients),
             "allowed_senders": list(plan.source_policy.allowed_senders),
+            "allowed_from_addresses": list(plan.source_policy.allowed_from_addresses),
             "report_blocked_mutations": plan.source_policy.report_blocked_mutations,
             "allowed_mutations": list(plan.source_policy.allowed_mutations),
         },
@@ -591,6 +593,7 @@ def config_policy(json_output: JsonOutput = False) -> None:
     typer.echo("allowed_mutations=" + (",".join(policy.allowed_mutations) or "none"))
     typer.echo("allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
     typer.echo("allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
+    typer.echo("allowed_from_addresses=" + (",".join(policy.allowed_from_addresses) or "none"))
     typer.echo(f"report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")
 
 
@@ -617,6 +620,11 @@ def config_update_policy(
         None,
         "--allowed-senders",
         help="Comma-separated patterns; pass an empty value to clear.",
+    ),
+    allowed_from_addresses: str | None = typer.Option(
+        None,
+        "--allowed-from-addresses",
+        help="Comma-separated own addresses or glob patterns allowed as From; an empty value keeps the account From only.",
     ),
     report_blocked_mutations: bool | None = typer.Option(
         None,
@@ -650,6 +658,11 @@ def config_update_policy(
                 ),
                 allowed_senders=(
                     current.allowed_senders if allowed_senders is None else tuple(_split_csv(allowed_senders))
+                ),
+                allowed_from_addresses=(
+                    current.allowed_from_addresses
+                    if allowed_from_addresses is None
+                    else tuple(_split_csv(allowed_from_addresses))
                 ),
                 report_blocked_mutations=(
                     current.report_blocked_mutations if report_blocked_mutations is None else report_blocked_mutations
@@ -728,6 +741,7 @@ def _echo_legacy_import_plan(plan: LegacyImportPlan) -> None:
     typer.echo(f"  attachment_content={str(policy.enable_attachment_content).lower()}")
     typer.echo("  allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
     typer.echo("  allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
+    typer.echo("  allowed_from_addresses=" + (",".join(policy.allowed_from_addresses) or "none"))
     typer.echo(f"  report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")
     for provider_name in plan.unsupported_provider_names:
         typer.echo(f"provider={provider_name} action=unsupported")

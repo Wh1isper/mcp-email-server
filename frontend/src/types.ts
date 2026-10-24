@@ -103,6 +103,7 @@ export interface ManagedPolicy {
   enable_attachment_content: boolean
   allowed_recipients: string[]
   allowed_senders: string[]
+  allowed_from_addresses: string[]
   report_blocked_mutations: boolean
 }
 
@@ -124,6 +125,7 @@ export interface LegacyPolicySource {
   enable_attachment_content: boolean
   allowed_recipients: string[]
   allowed_senders: string[]
+  allowed_from_addresses?: string[]
   report_blocked_mutations: boolean
 }
 

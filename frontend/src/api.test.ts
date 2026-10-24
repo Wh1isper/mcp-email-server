@@ -76,6 +76,7 @@ describe('bootstrap and API security behavior', () => {
       enable_attachment_content: true,
       allowed_recipients: [],
       allowed_senders: [],
+      allowed_from_addresses: ['*@example.test'],
       report_blocked_mutations: false,
     allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
     }, { expected_bootstrap_revision: 4, expected_catalog: '/private/catalog.sqlite3' })
@@ -89,6 +90,7 @@ describe('bootstrap and API security behavior', () => {
       enable_attachment_content: true,
       allowed_recipients: [],
       allowed_senders: [],
+      allowed_from_addresses: ['*@example.test'],
       report_blocked_mutations: false,
     allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
       expected_bootstrap_revision: 4,

@@ -210,6 +210,7 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
       allowed_mutations: policy.allowed_mutations,
       allowed_recipients: policy.allowed_recipients,
       allowed_senders: policy.allowed_senders,
+      allowed_from_addresses: policy.allowed_from_addresses,
       report_blocked_mutations: policy.report_blocked_mutations,
     }, target),
     previewImport: () => mutate('import/preview', {}),
