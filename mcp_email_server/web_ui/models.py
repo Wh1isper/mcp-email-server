@@ -84,6 +84,7 @@ class CreateAccountRequest(CatalogTargetRequest):
     allowed_mutations: tuple[MutationClass, ...] | None = None
     drafts_mailbox: str | None = Field(default=None, max_length=65535)
     allow_protocol_commands: bool = False
+    draft_identity_key: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def validate_outgoing_credential(self) -> CreateAccountRequest:
@@ -109,6 +110,7 @@ class UpdateAccountRequest(CatalogTargetRequest):
     allowed_mutations: tuple[MutationClass, ...] | None = None
     drafts_mailbox: str | None = Field(default=None, max_length=65535)
     allow_protocol_commands: bool | None = None
+    draft_identity_key: str | None = Field(default=None, max_length=64)
 
     def command(self, current_name: str, *, had_outgoing: bool) -> UpdateAccountCommand:
         return UpdateAccountCommand(
@@ -129,6 +131,9 @@ class UpdateAccountRequest(CatalogTargetRequest):
             allowed_mutations=self.allowed_mutations,
             drafts_mailbox=self.drafts_mailbox,
             allow_protocol_commands=self.allow_protocol_commands,
+            draft_identity_key=self.draft_identity_key or None,
+            # Older UI builds omit the field; leave the stored key unchanged then.
+            update_draft_identity_key="draft_identity_key" in self.model_fields_set,
         )
 
 
@@ -162,6 +167,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
+    allowed_from_addresses: tuple[str, ...] = ()
 
     def policy(self) -> ManagedPolicy:
         return ManagedPolicy(
@@ -172,6 +178,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
             allowed_mutations=self.allowed_mutations,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
+            allowed_from_addresses=self.allowed_from_addresses,
         )
 
 

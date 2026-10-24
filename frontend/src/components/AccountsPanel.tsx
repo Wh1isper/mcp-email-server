@@ -91,6 +91,7 @@ const displayNameFromEmail = (emailAddress: string): string => {
 const blankAccount = (): AccountInput => ({
   allowed_mutations: null,
   drafts_mailbox: null,
+  draft_identity_key: null,
   allow_protocol_commands: false,
   name: '',
   full_name: '',
@@ -105,6 +106,7 @@ const blankAccount = (): AccountInput => ({
 const editableAccount = (current: AccountDetails): AccountInput => ({
   allowed_mutations: current.allowed_mutations ?? null,
   drafts_mailbox: current.drafts_mailbox ?? null,
+  draft_identity_key: current.draft_identity_key ?? null,
   allow_protocol_commands: current.allow_protocol_commands ?? false,
   name: current.name,
   full_name: current.full_name,
@@ -366,6 +368,7 @@ function AccountEditor({
           <MutationGrants id="account-grants" value={input.allowed_mutations ?? globalGrants} disabled={input.allowed_mutations == null} onChange={(grants) => update('allowed_mutations', grants)} />
           <p className="hint">Effective permissions: {grantSummary(input.allowed_mutations ?? globalGrants)}.</p>
           <div className="field"><label htmlFor="drafts-mailbox">Drafts mailbox (optional)</label><input id="drafts-mailbox" value={input.drafts_mailbox ?? ''} onChange={(event) => update('drafts_mailbox', event.target.value || null)} maxLength={1000} /><small>Mailbox used by save_draft. Leave empty to discover a unique provider Drafts special-use mailbox; this does not grant draft permission.</small></div>
+          <div className="field"><label htmlFor="draft-identity-key">Thunderbird identity key (optional)</label><input id="draft-identity-key" value={input.draft_identity_key ?? ''} onChange={(event) => update('draft_identity_key', event.target.value || null)} maxLength={64} pattern="[A-Za-z0-9_.\-]+" spellCheck={false} autoCapitalize="none" /><small>Written as X-Identity-Key on saved drafts, for example id4. Thunderbird then keeps a From that differs from the identity address instead of replacing it.</small></div>
         </div>
       </details>
 

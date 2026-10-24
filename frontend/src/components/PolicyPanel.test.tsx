@@ -6,7 +6,7 @@ import { PolicyPanel } from './PolicyPanel'
 
 const target = { expected_bootstrap_revision: 1, expected_catalog: '/private/managed.sqlite3' }
 
-test('edits recipient and sender allowlists as individual items', async () => {
+test('edits recipient, sender and From allowlists as individual items', async () => {
   const user = userEvent.setup()
   const api = createMockApi()
   vi.mocked(api.policy).mockResolvedValue({
@@ -15,6 +15,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
     enable_attachment_content: false,
     allowed_recipients: ['first@example.test'],
     allowed_senders: ['*@example.test'],
+    allowed_from_addresses: ['*@example.test'],
     report_blocked_mutations: false,
     allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
   })
@@ -23,6 +24,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
 
   expect(await screen.findByLabelText('Recipient 1')).toHaveValue('first@example.test')
   expect(screen.getByLabelText('Sender pattern 1')).toHaveValue('*@example.test')
+  expect(screen.getByLabelText('From address 1')).toHaveValue('*@example.test')
   await user.click(screen.getByRole('checkbox', { name: 'Allow attachments to be returned through MCP' }))
 
   await user.click(screen.getByRole('button', { name: 'Add recipient' }))
@@ -35,6 +37,11 @@ test('edits recipient and sender allowlists as individual items', async () => {
   const secondSender = screen.getByLabelText('Sender pattern 2')
   expect(secondSender).toHaveFocus()
   await user.type(secondSender, 'alerts@example.test')
+
+  await user.click(screen.getByRole('button', { name: 'Add From address' }))
+  const secondFrom = screen.getByLabelText('From address 2')
+  expect(secondFrom).toHaveFocus()
+  await user.type(secondFrom, ' alias@other.test ')
   await user.click(screen.getByRole('button', { name: 'Save safety settings' }))
 
   await waitFor(() => expect(api.updatePolicy).toHaveBeenCalledWith({
@@ -43,6 +50,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
     enable_attachment_content: true,
     allowed_recipients: ['*@example.test'],
     allowed_senders: ['*@example.test', 'alerts@example.test'],
+    allowed_from_addresses: ['*@example.test', 'alias@other.test'],
     report_blocked_mutations: false,
     allowed_mutations: ['draft', 'organize', 'delete', 'send', 'append'],
   }, target))
@@ -56,6 +64,7 @@ test('explains the distinct empty-list behavior', async () => {
   expect(await screen.findByText(/Empty blocks sending and any supplied draft recipients/)).toBeVisible()
   expect(screen.getByText(/\* allows all recipients for sending, forwarding, and drafts/)).toBeVisible()
   expect(screen.getByText(/Empty means all senders may be read/)).toBeVisible()
+  expect(screen.getByText(/Empty keeps the account address/)).toBeVisible()
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
 })
 

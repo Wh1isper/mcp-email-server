@@ -346,6 +346,7 @@ def _policy_data(policy: ManagedPolicy) -> dict[str, object]:
         "allowed_recipients": list(policy.allowed_recipients),
         "allowed_mutations": list(policy.allowed_mutations),
         "allowed_senders": list(policy.allowed_senders),
+        "allowed_from_addresses": list(policy.allowed_from_addresses),
         "report_blocked_mutations": policy.report_blocked_mutations,
     }
 
@@ -376,6 +377,7 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
                 "tags": [_tag_data(tag) for tag in source.tags],
                 "allowed_mutations": list(source.allowed_mutations) if source.allowed_mutations is not None else None,
                 "drafts_mailbox": source.drafts_mailbox,
+                "draft_identity_key": source.draft_identity_key,
                 "allow_protocol_commands": source.allow_protocol_commands,
             },
             "incoming": {
@@ -403,6 +405,7 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
             "enable_attachment_content": plan.source_policy.enable_attachment_content,
             "allowed_recipients": list(plan.source_policy.allowed_recipients),
             "allowed_senders": list(plan.source_policy.allowed_senders),
+            "allowed_from_addresses": list(plan.source_policy.allowed_from_addresses),
             "report_blocked_mutations": plan.source_policy.report_blocked_mutations,
             "allowed_mutations": list(plan.source_policy.allowed_mutations),
         },
@@ -591,6 +594,7 @@ def config_policy(json_output: JsonOutput = False) -> None:
     typer.echo("allowed_mutations=" + (",".join(policy.allowed_mutations) or "none"))
     typer.echo("allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
     typer.echo("allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
+    typer.echo("allowed_from_addresses=" + (",".join(policy.allowed_from_addresses) or "none"))
     typer.echo(f"report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")
 
 
@@ -617,6 +621,11 @@ def config_update_policy(
         None,
         "--allowed-senders",
         help="Comma-separated patterns; pass an empty value to clear.",
+    ),
+    allowed_from_addresses: str | None = typer.Option(
+        None,
+        "--allowed-from-addresses",
+        help="Comma-separated own addresses or glob patterns allowed as From; an empty value keeps the account From only.",
     ),
     report_blocked_mutations: bool | None = typer.Option(
         None,
@@ -650,6 +659,11 @@ def config_update_policy(
                 ),
                 allowed_senders=(
                     current.allowed_senders if allowed_senders is None else tuple(_split_csv(allowed_senders))
+                ),
+                allowed_from_addresses=(
+                    current.allowed_from_addresses
+                    if allowed_from_addresses is None
+                    else tuple(_split_csv(allowed_from_addresses))
                 ),
                 report_blocked_mutations=(
                     current.report_blocked_mutations if report_blocked_mutations is None else report_blocked_mutations
@@ -728,6 +742,7 @@ def _echo_legacy_import_plan(plan: LegacyImportPlan) -> None:
     typer.echo(f"  attachment_content={str(policy.enable_attachment_content).lower()}")
     typer.echo("  allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
     typer.echo("  allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
+    typer.echo("  allowed_from_addresses=" + (",".join(policy.allowed_from_addresses) or "none"))
     typer.echo(f"  report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")
     for provider_name in plan.unsupported_provider_names:
         typer.echo(f"provider={provider_name} action=unsupported")
@@ -834,6 +849,9 @@ def account_add(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
     drafts_mailbox: str | None = typer.Option(None, "--drafts-mailbox"),
+    draft_identity_key: str | None = typer.Option(
+        None, "--draft-identity-key", help="Thunderbird identity key (for example id4) written as X-Identity-Key."
+    ),
     sent_folder: str | None = typer.Option(None, "--sent-folder"),
     json_output: JsonOutput = False,
 ) -> None:
@@ -909,6 +927,7 @@ def account_add(
                 else parse_mutations(_split_csv(allowed_mutations)),
                 drafts_mailbox=drafts_mailbox or None,
                 allow_protocol_commands=allow_protocol_commands,
+                draft_identity_key=draft_identity_key or None,
             )
         )
     except (ManagementError, ValueError) as exc:
@@ -1050,6 +1069,7 @@ def account_show(name: str, json_output: JsonOutput = False) -> None:
                 "sent_folder_name": account.sent_folder_name,
                 "allowed_mutations": list(account.allowed_mutations) if account.allowed_mutations is not None else None,
                 "drafts_mailbox": account.drafts_mailbox,
+                "draft_identity_key": account.draft_identity_key,
                 "allow_protocol_commands": account.allow_protocol_commands,
                 "incoming": _endpoint_data(account.incoming),
                 "outgoing": _endpoint_data(account.outgoing) if account.outgoing is not None else None,
@@ -1115,6 +1135,11 @@ def account_update(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
     drafts_mailbox: str | None = typer.Option(None, "--drafts-mailbox"),
+    draft_identity_key: str | None = typer.Option(
+        None,
+        "--draft-identity-key",
+        help="Thunderbird identity key written as X-Identity-Key on drafts; an empty value clears it.",
+    ),
     sent_folder: str | None = typer.Option(None, "--sent-folder"),
     clear_sent_folder: bool = typer.Option(False, "--clear-sent-folder"),
     json_output: JsonOutput = False,
@@ -1158,6 +1183,8 @@ def account_update(
                 allow_protocol_commands=allow_protocol_commands,
                 update_allowed_mutations=allowed_mutations is not None,
                 update_drafts_mailbox=drafts_mailbox is not None,
+                draft_identity_key=draft_identity_key or None,
+                update_draft_identity_key=draft_identity_key is not None,
                 update_sent_folder=sent_folder is not None or clear_sent_folder,
             )
         )

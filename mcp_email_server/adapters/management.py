@@ -50,6 +50,7 @@ from mcp_email_server.config import (
     compose_legacy_policy_environment,
     delete_settings,
     get_settings,
+    normalize_recipient_patterns,
 )
 from mcp_email_server.emails.classic import ClassicEmailHandler, ImapAuthenticationError
 from mcp_email_server.managed import ManagedCatalog, ManagedCatalogError
@@ -269,6 +270,7 @@ class LocalManagementBackend:
             drafts_mailbox=account.drafts_mailbox,
             allow_protocol_commands=account.allow_protocol_commands,
             tags=account.tags,
+            draft_identity_key=account.draft_identity_key,
         )
         cls._validate_legacy_account_snapshot(snapshot)
         return snapshot
@@ -377,6 +379,7 @@ class LocalManagementBackend:
                 save_to_sent=cls._bool_environment("MCP_EMAIL_SERVER_SAVE_TO_SENT", True),
                 sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
                 drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
+                draft_identity_key=os.getenv("MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY") or None,
                 allow_protocol_commands=cls._bool_environment("MCP_EMAIL_SERVER_ALLOW_PROTOCOL_COMMANDS", False),
                 allowed_mutations=(
                     list(
@@ -443,6 +446,10 @@ class LocalManagementBackend:
         validate_mutations(mutations)
         recipients = raw.get("allowed_recipients", [])
         senders = raw.get("allowed_senders", [])
+        from_addresses = raw.get("allowed_from_addresses", [])
+        env_from_addresses = os.getenv("MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES")
+        if env_from_addresses is not None:
+            from_addresses = env_from_addresses.split(",")
         attachment_download = raw.get("enable_attachment_download", False)
         attachment_content = raw.get("enable_attachment_content", False)
         report_blocked = raw.get("report_blocked_mutations", False)
@@ -453,6 +460,9 @@ class LocalManagementBackend:
             or not isinstance(senders, list)
             or len(senders) > APPLICATION_LIMITS.policy_entries
             or not all(isinstance(item, str) for item in senders)
+            or not isinstance(from_addresses, list)
+            or len(from_addresses) > APPLICATION_LIMITS.policy_entries
+            or not all(isinstance(item, str) for item in from_addresses)
             or not isinstance(attachment_download, bool)
             or not isinstance(attachment_content, bool)
             or not isinstance(report_blocked, bool)
@@ -475,9 +485,11 @@ class LocalManagementBackend:
             )
         except ValueError as exc:
             raise ManagementError("Effective legacy policy environment is invalid") from exc
+        normalized_from_addresses = normalize_recipient_patterns(from_addresses)
         if (
             len(normalized_recipients) > APPLICATION_LIMITS.policy_entries
             or len(normalized_senders) > APPLICATION_LIMITS.policy_entries
+            or len(normalized_from_addresses) > APPLICATION_LIMITS.policy_entries
         ):
             raise ManagementError("Effective legacy policy exceeds the entry limit")
         try:
@@ -493,6 +505,12 @@ class LocalManagementBackend:
                     field_name="legacy allowed sender",
                     maximum_bytes=APPLICATION_LIMITS.address_bytes,
                 )
+            for from_address in normalized_from_addresses:
+                validate_controlled_string(
+                    from_address,
+                    field_name="legacy allowed from address",
+                    maximum_bytes=APPLICATION_LIMITS.address_bytes,
+                )
         except ValueError as exc:
             raise ManagementError("Effective legacy policy contains an invalid entry") from exc
         return LegacySourceSnapshot(
@@ -504,6 +522,7 @@ class LocalManagementBackend:
             allowed_mutations=parse_mutations(mutations),
             allowed_senders=tuple(normalized_senders),
             report_blocked_mutations=report_blocked,
+            allowed_from_addresses=tuple(normalized_from_addresses),
         )
 
     def resolve_legacy_secret(  # noqa: C901 - explicit source-specific JIT resolution

@@ -153,6 +153,21 @@ def sender_allowed(sender: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(addrs[0], pattern.lower()) for pattern in patterns)
 
 
+def from_address_allowed(from_address: str, patterns: Iterable[str]) -> bool:
+    """Return True if a From value names exactly one address on the sender identity allowlist.
+
+    Unlike the read-path sender allowlist, an empty list allows nothing: without
+    configured identities every message keeps the account's own address.
+    """
+    patterns = list(patterns)
+    if not patterns:
+        return False
+    addrs = [addr.strip() for _name, addr in getaddresses([from_address]) if addr.strip()]
+    if len(addrs) != 1 or addrs[0].count("@") != 1:
+        return False
+    return sender_allowed(addrs[0], patterns)
+
+
 def normalize_recipient_patterns(raw: Iterable[str]) -> list[str]:
     """Normalize exact addresses and bare glob patterns without losing glob syntax.
 
@@ -362,6 +377,9 @@ class EmailSettings(AccountAttributes):
     tags: tuple[ImapKeywordTag, ...] = ()
     allowed_mutations: list[MutationClass] | None = None
     drafts_mailbox: str | None = None
+    # Thunderbird identity key (for example "id4") written as X-Identity-Key on
+    # saved drafts, so Thunderbird keeps a From that differs from the identity.
+    draft_identity_key: str | None = None
     allow_protocol_commands: bool = False
     # None inherits MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH, which defaults to auto.
     # Managed accounts leave this unset; auto still quotes imap.qq.com by host.
@@ -375,6 +393,10 @@ class EmailSettings(AccountAttributes):
             from mcp_email_server.application.mutations import validate_mailbox_name
 
             validate_mailbox_name(self.drafts_mailbox)
+        if self.draft_identity_key is not None:
+            from mcp_email_server.application.mutations import validate_draft_identity_key
+
+            validate_draft_identity_key(self.draft_identity_key)
         ImapKeywordAccount(tags=self.tags)
         return self
 
@@ -411,6 +433,7 @@ class EmailSettings(AccountAttributes):
         allowed_mutations: list[MutationClass] | None = None,
         drafts_mailbox: str | None = None,
         allow_protocol_commands: bool = False,
+        draft_identity_key: str | None = None,
     ) -> EmailSettings:
         for candidate in (password, imap_password, smtp_password):
             if candidate == keyring_store.SENTINEL:
@@ -451,6 +474,7 @@ class EmailSettings(AccountAttributes):
             allowed_mutations=allowed_mutations,
             drafts_mailbox=drafts_mailbox,
             allow_protocol_commands=allow_protocol_commands,
+            draft_identity_key=draft_identity_key,
         )
 
     @classmethod
@@ -520,6 +544,7 @@ class EmailSettings(AccountAttributes):
                 save_to_sent=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),
                 sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
                 drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
+                draft_identity_key=os.getenv("MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY") or None,
                 allow_protocol_commands=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_ALLOW_PROTOCOL_COMMANDS"), False),
                 allowed_mutations=(
                     list(
@@ -574,6 +599,9 @@ class Settings(BaseSettings):
     allowed_mutations: list[MutationClass] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_MUTATIONS))
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
+    # Addresses or glob patterns compose tools may put in From instead of the
+    # account address (explicit from_address or derived from a replied-to message).
+    allowed_from_addresses: list[str] = []
     report_blocked_mutations: bool = False
     credential_storage: CredentialStorage = "auto"
 
@@ -619,6 +647,8 @@ class Settings(BaseSettings):
             self.allowed_recipients = normalize_recipient_patterns(self.allowed_recipients)
         if self.allowed_senders:
             self.allowed_senders = normalize_pattern_list(self.allowed_senders)
+        if self.allowed_from_addresses:
+            self.allowed_from_addresses = normalize_recipient_patterns(self.allowed_from_addresses)
 
         if not migration_load:
             self._apply_env_overrides()
@@ -650,6 +680,9 @@ class Settings(BaseSettings):
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
         )
+        from_addresses_value = os.getenv("MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES")
+        if from_addresses_value is not None:
+            self.allowed_from_addresses = normalize_recipient_patterns(from_addresses_value.split(","))
         raw_mutations = os.getenv("MCP_EMAIL_SERVER_ALLOWED_MUTATIONS")
         if raw_mutations is not None:
             self.allowed_mutations = list(
@@ -792,6 +825,8 @@ class Settings(BaseSettings):
             raise ValueError(f"Allowed recipients exceed the limit of {APPLICATION_LIMITS.policy_entries}")
         if len(self.allowed_senders) > APPLICATION_LIMITS.policy_entries:
             raise ValueError(f"Allowed senders exceed the limit of {APPLICATION_LIMITS.policy_entries}")
+        if len(self.allowed_from_addresses) > APPLICATION_LIMITS.policy_entries:
+            raise ValueError(f"Allowed from addresses exceed the limit of {APPLICATION_LIMITS.policy_entries}")
         account_names = set()
         for email in self.emails:
             if email.account_name in account_names:

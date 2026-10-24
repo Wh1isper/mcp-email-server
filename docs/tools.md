@@ -426,6 +426,9 @@ Sends a message through the selected account's SMTP server. It supports:
 - Plain-text or HTML bodies.
 - Attachments from file paths available to the server process. Relative paths use the process working directory; absolute paths are recommended.
 - `Reply-To`, `In-Reply-To`, and `References` headers.
+- An optional `from_address` from the
+  [sender identity](configuration.md#sender-identities) allowlist. On a reply
+  without it, the From is derived from the replied-to message.
 
 The tool is always present in the stable MCP catalog. The selected
 `account_name` must itself be enabled and send-capable; an IMAP-only account is
@@ -492,7 +495,11 @@ as `utf8-append-unsupported` without changing the successful SMTP outcome.
 Composes and saves a draft without SMTP. It requires `draft`, not `append`.
 Pass the account and compose fields (recipients, subject, body, optional CC/BCC,
 attachments and threading headers). An explicit empty recipient list is allowed;
-every supplied recipient must match the recipient allowlist.
+every supplied recipient must match the recipient allowlist. An optional
+`from_address`, and the From derived for replies, follow the
+[sender identity](configuration.md#sender-identities) rules. With the
+account's `draft_identity_key` set, the draft carries `X-Identity-Key` so
+Thunderbird keeps that From when the draft is opened.
 
 This tool has no mailbox or flags parameter. It uses the account's optional
 `drafts_mailbox`, or the unique mailbox advertising special-use `\Drafts`,
@@ -550,16 +557,17 @@ SMTP server. The server reads the source message over IMAP, composes a new
 message below an optional note from the caller, and re-attaches the original's
 attachments.
 
-| Parameter             | Default  | Description                                   |
-| --------------------- | -------- | --------------------------------------------- |
-| `account_name`        | Required | Configured account identifier.                |
-| `email_id`            | Required | UID of the source message to forward.         |
-| `recipients`          | Required | Addresses that receive the forwarded message. |
-| `source_mailbox`      | `INBOX`  | Mailbox that contains the source message.     |
-| `body`                | `""`     | Note placed above the forwarded content.      |
-| `cc`                  | None     | Additional CC recipients of the forward.      |
-| `bcc`                 | None     | Additional BCC recipients of the forward.     |
-| `include_attachments` | `true`   | Re-attach the source message's attachments.   |
+| Parameter             | Default  | Description                                      |
+| --------------------- | -------- | ------------------------------------------------ |
+| `account_name`        | Required | Configured account identifier.                   |
+| `email_id`            | Required | UID of the source message to forward.            |
+| `recipients`          | Required | Addresses that receive the forwarded message.    |
+| `source_mailbox`      | `INBOX`  | Mailbox that contains the source message.        |
+| `body`                | `""`     | Note placed above the forwarded content.         |
+| `cc`                  | None     | Additional CC recipients of the forward.         |
+| `bcc`                 | None     | Additional BCC recipients of the forward.        |
+| `include_attachments` | `true`   | Re-attach the source message's attachments.      |
+| `from_address`        | None     | Allowed own From instead of the account address. |
 
 The subject is derived from the source message as `Fwd: <original subject>`. A
 source subject that already begins with `Fwd:` in any letter case is not

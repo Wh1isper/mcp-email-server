@@ -716,6 +716,7 @@ def test_import_with_unsupported_provider_keeps_legacy_selected() -> None:
         allowed_recipients=(),
         allowed_senders=(),
         report_blocked_mutations=False,
+        allowed_from_addresses=(),
     )
     backend.write_selection.assert_not_called()
 
@@ -887,12 +888,14 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
             ),
             allowed_senders=(" *@Example.Test ", "", "*@example.test"),
             report_blocked_mutations=True,
+            allowed_from_addresses=(" *@Example.Test ", "", "Lu <LU@Lukius.de>"),
         )
     )
 
     assert result.enable_attachment_content is True
     assert result.allowed_recipients == ("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test")
     assert result.allowed_senders == ("*@example.test",)
+    assert result.allowed_from_addresses == ("*@example.test", "lu@lukius.de")
     catalog.update_policy.assert_called_once_with(
         allowed_mutations=("draft", "organize", "delete", "send", "append"),
         expected_revision=7,
@@ -901,6 +904,7 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
         allowed_recipients=("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test"),
         allowed_senders=("*@example.test",),
         report_blocked_mutations=True,
+        allowed_from_addresses=("*@example.test", "lu@lukius.de"),
     )
 
 

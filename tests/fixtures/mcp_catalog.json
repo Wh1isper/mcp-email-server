@@ -996,6 +996,20 @@
                         "default": null,
                         "description": "Email address to set as the Reply-To header. When set, email clients will reply to this address instead of the From address.",
                         "title": "Reply To"
+                    },
+                    "from_address": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Optional From address (bare or 'Name <address>') used instead of the account address. It must match the configured sender identity allowlist. When omitted on a reply (in_reply_to set), the From is the own address the replied-to message was sent to, if that address is on the allowlist; otherwise the account address is used.",
+                        "title": "From Address"
                     }
                 },
                 "required": ["account_name", "recipients", "subject", "body"],
@@ -1104,6 +1118,20 @@
                         "description": "Whether to re-attach the source message's attachments.",
                         "title": "Include Attachments",
                         "type": "boolean"
+                    },
+                    "from_address": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Optional From address (bare or 'Name <address>') used instead of the account address. It must match the configured sender identity allowlist.",
+                        "title": "From Address"
                     }
                 },
                 "required": ["account_name", "email_id", "recipients"],
@@ -1426,6 +1454,20 @@
                         "default": null,
                         "description": "Space-separated Message-IDs for the thread chain. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
                         "title": "References"
+                    },
+                    "from_address": {
+                        "anyOf": [
+                            {
+                                "maxLength": 65536,
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "default": null,
+                        "description": "Optional From address (bare or 'Name <address>') used instead of the account address. It must match the configured sender identity allowlist. When omitted on a reply (in_reply_to set), the From is the own address the replied-to message was sent to, if that address is on the allowlist; otherwise the account address is used.",
+                        "title": "From Address"
                     }
                 },
                 "required": ["account_name", "subject", "body"],

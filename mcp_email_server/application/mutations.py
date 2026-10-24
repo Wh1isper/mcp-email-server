@@ -48,6 +48,10 @@ class RecipientPolicyDeniedError(PermissionError):
     """Current account authority denies one or more message recipients."""
 
 
+class SenderIdentityDeniedError(PermissionError):
+    """Current account authority denies the requested From address."""
+
+
 async def _bounded_provider_effect(operation: Awaitable[ProviderResultT]) -> ProviderResultT:
     async with asyncio.timeout(APPLICATION_LIMITS.provider_timeout_seconds):
         return await operation
@@ -69,6 +73,9 @@ class MutationAccountSnapshot:
     tag_registry: ImapKeywordRegistry = field(default_factory=ImapKeywordRegistry)
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
     drafts_mailbox: str | None = None
+    # Empty means every composed message uses the account's own From address.
+    allowed_from_addresses: tuple[str, ...] = ()
+    draft_identity_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -339,6 +346,7 @@ class ComposeCommand:
     attachments: tuple[str, ...] = ()
     in_reply_to: str | None = None
     references: str | None = None
+    from_address: str | None = None
 
     def validate(self) -> None:
         self._validate_compose()
@@ -349,6 +357,7 @@ class ComposeCommand:
         _validate_content(self.subject, self.body, self.attachments)
         _validate_optional_header("in_reply_to", self.in_reply_to)
         _validate_optional_header("references", self.references)
+        _validate_optional_header("from_address", self.from_address)
         if self.in_reply_to is not None:
             _validate_optional_header("in_reply_to", normalize_thread_message_ids(self.in_reply_to))
         if self.references is not None:
@@ -495,6 +504,12 @@ class MutationProvider(Protocol):
 
     async def find_drafts_mailbox(self) -> str: ...
 
+    async def find_reply_identity(
+        self,
+        in_reply_to: str,
+        account: MutationAccountSnapshot,
+    ) -> str | None: ...
+
     async def find_archive_mailbox(self, source_mailbox: str) -> str: ...
 
     async def find_junk_mailbox(self) -> str: ...
@@ -563,6 +578,15 @@ def validate_mailbox_name(mailbox: str) -> None:
         field_name="mailbox",
         maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
     )
+
+
+_DRAFT_IDENTITY_KEY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+
+
+def validate_draft_identity_key(key: str) -> None:
+    """A client identity key is a short token; it becomes a header value verbatim."""
+    if not isinstance(key, str) or not 1 <= len(key) <= 64 or not set(key) <= _DRAFT_IDENTITY_KEY_CHARS:
+        raise ValueError("draft_identity_key must be 1 to 64 letters, digits, '_', '.' or '-'")
 
 
 def _validate_email_ids(email_ids: tuple[str, ...]) -> None:
@@ -747,6 +771,42 @@ def _validate_recipient_policy(command: ComposeCommand, account: MutationAccount
     ]
     if blocked:
         raise RecipientPolicyDeniedError("recipient policy denied one or more addresses")
+
+
+def _validate_sender_identity(command: ComposeCommand, account: MutationAccountSnapshot) -> None:
+    from mcp_email_server.config import from_address_allowed
+
+    if command.from_address is not None and not from_address_allowed(
+        command.from_address, account.allowed_from_addresses
+    ):
+        raise SenderIdentityDeniedError("sender identity policy denied the from_address")
+
+
+ComposeCommandT = TypeVar("ComposeCommandT", bound=ComposeCommand)
+
+
+async def _with_reply_identity(
+    command: ComposeCommandT,
+    provider: MutationProvider,
+    account: MutationAccountSnapshot,
+) -> ComposeCommandT:
+    """Answer from the own address the replied-to message was sent to.
+
+    Only applies to replies without an explicit from_address and only when
+    sender identities are configured. A replied-to message that cannot be found
+    or names no allowed address keeps the account's own From.
+    """
+    if command.from_address is not None or command.in_reply_to is None or not account.allowed_from_addresses:
+        return command
+    try:
+        identity = await _bounded_provider_effect(provider.find_reply_identity(command.in_reply_to, account))
+    except TimeoutError:
+        raise MutationProviderError("reply identity lookup timed out") from None
+    if identity is None:
+        return command
+    derived = replace(command, from_address=identity)
+    _validate_sender_identity(derived, account)
+    return derived
 
 
 def _result_limit_error() -> MutationProviderError:
@@ -1098,9 +1158,12 @@ class SaveToMailboxService(_MutationWorkflow):
         account = self._resolve(command.account_name)
         require_append_permissions(account.allowed_mutations, command.flags)
         _validate_recipient_policy(command, account)
+        _validate_sender_identity(command, account)
         access = self._open(account)
         require_append_permissions(access.account.allowed_mutations, command.flags)
         _validate_recipient_policy(command, access.account)
+        command = await _with_reply_identity(command, access.provider, access.account)
+        _validate_sender_identity(command, access.account)
         _preflight_attachment_sizes(command.attachments)
         try:
             outcome = _validate_append_result(
@@ -1137,18 +1200,21 @@ class SaveDraftService(_MutationWorkflow):
         account = self._resolve(command.account_name)
         require_mutation(account.allowed_mutations, "draft")
         _validate_recipient_policy(command, account)
+        _validate_sender_identity(command, account)
         access = self._open(account)
         require_mutation(access.account.allowed_mutations, "draft")
         mailbox = access.account.drafts_mailbox
         if mailbox is None:
             mailbox = await _bounded_provider_effect(access.provider.find_drafts_mailbox())
         validate_mailbox_name(mailbox)
+        command = await _with_reply_identity(command, access.provider, access.account)
         # Discovery is a read; reopen fresh authority before the independent APPEND.
         access = self._open(account)
         require_mutation(access.account.allowed_mutations, "draft")
         if access.account.drafts_mailbox != account.drafts_mailbox:
             raise PermissionError("Draft mailbox authority changed; retry")
         _validate_recipient_policy(command, access.account)
+        _validate_sender_identity(command, access.account)
         _preflight_attachment_sizes(command.attachments)
         append = DraftAppendCommand(**vars(command), mailbox=mailbox, flags=(r"\Draft",))
         try:
@@ -1328,10 +1394,18 @@ class SendService(_MutationWorkflow):
         # presence, so both submission workflows check the same non-secret flag.
         self._require_send_capability(account)
         _validate_recipient_policy(command, account)
+        _validate_sender_identity(command, account)
+        if command.from_address is None and command.in_reply_to is not None and account.allowed_from_addresses:
+            # The replied-to message lives in the incoming store; derivation is a
+            # read, so the outgoing authority below is resolved fresh afterwards.
+            incoming = self._open(account, purpose="incoming")
+            require_mutation(incoming.account.allowed_mutations, "send")
+            command = await _with_reply_identity(command, incoming.provider, incoming.account)
         access = self._open(account, purpose="outgoing")
         require_mutation(access.account.allowed_mutations, "send")
         self._require_send_capability(access.account)
         _validate_recipient_policy(command, access.account)
+        _validate_sender_identity(command, access.account)
         _preflight_attachment_sizes(command.attachments)
         try:
             delivery = _validate_delivery_result(
@@ -1353,6 +1427,7 @@ class ForwardService(_MutationWorkflow):
         # until the submission effect itself opens the outgoing provider.
         self._require_send_capability(account)
         _validate_recipient_policy(command, account)
+        _validate_sender_identity(command, account)
         incoming = self._open(account, purpose="incoming")
         require_mutation(incoming.account.allowed_mutations, "send")
         self._require_send_capability(incoming.account)
@@ -1386,6 +1461,7 @@ class ForwardService(_MutationWorkflow):
         _validate_forward_sender_policy(forwarded, source, access.account)
         self._require_send_capability(access.account)
         _validate_recipient_policy(forwarded, access.account)
+        _validate_sender_identity(forwarded, access.account)
         try:
             delivery = _validate_delivery_result(
                 await _bounded_provider_effect(access.provider.forward(forwarded, source, access.account))

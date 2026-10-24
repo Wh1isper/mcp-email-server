@@ -290,8 +290,9 @@ def test_v3_catalog_migrates_to_v5_without_losing_accounts_policy_or_secrets(tmp
     assert details.sent_folder_name == "Sent"
 
     with closing(sqlite3.connect(catalog.path)) as connection:
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 6
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 7
         assert connection.execute("SELECT enable_attachment_content FROM catalog").fetchone()[0] == 0
+        assert connection.execute("SELECT allowed_from_addresses_json FROM catalog").fetchone()[0] == "[]"
         assert connection.execute("SELECT tags_json FROM managed_account").fetchone()[0] == "[]"
 
 

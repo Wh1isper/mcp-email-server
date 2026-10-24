@@ -65,6 +65,7 @@ def resolve_local_account(  # noqa: C901 - managed/legacy selected-role resoluti
             enable_attachment_content=policy.enable_attachment_content,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
+            allowed_from_addresses=list(policy.allowed_from_addresses),
             allowed_mutations=list(policy.allowed_mutations),
             report_blocked_mutations=policy.report_blocked_mutations,
             credential_storage="keyring",
