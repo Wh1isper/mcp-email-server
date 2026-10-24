@@ -50,8 +50,7 @@ from mcp_email_server.windows_security import (
     windows_security_supported,
 )
 
-SCHEMA_VERSION = 7
-_MIGRATION_SOURCE_VERSION = 3
+SCHEMA_VERSION = 8
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
@@ -67,6 +66,35 @@ def _validate_account_mutation_policy(
         from mcp_email_server.application.mutations import validate_mailbox_name
 
         validate_mailbox_name(drafts_mailbox)
+
+
+def _normalized_from_addresses(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    from mcp_email_server.application.limits import validate_controlled_string
+    from mcp_email_server.config import normalize_recipient_patterns
+
+    for value in values:
+        validate_controlled_string(
+            value,
+            field_name="allowed from address",
+            maximum_bytes=APPLICATION_LIMITS.address_bytes,
+            allow_empty=True,
+        )
+    normalized = tuple(normalize_recipient_patterns(values))
+    if len(normalized) > APPLICATION_LIMITS.policy_entries:
+        raise ManagedCatalogError("Managed from address policy exceeds the application limit")
+    return normalized
+
+
+def _parse_from_addresses_json(raw: object) -> tuple[str, ...]:
+    try:
+        values = json.loads(raw) if isinstance(raw, str) else None
+    except json.JSONDecodeError as exc:
+        raise ManagedCatalogError("Managed account from address data is invalid") from exc
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ManagedCatalogError("Managed account from address data is invalid")
+    if len(values) > APPLICATION_LIMITS.policy_entries:
+        raise ManagedCatalogError("Managed from address policy exceeds the application limit")
+    return tuple(values)
 
 
 def _parse_mutations_json(raw: str) -> tuple[MutationClass, ...]:
@@ -130,6 +158,8 @@ class _ManagedAuthoritySnapshot:
     allow_protocol_commands: bool
     incoming: EndpointSummary
     outgoing: EndpointSummary | None
+    allowed_from_addresses: tuple[str, ...]
+    derive_reply_from: bool
     binding_ids: tuple[tuple[BindingRole, str], ...]
     binding_locators: tuple[tuple[BindingRole, str], ...]
 
@@ -702,7 +732,23 @@ _SCHEMA_V6 = _SCHEMA_V5 + _SCHEMA_V6_ADDITIONS
 _SCHEMA_V7_ADDITIONS = """
 ALTER TABLE message_metadata_projection ADD COLUMN to_addresses_json TEXT;
 """
-_SCHEMA = _SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
+_SCHEMA_V7 = _SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
+_SCHEMA_V8_ADDITIONS = """
+ALTER TABLE managed_account ADD COLUMN allowed_from_addresses_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE managed_account
+    ADD COLUMN derive_reply_from INTEGER NOT NULL DEFAULT 0
+        CHECK (derive_reply_from IN (0, 1));
+"""
+_SCHEMA = _SCHEMA_V7 + _SCHEMA_V8_ADDITIONS
+# Each migration validates its source schema, then applies every later addition.
+_MIGRATION_SOURCE_SCHEMAS = {3: _SCHEMA_V3, 4: _SCHEMA_V4, 5: _SCHEMA_V5, 6: _SCHEMA_V6, 7: _SCHEMA_V7}
+_SCHEMA_ADDITIONS = (
+    (4, _SCHEMA_V4_ADDITIONS),
+    (5, _SCHEMA_V5_ADDITIONS),
+    (6, _SCHEMA_V6_ADDITIONS),
+    (7, _SCHEMA_V7_ADDITIONS),
+    (8, _SCHEMA_V8_ADDITIONS),
+)
 _OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
 _OPERATIONAL_DATABASE_SCHEMA_V6 = (
     """
@@ -766,9 +812,11 @@ def _read_schema_version(connection: sqlite3.Connection) -> int:
     return row["version"]
 
 
-def _require_migration_source(version: int) -> None:
-    if version != _MIGRATION_SOURCE_VERSION:
+def _migration_source_schema(version: int) -> str:
+    schema = _MIGRATION_SOURCE_SCHEMAS.get(version)
+    if schema is None:
         raise ManagedCatalogError("Managed catalog schema version is unsupported")
+    return schema
 
 
 def _require_migration_update(cursor: sqlite3.Cursor) -> None:
@@ -807,11 +855,14 @@ def _validate_managed_invariants(connection: sqlite3.Connection) -> None:
             raise ManagedCatalogError("Managed catalog policy data is invalid") from exc
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise ManagedCatalogError("Managed catalog policy data is invalid")
-    accounts = connection.execute("SELECT name, normalized_name, tags_json FROM managed_account").fetchall()
+    accounts = connection.execute(
+        "SELECT name, normalized_name, tags_json, allowed_from_addresses_json FROM managed_account"
+    ).fetchall()
     if any(row["normalized_name"] != _normalize_account_name(row["name"]) for row in accounts):
         raise ManagedCatalogError("Managed account identity data is invalid")
     for row in accounts:
         _parse_tags_json(row["tags_json"])
+        _parse_from_addresses_json(row["allowed_from_addresses_json"])
 
 
 class ManagedCatalog:
@@ -862,18 +913,9 @@ class ManagedCatalog:
             version = _read_schema_version(connection)
         except sqlite3.Error as exc:
             raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
-        if version == SCHEMA_VERSION:
-            _validate_managed_schema(connection, _SCHEMA)
-        elif version == 6:
-            _validate_managed_schema(connection, _SCHEMA_V6)
-        elif version == 5:
-            _validate_managed_schema(connection, _SCHEMA_V5)
-        elif version == 4:
-            _validate_managed_schema(connection, _SCHEMA_V4)
-        elif version == _MIGRATION_SOURCE_VERSION:
-            _validate_managed_schema(connection, _SCHEMA_V3)
-        else:
-            raise ManagedCatalogError("Managed catalog schema version is unsupported")
+        _validate_managed_schema(
+            connection, _SCHEMA if version == SCHEMA_VERSION else _migration_source_schema(version)
+        )
         return version
 
     @staticmethod
@@ -886,22 +928,10 @@ class ManagedCatalog:
                 _validate_managed_invariants(connection)
                 connection.commit()
                 return
-            if version == 3:
-                _validate_managed_schema(connection, _SCHEMA_V3)
-                _execute_schema(connection, _SCHEMA_V4_ADDITIONS)
-            elif version == 4:
-                _validate_managed_schema(connection, _SCHEMA_V4)
-            elif version == 5:
-                _validate_managed_schema(connection, _SCHEMA_V5)
-            elif version == 6:
-                _validate_managed_schema(connection, _SCHEMA_V6)
-            else:
-                _require_migration_source(version)
-            if version < 5:
-                _execute_schema(connection, _SCHEMA_V5_ADDITIONS)
-            if version < 6:
-                _execute_schema(connection, _SCHEMA_V6_ADDITIONS)
-            _execute_schema(connection, _SCHEMA_V7_ADDITIONS)
+            _validate_managed_schema(connection, _migration_source_schema(version))
+            for target_version, additions in _SCHEMA_ADDITIONS:
+                if version < target_version:
+                    _execute_schema(connection, additions)
             _validate_managed_schema(connection, _SCHEMA)
             _validate_managed_invariants(connection)
             updated = connection.execute(
@@ -919,7 +949,7 @@ class ManagedCatalog:
         with _connect(self.path, enable_wal=False) as connection:
             version = self._preflight_schema_ownership(connection)
         with _connect(self.path) as connection:
-            if version in (3, 4, 5, 6):
+            if version in _MIGRATION_SOURCE_SCHEMAS:
                 self._migrate_to_current_schema(connection)
             self._validate_schema(connection)
             yield connection
@@ -1068,8 +1098,11 @@ class ManagedCatalog:
         drafts_mailbox: str | None = None,
         allow_protocol_commands: bool = False,
         expected_revision: int | None = None,
+        allowed_from_addresses: tuple[str, ...] = (),
+        derive_reply_from: bool = False,
     ) -> str:
         _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
+        from_addresses = _normalized_from_addresses(allowed_from_addresses)
         if not name.strip() or not full_name.strip() or not email_address.strip():
             raise ManagedCatalogError("Account name, full name, and email address are required")
         account_id = uuid.uuid4().hex
@@ -1122,11 +1155,14 @@ class ManagedCatalog:
                 )
                 connection.execute(
                     "UPDATE managed_account SET allowed_mutations_json = ?, drafts_mailbox = ?, "
-                    "allow_protocol_commands = ? WHERE id = ?",
+                    "allow_protocol_commands = ?, allowed_from_addresses_json = ?, derive_reply_from = ? "
+                    "WHERE id = ?",
                     (
                         json.dumps(allowed_mutations) if allowed_mutations is not None else None,
                         drafts_mailbox,
                         int(allow_protocol_commands),
+                        json.dumps(list(from_addresses)),
+                        int(derive_reply_from),
                         account_id,
                     ),
                 )
@@ -1439,6 +1475,8 @@ class ManagedCatalog:
             else None,
             drafts_mailbox=account["drafts_mailbox"],
             allow_protocol_commands=bool(account["allow_protocol_commands"]),
+            allowed_from_addresses=_parse_from_addresses_json(account["allowed_from_addresses_json"]),
+            derive_reply_from=bool(account["derive_reply_from"]),
             incoming=incoming,
             outgoing=endpoints.get("outgoing"),
             incoming_binding=bindings.get("incoming", "MISSING"),
@@ -1486,8 +1524,13 @@ class ManagedCatalog:
         drafts_mailbox: str | None = None,
         update_drafts_mailbox: bool = False,
         allow_protocol_commands: bool | None = None,
+        allowed_from_addresses: tuple[str, ...] | None = None,
+        derive_reply_from: bool | None = None,
     ) -> int:
         _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
+        from_addresses = (
+            _normalized_from_addresses(allowed_from_addresses) if allowed_from_addresses is not None else None
+        )
         if expected_revision < 1:
             raise ManagedCatalogError("Expected account revision must be positive")
         if new_name is not None and not new_name.strip():
@@ -1512,6 +1555,8 @@ class ManagedCatalog:
             validated_tags is not None,
             update_allowed_mutations,
             update_drafts_mailbox,
+            from_addresses is not None,
+            derive_reply_from is not None,
         )):
             raise ManagedCatalogError("Account update did not specify any changes")
 
@@ -1536,7 +1581,8 @@ class ManagedCatalog:
                     update_sent_folder=update_sent_folder,
                     tags=validated_tags,
                 )
-                if update_allowed_mutations or update_drafts_mailbox:
+                identity_update = from_addresses is not None or derive_reply_from is not None
+                if update_allowed_mutations or update_drafts_mailbox or identity_update:
                     row = connection.execute(
                         "SELECT id FROM managed_account WHERE normalized_name = ?",
                         (_normalize_account_name(new_name or name),),
@@ -1551,6 +1597,16 @@ class ManagedCatalog:
                     if update_drafts_mailbox:
                         connection.execute(
                             "UPDATE managed_account SET drafts_mailbox = ? WHERE id = ?", (drafts_mailbox, row["id"])
+                        )
+                    if from_addresses is not None:
+                        connection.execute(
+                            "UPDATE managed_account SET allowed_from_addresses_json = ? WHERE id = ?",
+                            (json.dumps(list(from_addresses)), row["id"]),
+                        )
+                    if derive_reply_from is not None:
+                        connection.execute(
+                            "UPDATE managed_account SET derive_reply_from = ? WHERE id = ?",
+                            (int(derive_reply_from), row["id"]),
                         )
                 connection.commit()
             except sqlite3.IntegrityError as exc:
@@ -2060,6 +2116,8 @@ class ManagedCatalog:
             else None,
             drafts_mailbox=account["drafts_mailbox"],
             allow_protocol_commands=bool(account["allow_protocol_commands"]),
+            allowed_from_addresses=_parse_from_addresses_json(account["allowed_from_addresses_json"]),
+            derive_reply_from=bool(account["derive_reply_from"]),
             incoming=self._endpoint_summary(incoming_row),
             outgoing=self._endpoint_summary(outgoing_row) if outgoing_row is not None else None,
             binding_ids=tuple((role, bindings[role]["id"]) for role in sorted(bindings)),
@@ -2114,6 +2172,8 @@ class ManagedCatalog:
                 allowed_mutations=list(current.allowed_mutations) if current.allowed_mutations is not None else None,
                 drafts_mailbox=current.drafts_mailbox,
                 allow_protocol_commands=current.allow_protocol_commands,
+                allowed_from_addresses=list(current.allowed_from_addresses),
+                derive_reply_from=current.derive_reply_from,
                 tags=current.tags,
             ),
             policy=current.policy,
@@ -2181,6 +2241,8 @@ class ManagedCatalog:
                         else None,
                         drafts_mailbox=account["drafts_mailbox"],
                         allow_protocol_commands=bool(account["allow_protocol_commands"]),
+                        allowed_from_addresses=list(_parse_from_addresses_json(account["allowed_from_addresses_json"])),
+                        derive_reply_from=bool(account["derive_reply_from"]),
                     )
                 )
             policy = self._policy_from_row(catalog)
