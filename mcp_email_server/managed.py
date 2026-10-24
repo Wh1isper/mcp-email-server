@@ -59,7 +59,9 @@ MAX_CREDENTIAL_CLEANUP_ROWS = APPLICATION_LIMITS.credential_cleanup_rows
 
 
 def _validate_account_mutation_policy(
-    allowed_mutations: tuple[MutationClass, ...] | None, drafts_mailbox: str | None
+    allowed_mutations: tuple[MutationClass, ...] | None,
+    drafts_mailbox: str | None,
+    draft_identity_key: str | None = None,
 ) -> None:
     if allowed_mutations is not None:
         validate_mutations(allowed_mutations)
@@ -67,6 +69,10 @@ def _validate_account_mutation_policy(
         from mcp_email_server.application.mutations import validate_mailbox_name
 
         validate_mailbox_name(drafts_mailbox)
+    if draft_identity_key is not None:
+        from mcp_email_server.application.mutations import validate_draft_identity_key
+
+        validate_draft_identity_key(draft_identity_key)
 
 
 def _parse_mutations_json(raw: str) -> tuple[MutationClass, ...]:
@@ -130,6 +136,7 @@ class _ManagedAuthoritySnapshot:
     allow_protocol_commands: bool
     incoming: EndpointSummary
     outgoing: EndpointSummary | None
+    draft_identity_key: str | None
     binding_ids: tuple[tuple[BindingRole, str], ...]
     binding_locators: tuple[tuple[BindingRole, str], ...]
 
@@ -701,6 +708,7 @@ ALTER TABLE managed_account
 _SCHEMA_V6 = _SCHEMA_V5 + _SCHEMA_V6_ADDITIONS
 _SCHEMA_V7_ADDITIONS = """
 ALTER TABLE catalog ADD COLUMN allowed_from_addresses_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE managed_account ADD COLUMN draft_identity_key TEXT;
 """
 _SCHEMA = _SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
 _OPERATIONAL_DATABASE_SCHEMA = (
@@ -1080,8 +1088,9 @@ class ManagedCatalog:
         drafts_mailbox: str | None = None,
         allow_protocol_commands: bool = False,
         expected_revision: int | None = None,
+        draft_identity_key: str | None = None,
     ) -> str:
-        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
+        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox, draft_identity_key)
         if not name.strip() or not full_name.strip() or not email_address.strip():
             raise ManagedCatalogError("Account name, full name, and email address are required")
         account_id = uuid.uuid4().hex
@@ -1134,11 +1143,12 @@ class ManagedCatalog:
                 )
                 connection.execute(
                     "UPDATE managed_account SET allowed_mutations_json = ?, drafts_mailbox = ?, "
-                    "allow_protocol_commands = ? WHERE id = ?",
+                    "allow_protocol_commands = ?, draft_identity_key = ? WHERE id = ?",
                     (
                         json.dumps(allowed_mutations) if allowed_mutations is not None else None,
                         drafts_mailbox,
                         int(allow_protocol_commands),
+                        draft_identity_key,
                         account_id,
                     ),
                 )
@@ -1450,6 +1460,7 @@ class ManagedCatalog:
             if account["allowed_mutations_json"] is not None
             else None,
             drafts_mailbox=account["drafts_mailbox"],
+            draft_identity_key=account["draft_identity_key"],
             allow_protocol_commands=bool(account["allow_protocol_commands"]),
             incoming=incoming,
             outgoing=endpoints.get("outgoing"),
@@ -1498,8 +1509,10 @@ class ManagedCatalog:
         drafts_mailbox: str | None = None,
         update_drafts_mailbox: bool = False,
         allow_protocol_commands: bool | None = None,
+        draft_identity_key: str | None = None,
+        update_draft_identity_key: bool = False,
     ) -> int:
-        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
+        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox, draft_identity_key)
         if expected_revision < 1:
             raise ManagedCatalogError("Expected account revision must be positive")
         if new_name is not None and not new_name.strip():
@@ -1524,6 +1537,7 @@ class ManagedCatalog:
             validated_tags is not None,
             update_allowed_mutations,
             update_drafts_mailbox,
+            update_draft_identity_key,
         )):
             raise ManagedCatalogError("Account update did not specify any changes")
 
@@ -1548,7 +1562,7 @@ class ManagedCatalog:
                     update_sent_folder=update_sent_folder,
                     tags=validated_tags,
                 )
-                if update_allowed_mutations or update_drafts_mailbox:
+                if update_allowed_mutations or update_drafts_mailbox or update_draft_identity_key:
                     row = connection.execute(
                         "SELECT id FROM managed_account WHERE normalized_name = ?",
                         (_normalize_account_name(new_name or name),),
@@ -1563,6 +1577,11 @@ class ManagedCatalog:
                     if update_drafts_mailbox:
                         connection.execute(
                             "UPDATE managed_account SET drafts_mailbox = ? WHERE id = ?", (drafts_mailbox, row["id"])
+                        )
+                    if update_draft_identity_key:
+                        connection.execute(
+                            "UPDATE managed_account SET draft_identity_key = ? WHERE id = ?",
+                            (draft_identity_key, row["id"]),
                         )
                 connection.commit()
             except sqlite3.IntegrityError as exc:
@@ -2071,6 +2090,7 @@ class ManagedCatalog:
             if account["allowed_mutations_json"] is not None
             else None,
             drafts_mailbox=account["drafts_mailbox"],
+            draft_identity_key=account["draft_identity_key"],
             allow_protocol_commands=bool(account["allow_protocol_commands"]),
             incoming=self._endpoint_summary(incoming_row),
             outgoing=self._endpoint_summary(outgoing_row) if outgoing_row is not None else None,
@@ -2125,6 +2145,7 @@ class ManagedCatalog:
                 sent_folder_name=current.sent_folder_name,
                 allowed_mutations=list(current.allowed_mutations) if current.allowed_mutations is not None else None,
                 drafts_mailbox=current.drafts_mailbox,
+                draft_identity_key=current.draft_identity_key,
                 allow_protocol_commands=current.allow_protocol_commands,
                 tags=current.tags,
             ),
@@ -2192,6 +2213,7 @@ class ManagedCatalog:
                         if account["allowed_mutations_json"] is not None
                         else None,
                         drafts_mailbox=account["drafts_mailbox"],
+                        draft_identity_key=account["draft_identity_key"],
                         allow_protocol_commands=bool(account["allow_protocol_commands"]),
                     )
                 )

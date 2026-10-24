@@ -270,6 +270,7 @@ class LocalManagementBackend:
             drafts_mailbox=account.drafts_mailbox,
             allow_protocol_commands=account.allow_protocol_commands,
             tags=account.tags,
+            draft_identity_key=account.draft_identity_key,
         )
         cls._validate_legacy_account_snapshot(snapshot)
         return snapshot
@@ -378,6 +379,7 @@ class LocalManagementBackend:
                 save_to_sent=cls._bool_environment("MCP_EMAIL_SERVER_SAVE_TO_SENT", True),
                 sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
                 drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
+                draft_identity_key=os.getenv("MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY") or None,
                 allow_protocol_commands=cls._bool_environment("MCP_EMAIL_SERVER_ALLOW_PROTOCOL_COMMANDS", False),
                 allowed_mutations=(
                     list(

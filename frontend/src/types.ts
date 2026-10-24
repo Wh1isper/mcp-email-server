@@ -59,6 +59,7 @@ export interface AccountTag {
 export interface AccountSummary {
   allowed_mutations?: MutationClass[] | null
   drafts_mailbox?: string | null
+  draft_identity_key?: string | null
   allow_protocol_commands?: boolean
   name: string
   email_address: string
@@ -81,6 +82,7 @@ export interface AccountDetails extends AccountSummary {
 export interface AccountInput {
   allowed_mutations?: MutationClass[] | null
   drafts_mailbox?: string | null
+  draft_identity_key?: string | null
   allow_protocol_commands?: boolean
   name: string
   full_name: string

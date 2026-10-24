@@ -377,6 +377,7 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
                 "tags": [_tag_data(tag) for tag in source.tags],
                 "allowed_mutations": list(source.allowed_mutations) if source.allowed_mutations is not None else None,
                 "drafts_mailbox": source.drafts_mailbox,
+                "draft_identity_key": source.draft_identity_key,
                 "allow_protocol_commands": source.allow_protocol_commands,
             },
             "incoming": {
@@ -848,6 +849,9 @@ def account_add(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
     drafts_mailbox: str | None = typer.Option(None, "--drafts-mailbox"),
+    draft_identity_key: str | None = typer.Option(
+        None, "--draft-identity-key", help="Thunderbird identity key (for example id4) written as X-Identity-Key."
+    ),
     sent_folder: str | None = typer.Option(None, "--sent-folder"),
     json_output: JsonOutput = False,
 ) -> None:
@@ -923,6 +927,7 @@ def account_add(
                 else parse_mutations(_split_csv(allowed_mutations)),
                 drafts_mailbox=drafts_mailbox or None,
                 allow_protocol_commands=allow_protocol_commands,
+                draft_identity_key=draft_identity_key or None,
             )
         )
     except (ManagementError, ValueError) as exc:
@@ -1064,6 +1069,7 @@ def account_show(name: str, json_output: JsonOutput = False) -> None:
                 "sent_folder_name": account.sent_folder_name,
                 "allowed_mutations": list(account.allowed_mutations) if account.allowed_mutations is not None else None,
                 "drafts_mailbox": account.drafts_mailbox,
+                "draft_identity_key": account.draft_identity_key,
                 "allow_protocol_commands": account.allow_protocol_commands,
                 "incoming": _endpoint_data(account.incoming),
                 "outgoing": _endpoint_data(account.outgoing) if account.outgoing is not None else None,
@@ -1129,6 +1135,11 @@ def account_update(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
     drafts_mailbox: str | None = typer.Option(None, "--drafts-mailbox"),
+    draft_identity_key: str | None = typer.Option(
+        None,
+        "--draft-identity-key",
+        help="Thunderbird identity key written as X-Identity-Key on drafts; an empty value clears it.",
+    ),
     sent_folder: str | None = typer.Option(None, "--sent-folder"),
     clear_sent_folder: bool = typer.Option(False, "--clear-sent-folder"),
     json_output: JsonOutput = False,
@@ -1172,6 +1183,8 @@ def account_update(
                 allow_protocol_commands=allow_protocol_commands,
                 update_allowed_mutations=allowed_mutations is not None,
                 update_drafts_mailbox=drafts_mailbox is not None,
+                draft_identity_key=draft_identity_key or None,
+                update_draft_identity_key=draft_identity_key is not None,
                 update_sent_folder=sent_folder is not None or clear_sent_folder,
             )
         )

@@ -332,6 +332,8 @@ account_name = "work"
 # Omit allowed_mutations to inherit; [] explicitly blocks all mail writes.
 allowed_mutations = ["draft", "organize"]
 drafts_mailbox = "Drafts"
+# Optional: Thunderbird identity key for X-Identity-Key on saved drafts.
+draft_identity_key = "id4"
 ```
 
 The account editor distinguishes inherited permissions from an explicit list
@@ -350,6 +352,16 @@ not guess a name or create a mailbox. `save_draft` permits a recipientless draft
 including with an empty recipient allowlist. Every supplied To/CC/BCC address
 still requires a match. General `save_to_mailbox` continues to enforce its
 recipient policy and requires `append`, even when saving to a Drafts folder.
+
+`draft_identity_key` is optional (environment:
+`MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`). When set, every draft from `save_draft`
+carries `X-Identity-Key: <value>`. Thunderbird opens a draft with the identity
+that header names and keeps the draft's From. Without it, Thunderbird looks for
+an identity whose address equals the From and, when none exists (an alias
+served by a catch-all identity, for example), uses the default identity and
+replaces the From. The value is the identity key from Thunderbird's account
+settings (`mail.identity.idN` in the Config Editor), 1 to 64 letters, digits,
+`_`, `.` or `-`. `save_to_mailbox` never adds the header.
 
 Endpoint ports must be between 1 and 65535, and implicit TLS cannot be combined
 with STARTTLS. `account add` checks the selected catalog and these non-secret
@@ -856,6 +868,7 @@ after changing legacy TOML.
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`          | Auto-detected             | No       | Override the Sent folder name.                                                                                                              |
 | `MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS` | Inherit global            | No       | CSV grants for the environment-created account; empty means read-only. Omit to inherit; `inherit` is a CLI value, not an environment value. |
 | `MCP_EMAIL_SERVER_DRAFTS_MAILBOX`            | Unique special-use Drafts | No       | Exact existing draft mailbox for the environment-created account; omit for discovery.                                                       |
+| `MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`        | Unset                     | No       | Thunderbird identity key written as `X-Identity-Key` on `save_draft` drafts.                                                                |
 
 Boolean values accept `true`, `1`, `yes`, or `on` as true, ignoring case. Other
 values are treated as false. Do not add surrounding whitespace to these values.

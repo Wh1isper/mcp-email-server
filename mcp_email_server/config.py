@@ -377,6 +377,9 @@ class EmailSettings(AccountAttributes):
     tags: tuple[ImapKeywordTag, ...] = ()
     allowed_mutations: list[MutationClass] | None = None
     drafts_mailbox: str | None = None
+    # Thunderbird identity key (for example "id4") written as X-Identity-Key on
+    # saved drafts, so Thunderbird keeps a From that differs from the identity.
+    draft_identity_key: str | None = None
     allow_protocol_commands: bool = False
     # None inherits MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH, which defaults to auto.
     # Managed accounts leave this unset; auto still quotes imap.qq.com by host.
@@ -390,6 +393,10 @@ class EmailSettings(AccountAttributes):
             from mcp_email_server.application.mutations import validate_mailbox_name
 
             validate_mailbox_name(self.drafts_mailbox)
+        if self.draft_identity_key is not None:
+            from mcp_email_server.application.mutations import validate_draft_identity_key
+
+            validate_draft_identity_key(self.draft_identity_key)
         ImapKeywordAccount(tags=self.tags)
         return self
 
@@ -426,6 +433,7 @@ class EmailSettings(AccountAttributes):
         allowed_mutations: list[MutationClass] | None = None,
         drafts_mailbox: str | None = None,
         allow_protocol_commands: bool = False,
+        draft_identity_key: str | None = None,
     ) -> EmailSettings:
         for candidate in (password, imap_password, smtp_password):
             if candidate == keyring_store.SENTINEL:
@@ -466,6 +474,7 @@ class EmailSettings(AccountAttributes):
             allowed_mutations=allowed_mutations,
             drafts_mailbox=drafts_mailbox,
             allow_protocol_commands=allow_protocol_commands,
+            draft_identity_key=draft_identity_key,
         )
 
     @classmethod
@@ -535,6 +544,7 @@ class EmailSettings(AccountAttributes):
                 save_to_sent=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),
                 sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
                 drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
+                draft_identity_key=os.getenv("MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY") or None,
                 allow_protocol_commands=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_ALLOW_PROTOCOL_COMMANDS"), False),
                 allowed_mutations=(
                     list(
