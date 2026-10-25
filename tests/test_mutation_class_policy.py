@@ -363,7 +363,7 @@ def test_migration_preserves_full_default_inheritance_and_existing_rows(tmp_path
     store.delete.assert_not_called()
     with closing(sqlite3.connect(catalog.path)) as connection:
         connection.row_factory = sqlite3.Row
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 6
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == managed_module.SCHEMA_VERSION
         for query, old_rows in original.items():
             new_rows = connection.execute(query).fetchall()
             columns = tuple(old_rows[0].keys())

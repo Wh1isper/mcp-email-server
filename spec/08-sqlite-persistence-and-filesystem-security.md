@@ -60,16 +60,19 @@ A new catalog is created at the current exact schema version. Opening:
 - leaves no partially advertised version on rollback or crash.
 
 No startup path silently drops/recreates authoritative tables. Projection-only
-rebuild is explicit and isolated. Schemas v3, v4 and v5 are the declared migration
-sources for v6. Opening a source first validates its exact schema, then uses
+rebuild is explicit and isolated. Schemas v3, v4, v5 and v6 are the declared migration
+sources for v7. Opening a source first validates its exact schema, then uses
 one bounded `BEGIN IMMEDIATE` transaction. A v3 source first receives the disabled
 attachment-content policy and empty account tag mappings from v4. Sources below
 v5 receive the fixed-five global mutation grants, nullable account overrides that
-inherit, and an unset draft destination. All sources receive the v6 per-account
+inherit, and an unset draft destination. Sources below v6 receive the per-account
 `allow_protocol_commands INTEGER NOT NULL DEFAULT 0 CHECK (... IN (0, 1))`.
 Existing grants and overrides are unchanged; protocol access is never inferred
-from them. The exact v6 schema and invariants are validated before recording
-version 6 as the final write. Failure or process
+from them. All sources receive the v7 nullable `to_addresses_json` projection
+column. NULL preserves unknown To evidence in old rows; a stored empty JSON list
+means the To header was observed empty (spec 06). Legacy operational databases
+at v1 or v6 receive the same column without catalog changes. The exact v7 schema
+and invariants are validated before recording version 7 as the final write. Failure or process
 interruption rolls back all additions and leaves the original source version
 advertised; account, policy, binding, secret, and projection rows retain their
 identifiers and revisions. Migration does not resolve or copy secret values.
@@ -77,7 +80,7 @@ Other schema versions remain unsupported without a general compatibility promise
 Legacy TOML, environment, and keyring import remains supported through the
 explicit spec 04 workflow.
 
-Older runtimes cannot read a migrated v6 catalog. Published upgrade guidance MUST
+Older runtimes cannot read a migrated v7 catalog. Published upgrade guidance MUST
 require stopping all catalog users, privately backing up the catalog before its
 first new-version open, and upgrading UI, CLI, and MCP together. A package-only
 downgrade is not a catalog rollback: recovery requires the matching pre-migration
@@ -286,8 +289,9 @@ remain separate operator procedures outside this delivery.
 
 ## Acceptance Criteria
 
-- **08-P1:** V3/v4/v5 migration to v6 is transactional and idempotent, preserves prior rows
-  and revisions, never accesses secrets, and defaults protocol access to false.
+- **08-P1:** V3/v4/v5/v6 migration to v7 is transactional and idempotent, preserves prior rows
+  and revisions, never accesses secrets, and retains unknown To evidence in old
+  projection rows. Sources before v6 default protocol access to false.
   Injected migration failure restores the exact source schema and version.
 
 1. Schema tests assert exact version, required constraints, foreign keys, the
@@ -304,7 +308,7 @@ remain separate operator procedures outside this delivery.
 5. Concurrent initialization/open, application-lock timeout, crash release, and
    SQLite busy timeout behavior is deterministic and bounded on POSIX and native
    Windows.
-6. Exact schemas v3/v4/v5 migrate transactionally to v6 without losing authority or secret rows; rollback never advertises a partially migrated schema, and every other unsupported pre-release version is rejected without mutation.
+6. Exact schemas v3/v4/v5/v6 migrate transactionally to v7 without losing authority or secret rows; rollback never advertises a partially migrated schema, and every other unsupported pre-release version is rejected without mutation.
 7. External network, system-keyring, and large filesystem work is absent from
    SQLite transaction scopes; Linux secret insertion and binding activation are
    atomic in one bounded transaction.

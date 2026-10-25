@@ -826,6 +826,74 @@ async def test_managed_stdio_missing_database_fails_closed_without_legacy_fallba
 
 
 @pytest.mark.asyncio
+async def test_local_to_search_cache_restart_and_append_against_greenmail(tmp_path: Path) -> None:
+    """Exercise real MCP, IMAP header parsing, SQLite reuse, and append-only sync."""
+    _wait_until_ready()
+    _ensure_empty_mailboxes(BOB, ["INBOX"])
+
+    def append(*, cc_only: bool, subject: str) -> None:
+        message = EmailMessage()
+        message["From"] = ALICE[0]
+        message["Cc" if cc_only else "To"] = BOB[0]
+        message["Subject"] = subject
+        message["Date"] = "Wed, 02 Sep 2026 17:00:00 +0000"
+        message.set_content("Synthetic local-search regression message")
+        with _imap_session(BOB) as client:
+            status, _ = client.append("INBOX", None, None, message.as_bytes(policy=policy.SMTP))
+            assert status == "OK"
+
+    append(cc_only=False, subject="To match")
+    append(cc_only=True, subject="Cc only")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(CONFIG_TEMPLATE)
+    config_path.chmod(0o600)
+    database = tmp_path / "db.sqlite3"
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE": "plaintext",
+        "MCP_EMAIL_SERVER_IMAP_SEARCH_MODE": "local",
+        "MCP_EMAIL_SERVER_LOG_LEVEL": "WARNING",
+    })
+    server = StdioServerParameters(
+        command=str(Path(sys.executable).with_name("mcp-email-server")),
+        args=["stdio"],
+        env=server_env,
+        cwd=Path.cwd(),
+    )
+    observed_at = None
+    for restart in (False, True):
+        async with stdio_client(server) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream, read_timeout_seconds=timedelta(seconds=15)) as session:
+                await session.initialize()
+                query = {"account_name": "bob", "to_address": BOB[0]}
+                for _ in range(2):
+                    result = await _call_tool(session, "list_emails_metadata", query)
+                    assert result["total"] == 1
+                    assert [row["subject"] for row in result["emails"]] == ["To match"]
+                    with contextlib.closing(sqlite3.connect(database)) as connection:
+                        timestamp = connection.execute("SELECT observed_at FROM index_coverage").fetchone()[0]
+                        assert (
+                            connection.execute(
+                                "SELECT COUNT(*) FROM message_metadata_projection WHERE to_addresses_json IS NULL"
+                            ).fetchone()[0]
+                            == 0
+                        )
+                    if observed_at is None:
+                        observed_at = timestamp
+                    else:
+                        assert timestamp == observed_at
+                if restart:
+                    append(cc_only=False, subject="New To match")
+                    for _ in range(2):
+                        result = await _call_tool(session, "list_emails_metadata", query)
+                        assert result["total"] == 2
+                        assert {row["subject"] for row in result["emails"]} == {"To match", "New To match"}
+                    with contextlib.closing(sqlite3.connect(database)) as connection:
+                        assert connection.execute("SELECT message_count FROM index_coverage").fetchone()[0] == 3
+
+
+@pytest.mark.asyncio
 async def test_metadata_index_paging_fallback_and_restart_reuse_against_greenmail(tmp_path: Path) -> None:
     """Exercise population, qualified SQLite reuse, filters, bounds, and restart."""
     _wait_until_ready()

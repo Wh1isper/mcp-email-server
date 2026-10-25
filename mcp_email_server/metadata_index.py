@@ -15,8 +15,10 @@ from mcp_email_server.application.limits import metadata_snapshot_row_limit
 from mcp_email_server.config import EmailSettings
 from mcp_email_server.managed import (
     _OPERATIONAL_DATABASE_SCHEMA,
+    _OPERATIONAL_DATABASE_SCHEMA_V6,
     _OPERATIONAL_SCHEMA,
     _SCHEMA,
+    _SCHEMA_V7_ADDITIONS,
     SCHEMA_VERSION,
     ManagedCatalogError,
     _connect,
@@ -113,12 +115,18 @@ def _load_projected_emails(
                 and all(isinstance(item, str) for item in flags)
             ):
                 _fail("Indexed metadata is malformed")
+            to_addresses = None
+            if row["to_addresses_json"] is not None:
+                to_addresses = json.loads(row["to_addresses_json"])
+                if not isinstance(to_addresses, list) or not all(isinstance(item, str) for item in to_addresses):
+                    _fail("Indexed To metadata is malformed")
             emails.append({
                 "email_id": str(row["uid"]),
                 "message_id": row["message_id"],
                 "subject": row["subject"],
                 "from": row["sender"],
                 "to": recipients,
+                **({"to_addresses": to_addresses} if to_addresses is not None else {}),
                 "date": _parse_utc(row["message_date"]),
                 "attachments": attachments,
                 "_internal_date": _parse_utc(row["internal_date"]) if row["internal_date"] else None,
@@ -201,14 +209,17 @@ def _preflight_schema_ownership(connection: sqlite3.Connection, mode: IndexMode)
             _fail("Operational database schema is missing or incompatible")
         return
     if (mode == "managed" and row["version"] != SCHEMA_VERSION) or (
-        mode == "legacy" and row["version"] not in (1, SCHEMA_VERSION)
+        mode == "legacy" and row["version"] not in (1, 6, SCHEMA_VERSION)
     ):
         _fail("Operational database schema version is unsupported")
     try:
         if mode == "managed":
             _validate_managed_schema(connection, _SCHEMA)
         else:
-            _validate_operational_schema(connection)
+            schema = (
+                _OPERATIONAL_DATABASE_SCHEMA if row["version"] == SCHEMA_VERSION else _OPERATIONAL_DATABASE_SCHEMA_V6
+            )
+            _validate_operational_schema(connection, schema)
     except ManagedCatalogError as exc:
         raise MetadataIndexError("Operational database schema is incomplete or incompatible") from exc
 
@@ -257,19 +268,14 @@ def _initialize(  # noqa: C901 - bounded initialization and ownership checks
                 if row is None:
                     _fail("Operational database initialization did not complete")
             if (mode == "managed" and row["version"] != SCHEMA_VERSION) or (
-                mode == "legacy" and row["version"] not in (1, SCHEMA_VERSION)
+                mode == "legacy" and row["version"] not in (1, 6, SCHEMA_VERSION)
             ):
                 _fail("Operational database schema version is unsupported")
-            try:
-                if mode == "managed":
-                    _validate_managed_schema(connection, _SCHEMA)
-                else:
-                    _validate_operational_schema(connection)
-            except ManagedCatalogError as exc:
-                raise MetadataIndexError("Operational database schema is incomplete or incompatible") from exc
-            if row["version"] == 1:
+            _preflight_schema_ownership(connection, mode)
+            if mode == "legacy" and row["version"] in (1, 6):
+                _execute_schema(connection, _SCHEMA_V7_ADDITIONS)
                 connection.execute(
-                    "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = 1",
+                    "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
                     (SCHEMA_VERSION,),
                 )
             try:
@@ -590,17 +596,23 @@ class MetadataIndex:
                         _fail("Provider metadata date is invalid")
                     if internal_date is not None and not isinstance(internal_date, datetime):
                         _fail("Provider internal date is invalid")
+                    to_addresses = email.get("to_addresses")
+                    if to_addresses is not None and (
+                        not isinstance(to_addresses, list) or not all(isinstance(item, str) for item in to_addresses)
+                    ):
+                        _fail("Provider To metadata is invalid")
                     connection.execute(
                         """INSERT INTO message_metadata_projection(
                                mailbox_id, uidvalidity, uid, message_id, subject, sender,
                                recipients_json, message_date, internal_date, attachment_names_json,
-                               flags_json, observed_at
-                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               flags_json, observed_at, to_addresses_json
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(mailbox_id, uidvalidity, uid) DO UPDATE SET
                                message_id = excluded.message_id,
                                subject = excluded.subject,
                                sender = excluded.sender,
                                recipients_json = excluded.recipients_json,
+                               to_addresses_json = excluded.to_addresses_json,
                                message_date = excluded.message_date,
                                internal_date = excluded.internal_date,
                                attachment_names_json = excluded.attachment_names_json,
@@ -619,6 +631,7 @@ class MetadataIndex:
                             json.dumps(email.get("attachments", []), separators=(",", ":")),
                             json.dumps(email.get("_flags", []), separators=(",", ":")),
                             timestamp,
+                            json.dumps(to_addresses, separators=(",", ":")) if to_addresses is not None else None,
                         ),
                     )
                 # Retention eviction is not a provider-removal claim. Keep only

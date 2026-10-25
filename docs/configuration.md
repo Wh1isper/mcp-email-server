@@ -521,23 +521,26 @@ platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
 original and never treat the catalog as a non-secret database. Schema v3, v4,
-and v5 catalogs migrate automatically to v6 on the first catalog access. The
+v5, and v6 catalogs migrate automatically to v7 on the first catalog access. The
 transaction preserves accounts, policy, bindings, secrets, and revisions; it adds
-default-disabled protocol access. Sources before v5 also receive all five global
+a nullable To-only address field to the metadata cache. Sources before v6 also
+receive default-disabled protocol access. Sources before v5 also receive all five global
 mutation grants, inheriting account overrides, and an unset draft mailbox. A v3
 source additionally receives empty account tag mappings and the disabled
-attachment-content policy. Exact schema and invariant checks finish before v6
+attachment-content policy. Exact schema and invariant checks finish before v7
 is recorded; failure leaves the original version intact. Other unsupported
 versions, corrupt storage, and insecure storage fail closed. Legacy TOML,
 environment, and keyring sources remain supported through explicit import. In
 legacy mode, an unavailable or unsafe operational database produces a bounded
 warning and the metadata query uses its bounded IMAP fallback instead.
 
-### Upgrading a managed catalog to v6
+### Upgrading a managed catalog to v7
 
-Managed v3/v4/v5 catalogs migrate transactionally to v6. The new protocol-access
-flag defaults to false for every existing account; account grants and other
-configuration remain intact. Migration never reads credential values.
+Managed v3/v4/v5/v6 catalogs migrate transactionally to v7. The new To-only cache
+field starts as unknown for existing rows; a local To query refetches the missing
+headers automatically. Legacy operational databases at v1 or v6 receive the same
+cache-field migration. Account grants and other configuration remain intact.
+Migration never reads credential values.
 
 1. Stop every MCP, UI, and CLI process using the selected catalog before opening
    it with the new application. Even an inspection command can trigger migration.
@@ -548,7 +551,7 @@ configuration remain intact. Migration never reads credential values.
 3. Upgrade UI, CLI, and MCP together to the same release, then restart each MCP
    client. Do not leave an older process sharing the newly migrated catalog.
 
-Versions that only understand v3/v4/v5 cannot open v6. Downgrading only the package
+Versions that only understand v3/v4/v5/v6 cannot open v7. Downgrading only the package
 is therefore insufficient: stop the new processes and restore the matching
 pre-upgrade catalog and bootstrap with the older application. This restores
 local configuration to the backup point, not provider-side email effects or
@@ -840,22 +843,23 @@ values are treated as false. Do not add surrounding whitespace to these values.
 
 ### Global variables
 
-| Variable                                            | Default                                  | Description                                                                                                                                                                      |
-| --------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MCP_EMAIL_SERVER_CONFIG_PATH`                      | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                                                                                                          |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD`       | `false`                                  | Override attachment file-download access.                                                                                                                                        |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`        | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                 |
-| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`               | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                              |
-| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`                  | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                   |
-| `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`                | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts.                                                                            |
-| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`         | `false`                                  | Override blocked mutation reporting.                                                                                                                                             |
-| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`               | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                                                                                              |
-| `MCP_EMAIL_SERVER_LOG_LEVEL`                        | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                                                                                                                      |
-| `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`            | `auto`                                   | `literal`, `quoted`, or `auto`. `auto` quotes non-ASCII IMAP SEARCH text for `imap.qq.com` and uses synchronizing UTF-8 literals elsewhere. A legacy account field overrides it. |
-| `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS`           | `1000`                                   | Maximum rows in one metadata projection. An integer from 1 through 100000. Mailboxes above this stay partial and are listed from IMAP.                                           |
-| `MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` | `60`                                     | Per-batch timeout for a metadata projection refresh, from 1 to 3600 seconds. It does not change other IMAP or SMTP deadlines.                                                    |
-| `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES`     | `4194304`                                | Aggregate raw-header budget. 65536 through 67108864 bytes. A refresh applies it to each UID batch; a filtered metadata query applies it once.                                    |
-| `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`      | `100`                                    | Newest-first UID count for one refresh batch, from 1 to 1000. The batch is also capped so maximum-size headers cannot exceed the header budget.                                  |
+| Variable                                            | Default                                  | Description                                                                                                                                                                                                       |
+| --------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MCP_EMAIL_SERVER_CONFIG_PATH`                      | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                                                                                                                                           |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD`       | `false`                                  | Override attachment file-download access.                                                                                                                                                                         |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`        | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                                                  |
+| `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`               | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                                                               |
+| `MCP_EMAIL_SERVER_ALLOWED_SENDERS`                  | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                                                    |
+| `MCP_EMAIL_SERVER_ALLOWED_MUTATIONS`                | All five classes                         | CSV global grants (`draft,organize,delete,send,append`); empty blocks writes for inheriting accounts.                                                                                                             |
+| `MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS`         | `false`                                  | Override blocked mutation reporting.                                                                                                                                                                              |
+| `MCP_EMAIL_SERVER_CREDENTIAL_STORAGE`               | TOML value or `auto`                     | Override credential storage with `auto`, `keyring`, or `plaintext`.                                                                                                                                               |
+| `MCP_EMAIL_SERVER_LOG_LEVEL`                        | `INFO`                                   | Set the Loguru logging level, such as `DEBUG` or `WARNING`.                                                                                                                                                       |
+| `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`            | `auto`                                   | `literal`, `quoted`, or `auto`. `auto` quotes non-ASCII IMAP SEARCH text for `imap.qq.com` and uses synchronizing UTF-8 literals elsewhere. A legacy account field overrides it.                                  |
+| `MCP_EMAIL_SERVER_IMAP_SEARCH_MODE`                 | `server`                                 | `server` or `local`. `server` sends subject, from, and to to IMAP SEARCH. `local` filters those headers from the metadata observation. The host name does not choose a mode. A legacy account field overrides it. |
+| `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS`           | `1000`                                   | Maximum rows in one metadata projection. An integer from 1 through 100000. Mailboxes above this stay partial and are listed from IMAP.                                                                            |
+| `MCP_EMAIL_SERVER_METADATA_REFRESH_TIMEOUT_SECONDS` | `60`                                     | Per-batch timeout for a metadata projection refresh, from 1 to 3600 seconds. It does not change other IMAP or SMTP deadlines.                                                                                     |
+| `MCP_EMAIL_SERVER_METADATA_HEADER_BUDGET_BYTES`     | `4194304`                                | Aggregate raw-header budget. 65536 through 67108864 bytes. A refresh applies it to each UID batch; a filtered metadata query applies it once.                                                                     |
+| `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`      | `100`                                    | Newest-first UID count for one refresh batch, from 1 to 1000. The batch is also capped so maximum-size headers cannot exceed the header budget.                                                                   |
 
 `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH` is read when a search runs. It is not
 copied onto an environment-created account. A legacy `[[emails]]` entry can set
@@ -863,6 +867,19 @@ copied onto an environment-created account. A legacy `[[emails]]` entry can set
 that account only. Managed accounts do not store the field; they follow the
 environment variable, and the default `auto` still uses quoted text for
 `imap.qq.com`.
+
+`MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` is read the same way. `server` (the default)
+sends subject, from, and to filters to IMAP SEARCH. `local` answers only those
+filters from mailbox headers: a qualified complete projection when the server
+supplied both `UIDVALIDITY` and `UIDNEXT`, and otherwise a bounded fresh UID
+and header read. The IMAP host never selects the mode, and an empty SEARCH
+result never switches it. A legacy `[[emails]]` entry can set
+`imap_search_mode = "server"` or `"local"` for that account only. Managed
+accounts do not store the field; they follow the environment variable. Body,
+text, date, flag, tag, and attachment filters stay on IMAP SEARCH. In `local`
+mode, combining one of those filters with subject, from, or to is rejected.
+A local read that cannot prove complete coverage, including a mailbox above the
+snapshot row ceiling, fails with `query_too_broad` instead of using IMAP SEARCH.
 
 `MCP_EMAIL_SERVER_METADATA_SNAPSHOT_ROWS` is also read when a projection
 refreshes. It does not belong in the account TOML. Values outside 1 through

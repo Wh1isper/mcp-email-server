@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+import mcp_email_server.managed as managed_module
+import mcp_email_server.metadata_index as index_module
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.managed import SCHEMA_VERSION, ManagedCatalog, ManagedCatalogError
 from mcp_email_server.metadata_index import MetadataIndex, MetadataIndexError
@@ -60,6 +62,108 @@ def _email(uid: int, *, subject: str | None = None) -> dict[str, object]:
         "_internal_date": date,
         "_flags": ["\\Seen"] if uid % 2 else [],
     }
+
+
+def _v6_projection(tmp_path: Path, *, managed: bool, version: int = 6) -> Path:
+    parent = tmp_path / "private"
+    _prepare_private_directory(parent)
+    path = parent / "old.sqlite3"
+    schema = managed_module._SCHEMA_V6 if managed else managed_module._OPERATIONAL_DATABASE_SCHEMA_V6
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript(schema)
+        connection.execute("INSERT INTO schema_metadata VALUES (1, ?)", (version,))
+        if managed:
+            connection.execute(
+                """INSERT INTO catalog(id, revision, enable_attachment_download,
+                   allowed_recipients_json, allowed_senders_json, report_blocked_mutations)
+                   VALUES ('local', 1, 0, '[]', '[]', 0)"""
+            )
+        connection.execute(
+            "INSERT INTO operational_account VALUES ('account', 'legacy', 'source', ?)", (NOW.isoformat(),)
+        )
+        connection.execute(
+            "INSERT INTO mailbox_projection VALUES ('mailbox', 'account', 'INBOX', '/', '[]', 77, ?)",
+            (NOW.isoformat(),),
+        )
+        connection.execute(
+            """INSERT INTO message_metadata_projection VALUES (
+               'mailbox', 77, 12, '<12@example.test>', 'Subject', 'sender@example.test',
+               '["to@example.test","cc@example.test"]', ?, ?, '[]', '[]', ?)""",
+            (NOW.isoformat(), NOW.isoformat(), NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO index_coverage VALUES ('mailbox', 77, 13, 1, 12, 12, 'COMPLETE', ?)", (NOW.isoformat(),)
+        )
+        connection.commit()
+    _harden_private_test_file(path)
+    return path
+
+
+@pytest.mark.parametrize(("managed", "version"), [(False, 1), (False, 6), (True, 6)])
+def test_to_projection_migration_preserves_unknown_fields_and_converges(
+    tmp_path: Path, managed: bool, version: int
+) -> None:
+    path = _v6_projection(tmp_path, managed=managed, version=version)
+
+    def migrate() -> None:
+        if managed:
+            assert ManagedCatalog(path).catalog_revision() == 1
+        MetadataIndex(path, "managed" if managed else "legacy").ensure_ready()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(lambda _: migrate(), range(4)))
+    index = MetadataIndex(path, "managed" if managed else "legacy")
+    snapshot = index.read_complete("account", "INBOX", uidvalidity=77, uidnext=13, message_count=1)
+    assert snapshot is not None
+    assert snapshot.emails[0]["to"] == ["to@example.test", "cc@example.test"]
+    assert "to_addresses" not in snapshot.emails[0]
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT to_addresses_json FROM message_metadata_projection").fetchone()[0] is None
+
+    # Empty To is known, and remains distinct from the migrated unknown value.
+    for addresses in ([], ["to@example.test"]):
+        row = {**snapshot.emails[0], "to_addresses": addresses}
+        index.write_snapshot(
+            "account",
+            "INBOX",
+            delimiter="/",
+            attributes=[],
+            uidvalidity=77,
+            uidnext=13,
+            message_count=1,
+            emails=[row],
+            complete=True,
+            observed_at=NOW,
+        )
+        reread = index.read_complete("account", "INBOX", uidvalidity=77, uidnext=13, message_count=1)
+        assert reread is not None
+        assert reread.emails[0]["to_addresses"] == addresses
+        assert reread.emails[0]["to"] == snapshot.emails[0]["to"]
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_to_projection_migration_rolls_back_column_and_version(tmp_path: Path, monkeypatch, managed: bool) -> None:
+    path = _v6_projection(tmp_path, managed=managed)
+    original = managed_module._execute_schema
+
+    def fail_after_column(connection: sqlite3.Connection, schema: str) -> None:
+        original(connection, schema)
+        raise RuntimeError("synthetic migration interruption")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(managed_module if managed else index_module, "_execute_schema", fail_after_column)
+        with pytest.raises(RuntimeError, match="synthetic migration interruption"):
+            if managed:
+                ManagedCatalog(path).catalog_revision()
+            else:
+                MetadataIndex(path, "legacy").ensure_ready()
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 6
+        assert "to_addresses_json" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(message_metadata_projection)")
+        }
+        assert connection.execute("SELECT COUNT(*) FROM message_metadata_projection").fetchone()[0] == 1
 
 
 def test_legacy_index_uses_non_secret_stable_mapping_and_keyset_read(tmp_path: Path) -> None:

@@ -257,13 +257,35 @@ When a sender allowlist is configured, blocked messages are removed before
 pagination, so `total` and page sizes describe only visible messages.
 
 The application keeps a rebuildable SQLite projection for unfiltered mailbox
-pages. It uses that projection only after a small IMAP `STATUS` probe confirms
-the same UIDVALIDITY, UIDNEXT, and message count and the projection covers the
-whole mailbox. Before returning a cached page, it fetches current FLAGS only for
-the UIDs on that page so external tag changes are not hidden by the projection.
-Text, date, address, flag, tag, body, and attachment filters remain on the
-bounded IMAP path so provider-specific search semantics and mutable flags stay
-authoritative. Tag filters resolve configured semantic names before IMAP search
+pages and, in `local` header-search mode, for subject, from, and to filters. It
+reuses that projection only after a small IMAP `STATUS` probe confirms the same
+UIDVALIDITY, UIDNEXT, and message count and the projection covers the whole
+mailbox. `STATUS` must return `MESSAGES`. `UIDVALIDITY` and `UIDNEXT` are also
+read from `SELECT` when `STATUS` omits them. A value that is still missing stays
+unknown. The probe does not store `max(uid) + 1` as `UIDNEXT` and does not hash
+the UID set into a `UIDVALIDITY`. Servers that omit `UIDNEXT`, including the
+reported NetEase IMAP responses, are covered by `UID FETCH 1:* (UID)`. That
+inventory may contain gaps from expunged messages. Coverage is exact when the
+inventory length equals `MESSAGES` and every UID has header and `INTERNALDATE`
+evidence inside the snapshot bounds. If `UIDVALIDITY` is omitted, rows from an
+earlier observation are not reused; a fresh read can still be exact for that
+one request, and it is not saved as a cache key. `MESSAGES` is still required.
+Before returning a cached page, it fetches current FLAGS only for the UIDs on
+that page so external tag changes are not hidden by the projection.
+
+Subject, from, and to use IMAP SEARCH unless
+`MCP_EMAIL_SERVER_IMAP_SEARCH_MODE` or the legacy account field `imap_search_mode`
+is `local`. The default is `server` on every host. An empty SEARCH result does
+not change the mode. `local` filters those three fields from a qualified
+complete projection when both `UIDVALIDITY` and `UIDNEXT` match, and otherwise
+from a bounded fresh header read. Matches are case-insensitive substrings of
+the decoded Subject, From, and To header text, including RFC 2047 encoded words
+such as Chinese subjects. To does not match Cc. The displayed recipient list
+still includes both To and Cc. Date, flag, tag, body, and attachment filters
+remain on the bounded IMAP path. Combining any of those with subject, from, or
+to while the mode is `local` is rejected. A local read that is partial or above
+the snapshot row ceiling returns `query_too_broad` instead of an empty page or
+an IMAP SEARCH fallback. Tag filters resolve configured semantic names before IMAP search
 and reject unknown values before provider access. ASCII filter values retain their exact text through IMAP
 atom or quoted-string encoding. Non-ASCII filter values use synchronizing UTF-8
 literals with `CHARSET UTF-8` on every host except `imap.qq.com`, which receives

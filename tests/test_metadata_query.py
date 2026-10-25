@@ -212,11 +212,20 @@ async def test_complete_index_refreshes_current_keywords_and_semantic_tags_for_r
 @pytest.mark.asyncio
 async def test_unsupported_filter_uses_application_owned_provider_fallback_without_index_probe() -> None:
     service, _accounts, _providers, projections, provider, _projection = _service()
-    provider.list_metadata.return_value = _fallback_response("needle")
+    provider.list_metadata.return_value = EmailMetadataPageResponse(
+        page=1,
+        page_size=10,
+        before=None,
+        since=None,
+        subject="needle",
+        emails=[EmailMetadata.from_email(_email(1))],
+        total=1,
+    )
 
     response = await service.execute(ListEmailMetadataQuery(account_name="work", subject="needle"))
 
     assert response.subject == "needle"
+    assert response.total == 1
     provider.list_metadata.assert_awaited_once()
     provider.mailbox_state.assert_not_awaited()
     projections.open.assert_not_awaited()
