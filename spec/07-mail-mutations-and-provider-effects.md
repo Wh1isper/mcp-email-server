@@ -164,6 +164,13 @@ Send opens incoming authority for this read and resolves outgoing authority
 fresh afterwards. `save_to_mailbox` and `forward_email` never derive an
 identity. The SMTP reverse-path is unaffected (see SMTP Delivery).
 
+When the account sets `draft_identity_key` (spec 04), `save_draft` adds
+`X-Identity-Key: <value>` to the composed draft. Thunderbird opens such a draft
+with that profile identity and keeps its `From`; without the header it replaces a
+`From` that matches no identity with its default identity. The key is specific
+to one Thunderbird profile and has no effect on other clients. `save_to_mailbox`,
+Sent copies, and SMTP message data never carry it.
+
 ## Save or Append
 
 `save_to_mailbox` requires `append`, even when its destination happens to be a

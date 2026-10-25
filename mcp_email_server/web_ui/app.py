@@ -419,6 +419,7 @@ async def _create_account(_request: Request, state: LocalUiState, payload: Creat
             tags=payload.tags,
             allowed_from_addresses=payload.allowed_from_addresses,
             derive_reply_from=payload.derive_reply_from,
+            draft_identity_key=payload.draft_identity_key,
         ),
     )
     return {

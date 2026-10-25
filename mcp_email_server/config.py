@@ -405,6 +405,9 @@ class EmailSettings(AccountAttributes):
     # them from the replied-to message when no from_address is given.
     allowed_from_addresses: list[str] = []
     derive_reply_from: bool = False
+    # Thunderbird identity key (for example "id4") written as X-Identity-Key on
+    # saved drafts, so Thunderbird keeps a From that differs from the identity.
+    draft_identity_key: str | None = None
     allow_protocol_commands: bool = False
     # None inherits MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH, which defaults to auto.
     # Managed accounts leave this unset; auto still quotes imap.qq.com by host.
@@ -421,6 +424,10 @@ class EmailSettings(AccountAttributes):
             from mcp_email_server.application.mutations import validate_mailbox_name
 
             validate_mailbox_name(self.drafts_mailbox)
+        if self.draft_identity_key is not None:
+            from mcp_email_server.application.mutations import validate_draft_identity_key
+
+            validate_draft_identity_key(self.draft_identity_key)
         if self.allowed_from_addresses:
             self.allowed_from_addresses = normalize_recipient_patterns(self.allowed_from_addresses)
         if len(self.allowed_from_addresses) > APPLICATION_LIMITS.policy_entries:
@@ -463,6 +470,7 @@ class EmailSettings(AccountAttributes):
         allow_protocol_commands: bool = False,
         allowed_from_addresses: list[str] | None = None,
         derive_reply_from: bool = False,
+        draft_identity_key: str | None = None,
     ) -> EmailSettings:
         for candidate in (password, imap_password, smtp_password):
             if candidate == keyring_store.SENTINEL:
@@ -505,6 +513,7 @@ class EmailSettings(AccountAttributes):
             allow_protocol_commands=allow_protocol_commands,
             allowed_from_addresses=list(allowed_from_addresses or ()),
             derive_reply_from=derive_reply_from,
+            draft_identity_key=draft_identity_key,
         )
 
     @classmethod
@@ -576,6 +585,7 @@ class EmailSettings(AccountAttributes):
                 drafts_mailbox=os.getenv("MCP_EMAIL_SERVER_DRAFTS_MAILBOX"),
                 allowed_from_addresses=os.getenv("MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES", "").split(","),
                 derive_reply_from=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_DERIVE_REPLY_FROM"), False),
+                draft_identity_key=os.getenv("MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY") or None,
                 allow_protocol_commands=_parse_bool_env(os.getenv("MCP_EMAIL_SERVER_ALLOW_PROTOCOL_COMMANDS"), False),
                 allowed_mutations=(
                     list(

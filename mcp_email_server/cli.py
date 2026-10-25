@@ -379,6 +379,7 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
                 "allow_protocol_commands": source.allow_protocol_commands,
                 "allowed_from_addresses": list(source.allowed_from_addresses),
                 "derive_reply_from": source.derive_reply_from,
+                "draft_identity_key": source.draft_identity_key,
             },
             "incoming": {
                 **_endpoint_data(source.incoming),
@@ -842,6 +843,9 @@ def account_add(
         "--derive-reply-from/--no-derive-reply-from",
         help="Replies without from_address take an allowed address from the replied-to message.",
     ),
+    draft_identity_key: str | None = typer.Option(
+        None, "--draft-identity-key", help="Thunderbird identity key (for example id4) written as X-Identity-Key."
+    ),
     allowed_mutations: str | None = typer.Option(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
@@ -923,6 +927,7 @@ def account_add(
                 allow_protocol_commands=allow_protocol_commands,
                 allowed_from_addresses=tuple(_split_csv(allowed_from_addresses or "")),
                 derive_reply_from=derive_reply_from,
+                draft_identity_key=draft_identity_key or None,
             )
         )
     except (ManagementError, ValueError) as exc:
@@ -1067,6 +1072,7 @@ def account_show(name: str, json_output: JsonOutput = False) -> None:
                 "allow_protocol_commands": account.allow_protocol_commands,
                 "allowed_from_addresses": list(account.allowed_from_addresses),
                 "derive_reply_from": account.derive_reply_from,
+                "draft_identity_key": account.draft_identity_key,
                 "incoming": _endpoint_data(account.incoming),
                 "outgoing": _endpoint_data(account.outgoing) if account.outgoing is not None else None,
                 "incoming_binding": account.incoming_binding,
@@ -1137,6 +1143,11 @@ def account_update(
         "--derive-reply-from/--no-derive-reply-from",
         help="Replies without from_address take an allowed address from the replied-to message.",
     ),
+    draft_identity_key: str | None = typer.Option(
+        None,
+        "--draft-identity-key",
+        help="Thunderbird identity key written as X-Identity-Key on drafts; an empty value clears it.",
+    ),
     allowed_mutations: str | None = typer.Option(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
@@ -1188,6 +1199,8 @@ def account_update(
                 if allowed_from_addresses is None
                 else tuple(_split_csv(allowed_from_addresses)),
                 derive_reply_from=derive_reply_from,
+                draft_identity_key=draft_identity_key or None,
+                update_draft_identity_key=draft_identity_key is not None,
                 update_sent_folder=sent_folder is not None or clear_sent_folder,
             )
         )

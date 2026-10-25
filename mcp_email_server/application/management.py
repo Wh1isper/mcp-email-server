@@ -125,6 +125,7 @@ class AccountDetails:
     allow_protocol_commands: bool = False
     allowed_from_addresses: tuple[str, ...] = ()
     derive_reply_from: bool = False
+    draft_identity_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +279,7 @@ class CreateAccountCommand:
     allow_protocol_commands: bool = False
     allowed_from_addresses: tuple[str, ...] = ()
     derive_reply_from: bool = False
+    draft_identity_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -341,6 +343,8 @@ class UpdateAccountCommand:
     # None leaves the stored value unchanged.
     allowed_from_addresses: tuple[str, ...] | None = None
     derive_reply_from: bool | None = None
+    draft_identity_key: str | None = None
+    update_draft_identity_key: bool = False
 
 
 @dataclass(frozen=True)
@@ -360,6 +364,7 @@ class LegacyAccountSnapshot:
     allow_protocol_commands: bool = False
     allowed_from_addresses: tuple[str, ...] = ()
     derive_reply_from: bool = False
+    draft_identity_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -494,6 +499,7 @@ class ManagedCatalogPort(Protocol):
         expected_revision: int | None = None,
         allowed_from_addresses: tuple[str, ...] = (),
         derive_reply_from: bool = False,
+        draft_identity_key: str | None = None,
     ) -> str: ...
 
     def set_secret(
@@ -533,6 +539,8 @@ class ManagedCatalogPort(Protocol):
         allow_protocol_commands: bool | None = None,
         allowed_from_addresses: tuple[str, ...] | None = None,
         derive_reply_from: bool | None = None,
+        draft_identity_key: str | None = None,
+        update_draft_identity_key: bool = False,
     ) -> int: ...
 
     def disable_account(self, name: str, *, expected_revision: int) -> int: ...
@@ -926,6 +934,7 @@ class ManagedAccountService(_ConfiguredCatalogService):
             expected_revision=command.expected_catalog_revision,
             allowed_from_addresses=command.allowed_from_addresses,
             derive_reply_from=command.derive_reply_from,
+            draft_identity_key=command.draft_identity_key,
         )
         incoming = catalog.set_secret(
             command.name,
@@ -991,6 +1000,8 @@ class ManagedAccountService(_ConfiguredCatalogService):
             allow_protocol_commands=command.allow_protocol_commands,
             allowed_from_addresses=command.allowed_from_addresses,
             derive_reply_from=command.derive_reply_from,
+            draft_identity_key=command.draft_identity_key,
+            update_draft_identity_key=command.update_draft_identity_key,
         )
 
     def disable(self, name: str, *, expected_revision: int) -> int:
@@ -1081,6 +1092,7 @@ class LegacyImportService(_ConfiguredCatalogService):
             and source.drafts_mailbox == destination.drafts_mailbox
             and source.allowed_from_addresses == destination.allowed_from_addresses
             and source.derive_reply_from == destination.derive_reply_from
+            and source.draft_identity_key == destination.draft_identity_key
             and source.allow_protocol_commands == destination.allow_protocol_commands
             and source.sent_folder_name == destination.sent_folder_name
             and source.tags == destination.tags
@@ -1396,6 +1408,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                         tags=account.tags,
                         allowed_from_addresses=account.allowed_from_addresses,
                         derive_reply_from=account.derive_reply_from,
+                        draft_identity_key=account.draft_identity_key,
                     )
                 )
                 for role, mutation in (("incoming", result.incoming), ("outgoing", result.outgoing)):

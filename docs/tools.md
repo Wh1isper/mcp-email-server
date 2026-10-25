@@ -520,7 +520,9 @@ Pass the account and compose fields (recipients, subject, body, optional CC/BCC,
 attachments and threading headers). An explicit empty recipient list is allowed;
 every supplied recipient must match the recipient allowlist. An optional
 `from_address`, and the From derived for replies, follow the
-[sender identity](configuration.md#sender-identities) rules.
+[sender identity](configuration.md#sender-identities) rules. With the
+account's `draft_identity_key` set, the draft carries `X-Identity-Key` for
+Thunderbird.
 
 This tool has no mailbox or flags parameter. It uses the account's optional
 `drafts_mailbox`, or the unique mailbox advertising special-use `\Drafts`,

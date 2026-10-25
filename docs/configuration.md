@@ -353,6 +353,8 @@ account_name = "work"
 # Omit allowed_mutations to inherit; [] explicitly blocks all mail writes.
 allowed_mutations = ["draft", "organize"]
 drafts_mailbox = "Drafts"
+# Optional: Thunderbird identity key for X-Identity-Key on saved drafts.
+draft_identity_key = "id4"
 ```
 
 The account editor distinguishes inherited permissions from an explicit list
@@ -371,6 +373,18 @@ not guess a name or create a mailbox. `save_draft` permits a recipientless draft
 including with an empty recipient allowlist. Every supplied To/CC/BCC address
 still requires a match. General `save_to_mailbox` continues to enforce its
 recipient policy and requires `append`, even when saving to a Drafts folder.
+
+`draft_identity_key` is optional (environment:
+`MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`). It is Thunderbird profile compatibility,
+independent of sender identities. When set, every draft from `save_draft`
+carries `X-Identity-Key: <value>`. Thunderbird opens a draft with the identity
+that header names and keeps the draft's From. Without it, Thunderbird looks for
+an identity whose address equals the From and, when none exists (an alias
+served by a catch-all identity, for example), uses the default identity and
+replaces the From. The value is the identity key from that one Thunderbird
+profile (`mail.identity.idN` in the Config Editor), so it only fits clients that
+share the profile; other clients ignore the header. It is limited to 1 to 64
+letters, digits, `_`, `.` or `-`. `save_to_mailbox` never adds the header.
 
 Endpoint ports must be between 1 and 65535, and implicit TLS cannot be combined
 with STARTTLS. `account add` checks the selected catalog and these non-secret
@@ -564,24 +578,25 @@ platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
 original and never treat the catalog as a non-secret database. Schema v3, v4,
-v5, v6, and v7 catalogs migrate automatically to v8 on the first catalog access. The
+v5, v6, v7, and v8 catalogs migrate automatically to v9 on the first catalog access. The
 transaction preserves accounts, policy, bindings, secrets, and revisions; it adds
 a nullable To-only address field to the metadata cache (sources before v7) and
 empty per-account sender identities with reply derivation off. Sources before v6 also
 receive default-disabled protocol access. Sources before v5 also receive all five global
 mutation grants, inheriting account overrides, and an unset draft mailbox. A v3
 source additionally receives empty account tag mappings and the disabled
-attachment-content policy. Exact schema and invariant checks finish before v8
+attachment-content policy. Exact schema and invariant checks finish before v9
 is recorded; failure leaves the original version intact. Other unsupported
 versions, corrupt storage, and insecure storage fail closed. Legacy TOML,
 environment, and keyring sources remain supported through explicit import. In
 legacy mode, an unavailable or unsafe operational database produces a bounded
 warning and the metadata query uses its bounded IMAP fallback instead.
 
-### Upgrading a managed catalog to v8
+### Upgrading a managed catalog to v9
 
-Managed v3/v4/v5/v6/v7 catalogs migrate transactionally to v8. Accounts gain
-empty sender identities (no allowed From addresses, reply derivation off). The
+Managed v3/v4/v5/v6/v7/v8 catalogs migrate transactionally to v9. Accounts gain
+empty sender identities (no allowed From addresses, reply derivation off) and an
+unset Thunderbird draft identity key. The
 To-only cache field added in v7 starts as unknown for existing rows; a local To query refetches the missing
 headers automatically. Legacy operational databases at v1 or v6 receive the same
 cache-field migration. Account grants and other configuration remain intact.
@@ -596,7 +611,7 @@ Migration never reads credential values.
 3. Upgrade UI, CLI, and MCP together to the same release, then restart each MCP
    client. Do not leave an older process sharing the newly migrated catalog.
 
-Versions that only understand v3 through v7 cannot open v8. Downgrading only the package
+Versions that only understand v3 through v8 cannot open v9. Downgrading only the package
 is therefore insufficient: stop the new processes and restore the matching
 pre-upgrade catalog and bootstrap with the older application. This restores
 local configuration to the backup point, not provider-side email effects or
@@ -884,6 +899,7 @@ after changing legacy TOML.
 | `MCP_EMAIL_SERVER_DRAFTS_MAILBOX`            | Unique special-use Drafts | No       | Exact existing draft mailbox for the environment-created account; omit for discovery.                                                       |
 | `MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES`    | Empty                     | No       | Comma-separated own From addresses or globs for the environment-created account; the account address is always allowed.                     |
 | `MCP_EMAIL_SERVER_DERIVE_REPLY_FROM`         | `false`                   | No       | Let replies of the environment-created account take an allowed From from the replied-to message.                                            |
+| `MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`        | Unset                     | No       | Thunderbird identity key written as `X-Identity-Key` on `save_draft` drafts of the environment-created account.                             |
 
 Boolean values accept `true`, `1`, `yes`, or `on` as true, ignoring case. Other
 values are treated as false. Do not add surrounding whitespace to these values.

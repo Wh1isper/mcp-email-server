@@ -395,7 +395,7 @@ async def test_tools_pass_from_address_and_map_identity_denial(tool: str) -> Non
     assert handler.await_args.args[0].from_address == "x@evil.test"
 
 
-@pytest.mark.parametrize("source_version", [6, 7])
+@pytest.mark.parametrize("source_version", [6, 7, 8])
 def test_catalog_migrates_and_stores_account_identities(tmp_path, source_version: int) -> None:
     import sqlite3
     from contextlib import closing

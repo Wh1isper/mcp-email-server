@@ -50,7 +50,7 @@ from mcp_email_server.windows_security import (
     windows_security_supported,
 )
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
@@ -58,7 +58,9 @@ MAX_CREDENTIAL_CLEANUP_ROWS = APPLICATION_LIMITS.credential_cleanup_rows
 
 
 def _validate_account_mutation_policy(
-    allowed_mutations: tuple[MutationClass, ...] | None, drafts_mailbox: str | None
+    allowed_mutations: tuple[MutationClass, ...] | None,
+    drafts_mailbox: str | None,
+    draft_identity_key: str | None = None,
 ) -> None:
     if allowed_mutations is not None:
         validate_mutations(allowed_mutations)
@@ -66,6 +68,10 @@ def _validate_account_mutation_policy(
         from mcp_email_server.application.mutations import validate_mailbox_name
 
         validate_mailbox_name(drafts_mailbox)
+    if draft_identity_key is not None:
+        from mcp_email_server.application.mutations import validate_draft_identity_key
+
+        validate_draft_identity_key(draft_identity_key)
 
 
 def _normalized_from_addresses(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -160,6 +166,7 @@ class _ManagedAuthoritySnapshot:
     outgoing: EndpointSummary | None
     allowed_from_addresses: tuple[str, ...]
     derive_reply_from: bool
+    draft_identity_key: str | None
     binding_ids: tuple[tuple[BindingRole, str], ...]
     binding_locators: tuple[tuple[BindingRole, str], ...]
 
@@ -739,15 +746,27 @@ ALTER TABLE managed_account
     ADD COLUMN derive_reply_from INTEGER NOT NULL DEFAULT 0
         CHECK (derive_reply_from IN (0, 1));
 """
-_SCHEMA = _SCHEMA_V7 + _SCHEMA_V8_ADDITIONS
+_SCHEMA_V8 = _SCHEMA_V7 + _SCHEMA_V8_ADDITIONS
+_SCHEMA_V9_ADDITIONS = """
+ALTER TABLE managed_account ADD COLUMN draft_identity_key TEXT;
+"""
+_SCHEMA = _SCHEMA_V8 + _SCHEMA_V9_ADDITIONS
 # Each migration validates its source schema, then applies every later addition.
-_MIGRATION_SOURCE_SCHEMAS = {3: _SCHEMA_V3, 4: _SCHEMA_V4, 5: _SCHEMA_V5, 6: _SCHEMA_V6, 7: _SCHEMA_V7}
+_MIGRATION_SOURCE_SCHEMAS = {
+    3: _SCHEMA_V3,
+    4: _SCHEMA_V4,
+    5: _SCHEMA_V5,
+    6: _SCHEMA_V6,
+    7: _SCHEMA_V7,
+    8: _SCHEMA_V8,
+}
 _SCHEMA_ADDITIONS = (
     (4, _SCHEMA_V4_ADDITIONS),
     (5, _SCHEMA_V5_ADDITIONS),
     (6, _SCHEMA_V6_ADDITIONS),
     (7, _SCHEMA_V7_ADDITIONS),
     (8, _SCHEMA_V8_ADDITIONS),
+    (9, _SCHEMA_V9_ADDITIONS),
 )
 _OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
 _OPERATIONAL_DATABASE_SCHEMA_V6 = (
@@ -1100,8 +1119,9 @@ class ManagedCatalog:
         expected_revision: int | None = None,
         allowed_from_addresses: tuple[str, ...] = (),
         derive_reply_from: bool = False,
+        draft_identity_key: str | None = None,
     ) -> str:
-        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
+        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox, draft_identity_key)
         from_addresses = _normalized_from_addresses(allowed_from_addresses)
         if not name.strip() or not full_name.strip() or not email_address.strip():
             raise ManagedCatalogError("Account name, full name, and email address are required")
@@ -1155,14 +1175,15 @@ class ManagedCatalog:
                 )
                 connection.execute(
                     "UPDATE managed_account SET allowed_mutations_json = ?, drafts_mailbox = ?, "
-                    "allow_protocol_commands = ?, allowed_from_addresses_json = ?, derive_reply_from = ? "
-                    "WHERE id = ?",
+                    "allow_protocol_commands = ?, allowed_from_addresses_json = ?, derive_reply_from = ?, "
+                    "draft_identity_key = ? WHERE id = ?",
                     (
                         json.dumps(allowed_mutations) if allowed_mutations is not None else None,
                         drafts_mailbox,
                         int(allow_protocol_commands),
                         json.dumps(list(from_addresses)),
                         int(derive_reply_from),
+                        draft_identity_key,
                         account_id,
                     ),
                 )
@@ -1477,6 +1498,7 @@ class ManagedCatalog:
             allow_protocol_commands=bool(account["allow_protocol_commands"]),
             allowed_from_addresses=_parse_from_addresses_json(account["allowed_from_addresses_json"]),
             derive_reply_from=bool(account["derive_reply_from"]),
+            draft_identity_key=account["draft_identity_key"],
             incoming=incoming,
             outgoing=endpoints.get("outgoing"),
             incoming_binding=bindings.get("incoming", "MISSING"),
@@ -1526,8 +1548,10 @@ class ManagedCatalog:
         allow_protocol_commands: bool | None = None,
         allowed_from_addresses: tuple[str, ...] | None = None,
         derive_reply_from: bool | None = None,
+        draft_identity_key: str | None = None,
+        update_draft_identity_key: bool = False,
     ) -> int:
-        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox)
+        _validate_account_mutation_policy(allowed_mutations, drafts_mailbox, draft_identity_key)
         from_addresses = (
             _normalized_from_addresses(allowed_from_addresses) if allowed_from_addresses is not None else None
         )
@@ -1557,6 +1581,7 @@ class ManagedCatalog:
             update_drafts_mailbox,
             from_addresses is not None,
             derive_reply_from is not None,
+            update_draft_identity_key,
         )):
             raise ManagedCatalogError("Account update did not specify any changes")
 
@@ -1581,7 +1606,9 @@ class ManagedCatalog:
                     update_sent_folder=update_sent_folder,
                     tags=validated_tags,
                 )
-                identity_update = from_addresses is not None or derive_reply_from is not None
+                identity_update = (
+                    from_addresses is not None or derive_reply_from is not None or update_draft_identity_key
+                )
                 if update_allowed_mutations or update_drafts_mailbox or identity_update:
                     row = connection.execute(
                         "SELECT id FROM managed_account WHERE normalized_name = ?",
@@ -1607,6 +1634,11 @@ class ManagedCatalog:
                         connection.execute(
                             "UPDATE managed_account SET derive_reply_from = ? WHERE id = ?",
                             (int(derive_reply_from), row["id"]),
+                        )
+                    if update_draft_identity_key:
+                        connection.execute(
+                            "UPDATE managed_account SET draft_identity_key = ? WHERE id = ?",
+                            (draft_identity_key, row["id"]),
                         )
                 connection.commit()
             except sqlite3.IntegrityError as exc:
@@ -2118,6 +2150,7 @@ class ManagedCatalog:
             allow_protocol_commands=bool(account["allow_protocol_commands"]),
             allowed_from_addresses=_parse_from_addresses_json(account["allowed_from_addresses_json"]),
             derive_reply_from=bool(account["derive_reply_from"]),
+            draft_identity_key=account["draft_identity_key"],
             incoming=self._endpoint_summary(incoming_row),
             outgoing=self._endpoint_summary(outgoing_row) if outgoing_row is not None else None,
             binding_ids=tuple((role, bindings[role]["id"]) for role in sorted(bindings)),
@@ -2174,6 +2207,7 @@ class ManagedCatalog:
                 allow_protocol_commands=current.allow_protocol_commands,
                 allowed_from_addresses=list(current.allowed_from_addresses),
                 derive_reply_from=current.derive_reply_from,
+                draft_identity_key=current.draft_identity_key,
                 tags=current.tags,
             ),
             policy=current.policy,
@@ -2243,6 +2277,7 @@ class ManagedCatalog:
                         allow_protocol_commands=bool(account["allow_protocol_commands"]),
                         allowed_from_addresses=list(_parse_from_addresses_json(account["allowed_from_addresses_json"])),
                         derive_reply_from=bool(account["derive_reply_from"]),
+                        draft_identity_key=account["draft_identity_key"],
                     )
                 )
             policy = self._policy_from_row(catalog)

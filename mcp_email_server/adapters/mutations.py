@@ -174,6 +174,9 @@ class ClassicMutationProvider:
             include_bcc_header=True,
             from_address=command.from_address,
         )
+        if isinstance(command, DraftAppendCommand) and account.draft_identity_key is not None:
+            # Thunderbird keeps a draft's From only when it knows the creating identity.
+            message["X-Identity-Key"] = account.draft_identity_key
         flags = r"(\Draft \Seen)" if command.flags is None else _validate_flags(list(command.flags))
         return await _bounded_mutation_call(
             self._handler.incoming_client.append_to_mailbox_with_outcome(
@@ -446,6 +449,7 @@ class LocalMutationBackend:
                 email_address=resolved.account.email_address,
                 allowed_from_addresses=tuple(resolved.account.allowed_from_addresses),
                 derive_reply_from=resolved.account.derive_reply_from,
+                draft_identity_key=resolved.account.draft_identity_key,
             ),
         )
 

@@ -243,6 +243,15 @@ omission on update preserves both. Legacy import carries both, and they take
 part in the import equality check. The selection and enforcement rules are owned
 by spec 07.
 
+`draft_identity_key` is an optional, non-secret account field for Thunderbird
+profile compatibility, independent of sender identities: 1 to 64 letters,
+digits, `_`, `.` or `-`, because it becomes a header value verbatim. Managed
+schema v9 adds `managed_account.draft_identity_key` (nullable); v3 through v8
+catalogs migrate in place. The environment-created legacy account reads
+`MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`, `account add/update --draft-identity-key`
+sets it (`''` clears on update, omission preserves), the Web UI account editor
+exposes it, and legacy import carries it. Header behavior is owned by spec 07.
+
 Legacy accounts may set `imap_non_ascii_search` to `literal`, `quoted`, or
 `auto`. Omission inherits `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`, whose
 default is `auto`. Managed accounts do not persist the field; they use that

@@ -80,6 +80,7 @@ class MutationAccountSnapshot:
     # Lets replies without from_address take an allowed address from the
     # replied-to message. Off means replies use the account From.
     derive_reply_from: bool = False
+    draft_identity_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -582,6 +583,15 @@ def validate_mailbox_name(mailbox: str) -> None:
         field_name="mailbox",
         maximum_bytes=APPLICATION_LIMITS.mailbox_bytes,
     )
+
+
+_DRAFT_IDENTITY_KEY_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+
+
+def validate_draft_identity_key(key: str) -> None:
+    """A client identity key is a short token; it becomes a header value verbatim."""
+    if not isinstance(key, str) or not 1 <= len(key) <= 64 or not set(key) <= _DRAFT_IDENTITY_KEY_CHARS:
+        raise ValueError("draft_identity_key must be 1 to 64 letters, digits, '_', '.' or '-'")
 
 
 def _validate_email_ids(email_ids: tuple[str, ...]) -> None:

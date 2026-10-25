@@ -95,6 +95,7 @@ const blankAccount = (): AccountInput => ({
   allow_protocol_commands: false,
   allowed_from_addresses: [],
   derive_reply_from: false,
+  draft_identity_key: null,
   name: '',
   full_name: '',
   email_address: '',
@@ -110,6 +111,7 @@ const editableAccount = (current: AccountDetails): AccountInput => ({
   drafts_mailbox: current.drafts_mailbox ?? null,
   allowed_from_addresses: current.allowed_from_addresses ?? [],
   derive_reply_from: current.derive_reply_from ?? false,
+  draft_identity_key: current.draft_identity_key ?? null,
   allow_protocol_commands: current.allow_protocol_commands ?? false,
   name: current.name,
   full_name: current.full_name,
@@ -382,6 +384,7 @@ function AccountEditor({
           />
           <label className="field-checkbox"><input type="checkbox" checked={input.derive_reply_from ?? false} onChange={(event) => update('derive_reply_from', event.target.checked)} /> Reply from the address the original was sent to</label>
           <p className="hint">Replies without an explicit From look the original message up over IMAP and use its first allowed To, Cc or original recipient address. No match keeps the account address; a failed lookup fails the reply.</p>
+          <div className="field"><label htmlFor="draft-identity-key">Thunderbird identity key (optional)</label><input id="draft-identity-key" value={input.draft_identity_key ?? ''} onChange={(event) => update('draft_identity_key', event.target.value || null)} maxLength={64} pattern="[A-Za-z0-9_.\-]+" spellCheck={false} autoCapitalize="none" /><small>Written as X-Identity-Key on saved drafts, for example id4. Thunderbird then keeps a From that differs from the identity address instead of replacing it.</small></div>
         </div>
       </details>
 

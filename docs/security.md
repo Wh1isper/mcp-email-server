@@ -143,7 +143,7 @@ backups include plaintext `managed_secret.secret_value` values. Keep every copy
 under protection equivalent to the private original; do not upload, share, or
 treat it as a non-secret account database.
 
-The declared v3/v4/v5/v6/v7-to-v8 catalog migration runs only after the existing catalog
+The declared v3/v4/v5/v6/v7/v8-to-v9 catalog migration runs only after the existing catalog
 and sidecars pass the same private-file checks as a normal managed open. One
 bounded SQLite write transaction validates the exact source schema and adds
 a nullable To-only projection field (sources before v7) and empty per-account
@@ -151,11 +151,11 @@ sender identities with reply derivation off. Sources before v6 receive default-d
 protocol access. Sources before v5 also receive fixed-five global
 grants, inheriting account overrides, and an unset draft mailbox; v3 additionally
 receives default-disabled attachment content and empty tag mappings. It validates
-the resulting v8 schema and invariants and records version 8 last. It neither
+the resulting v9 schema and invariants and records version 9 last. It neither
 resolves nor copies secret values; failure rolls back without changing the
-advertised source version. Older runtimes reject v8. Stop all catalog users and
+advertised source version. Older runtimes reject v9. Stop all catalog users and
 retain a private, consistent backup before the first new-version open; see
-[managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v8).
+[managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v9).
 
 A create or rotation stores a new immutable value and commits it as active only
 if the reviewed account revision still matches. On Linux and Windows, inserting
