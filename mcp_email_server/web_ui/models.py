@@ -84,6 +84,9 @@ class CreateAccountRequest(CatalogTargetRequest):
     allowed_mutations: tuple[MutationClass, ...] | None = None
     drafts_mailbox: str | None = Field(default=None, max_length=65535)
     allow_protocol_commands: bool = False
+    allowed_from_addresses: tuple[str, ...] = Field(default=(), max_length=1000)
+    derive_reply_from: bool = False
+    draft_identity_key: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def validate_outgoing_credential(self) -> CreateAccountRequest:
@@ -109,6 +112,10 @@ class UpdateAccountRequest(CatalogTargetRequest):
     allowed_mutations: tuple[MutationClass, ...] | None = None
     drafts_mailbox: str | None = Field(default=None, max_length=65535)
     allow_protocol_commands: bool | None = None
+    # None (or an older UI omitting the fields) leaves the stored values unchanged.
+    allowed_from_addresses: tuple[str, ...] | None = Field(default=None, max_length=1000)
+    derive_reply_from: bool | None = None
+    draft_identity_key: str | None = Field(default=None, max_length=64)
 
     def command(self, current_name: str, *, had_outgoing: bool) -> UpdateAccountCommand:
         return UpdateAccountCommand(
@@ -129,6 +136,11 @@ class UpdateAccountRequest(CatalogTargetRequest):
             allowed_mutations=self.allowed_mutations,
             drafts_mailbox=self.drafts_mailbox,
             allow_protocol_commands=self.allow_protocol_commands,
+            allowed_from_addresses=self.allowed_from_addresses,
+            derive_reply_from=self.derive_reply_from,
+            draft_identity_key=self.draft_identity_key or None,
+            # Older UI builds omit the field; leave the stored key unchanged then.
+            update_draft_identity_key="draft_identity_key" in self.model_fields_set,
         )
 
 

@@ -136,6 +136,41 @@ current account/destination authority before APPEND. Return the same APPEND
 success, assigned-UID/unknown-placement, and ambiguity semantics as the shared
 append implementation. No operation journal or approval token is required.
 
+## Sender Identity
+
+`save_draft`, `send_email`, and `forward_email` accept an optional
+`from_address` that replaces the account address in the RFC 5322 `From` header
+only. It must name exactly one address that equals the account `email_address`
+or matches that account's `allowed_from_addresses` (spec 04); otherwise the call
+fails with a typed sender-identity denial before provider access. The check is
+repeated against freshly opened authority and again in the shared provider
+guard at every effect checkpoint (before APPEND and before SMTP `DATA`), the same
+boundary that revalidates recipient policy, so a revoked identity stops an
+effect already past provider construction. A bare address takes the account
+display name.
+
+Automatic selection applies only to `save_draft` and `send_email` with
+`in_reply_to`, no `from_address`, `derive_reply_from` enabled, and a nonempty
+list. It is a read before the effect: the provider normalizes a simple bare
+Message-ID the same way threading headers are composed, searches INBOX and then
+the other selectable mailboxes in one IMAP session with `BODY.PEEK`, requires the
+fetched `Message-ID` to equal it exactly, treats a source blocked by
+`allowed_senders` as not found, and takes the first allowed address from `To`,
+then `Cc`, then the bottom-most `X-Original-To`. Later trace hops and
+`Delivered-To` are never candidates. The displayed name is kept and the result is
+formatted without requiring an ASCII addr-spec. No match keeps the account
+`From`; a provider error or timeout fails the operation instead of falling back.
+Send opens incoming authority for this read and resolves outgoing authority
+fresh afterwards. `save_to_mailbox` and `forward_email` never derive an
+identity. The SMTP reverse-path is unaffected (see SMTP Delivery).
+
+When the account sets `draft_identity_key` (spec 04), `save_draft` adds
+`X-Identity-Key: <value>` to the composed draft. Thunderbird opens such a draft
+with that profile identity and keeps its `From`; without the header it replaces a
+`From` that matches no identity with its default identity. The key is specific
+to one Thunderbird profile and has no effect on other clients. `save_to_mailbox`,
+Sent copies, and SMTP message data never carry it.
+
 ## Save or Append
 
 `save_to_mailbox` requires `append`, even when its destination happens to be a
@@ -270,7 +305,8 @@ optional display name is formatted and quoted only in the RFC 5322 `From` header
 A provider adapter MUST NOT recover an envelope sender by parsing a formatted
 header, and a parse failure MUST NOT fall back to sending that complete header as
 the reverse-path. The same correctly formatted `From` header is used for SMTP
-message data, drafts, and Sent copies.
+message data, drafts, and Sent copies. A sender identity (see Sender Identity)
+changes only that header; `MAIL FROM` remains the account address.
 
 SMTPUTF8 is required when any envelope sender or recipient addr-spec is
 non-ASCII, or when any From, Sender, To, Cc, Bcc, Reply-To, Message-ID,

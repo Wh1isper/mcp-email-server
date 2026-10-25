@@ -60,6 +60,9 @@ export interface AccountSummary {
   allowed_mutations?: MutationClass[] | null
   drafts_mailbox?: string | null
   allow_protocol_commands?: boolean
+  allowed_from_addresses?: string[]
+  derive_reply_from?: boolean
+  draft_identity_key?: string | null
   name: string
   email_address: string
   enabled: boolean
@@ -82,6 +85,9 @@ export interface AccountInput {
   allowed_mutations?: MutationClass[] | null
   drafts_mailbox?: string | null
   allow_protocol_commands?: boolean
+  allowed_from_addresses?: string[]
+  derive_reply_from?: boolean
+  draft_identity_key?: string | null
   name: string
   full_name: string
   email_address: string

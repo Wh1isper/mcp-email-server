@@ -33,6 +33,7 @@ from mcp_email_server.application.mutations import (
     SaveDraftCommand,
     SaveToMailboxCommand,
     SendCommand,
+    SenderIdentityDeniedError,
     SendMutationOutcome,
     SetEmailFlagsCommand,
     SetEmailTagsCommand,
@@ -161,6 +162,20 @@ _PUBLIC_SEND_DETAILS = frozenset({
     "smtp-session-lost-before-data",
     "smtp-utf8-unsupported",
 })
+_FROM_ADDRESS_DESCRIPTION = (
+    "Optional From address (bare or 'Name <address>') used instead of the account address: the account "
+    "address itself or one matching the account's allowed From addresses. When omitted on a reply "
+    "(in_reply_to set) and the account enables reply derivation, the From is the allowed address the "
+    "replied-to message was sent to; otherwise the account address is used."
+)
+_FORWARD_FROM_ADDRESS_DESCRIPTION = (
+    "Optional From address (bare or 'Name <address>') used instead of the account address: the account "
+    "address itself or one matching the account's allowed From addresses."
+)
+_SENDER_IDENTITY_DENIED = (
+    "from_address is not an allowed sender identity for this account; configure the account's allowed "
+    "From addresses through the user-operated configuration. An empty list allows only the account address."
+)
 _PUBLIC_APPEND_DETAILS = frozenset({
     "append-unknown",
     "provider-timeout",
@@ -709,6 +724,14 @@ async def send_email(
             description="Email address to set as the Reply-To header. When set, email clients will reply to this address instead of the From address.",
         ),
     ] = None,
+    from_address: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
+            description=_FROM_ADDRESS_DESCRIPTION,
+        ),
+    ] = None,
 ) -> str:
     try:
         outcome = await send_email_command(
@@ -724,8 +747,11 @@ async def send_email(
                 in_reply_to=in_reply_to,
                 references=references,
                 reply_to=reply_to,
+                from_address=from_address,
             )
         )
+    except SenderIdentityDeniedError as exc:
+        raise ValueError(_SENDER_IDENTITY_DENIED) from exc
     except RecipientPolicyDeniedError as exc:
         raise ValueError(
             "Recipient(s) not in allowlist; configure allowed recipients through the user-operated CLI/UI "
@@ -798,6 +824,14 @@ async def forward_email(
         bool,
         Field(default=True, description="Whether to re-attach the source message's attachments."),
     ] = True,
+    from_address: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
+            description=_FORWARD_FROM_ADDRESS_DESCRIPTION,
+        ),
+    ] = None,
 ) -> str:
     try:
         outcome = await forward_email_command(
@@ -811,8 +845,11 @@ async def forward_email(
                 source_email_id=email_id,
                 source_mailbox=source_mailbox,
                 include_attachments=include_attachments,
+                from_address=from_address,
             )
         )
+    except SenderIdentityDeniedError as exc:
+        raise ValueError(_SENDER_IDENTITY_DENIED) from exc
     except RecipientPolicyDeniedError as exc:
         raise ValueError(
             "Recipient(s) not in allowlist; configure allowed recipients through the user-operated CLI/UI "
@@ -993,21 +1030,33 @@ async def save_draft(
             description="Space-separated Message-IDs for the thread chain. Simple IDs may be bare or bracketed; bare IDs gain RFC angle brackets during composition.",
         ),
     ] = None,
+    from_address: Annotated[
+        str | None,
+        Field(
+            default=None,
+            max_length=APPLICATION_LIMITS.header_bytes,
+            description=_FROM_ADDRESS_DESCRIPTION,
+        ),
+    ] = None,
 ) -> str:
-    outcome = await get_application_runtime().mutations.save_draft.execute(
-        SaveDraftCommand(
-            account_name=account_name,
-            recipients=tuple(recipients or ()),
-            subject=subject,
-            body=body,
-            cc=tuple(cc or ()),
-            bcc=tuple(bcc or ()),
-            html=html,
-            attachments=tuple(attachments or ()),
-            in_reply_to=in_reply_to,
-            references=references,
+    try:
+        outcome = await get_application_runtime().mutations.save_draft.execute(
+            SaveDraftCommand(
+                account_name=account_name,
+                recipients=tuple(recipients or ()),
+                subject=subject,
+                body=body,
+                cc=tuple(cc or ()),
+                bcc=tuple(bcc or ()),
+                html=html,
+                attachments=tuple(attachments or ()),
+                in_reply_to=in_reply_to,
+                references=references,
+                from_address=from_address,
+            )
         )
-    )
+    except SenderIdentityDeniedError as exc:
+        raise ValueError(_SENDER_IDENTITY_DENIED) from exc
     warning = "; warning: reconciliation needed" if outcome.reconciliation_needed else ""
     return f"Draft save [{outcome.status}: {outcome.mailbox}; Message-Id: {outcome.message_id}{warning}]"
 
