@@ -23,6 +23,9 @@ time and returns a bounded typed denial.
 `save_to_mailbox`. Its schema exposes compose fields but no mailbox or flags;
 its destination and mutation authority are owned by specs 04 and 07. The complete
 catalog remains advertised for read-only and selectively granted accounts too.
+`save_draft`, `send_email`, and `forward_email` additively accept an optional
+`from_address`; existing calls without it are unchanged, and its authority and
+reply-derivation rules are owned by spec 07.
 
 Junk/restore workflows reuse `move_emails`, not new spam/ham tool names. Its
 optional `destination_role="junk"` is mutually exclusive with the now-optional

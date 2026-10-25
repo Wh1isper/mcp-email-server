@@ -143,18 +143,19 @@ backups include plaintext `managed_secret.secret_value` values. Keep every copy
 under protection equivalent to the private original; do not upload, share, or
 treat it as a non-secret account database.
 
-The declared v3/v4/v5/v6-to-v7 catalog migration runs only after the existing catalog
+The declared v3/v4/v5/v6/v7-to-v8 catalog migration runs only after the existing catalog
 and sidecars pass the same private-file checks as a normal managed open. One
 bounded SQLite write transaction validates the exact source schema and adds
-a nullable To-only projection field. Sources before v6 receive default-disabled
+a nullable To-only projection field (sources before v7) and empty per-account
+sender identities with reply derivation off. Sources before v6 receive default-disabled
 protocol access. Sources before v5 also receive fixed-five global
 grants, inheriting account overrides, and an unset draft mailbox; v3 additionally
 receives default-disabled attachment content and empty tag mappings. It validates
-the resulting v7 schema and invariants and records version 7 last. It neither
+the resulting v8 schema and invariants and records version 8 last. It neither
 resolves nor copies secret values; failure rolls back without changing the
-advertised source version. Older runtimes reject v7. Stop all catalog users and
+advertised source version. Older runtimes reject v8. Stop all catalog users and
 retain a private, consistent backup before the first new-version open; see
-[managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v7).
+[managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v8).
 
 A create or rotation stores a new immutable value and commits it as active only
 if the reviewed account revision still matches. On Linux and Windows, inserting
@@ -668,6 +669,30 @@ patterns as individual add/edit/remove items.
 The sender allowlist is local filtering, not sender authentication. A spoofed
 `From` header can match. Continue to rely on provider-side SPF, DKIM, DMARC,
 and spam controls.
+
+## Sender identities
+
+`allowed_from_addresses` is an account setting that authorizes which `From`
+addresses compose tools may write for that account (see
+[configuration](configuration.md#sender-identities)). It is not the inbound
+`allowed_senders` filter above.
+
+- **Scope.** The list belongs to one account. Another account cannot use it,
+  even in the same catalog. The account address is always allowed; an empty
+  list allows nothing else, so existing configurations keep their behavior.
+- **Enforcement.** An explicit `from_address` is checked when the request is
+  resolved, again against freshly opened authority, and again at the provider
+  effect boundary right before APPEND or SMTP `DATA`. Revoking an alias stops an
+  operation that is already connected.
+- **Automatic selection.** `derive_reply_from` is a separate opt-in. When it is
+  off, no reply triggers an IMAP lookup, and send does not depend on one. When it
+  is on, the lookup reads only `BODY.PEEK` headers, treats a source blocked by
+  `allowed_senders` as not found, and only ever selects an address that the
+  list allows. A lookup failure fails the call rather than falling back.
+- **Header versus envelope.** Only the RFC 5322 `From` header changes. The SMTP
+  reverse-path stays the account address, and the provider decides whether that
+  login may send with the alias. This setting does not make an address
+  deliverable or DKIM-aligned.
 
 ## Mutation replay safety
 
