@@ -2152,7 +2152,8 @@ class EmailClient:
         A complete STATUS response is returned unchanged. When UIDNEXT or
         UIDVALIDITY is missing, SELECT is checked next because some servers
         put those values only in the SELECT response codes. A field that is
-        still missing stays ``None``.
+        still missing stays ``None``. Conflicting UIDVALIDITY values reject
+        the observation instead of combining fields from different epochs.
 
         Omitted UIDNEXT is not replaced with ``max(uid) + 1``. Snapshot and
         delta reads use ``UID FETCH 1:* (UID)`` as coverage evidence, so an
@@ -2168,6 +2169,8 @@ class EmailClient:
             select_response = await imap.select(_quote_mailbox(mailbox))
             _raise_for_imap_error(select_response, f"SELECT mailbox {mailbox}")
             selected_validity, selected_next = self._parse_select_state_fields(select_response)
+            if uidvalidity is not None and selected_validity is not None and uidvalidity != selected_validity:
+                raise MetadataProviderObservationError("Provider UIDVALIDITY changed between STATUS and SELECT")
             if uidvalidity is None and selected_validity is not None:
                 uidvalidity = selected_validity
             if uidnext is None and selected_next is not None:

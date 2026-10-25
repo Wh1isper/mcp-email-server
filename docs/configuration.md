@@ -521,23 +521,26 @@ platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
 original and never treat the catalog as a non-secret database. Schema v3, v4,
-and v5 catalogs migrate automatically to v6 on the first catalog access. The
+v5, and v6 catalogs migrate automatically to v7 on the first catalog access. The
 transaction preserves accounts, policy, bindings, secrets, and revisions; it adds
-default-disabled protocol access. Sources before v5 also receive all five global
+a nullable To-only address field to the metadata cache. Sources before v6 also
+receive default-disabled protocol access. Sources before v5 also receive all five global
 mutation grants, inheriting account overrides, and an unset draft mailbox. A v3
 source additionally receives empty account tag mappings and the disabled
-attachment-content policy. Exact schema and invariant checks finish before v6
+attachment-content policy. Exact schema and invariant checks finish before v7
 is recorded; failure leaves the original version intact. Other unsupported
 versions, corrupt storage, and insecure storage fail closed. Legacy TOML,
 environment, and keyring sources remain supported through explicit import. In
 legacy mode, an unavailable or unsafe operational database produces a bounded
 warning and the metadata query uses its bounded IMAP fallback instead.
 
-### Upgrading a managed catalog to v6
+### Upgrading a managed catalog to v7
 
-Managed v3/v4/v5 catalogs migrate transactionally to v6. The new protocol-access
-flag defaults to false for every existing account; account grants and other
-configuration remain intact. Migration never reads credential values.
+Managed v3/v4/v5/v6 catalogs migrate transactionally to v7. The new To-only cache
+field starts as unknown for existing rows; a local To query refetches the missing
+headers automatically. Legacy operational databases at v1 or v6 receive the same
+cache-field migration. Account grants and other configuration remain intact.
+Migration never reads credential values.
 
 1. Stop every MCP, UI, and CLI process using the selected catalog before opening
    it with the new application. Even an inspection command can trigger migration.
@@ -548,7 +551,7 @@ configuration remain intact. Migration never reads credential values.
 3. Upgrade UI, CLI, and MCP together to the same release, then restart each MCP
    client. Do not leave an older process sharing the newly migrated catalog.
 
-Versions that only understand v3/v4/v5 cannot open v6. Downgrading only the package
+Versions that only understand v3/v4/v5/v6 cannot open v7. Downgrading only the package
 is therefore insufficient: stop the new processes and restore the matching
 pre-upgrade catalog and bootstrap with the older application. This restores
 local configuration to the backup point, not provider-side email effects or

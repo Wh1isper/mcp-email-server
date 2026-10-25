@@ -50,7 +50,7 @@ from mcp_email_server.windows_security import (
     windows_security_supported,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _MIGRATION_SOURCE_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
@@ -626,7 +626,7 @@ CREATE TABLE managed_secret (
 );
 """
 
-_OPERATIONAL_SCHEMA = """
+_OPERATIONAL_SCHEMA_V6 = """
 CREATE TABLE IF NOT EXISTS operational_account (
     id TEXT PRIMARY KEY,
     source_kind TEXT NOT NULL CHECK (source_kind IN ('managed', 'legacy')),
@@ -685,8 +685,8 @@ ALTER TABLE managed_account
     ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
 """
 
-_SCHEMA_V3 = _AUTHORITY_SCHEMA + _OPERATIONAL_SCHEMA
-_SCHEMA_V4 = _AUTHORITY_SCHEMA + _SCHEMA_V4_ADDITIONS + _OPERATIONAL_SCHEMA
+_SCHEMA_V3 = _AUTHORITY_SCHEMA + _OPERATIONAL_SCHEMA_V6
+_SCHEMA_V4 = _AUTHORITY_SCHEMA + _SCHEMA_V4_ADDITIONS + _OPERATIONAL_SCHEMA_V6
 _SCHEMA_V5_ADDITIONS = """
 ALTER TABLE catalog ADD COLUMN allowed_mutations_json TEXT NOT NULL DEFAULT '["draft","organize","delete","send","append"]';
 ALTER TABLE managed_account ADD COLUMN allowed_mutations_json TEXT;
@@ -698,16 +698,22 @@ ALTER TABLE managed_account
     ADD COLUMN allow_protocol_commands INTEGER NOT NULL DEFAULT 0
         CHECK (allow_protocol_commands IN (0, 1));
 """
-_SCHEMA = _SCHEMA_V5 + _SCHEMA_V6_ADDITIONS
-_OPERATIONAL_DATABASE_SCHEMA = (
+_SCHEMA_V6 = _SCHEMA_V5 + _SCHEMA_V6_ADDITIONS
+_SCHEMA_V7_ADDITIONS = """
+ALTER TABLE message_metadata_projection ADD COLUMN to_addresses_json TEXT;
+"""
+_SCHEMA = _SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
+_OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
+_OPERATIONAL_DATABASE_SCHEMA_V6 = (
     """
 CREATE TABLE schema_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     version INTEGER NOT NULL
 );
 """
-    + _OPERATIONAL_SCHEMA
+    + _OPERATIONAL_SCHEMA_V6
 )
+_OPERATIONAL_DATABASE_SCHEMA = _OPERATIONAL_DATABASE_SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
 
 
 def _execute_schema(connection: sqlite3.Connection, schema: str) -> None:
@@ -742,8 +748,8 @@ def _expected_schema_objects(schema: str) -> dict[tuple[str, str], str]:
         return _schema_objects(connection)
 
 
-def _validate_operational_schema(connection: sqlite3.Connection) -> None:
-    expected = _expected_schema_objects(_OPERATIONAL_DATABASE_SCHEMA)
+def _validate_operational_schema(connection: sqlite3.Connection, schema: str = _OPERATIONAL_DATABASE_SCHEMA) -> None:
+    expected = _expected_schema_objects(schema)
     if _schema_objects(connection) != expected:
         raise ManagedCatalogError("Operational database schema is incomplete or incompatible")
 
@@ -858,6 +864,8 @@ class ManagedCatalog:
             raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
         if version == SCHEMA_VERSION:
             _validate_managed_schema(connection, _SCHEMA)
+        elif version == 6:
+            _validate_managed_schema(connection, _SCHEMA_V6)
         elif version == 5:
             _validate_managed_schema(connection, _SCHEMA_V5)
         elif version == 4:
@@ -885,11 +893,15 @@ class ManagedCatalog:
                 _validate_managed_schema(connection, _SCHEMA_V4)
             elif version == 5:
                 _validate_managed_schema(connection, _SCHEMA_V5)
+            elif version == 6:
+                _validate_managed_schema(connection, _SCHEMA_V6)
             else:
                 _require_migration_source(version)
             if version < 5:
                 _execute_schema(connection, _SCHEMA_V5_ADDITIONS)
-            _execute_schema(connection, _SCHEMA_V6_ADDITIONS)
+            if version < 6:
+                _execute_schema(connection, _SCHEMA_V6_ADDITIONS)
+            _execute_schema(connection, _SCHEMA_V7_ADDITIONS)
             _validate_managed_schema(connection, _SCHEMA)
             _validate_managed_invariants(connection)
             updated = connection.execute(
@@ -907,7 +919,7 @@ class ManagedCatalog:
         with _connect(self.path, enable_wal=False) as connection:
             version = self._preflight_schema_ownership(connection)
         with _connect(self.path) as connection:
-            if version in (3, 4, 5):
+            if version in (3, 4, 5, 6):
                 self._migrate_to_current_schema(connection)
             self._validate_schema(connection)
             yield connection

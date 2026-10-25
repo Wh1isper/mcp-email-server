@@ -184,10 +184,10 @@ sidecar itself is unparseable, repair or restore that sidecar manually; `reset`
 cannot safely infer its mode and therefore does not unlink the independent legacy
 source.
 
-Schemas v3, v4, and v5 are supported managed-catalog migration sources for v6.
+Schemas v3, v4, v5, and v6 are supported managed-catalog migration sources for v7.
 The first new-version catalog access migrates transactionally, preserving account,
-policy, binding, secret rows, and revisions. All sources receive disabled protocol
-access. Sources before v5 receive full global mutation grants and inheriting
+policy, binding, secret rows, and revisions. All sources receive the nullable
+To-only cache field. Sources before v6 receive disabled protocol access. Sources before v5 receive full global mutation grants and inheriting
 account overrides; v3 also receives empty tag mappings and a disabled
 attachment-content policy. A failed migration leaves the source version intact.
 
@@ -196,7 +196,7 @@ or MCP process migrates it. Upgrade all catalog users together and restart every
 MCP client. If rolling back the package, restore the consistent pre-migration
 catalog backup too; do not edit the schema version manually, delete the catalog,
 or re-enter all accounts as a routine upgrade fix. Follow the
-[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v6).
+[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v7).
 
 Other older development schemas are still rejected. For those versions, select
 legacy mode, preserve the old file for rollback, and initialize a fresh
@@ -304,12 +304,18 @@ supplied both `UIDVALIDITY` and `UIDNEXT`. Otherwise it reads `UID FETCH 1:*
 (UID)` and the headers. Gaps in that UID list are kept as coverage evidence,
 and the omitted `UIDNEXT` stays unknown. If the server also omits
 `UIDVALIDITY`, each request reads the mailbox again, so a reset that issues
-the same UID numbers returns the headers from that read. A mailbox that does not fit the snapshot bounds, or a
+the same UID numbers returns the headers from that read. If `STATUS` and
+`SELECT` return conflicting `UIDVALIDITY` values, the request fails rather
+than reuse cached headers across the reset; retry once the mailbox is stable.
+A mailbox that does not fit the snapshot bounds, or a
 read that cannot prove every message was seen, fails with `query_too_broad`
 instead of an empty page. Body, text, date, flag, tag, and attachment filters
 stay on IMAP SEARCH. A `local` query that mixes those filters with subject,
 from, or to is rejected; run the header filter and the other filter as
-separate requests. To matches the To header only, not Cc.
+separate requests. To matches the To header only, not Cc. The cache stores To
+addresses separately from display recipients. Older cache rows without that
+field are refreshed automatically on a To search; no manual cache deletion is
+needed. Repeated searches and incremental updates preserve the distinction.
 
 A metadata refresh logs its progress at INFO: a partial snapshot reports how
 many rows it kept out of the server message count, a complete snapshot reports

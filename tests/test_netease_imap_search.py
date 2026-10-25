@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from email.header import Header
 from io import StringIO
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +34,7 @@ from mcp_email_server.emails.classic import _MAILBOX_STATE_NOTICES, MAX_IMAP_UID
 from mcp_email_server.emails.models import EmailMetadataPageResponse, MailboxInfo
 from mcp_email_server.imap_keywords import ImapKeywordRegistry
 from mcp_email_server.log import logger
+from mcp_email_server.metadata_index import MetadataIndex
 
 NOW = datetime(2026, 7, 22, 4, 0, tzinfo=UTC)
 
@@ -399,6 +401,28 @@ async def test_select_uidnext_does_not_fetch_an_inventory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_conflicting_status_and_select_epochs_cannot_qualify_cached_headers() -> None:
+    client = _client()
+    imap = _imap()
+    imap.status.return_value = ("OK", [b"INBOX (UIDVALIDITY 77 MESSAGES 1)"])
+    imap.select.return_value = ("OK", [b"1 EXISTS", b"[UIDVALIDITY 88]", b"[UIDNEXT 5]"])
+    service, provider, projection = _service("imap.example.test", "local")
+    provider.mailbox_state.side_effect = client.get_mailbox_state
+    projection.read_complete.return_value = [_row("4", "Deleted old-epoch subject")]
+
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        pytest.raises(MetadataProviderObservationError, match="UIDVALIDITY changed"),
+    ):
+        await service.execute(ListEmailMetadataQuery(account_name="work", subject="old-epoch"))
+
+    projection.read_complete.assert_not_awaited()
+    projection.write_snapshot.assert_not_awaited()
+    provider.list_metadata.assert_not_awaited()
+    imap.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_empty_mailbox_without_uidnext_is_complete_without_search() -> None:
     client = _client()
     imap = _imap()
@@ -559,6 +583,87 @@ async def test_local_mode_to_match_ignores_cc_and_refetches_without_a_to_field()
     assert matched.emails[0].recipients == ["to@example.com", "cc-only@example.com"]
     provider.list_metadata.assert_not_awaited()
     assert provider.mailbox_snapshot.await_count == 2
+
+
+def _sqlite_projection(tmp_path: Path) -> SQLiteMetadataProjection:
+    index = MetadataIndex(tmp_path / "private" / "metadata.sqlite3", "legacy")
+    account = EmailSettings(
+        account_name="work",
+        full_name="Work",
+        email_address="user@example.test",
+        incoming=EmailServer(
+            user_name="user@example.test", password=SecretStr("secret"), host="imap.example.test", port=993
+        ),
+    )
+    return SQLiteMetadataProjection(index, index.resolve_operational_account(account))
+
+
+@pytest.mark.asyncio
+async def test_local_to_search_survives_sqlite_reopen_and_incremental_refresh(tmp_path: Path) -> None:
+    service, provider, _ = _service(mode="local")
+    projection = _sqlite_projection(tmp_path)
+    service._projections.open = AsyncMock(return_value=projection)
+    rows = (
+        _row("10", "To match", to=["to@example.com", "cc@example.com"], to_addresses=["to@example.com"]),
+        _row("12", "Cc only", to=["to@example.com"], to_addresses=[]),
+    )
+    provider.mailbox_snapshot.return_value = _mailbox_snapshot(rows)
+    query = ListEmailMetadataQuery(account_name="work", to_address="to@example.com")
+    assert (await service.execute(query)).total == 1
+
+    # A new index instance reads the persisted observation, not the original dicts.
+    service._projections.open.return_value = _sqlite_projection(tmp_path)
+    assert (await service.execute(query)).total == 1
+    assert (await service.execute(ListEmailMetadataQuery(account_name="work", to_address="cc@example.com"))).total == 0
+    provider.mailbox_snapshot.assert_awaited_once()
+    provider.mailbox_uid_delta.assert_not_awaited()
+
+    provider.mailbox_state.return_value = MailboxState(77, 14, 3)
+    provider.mailbox_uid_delta.return_value = MailboxUidDelta(
+        state=MailboxState(77, 14, 3),
+        mailbox=MailboxInfo(name="INBOX", delimiter="", flags=[]),
+        emails=(_row("13", "New match", to_addresses=["to@example.com"]),),
+        observed_at=NOW,
+        resumable=True,
+        uidvalidity_changed=False,
+    )
+    assert (await service.execute(query)).total == 2
+    assert (await service.execute(query)).total == 2
+    provider.mailbox_snapshot.assert_awaited_once()
+    provider.mailbox_uid_delta.assert_awaited_once()
+    provider.list_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete", [True, False])
+@pytest.mark.parametrize("new_mail", [True, False])
+async def test_local_to_search_repairs_old_sqlite_rows(tmp_path: Path, complete: bool, new_mail: bool) -> None:
+    service, provider, _ = _service(mode="local")
+    projection = _sqlite_projection(tmp_path)
+    service._projections.open = AsyncMock(return_value=projection)
+    known = _row("10", "Known empty To", to=["to@example.com"], to_addresses=[])
+    unknown = _row("12", "Old cache", to=["to@example.com"])
+    await projection.write_snapshot("INBOX", _mailbox_snapshot((known, unknown), complete=complete))
+    repaired = _row("12", "Old cache", to=["to@example.com"], to_addresses=["to@example.com"])
+    added = (_row("13", "New match", to_addresses=["to@example.com"]),) if new_mail else ()
+    state = MailboxState(77, 14 if new_mail else 13, 3 if new_mail else 2)
+    provider.mailbox_state.return_value = state
+    provider.mailbox_uid_delta.return_value = MailboxUidDelta(
+        state=state,
+        mailbox=MailboxInfo(name="INBOX", delimiter="", flags=[]),
+        emails=added,
+        observed_at=NOW,
+        resumable=True,
+        uidvalidity_changed=False,
+    )
+    provider.mailbox_snapshot.return_value = _mailbox_snapshot((known, repaired, *added), state=state)
+    query = ListEmailMetadataQuery(account_name="work", to_address="to@example.com")
+    assert (await service.execute(query)).total == 1 + int(new_mail)
+    provider.mailbox_snapshot.assert_awaited_once_with("INBOX", retained_emails=(known,), retained_uidvalidity=77)
+    assert provider.mailbox_uid_delta.await_count == int(complete)
+    assert (await service.execute(query)).total == 1 + int(new_mail)
+    provider.mailbox_snapshot.assert_awaited_once()
+    provider.list_metadata.assert_not_awaited()
 
 
 @pytest.mark.asyncio

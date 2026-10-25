@@ -827,7 +827,7 @@ class MetadataQueryService:
                 _log_projection_refresh_failure(exc, incremental=True)
             else:
                 merged = _merge_append_only_snapshot(query.mailbox, baseline, delta)
-                if merged is not None:
+                if merged is not None and _projection_can_answer(query, merged.emails):
                     logger.info(f"Incremental metadata sync added {len(delta.emails)} UIDs")
                     return merged, True, False
         if baseline is not None:

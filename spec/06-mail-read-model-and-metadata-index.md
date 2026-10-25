@@ -78,7 +78,9 @@ absence and never produce an exact total claim.
 
 `STATUS` must include `MESSAGES`. `UIDVALIDITY` and `UIDNEXT` may be omitted
 from `STATUS`; the parser then reads the same names from `SELECT` response
-codes. A field that is still absent stays unknown. It is not replaced with
+codes. If both responses supply UIDVALIDITY and disagree, the observation
+fails; fields from different epochs must not be combined to qualify cached
+rows. A field that is still absent stays unknown. It is not replaced with
 `max(uid) + 1` or with a hash of the UID set. Some servers, including the
 reported NetEase IMAP responses, return `MESSAGES` and `UIDVALIDITY` while
 omitting `UIDNEXT`, and answer `UID SEARCH` with an empty set. That shape is
@@ -404,7 +406,11 @@ catalog authority or secret binding state.
     a bounded fresh UID and header read. Matches are case-insensitive
     substrings of decoded header text, including RFC 2047 encoded words. To
     matches the To header only; the display recipient list still combines To
-    and Cc. Body, text, date, flag, tag, and attachment predicates stay on
+    and Cc. The projection persists To addresses separately. An unknown To
+    field in older rows is distinct from a known empty To list. Complete cache
+    hits and append-only merges must have this evidence for every row before
+    answering To; otherwise a bounded refresh refetches rows missing it.
+    Body, text, date, flag, tag, and attachment predicates stay on
     IMAP SEARCH. Combining one of those with subject, from, or to in `local`
     mode fails before provider access. Incomplete local coverage, or a local
     read past the row, byte, or time bound, is `query_too_broad` and does not
