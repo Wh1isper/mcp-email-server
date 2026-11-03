@@ -158,6 +158,16 @@ rebuild and installed/`uvx` UI smokes. Relevant changes should still run
 `make test-browser` and `make test-e2e` locally before they are pushed so
 failures can be diagnosed without waiting for CI.
 
+A separate container security workflow scans the runtime image on pushes to
+`main`, on a weekly schedule, and when manually dispatched. Push and manual
+runs build the selected commit; the weekly run scans the published
+`ghcr.io/wh1isper/mcp-email-server:latest` image, not a rebuild. The scheduled
+scan covers the runner's native architecture, not every published architecture
+or older release tag. Trivy reports fixable HIGH and CRITICAL vulnerabilities
+in GitHub Security without failing the workflow merely for findings. Build,
+scanner, and SARIF upload errors still fail the job. The workflow does not run
+on pull requests or update dependencies automatically.
+
 9. Commit your changes and push your branch to GitHub:
 
 ```bash

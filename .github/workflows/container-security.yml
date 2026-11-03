@@ -1,0 +1,46 @@
+name: Container security
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    name: Scan runtime container
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out selected commit
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build runtime image from selected commit
+        if: github.event_name != 'schedule'
+        run: docker build --pull --tag mcp-email-server:security .
+
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ github.event_name == 'schedule' && 'ghcr.io/wh1isper/mcp-email-server:latest' || 'mcp-email-server:security' }}
+          scan-type: image
+          scanners: vuln
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Upload vulnerability report
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: ${{ github.event_name == 'schedule' && 'container-published' || 'container-main-build' }}
