@@ -377,6 +377,8 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
                 "allowed_mutations": list(source.allowed_mutations) if source.allowed_mutations is not None else None,
                 "drafts_mailbox": source.drafts_mailbox,
                 "allow_protocol_commands": source.allow_protocol_commands,
+                "allowed_from_addresses": list(source.allowed_from_addresses),
+                "derive_reply_from": source.derive_reply_from,
             },
             "incoming": {
                 **_endpoint_data(source.incoming),
@@ -830,6 +832,16 @@ def account_add(
         "--allow-protocol-commands/--no-allow-protocol-commands",
         help="Advanced raw protocol access, including mailbox deletion, expunge and arbitrary flags. Requires compatible policy.",
     ),
+    allowed_from_addresses: str | None = typer.Option(
+        None,
+        "--allowed-from-addresses",
+        help="Comma-separated own addresses or glob patterns this account may use as From besides its own address.",
+    ),
+    derive_reply_from: bool = typer.Option(
+        False,
+        "--derive-reply-from/--no-derive-reply-from",
+        help="Replies without from_address take an allowed address from the replied-to message.",
+    ),
     allowed_mutations: str | None = typer.Option(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
@@ -909,6 +921,8 @@ def account_add(
                 else parse_mutations(_split_csv(allowed_mutations)),
                 drafts_mailbox=drafts_mailbox or None,
                 allow_protocol_commands=allow_protocol_commands,
+                allowed_from_addresses=tuple(_split_csv(allowed_from_addresses or "")),
+                derive_reply_from=derive_reply_from,
             )
         )
     except (ManagementError, ValueError) as exc:
@@ -1051,6 +1065,8 @@ def account_show(name: str, json_output: JsonOutput = False) -> None:
                 "allowed_mutations": list(account.allowed_mutations) if account.allowed_mutations is not None else None,
                 "drafts_mailbox": account.drafts_mailbox,
                 "allow_protocol_commands": account.allow_protocol_commands,
+                "allowed_from_addresses": list(account.allowed_from_addresses),
+                "derive_reply_from": account.derive_reply_from,
                 "incoming": _endpoint_data(account.incoming),
                 "outgoing": _endpoint_data(account.outgoing) if account.outgoing is not None else None,
                 "incoming_binding": account.incoming_binding,
@@ -1111,6 +1127,16 @@ def account_update(
         "--allow-protocol-commands/--no-allow-protocol-commands",
         help="Advanced raw protocol access, including mailbox deletion, expunge and arbitrary flags. Requires compatible policy.",
     ),
+    allowed_from_addresses: str | None = typer.Option(
+        None,
+        "--allowed-from-addresses",
+        help="Comma-separated own From addresses or glob patterns; an empty value allows only the account address.",
+    ),
+    derive_reply_from: bool | None = typer.Option(
+        None,
+        "--derive-reply-from/--no-derive-reply-from",
+        help="Replies without from_address take an allowed address from the replied-to message.",
+    ),
     allowed_mutations: str | None = typer.Option(
         None, "--allowed-mutations", help="Comma-separated grants; empty read-only; inherit resets to global."
     ),
@@ -1158,6 +1184,10 @@ def account_update(
                 allow_protocol_commands=allow_protocol_commands,
                 update_allowed_mutations=allowed_mutations is not None,
                 update_drafts_mailbox=drafts_mailbox is not None,
+                allowed_from_addresses=None
+                if allowed_from_addresses is None
+                else tuple(_split_csv(allowed_from_addresses)),
+                derive_reply_from=derive_reply_from,
                 update_sent_folder=sent_folder is not None or clear_sent_folder,
             )
         )

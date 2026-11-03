@@ -5,6 +5,7 @@ import { ApiError, type ManagementApi } from '../api'
 import type { AccountDetails, AccountInput, AccountSummary, AccountTag, BindingState, CatalogTarget, Endpoint, ManagementStatus, MutationClass } from '../types'
 import { ConflictNotice, errorMessage, StatusMessage } from './Feedback'
 import { CredentialsPanel } from './CredentialsPanel'
+import { ItemEditor } from './ItemEditor'
 import { ALL_MUTATIONS, grantSummary, MutationGrants } from './MutationGrants'
 
 const blankEndpoint = (port: number): Endpoint => ({
@@ -92,6 +93,8 @@ const blankAccount = (): AccountInput => ({
   allowed_mutations: null,
   drafts_mailbox: null,
   allow_protocol_commands: false,
+  allowed_from_addresses: [],
+  derive_reply_from: false,
   name: '',
   full_name: '',
   email_address: '',
@@ -105,6 +108,8 @@ const blankAccount = (): AccountInput => ({
 const editableAccount = (current: AccountDetails): AccountInput => ({
   allowed_mutations: current.allowed_mutations ?? null,
   drafts_mailbox: current.drafts_mailbox ?? null,
+  allowed_from_addresses: current.allowed_from_addresses ?? [],
+  derive_reply_from: current.derive_reply_from ?? false,
   allow_protocol_commands: current.allow_protocol_commands ?? false,
   name: current.name,
   full_name: current.full_name,
@@ -366,6 +371,17 @@ function AccountEditor({
           <MutationGrants id="account-grants" value={input.allowed_mutations ?? globalGrants} disabled={input.allowed_mutations == null} onChange={(grants) => update('allowed_mutations', grants)} />
           <p className="hint">Effective permissions: {grantSummary(input.allowed_mutations ?? globalGrants)}.</p>
           <div className="field"><label htmlFor="drafts-mailbox">Drafts mailbox (optional)</label><input id="drafts-mailbox" value={input.drafts_mailbox ?? ''} onChange={(event) => update('drafts_mailbox', event.target.value || null)} maxLength={1000} /><small>Mailbox used by save_draft. Leave empty to discover a unique provider Drafts special-use mailbox; this does not grant draft permission.</small></div>
+          <ItemEditor
+            id="allowed-from-addresses"
+            title="Allowed From addresses"
+            itemLabel="From address"
+            addLabel="Add From address"
+            help="Own addresses or patterns such as *@example.com this account may use as From besides its own address. Empty allows only the account address. The SMTP envelope sender stays the account address."
+            values={input.allowed_from_addresses ?? []}
+            onChange={(values) => update('allowed_from_addresses', values)}
+          />
+          <label className="field-checkbox"><input type="checkbox" checked={input.derive_reply_from ?? false} onChange={(event) => update('derive_reply_from', event.target.checked)} /> Reply from the address the original was sent to</label>
+          <p className="hint">Replies without an explicit From look the original message up over IMAP and use its first allowed To, Cc or original recipient address. No match keeps the account address; a failed lookup fails the reply.</p>
         </div>
       </details>
 

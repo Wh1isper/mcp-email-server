@@ -145,6 +145,7 @@ async def test_mutation_adapter_composes_and_appends_mailbox_message(
         None,
         None,
         include_bcc_header=True,
+        from_address=None,
     )
     handler.incoming_client.append_to_mailbox_with_outcome.assert_awaited_once_with(
         message,
@@ -402,6 +403,7 @@ async def test_mutation_adapter_submits_forward_body_verbatim_with_reattached_pa
         None,
         None,
         extra_parts=[part],
+        from_address=None,
     )
 
 
