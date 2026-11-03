@@ -753,6 +753,10 @@ is reopened after discovery and checked freshly before provider effects.
 Native IMAP `MOVE` is preferred. The COPY-and-delete fallback is available only
 when the server advertises `UIDPLUS`, allowing the source to be removed with
 target-scoped `UID EXPUNGE`; otherwise the operation fails before copying.
+The fallback completes copy, flag, and scoped expunge for each UID before moving
+the next. This preserves completed progress if a later UID times out, at the
+cost of an extra expunge round trip per message. A partially completed UID can
+still be unknown and require reconciliation; do not blindly retry unknown UIDs.
 
 #### Move to Junk and restore
 
