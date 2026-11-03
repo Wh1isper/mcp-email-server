@@ -127,7 +127,11 @@ from 64 KiB through 64 MiB). `MCP_EMAIL_SERVER_METADATA_REFRESH_BATCH_SIZE`
 (default 100, from 1 through 1000) is additionally capped so one batch of
 maximum-size headers fits that budget. A failed batch stores the newest rows
 already fetched as a partial snapshot. Connection establishment also has its
-own refresh timeout, including cancellation cleanup. A failed refresh logs the
+own refresh timeout, including cancellation cleanup. IMAP command timeouts must
+honor the applicable refresh or ordinary provider budget rather than a shorter
+library default. A timed-out or cancelled metadata command discards the
+connection without waiting for logout; normal logout is bounded and releases
+the transport on failure. A failed refresh logs the
 causal exception class and at most 20 function-name/line-number traceback
 locations, omitting exception text/chains, source lines, paths, and locals even
 with diagnostic sinks. It then follows the existing legacy fallback or managed

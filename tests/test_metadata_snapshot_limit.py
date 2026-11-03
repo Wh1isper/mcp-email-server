@@ -373,17 +373,13 @@ async def test_incremental_sync_falls_back_when_messages_were_deleted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_snapshot_adapter_keeps_the_causal_exception_off_the_public_message() -> None:
+async def test_snapshot_adapter_preserves_timeout_for_application_mapping() -> None:
     handler = MagicMock()
     handler.incoming_client.get_mailbox_metadata_snapshot = AsyncMock(side_effect=TimeoutError("slow mailbox"))
     provider = ClassicMetadataProvider(handler)
 
-    with pytest.raises(MetadataProviderError, match="provider_failure") as exc_info:
+    with pytest.raises(TimeoutError, match="slow mailbox"):
         await provider.mailbox_snapshot("INBOX")
-
-    assert "slow mailbox" not in str(exc_info.value)
-    assert isinstance(exc_info.value.diagnostic, TimeoutError)
-    assert "slow mailbox" in str(exc_info.value.diagnostic)
 
 
 @pytest.mark.asyncio

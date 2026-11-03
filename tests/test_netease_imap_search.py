@@ -404,6 +404,7 @@ async def test_select_uidnext_does_not_fetch_an_inventory() -> None:
 async def test_conflicting_status_and_select_epochs_cannot_qualify_cached_headers() -> None:
     client = _client()
     imap = _imap()
+    imap.protocol = MagicMock(transport=None)
     imap.status.return_value = ("OK", [b"INBOX (UIDVALIDITY 77 MESSAGES 1)"])
     imap.select.return_value = ("OK", [b"1 EXISTS", b"[UIDVALIDITY 88]", b"[UIDNEXT 5]"])
     service, provider, projection = _service("imap.example.test", "local")

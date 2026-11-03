@@ -185,9 +185,10 @@ async def test_non_qq_auto_search_keeps_synchronizing_literal() -> None:
 async def test_quoted_mode_crlf_fails_before_search() -> None:
     client = _client("imap.example.com", mode="quoted")
     imap = _connected_imap()
+    imap.protocol = MagicMock(transport=None)
 
     with (
-        patch.object(client, "imap_class", return_value=imap),
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
         pytest.raises(ValueError, match="CR or LF"),
     ):
         await client.get_emails_metadata(subject="淘宝\n")

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+import aioimaplib
+
 from mcp_email_server import config as config_module
 from mcp_email_server.adapters.authority import resolve_local_account
 from mcp_email_server.application.accounts import EffectiveConfiguration
@@ -41,8 +43,10 @@ _T = TypeVar("_T")
 async def _bounded_provider_call(awaitable: Awaitable[_T]) -> _T:
     try:
         return await awaitable
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, TimeoutError):
         raise
+    except aioimaplib.CommandTimeout as exc:
+        raise TimeoutError("IMAP command timed out") from exc
     except (MetadataPayloadTooLargeError, MetadataProviderObservationError, MetadataQueryTooBroadError):
         raise
     except Exception as exc:
