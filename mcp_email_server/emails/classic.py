@@ -3978,6 +3978,7 @@ class EmailClient:
         _validate_imap_uids(email_ids)
         imap = await self._connect_imap()
         outcomes: dict[str, TargetMutationOutcome] = {}
+        interrupted = False
         try:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
@@ -4026,8 +4027,6 @@ class EmailClient:
                         else "move-unknown",
                     )
             else:
-                pending_expunge: list[str] = []
-                stopped = False
                 for index, email_id in enumerate(permitted):
                     try:
                         self._check_mutation_authority()
@@ -4035,22 +4034,22 @@ class EmailClient:
                     except PermissionError:
                         outcomes[email_id] = TargetMutationOutcome(email_id, "failed", "mutation-policy")
                         continue
-                    except asyncio.CancelledError:
+                    except (asyncio.CancelledError, Exception):
                         outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-unknown")
                         for remaining_id in permitted[index + 1 :]:
                             outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
-                        stopped = True
+                        interrupted = True
                         break
-                    except Exception:
-                        outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-unknown")
-                        continue
                     copy_status = _imap_effect_status(copy_response)
                     if copy_status != "succeeded":
                         outcomes[email_id] = TargetMutationOutcome(
-                            email_id,
-                            copy_status,
-                            "copy-rejected" if copy_status == "failed" else "copy-unknown",
+                            email_id, copy_status, "copy-rejected" if copy_status == "failed" else "copy-unknown"
                         )
+                        if copy_status == "unknown":
+                            for remaining_id in permitted[index + 1 :]:
+                                outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
+                            interrupted = True
+                            break
                         continue
                     try:
                         self._check_mutation_authority()
@@ -4060,15 +4059,12 @@ class EmailClient:
                             email_id, "unknown", "copy-succeeded-policy-cleanup-pending"
                         )
                         continue
-                    except asyncio.CancelledError:
+                    except (asyncio.CancelledError, Exception):
                         outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-succeeded-store-unknown")
                         for remaining_id in permitted[index + 1 :]:
                             outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
-                        stopped = True
+                        interrupted = True
                         break
-                    except Exception:
-                        outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "copy-succeeded-store-unknown")
-                        continue
                     store_status = _imap_effect_status(store_response)
                     if store_status != "succeeded":
                         outcomes[email_id] = TargetMutationOutcome(
@@ -4078,36 +4074,46 @@ class EmailClient:
                             if store_status == "failed"
                             else "copy-succeeded-store-unknown",
                         )
+                        if store_status == "unknown":
+                            for remaining_id in permitted[index + 1 :]:
+                                outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
+                            interrupted = True
+                            break
                         continue
-                    pending_expunge.append(email_id)
-                if stopped:
-                    for pending_id in pending_expunge:
-                        outcomes[pending_id] = TargetMutationOutcome(
-                            pending_id, "unknown", "expunge-after-copy-not-attempted"
-                        )
-                elif pending_expunge:
-                    expunge_detail = "expunge-after-copy-unknown"
                     try:
                         self._check_mutation_authority()
-                        expunge_response = await imap.uid("expunge", ",".join(pending_expunge))
+                        expunge_response = await imap.uid("expunge", email_id)
                     except PermissionError:
-                        expunge_response = None
-                        expunge_detail = "mutation-policy-cleanup-pending"
-                    except asyncio.CancelledError:
-                        expunge_response = None
-                    except Exception:
-                        expunge_response = None
+                        outcomes[email_id] = TargetMutationOutcome(
+                            email_id, "unknown", "mutation-policy-cleanup-pending"
+                        )
+                        continue
+                    except (asyncio.CancelledError, Exception):
+                        outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", "expunge-after-copy-unknown")
+                        for remaining_id in permitted[index + 1 :]:
+                            outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
+                        interrupted = True
+                        break
+                    expunge_status = _imap_effect_status(expunge_response)
+                    if expunge_status == "succeeded":
+                        outcomes[email_id] = TargetMutationOutcome(email_id, "succeeded")
                     else:
-                        if _imap_effect_status(expunge_response) == "failed":
-                            expunge_detail = "expunge-after-copy-failed"
-                    if expunge_response is not None and _imap_effect_status(expunge_response) == "succeeded":
-                        for email_id in pending_expunge:
-                            outcomes[email_id] = TargetMutationOutcome(email_id, "succeeded")
-                    else:
-                        for email_id in pending_expunge:
-                            outcomes[email_id] = TargetMutationOutcome(email_id, "unknown", expunge_detail)
+                        outcomes[email_id] = TargetMutationOutcome(
+                            email_id,
+                            "unknown",
+                            "expunge-after-copy-failed" if expunge_status == "failed" else "expunge-after-copy-unknown",
+                        )
+                        if expunge_status == "unknown":
+                            for remaining_id in permitted[index + 1 :]:
+                                outcomes[remaining_id] = TargetMutationOutcome(remaining_id, "failed", "not-attempted")
+                            interrupted = True
+                            break
         finally:
-            await _best_effort_imap_logout(imap)
+            if interrupted:
+                with suppress(asyncio.CancelledError, Exception):
+                    await self._abort_imap_connection(imap)
+            else:
+                await _best_effort_imap_logout(imap)
         return BatchMutationOutcome(tuple(outcomes[email_id] for email_id in email_ids))
 
     async def delete_emails(

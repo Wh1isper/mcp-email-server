@@ -187,7 +187,12 @@ placement/projection warning rather than resubmitting.
 
 A move uses native UID MOVE when the provider advertises and supports it. A
 fallback may use UID COPY followed by a deletion/expunge sequence only when the
-provider offers a scoped primitive that cannot expunge unrelated messages.
+provider offers a scoped primitive that cannot expunge unrelated messages. In the
+UIDPLUS fallback, finish COPY, STORE and UID EXPUNGE for each target before
+starting the next. Preserve confirmed results, report an interrupted target as
+unknown and the untouched tail as not attempted. Stop issuing commands on an
+interrupted connection. The additional per-target expunge round trip trades
+throughput for a smaller unfinished-copy window; it does not make a move atomic.
 
 `move_emails` accepts exactly one of an explicit `destination_mailbox` or
 `destination_role="junk"`. Existing explicit-destination calls retain their

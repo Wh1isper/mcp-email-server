@@ -32,7 +32,7 @@ def _imap(*, capabilities: tuple[str, ...] = ("IMAP4rev1", "UIDPLUS")) -> AsyncM
     imap.append.return_value = ("OK", [])
     imap.list.return_value = ("OK", [])
     imap.logout.return_value = ("BYE", [])
-    imap.protocol = SimpleNamespace(capabilities=capabilities, capability=AsyncMock())
+    imap.protocol = SimpleNamespace(capabilities=capabilities, capability=AsyncMock(), transport=None)
     return imap
 
 
@@ -1252,3 +1252,146 @@ async def test_legacy_send_debug_logs_are_redacted(email_server) -> None:
     assert "SMTP phase=send outcome=started" in captured
     assert "SMTP phase=send outcome=succeeded" in captured
     _assert_smtp_log_redacted(captured)
+
+
+@pytest.mark.parametrize(
+    ("interrupted_command", "detail"),
+    [("copy", "copy-unknown"), ("store", "copy-succeeded-store-unknown"), ("expunge", "expunge-after-copy-unknown")],
+)
+@pytest.mark.asyncio
+async def test_move_fallback_real_timeout_preserves_completed_prefix(email_server, interrupted_command, detail):
+    client = EmailClient(email_server)
+    imap = _imap()
+    imap.protocol.transport = MagicMock()
+    calls = []
+
+    async def uid(command, uid, *_args):
+        calls.append((command, uid))
+        if uid == "8" and command == interrupted_command:
+            await asyncio.Event().wait()
+        return ("OK", [])
+
+    imap.uid.side_effect = uid
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        async with asyncio.timeout(0.05):
+            result = await client.move_emails_with_outcome(["7", "8", "9"], "INBOX", "Archive", allowed_senders=[])
+
+    assert [(x.target, x.status, x.detail) for x in result.outcomes] == [
+        ("7", "succeeded", None),
+        ("8", "unknown", detail),
+        ("9", "failed", "not-attempted"),
+    ]
+    assert calls[:3] == [("copy", "7"), ("store", "7"), ("expunge", "7")]
+    assert calls[-1] == (interrupted_command, "8")
+    assert not any(uid == "9" for _, uid in calls)
+    imap.protocol.transport.close.assert_called_once()
+    imap.logout.assert_not_awaited()
+    assert result.reconciliation_needed
+
+
+@pytest.mark.parametrize(
+    ("rejected_command", "status", "detail"),
+    [
+        ("copy", "failed", "copy-rejected"),
+        ("store", "unknown", "copy-succeeded-store-failed"),
+        ("expunge", "unknown", "expunge-after-copy-failed"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_move_fallback_rejection_preserves_prefix_and_continues(email_server, rejected_command, status, detail):
+    client = EmailClient(email_server)
+    imap = _imap()
+    calls = []
+
+    async def uid(command, uid, *_args):
+        calls.append((command, uid))
+        return ("NO", []) if uid == "8" and command == rejected_command else ("OK", [])
+
+    imap.uid.side_effect = uid
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        result = await client.move_emails_with_outcome(["7", "8", "9"], "INBOX", "Archive", allowed_senders=[])
+
+    assert [(x.status, x.detail) for x in result.outcomes] == [
+        ("succeeded", None),
+        (status, detail),
+        ("succeeded", None),
+    ]
+    assert calls[:3] == [("copy", "7"), ("store", "7"), ("expunge", "7")]
+    assert calls[-3:] == [("copy", "9"), ("store", "9"), ("expunge", "9")]
+    assert len([call for call in calls if call == (rejected_command, "8")]) == 1
+    imap.expunge.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("interrupted_command", "detail"),
+    [("copy", "copy-unknown"), ("store", "copy-succeeded-store-unknown"), ("expunge", "expunge-after-copy-unknown")],
+)
+@pytest.mark.asyncio
+async def test_move_fallback_unknown_response_stops_after_completed_prefix(email_server, interrupted_command, detail):
+    client = EmailClient(email_server)
+    imap = _imap()
+    imap.protocol.transport = MagicMock()
+    calls = []
+
+    async def uid(command, uid, *_args):
+        calls.append((command, uid))
+        return ("BYE", []) if uid == "8" and command == interrupted_command else ("OK", [])
+
+    imap.uid.side_effect = uid
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        result = await client.move_emails_with_outcome(["7", "8", "9"], "INBOX", "Archive", allowed_senders=[])
+
+    assert [(x.target, x.status, x.detail) for x in result.outcomes] == [
+        ("7", "succeeded", None),
+        ("8", "unknown", detail),
+        ("9", "failed", "not-attempted"),
+    ]
+    assert calls[:3] == [("copy", "7"), ("store", "7"), ("expunge", "7")]
+    assert calls[-1] == (interrupted_command, "8")
+    assert not any(uid == "9" for _, uid in calls)
+    imap.protocol.transport.close.assert_called_once()
+    imap.logout.assert_not_awaited()
+    assert result.reconciliation_needed
+
+
+@pytest.mark.parametrize("cleanup", ["abort", "logout"])
+@pytest.mark.asyncio
+async def test_move_fallback_cleanup_cancellation_preserves_evidence(email_server, cleanup):
+    client = EmailClient(email_server)
+    imap = _imap()
+    if cleanup == "abort":
+        imap.uid.side_effect = [("OK", []), ("OK", []), ("OK", []), asyncio.CancelledError()]
+    else:
+        imap.logout.side_effect = asyncio.CancelledError()
+    with (
+        patch.object(client, "_connect_imap", AsyncMock(return_value=imap)),
+        patch.object(client, "_abort_imap_connection", AsyncMock(side_effect=asyncio.CancelledError())),
+    ):
+        result = await client.move_emails_with_outcome(["7", "8"], "INBOX", "Archive", allowed_senders=[])
+    assert result.outcomes[0].status == "succeeded"
+    assert result.outcomes[1].status == ("unknown" if cleanup == "abort" else "succeeded")
+    if cleanup == "abort":
+        imap.logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_move_fallback_revocation_after_successful_prefix(email_server):
+    client = EmailClient(email_server)
+    client.mutation_guard = MagicMock(
+        side_effect=[None, None, None, None, None, PermissionError("revoked"), PermissionError("revoked")]
+    )
+    imap = _imap()
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        result = await client.move_emails_with_outcome(["7", "8", "9"], "INBOX", "Archive", allowed_senders=[])
+    assert [(x.status, x.detail) for x in result.outcomes] == [
+        ("succeeded", None),
+        ("unknown", "mutation-policy-cleanup-pending"),
+        ("failed", "mutation-policy"),
+    ]
+    assert [(c.args[0], c.args[1]) for c in imap.uid.await_args_list] == [
+        ("copy", "7"),
+        ("store", "7"),
+        ("expunge", "7"),
+        ("copy", "8"),
+        ("store", "8"),
+    ]

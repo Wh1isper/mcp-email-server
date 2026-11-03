@@ -1656,3 +1656,20 @@ async def test_authorized_oversized_attachments_fail_before_the_provider_effect(
 
     provider.send.assert_not_awaited()
     provider.save_to_mailbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_move_partial_progress_invalidates_both_mailboxes() -> None:
+    provider = MagicMock()
+    provider.move = AsyncMock(
+        return_value=_batch(
+            TargetMutationOutcome("7", "succeeded"),
+            TargetMutationOutcome("8", "unknown", "copy-unknown"),
+            TargetMutationOutcome("9", "failed", "not-attempted"),
+        )
+    )
+    services, _, _, projection = _services(provider=provider)
+    result = await services.move.execute(MoveCommand("primary", ("7", "8", "9"), "INBOX", "Archive"))
+    assert [outcome.status for outcome in result.batch.outcomes] == ["succeeded", "unknown", "failed"]
+    assert result.batch.reconciliation_needed
+    projection.invalidate.assert_awaited_once_with(("INBOX", "Archive"))

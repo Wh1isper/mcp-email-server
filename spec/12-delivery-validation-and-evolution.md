@@ -131,6 +131,15 @@ fallback, explicit source ownership, newly listed destination UIDs on restore,
 selector validation, unchanged explicit-move results, organize revocation,
 stale-UID outcomes, discovery/effect timeouts, and projection-failure behavior.
 
+### UIDPLUS move progress delivery gate
+
+Spec 07 owns per-target move evidence. Provider tests must cover completed
+prefixes followed by COPY, STORE, and scoped UID EXPUNGE interruption or
+rejection, no replay, unchanged result order, policy revocation, and projection
+invalidation. A real asynchronous deadline must exercise interruption and prove
+that an unsynchronized connection sends no further commands. Published behavior
+and the additional round-trip tradeoff belong in `docs/tools.md`.
+
 ### Mailbox creation delivery gate
 
 `create_mailbox` adds one public tool name. Spec 07 owns its effect semantics
