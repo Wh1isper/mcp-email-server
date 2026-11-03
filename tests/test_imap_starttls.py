@@ -301,7 +301,7 @@ def test_imap_connect_uses_custom_context_when_verification_disabled():
 
     ssl_context = mock_imap_class.call_args.kwargs["ssl_context"]
     assert result is mock_imap_class.return_value
-    mock_imap_class.assert_called_once_with("imap.example.com", 993, ssl_context=ssl_context)
+    mock_imap_class.assert_called_once_with("imap.example.com", 993, ssl_context=ssl_context, timeout=60.0)
     assert isinstance(ssl_context, ssl.SSLContext)
     assert ssl_context.check_hostname is False
     assert ssl_context.verify_mode == ssl.CERT_NONE
@@ -324,7 +324,7 @@ async def test_connect_imap_uses_plain_connection_without_starttls():
             result = await EmailClient._connect_imap_server(server)
 
     assert result is mock_imap
-    mock_plain.assert_called_once_with("imap.example.com", 143)
+    mock_plain.assert_called_once_with("imap.example.com", 143, timeout=60.0)
     mock_starttls.assert_not_awaited()
 
 
@@ -346,7 +346,7 @@ async def test_connect_imap_uses_starttls_when_configured():
             result = await EmailClient._connect_imap_server(server)
 
     assert result is mock_imap
-    mock_plain.assert_called_once_with("127.0.0.1", 1143)
+    mock_plain.assert_called_once_with("127.0.0.1", 1143, timeout=60.0)
     mock_starttls.assert_awaited_once()
     starttls_context = mock_starttls.await_args.args[1]
     assert starttls_context.verify_mode == ssl.CERT_NONE

@@ -234,8 +234,9 @@ the same content; the management UI does not gain mail access.
 
 ## Error and Cancellation Rules
 
-Infrastructure errors map once to typed application errors. Public adapters
-sanitize and bound messages. Cancellation is checked before effects and between
+Infrastructure errors map once to typed application errors. Provider command
+timeouts retain their timeout classification through the metadata adapter.
+Public adapters sanitize and bound messages. Cancellation is checked before effects and between
 independent targets. Once an effect begins, the service preserves available
 protocol evidence and reports unknown when cancellation prevents certainty.
 

@@ -351,7 +351,10 @@ UID above the highest cached UID when the count proves append-only growth and
 UIDVALIDITY, UIDNEXT, and message count stay stable during the fetch. Concurrent
 changes rebuild the bounded snapshot; retained rows are reused only after their
 UIDVALIDITY matches the refresh's initial state. Connection establishment uses
-the refresh timeout too. A refresh that fails before any row is stored logs
+the refresh timeout too. IMAP command timeouts use the same refresh budget;
+ordinary metadata requests use the standard provider deadline instead. If a
+metadata command times out or is cancelled, the connection is discarded so a
+stalled logout does not delay the result. A refresh that fails before any row is stored logs
 `Metadata projection refresh failed` with the exception class and value-free
 traceback locations, without exception text, source lines, or frame locals.
 

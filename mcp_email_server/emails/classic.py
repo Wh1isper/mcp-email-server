@@ -837,6 +837,48 @@ def _has_already_exists_code(response: Any) -> bool:
     return False
 
 
+def _discard_metadata_imap(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
+    """Release a metadata connection whose command boundary is uncertain."""
+    protocol = imap.protocol
+    if protocol is not None:
+        if isinstance(protocol, aioimaplib.IMAP4ClientProtocol):
+            commands = list(protocol.pending_async_commands.values())
+            if protocol.pending_sync_command is not None:
+                commands.append(protocol.pending_sync_command)
+            if protocol.current_command is not None:
+                commands.append(protocol.current_command)
+            for command in commands:
+                command.close(b"Connection discarded", "KO")
+            protocol.pending_async_commands.clear()
+            protocol.pending_sync_command = None
+            protocol.current_command = None
+            protocol.incomplete_line = b""
+        transport = protocol.transport
+        if isinstance(transport, asyncio.BaseTransport):
+            with suppress(Exception):
+                if isinstance(transport, asyncio.WriteTransport):
+                    transport.abort()
+                else:
+                    transport.close()
+        imap.protocol = None
+
+
+async def _close_metadata_imap(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL, *, discard: bool = False) -> None:
+    """Bound graceful logout and always release the underlying transport."""
+    if discard:
+        _discard_metadata_imap(imap)
+        return
+    if imap.protocol is None:
+        return
+    try:
+        async with asyncio.timeout(APPLICATION_LIMITS.provider_timeout_seconds):
+            await imap.logout()
+    except Exception:
+        logger.info("IMAP logout failed")
+    finally:
+        _discard_metadata_imap(imap)
+
+
 async def _best_effort_imap_logout(imap: Any) -> None:
     """Close an IMAP session without replacing mutation evidence with cleanup failure."""
     try:
@@ -1350,8 +1392,10 @@ class EmailClient:
             raise ValueError("sender must contain one email address")
         return self.sender_address
 
-    def _imap_connect(self) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
+    def _imap_connect(self, *, timeout: float | None = None) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
         """Create a new IMAP connection with the configured SSL context."""
+        if timeout is None:
+            timeout = APPLICATION_LIMITS.provider_timeout_seconds
         if self.email_server.use_ssl:
             imap_ssl_context = _create_ssl_context(self.email_server.verify_ssl)
             if imap_ssl_context is not None:
@@ -1359,12 +1403,13 @@ class EmailClient:
                     self.email_server.host,
                     self.email_server.port,
                     ssl_context=imap_ssl_context,
+                    timeout=timeout,
                 )
-        return self.imap_class(self.email_server.host, self.email_server.port)
+        return self.imap_class(self.email_server.host, self.email_server.port, timeout=timeout)
 
-    async def _connect_imap(self) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
+    async def _connect_imap(self, *, timeout: float | None = None) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
         """Create, greet, and optionally STARTTLS-upgrade an IMAP connection."""
-        imap = self._imap_connect()
+        imap = self._imap_connect(timeout=timeout)
         return await self._prepare_imap_connection(imap, self.email_server)
 
     @staticmethod
@@ -1406,11 +1451,18 @@ class EmailClient:
         if server.use_ssl:
             imap_ssl_context = _create_ssl_context(server.verify_ssl)
             if imap_ssl_context is None:
-                imap = aioimaplib.IMAP4_SSL(server.host, server.port)
+                imap = aioimaplib.IMAP4_SSL(
+                    server.host, server.port, timeout=APPLICATION_LIMITS.provider_timeout_seconds
+                )
             else:
-                imap = aioimaplib.IMAP4_SSL(server.host, server.port, ssl_context=imap_ssl_context)
+                imap = aioimaplib.IMAP4_SSL(
+                    server.host,
+                    server.port,
+                    ssl_context=imap_ssl_context,
+                    timeout=APPLICATION_LIMITS.provider_timeout_seconds,
+                )
         else:
-            imap = aioimaplib.IMAP4(server.host, server.port)
+            imap = aioimaplib.IMAP4(server.host, server.port, timeout=APPLICATION_LIMITS.provider_timeout_seconds)
 
         return await EmailClient._prepare_imap_connection(imap, server)
 
@@ -1948,8 +2000,11 @@ class EmailClient:
             if set(flags) != set(email_ids):
                 raise RuntimeError("Provider returned incomplete flag metadata")
             return flags
+        except (TimeoutError, aioimaplib.CommandTimeout, asyncio.CancelledError):
+            _discard_metadata_imap(imap)
+            raise
         finally:
-            await _best_effort_imap_logout(imap)
+            await _close_metadata_imap(imap)
 
     async def _batch_fetch_senders(
         self,
@@ -2224,11 +2279,11 @@ class EmailClient:
             await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             return await self._status_mailbox(imap, mailbox)
+        except (TimeoutError, aioimaplib.CommandTimeout, asyncio.CancelledError):
+            _discard_metadata_imap(imap)
+            raise
         finally:
-            try:
-                await imap.logout()
-            except Exception:
-                logger.info("IMAP logout failed")
+            await _close_metadata_imap(imap)
 
     async def get_mailbox_metadata_snapshot(  # noqa: C901 - bounded snapshot evidence checks
         self,
@@ -2257,7 +2312,7 @@ class EmailClient:
         batch_limit = metadata_refresh_batch_limit()
         uid_ceiling = max(candidate_limit, maximum_window)
         async with asyncio.timeout(timeout_seconds):
-            imap = await self._connect_imap()
+            imap = await self._connect_imap(timeout=timeout_seconds)
         observed_at = datetime.now(UTC)
         mailbox_info = MailboxInfo(name=mailbox, delimiter="", flags=[])
         batch_failed = False
@@ -2361,14 +2416,11 @@ class EmailClient:
                 complete=complete,
                 observed_at=observed_at,
             )
+        except (TimeoutError, aioimaplib.CommandTimeout, asyncio.CancelledError):
+            batch_failed = True
+            raise
         finally:
-            try:
-                # A cancelled FETCH can leave the connection unusable. Bound logout
-                # so a partial snapshot is still returned to the caller.
-                async with asyncio.timeout(5.0 if batch_failed else timeout_seconds):
-                    await imap.logout()
-            except Exception:
-                logger.info("IMAP logout failed")
+            await _close_metadata_imap(imap, discard=batch_failed)
 
     async def get_mailbox_uid_delta(  # noqa: C901 - explicit UIDVALIDITY and append-only evidence checks
         self,
@@ -2475,11 +2527,11 @@ class EmailClient:
                 uidvalidity_changed=changed,
                 resumable=resumable,
             )
+        except (TimeoutError, aioimaplib.CommandTimeout, asyncio.CancelledError):
+            _discard_metadata_imap(imap)
+            raise
         finally:
-            try:
-                await imap.logout()
-            except Exception:
-                logger.info("IMAP logout failed")
+            await _close_metadata_imap(imap)
 
     async def get_emails_metadata(  # noqa: C901 - bounded compatibility query decision tree
         self,
@@ -2637,11 +2689,11 @@ class EmailClient:
                 raise RuntimeError("Provider returned an incomplete metadata page")
             page_emails = [metadata_by_uid[uid] for uid in page_uids]
             return len(email_ids), page_emails
+        except (TimeoutError, aioimaplib.CommandTimeout, asyncio.CancelledError):
+            _discard_metadata_imap(imap)
+            raise
         finally:
-            try:
-                await imap.logout()
-            except Exception:
-                logger.info("IMAP logout failed")
+            await _close_metadata_imap(imap)
 
     def _check_email_content(self, data: list) -> bool:
         """Check whether a FETCH response contains a full-message literal."""
