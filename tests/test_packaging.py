@@ -431,6 +431,36 @@ def test_isolated_wheel_and_local_uvx_serve_authenticated_ui(tmp_path: Path) -> 
         _stop_ui(release_process, release_terminal)
 
 
+def test_container_security_workflow_scans_selected_and_published_runtime_images() -> None:
+    workflow_path = REPOSITORY / ".github/workflows/container-security.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    events = workflow[True]  # PyYAML interprets the YAML 1.1 key "on" as True.
+    assert events["push"]["branches"] == ["main"]
+    assert events["schedule"] == [{"cron": "17 4 * * 1"}]
+    assert "workflow_dispatch" in events
+    assert "pull_request" not in events
+    assert workflow["permissions"] == {"contents": "read", "security-events": "write"}
+
+    steps = _workflow_steps(workflow_path, "scan")
+    build = next(step for step in steps if step.get("name") == "Build runtime image from selected commit")
+    assert build["if"] == "github.event_name != 'schedule'"
+    assert build["run"] == "docker build --pull --tag mcp-email-server:security ."
+    scan = next(step for step in steps if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@"))
+    options = scan["with"]
+    assert "ghcr.io/wh1isper/mcp-email-server:latest" in options["image-ref"]
+    assert "mcp-email-server:security" in options["image-ref"]
+    assert options["scan-type"] == "image"
+    assert options["scanners"] == "vuln"
+    assert options["severity"] == "HIGH,CRITICAL"
+    assert options["limit-severities-for-sarif"] is True
+    assert options["ignore-unfixed"] is True
+    assert options["exit-code"] == "0"
+    upload = next(step for step in steps if step.get("uses") == "github/codeql-action/upload-sarif@v4")
+    assert upload["with"]["sarif_file"] == options["output"]
+    assert "container-published" in upload["with"]["category"]
+    assert "container-main-build" in upload["with"]["category"]
+
+
 def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
     main = REPOSITORY / ".github/workflows/main.yml"
     release = REPOSITORY / ".github/workflows/on-release-main.yml"

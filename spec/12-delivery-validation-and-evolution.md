@@ -320,6 +320,11 @@ publish job only those unchanged verified bytes. A separately scoped
 `packages: write` job stamps the same exact commit and publishes the multi-platform
 container under the canonical repository owner only after all validation jobs
 succeed. Plugin metadata is not part of application release stamping.
+A separate reporting-only container vulnerability workflow scans the runtime
+image built from pushes to `main` and manual selections, and scans the published
+`latest` image weekly on the runner's native architecture. It reports fixable
+HIGH and CRITICAL findings to code scanning; scanner and upload failures remain
+visible, and the workflow neither blocks on findings nor updates dependencies.
 
 ## Artifact Contract
 
