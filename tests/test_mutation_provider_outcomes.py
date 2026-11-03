@@ -1322,6 +1322,38 @@ async def test_move_fallback_rejection_preserves_prefix_and_continues(email_serv
     imap.expunge.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("interrupted_command", "detail"),
+    [("copy", "copy-unknown"), ("store", "copy-succeeded-store-unknown"), ("expunge", "expunge-after-copy-unknown")],
+)
+@pytest.mark.asyncio
+async def test_move_fallback_unknown_response_stops_after_completed_prefix(email_server, interrupted_command, detail):
+    client = EmailClient(email_server)
+    imap = _imap()
+    imap.protocol.transport = MagicMock()
+    calls = []
+
+    async def uid(command, uid, *_args):
+        calls.append((command, uid))
+        return ("BYE", []) if uid == "8" and command == interrupted_command else ("OK", [])
+
+    imap.uid.side_effect = uid
+    with patch.object(client, "_connect_imap", AsyncMock(return_value=imap)):
+        result = await client.move_emails_with_outcome(["7", "8", "9"], "INBOX", "Archive", allowed_senders=[])
+
+    assert [(x.target, x.status, x.detail) for x in result.outcomes] == [
+        ("7", "succeeded", None),
+        ("8", "unknown", detail),
+        ("9", "failed", "not-attempted"),
+    ]
+    assert calls[:3] == [("copy", "7"), ("store", "7"), ("expunge", "7")]
+    assert calls[-1] == (interrupted_command, "8")
+    assert not any(uid == "9" for _, uid in calls)
+    imap.protocol.transport.close.assert_called_once()
+    imap.logout.assert_not_awaited()
+    assert result.reconciliation_needed
+
+
 @pytest.mark.parametrize("cleanup", ["abort", "logout"])
 @pytest.mark.asyncio
 async def test_move_fallback_cleanup_cancellation_preserves_evidence(email_server, cleanup):
