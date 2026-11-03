@@ -184,10 +184,10 @@ sidecar itself is unparseable, repair or restore that sidecar manually; `reset`
 cannot safely infer its mode and therefore does not unlink the independent legacy
 source.
 
-Schemas v3, v4, v5, and v6 are supported managed-catalog migration sources for v7.
+Schemas v3, v4, v5, v6, v7, and v8 are supported managed-catalog migration sources for v9.
 The first new-version catalog access migrates transactionally, preserving account,
-policy, binding, secret rows, and revisions. All sources receive the nullable
-To-only cache field. Sources before v6 receive disabled protocol access. Sources before v5 receive full global mutation grants and inheriting
+policy, binding, secret rows, and revisions. Sources before v7 receive the nullable
+To-only cache field, and all sources receive empty per-account sender identities. Sources before v6 receive disabled protocol access. Sources before v5 receive full global mutation grants and inheriting
 account overrides; v3 also receives empty tag mappings and a disabled
 attachment-content policy. A failed migration leaves the source version intact.
 
@@ -196,7 +196,7 @@ or MCP process migrates it. Upgrade all catalog users together and restart every
 MCP client. If rolling back the package, restore the consistent pre-migration
 catalog backup too; do not edit the schema version manually, delete the catalog,
 or re-enter all accounts as a routine upgrade fix. Follow the
-[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v7).
+[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v9).
 
 Other older development schemas are still rejected. For those versions, select
 legacy mode, preserve the old file for rollback, and initialize a fresh

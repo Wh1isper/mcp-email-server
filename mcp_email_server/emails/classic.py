@@ -72,6 +72,7 @@ from mcp_email_server.config import (
     EmailSettings,
     ImapNonAsciiSearchEncoding,
     ImapNonAsciiSearchMode,
+    from_address_allowed,
     get_settings,
     resolve_imap_non_ascii_search,
     sender_allowed,
@@ -96,6 +97,10 @@ MAX_METADATA_CANDIDATES = APPLICATION_LIMITS.metadata_candidates
 # Historical default. Runtime refreshes call metadata_snapshot_row_limit().
 MAX_INDEXED_UID_WINDOW = APPLICATION_LIMITS.metadata_snapshot_rows
 MAX_METADATA_HEADER_BYTES = APPLICATION_LIMITS.header_bytes
+# A HEADER Message-ID search makes servers such as Dovecot build a header cache
+# on first use, which takes longer than the 10 s aioimaplib command default on
+# large mailboxes. The application provider timeout still bounds the lookup.
+REPLY_IDENTITY_IMAP_TIMEOUT_SECONDS = 30.0
 MAX_METADATA_HEADER_TOTAL_BYTES = APPLICATION_LIMITS.aggregate_header_bytes
 MAX_METADATA_HEADER_FETCH_UIDS = MAX_METADATA_HEADER_TOTAL_BYTES // (MAX_METADATA_HEADER_BYTES + 1)
 MAX_IMAP_UID = 2**32 - 1
@@ -1342,6 +1347,19 @@ class EmailClient:
     def _non_ascii_search_encoding(self) -> ImapNonAsciiSearchEncoding:
         """Choose literal or quoted non-ASCII SEARCH text for this account."""
         return resolve_imap_non_ascii_search(self.email_server.host, self.imap_non_ascii_search)
+
+    def _format_from_address(self, from_address: str) -> str:
+        """Format a per-message From; a bare address gets the account display name."""
+        name, address = email.utils.parseaddr(from_address)
+        if not address or address.count("@") != 1:
+            raise ValueError("from_address must contain one email address")
+        name = name or self.sender_name or ""
+        try:
+            address.encode("ascii")
+        except UnicodeEncodeError:
+            quoted_name = email.utils.quote(name)
+            return f'"{quoted_name}" <{address}>' if quoted_name else address
+        return email.utils.formataddr((str(Header(name, "utf-8")), address))
 
     @property
     def envelope_sender(self) -> str:
@@ -2862,6 +2880,106 @@ class EmailClient:
             "saved_path": str(save_file.resolve()),
         }
 
+    async def find_reply_identity(
+        self,
+        in_reply_to: str,
+        allowed_from_addresses: list[str],
+        allowed_senders: list[str] | None = None,
+    ) -> str | None:
+        """Return the allowed own address a replied-to message was sent to.
+
+        Looks the single Message-ID in ``in_reply_to`` up in INBOX first, then in
+        every other selectable mailbox, all in one IMAP session. Candidates are
+        To, Cc, then the original envelope recipient: the bottom-most
+        X-Original-To. Later hops (forwarding aliases) and Delivered-To (the
+        final mailbox) never count, so a forwarded message cannot pick an
+        internal relay address.
+        A message whose sender the read allowlist blocks counts as not found.
+        The match keeps the display name the message showed for it, if any.
+        Returns None when nothing matches; the caller then keeps the account From.
+        A bare Message-ID is bracketed first, as threading headers are.
+        """
+        message_ids = normalize_thread_message_ids(in_reply_to).split()
+        if len(message_ids) != 1 or not allowed_from_addresses:
+            return None
+        message_id = message_ids[0]
+        imap = await self._connect_imap()
+        imap.timeout = max(imap.timeout, REPLY_IDENTITY_IMAP_TIMEOUT_SECONDS)
+        try:
+            await _imap_login(imap, self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            response = await imap.list('""', '"*"')  # pyright: ignore[reportArgumentType]
+            _raise_for_imap_error(response, "LIST mailboxes")
+            names = [
+                mailbox.name
+                for mailbox in _parse_list_responses(response[1])
+                if not any(flag.casefold() == r"\noselect" for flag in mailbox.flags)
+            ]
+            ordered = sorted(names, key=lambda name: name.upper() != "INBOX")
+            for mailbox in ordered:
+                select_response = await imap.select(_quote_mailbox(mailbox))
+                if _imap_status(select_response) != "OK":
+                    continue
+                search_response = await _uid_search(
+                    imap,
+                    [
+                        "HEADER",
+                        "Message-ID",
+                        EmailClient._sanitize_imap_value(message_id, non_ascii=self._non_ascii_search_encoding()),
+                    ],
+                )
+                _raise_for_imap_command_failure(search_response, f"SEARCH mailbox {mailbox}")
+                for uid in _normalize_search_uids(search_response[1]):
+                    identity = await self._reply_identity_for_uid(
+                        imap, uid, message_id, allowed_from_addresses, allowed_senders
+                    )
+                    if identity is not None:
+                        return identity
+            return None
+        finally:
+            await _best_effort_imap_logout(imap)
+
+    async def _reply_identity_for_uid(
+        self,
+        imap: aioimaplib.IMAP4_SSL | aioimaplib.IMAP4,
+        uid: str,
+        message_id: str,
+        allowed_from_addresses: list[str],
+        allowed_senders: list[str] | None,
+    ) -> str | None:
+        fetch_response = await imap.uid(
+            "fetch",
+            uid,
+            f"BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM TO CC X-ORIGINAL-TO)]<0.{MAX_METADATA_HEADER_BYTES + 1}>",
+        )
+        _raise_for_imap_command_failure(fetch_response, "FETCH reply identity headers")
+        raw_headers = next((bytes(item) for item in fetch_response[1] if isinstance(item, bytearray)), None)
+        if raw_headers is None or len(raw_headers) > MAX_METADATA_HEADER_BYTES:
+            return None
+        headers = BytesParser(policy=default).parsebytes(raw_headers)
+        # HEADER SEARCH is a substring match; require the exact Message-ID.
+        if str(headers.get("Message-ID", "")).strip() != message_id:
+            return None
+        if allowed_senders and not sender_allowed(str(headers.get("From", "")), allowed_senders):
+            return None
+        # Trace headers are prepended per hop: the last one is the first hop.
+        original_recipients = [str(value) for value in headers.get_all("X-Original-To", [])][-1:]
+        candidates = [
+            *(str(value) for value in headers.get_all("To", [])),
+            *(str(value) for value in headers.get_all("Cc", [])),
+            *original_recipients,
+        ]
+        for name, address in email.utils.getaddresses(candidates):
+            if address and from_address_allowed(address, "", allowed_from_addresses):
+                if not name:
+                    return address
+                # formataddr rejects a non-ASCII addr-spec; the composer re-parses
+                # this value and formats it like an explicit from_address.
+                if address.isascii():
+                    return email.utils.formataddr((name, address))
+                return f'"{email.utils.quote(name)}" <{address}>'
+        return None
+
     async def fetch_forward_source(
         self,
         email_id: str,
@@ -3085,6 +3203,7 @@ class EmailClient:
         reply_to: str | None = None,
         *,
         extra_parts: list[Message] | None = None,
+        from_address: str | None = None,
     ) -> MIMEText | MIMEMultipart:
         """Compose an email message without sending it.
 
@@ -3100,6 +3219,11 @@ class EmailClient:
         ``extra_parts`` carries already-built MIME parts (a forward's re-attached
         source parts) into the same multipart container as file attachments. It is
         keyword-only so existing positional call sites keep their meaning.
+
+        ``from_address`` replaces the account address in the From header; the
+        caller has already checked it against the sender identity policy. Its
+        display name is kept, and a bare address gets the account display name.
+        The SMTP reverse-path stays the account address.
         """
         envelope_sender = self.envelope_sender
 
@@ -3117,7 +3241,7 @@ class EmailClient:
 
         # The sender mailbox was formatted from structured identity fields at
         # construction time; do not parse the RFC 5322 header to recover it.
-        msg["From"] = self.sender
+        msg["From"] = self.sender if from_address is None else self._format_from_address(from_address)
         msg["To"] = ", ".join(recipients)
 
         # Add CC header if provided (visible to recipients)
@@ -3172,6 +3296,7 @@ class EmailClient:
         reply_to: str | None = None,
         *,
         extra_parts: list[Message] | None = None,
+        from_address: str | None = None,
     ) -> DeliveryMutationOutcome:
         """Run one SMTP transaction and preserve phase-specific delivery evidence."""
         msg = self.compose_message(
@@ -3187,6 +3312,7 @@ class EmailClient:
             False,
             reply_to,
             extra_parts=extra_parts,
+            from_address=from_address,
         )
         all_recipients = [*recipients, *(cc or []), *(bcc or [])]
         envelope_recipients = [email.utils.parseaddr(recipient)[1] for recipient in all_recipients]
