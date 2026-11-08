@@ -2,11 +2,12 @@
 
 ## Security Objective
 
-Managed secret values are owned only by a `SecretStore`. On Linux and Windows,
-the default store is the private managed SQLite database and values reside only
-in its dedicated `managed_secret` table. Windows requires spec 08's local fixed
-NTFS identity and protected-DACL profile. On macOS, the default store is the
-operating-system keyring; SQLite then stores only revisioned binding lifecycle
+Managed secret values are owned only by a `SecretStore`. On Linux, the default
+store is the private managed SQLite database and values reside only in its
+dedicated `managed_secret` table. On macOS (Keychain) and Windows (Credential
+Manager), the default store is the operating-system keyring; Windows still
+requires spec 08's local fixed NTFS identity and protected-DACL profile for the
+catalog; SQLite then stores only revisioned binding lifecycle
 and opaque internal references. Managed mode never falls back to legacy TOML
 plaintext when its selected store is unavailable.
 
