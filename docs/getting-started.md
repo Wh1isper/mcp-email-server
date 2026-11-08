@@ -131,9 +131,9 @@ storage and concurrency terms are kept out of the primary workflow. Account crea
 becomes available after the account list and inherited permissions finish loading.
 Optional
 settings are loaded only when their disclosure
-is opened. On Linux and Windows, managed credentials default to the private
-`managed_secret` table in the managed SQLite database. macOS uses the
-operating-system keyring. Managed mode never falls back to TOML plaintext. The
+is opened. On Linux, managed credentials default to the private
+`managed_secret` table in the managed SQLite database. macOS (Keychain) and
+Windows (Credential Manager) use the operating-system keyring. Managed mode never falls back to TOML plaintext. The
 interface is not a mail
 client and never exposes message content. The same cleanup and headless
 operations remain available through the managed CLI below.

@@ -581,7 +581,32 @@ def test_locked_keyring_write_is_typed_without_catalog_binding(monkeypatch: pyte
     assert catalog.show_account("alice").incoming_binding == "MISSING"
 
 
-@pytest.mark.parametrize("platform", ["linux", "win32"])
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_os_keyring_platform_default_store_keeps_secret_out_of_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_keyring,
+    platform: str,
+) -> None:
+    monkeypatch.setattr(managed_module.sys, "platform", platform)
+    catalog = _catalog(tmp_path)
+    assert isinstance(catalog.secret_store, ManagedKeyringSecretStore)
+    _add_account(catalog)
+
+    result = catalog.set_secret("alice", "incoming", "keyring-only-secret")
+
+    assert result.status == "active"
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        binding = connection.execute("SELECT status, opaque_locator FROM secret_binding").fetchone()
+        assert connection.execute("SELECT COUNT(*) FROM managed_secret").fetchone()[0] == 0
+    assert binding[0] == "ACTIVE"
+    assert fake_keyring._store[(managed_module.MANAGED_KEYRING_SERVICE, binding[1])] == "keyring-only-secret"
+    assert catalog.secret_store.get(binding[1]) == "keyring-only-secret"
+    for sidecar in catalog.path.parent.iterdir():
+        assert b"keyring-only-secret" not in sidecar.read_bytes()
+
+
+@pytest.mark.parametrize("platform", ["linux"])
 def test_file_backed_platform_default_store_uses_catalog_sqlite_transaction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

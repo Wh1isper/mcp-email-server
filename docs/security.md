@@ -130,10 +130,17 @@ the same redacted format when keeping a partial snapshot.
 Managed mode never falls back to TOML plaintext. Its default managed secret
 backend is platform-specific:
 
-- Linux and Windows store values in the dedicated `managed_secret` table inside
+- Linux stores values in the dedicated `managed_secret` table inside
   the same private managed SQLite database as the catalog;
-- macOS uses the operating-system keyring. Platforms without the complete
+- macOS (Keychain) and Windows (Credential Manager, DPAPI-encrypted for the
+  signed-in user) use the operating-system keyring, so their catalog files and
+  backups hold no credential values. Platforms without the complete
   filesystem-security profile are not supported for managed catalogs.
+
+> Fork note: upstream stores Windows credentials in the SQLite `managed_secret`
+> table. This fork is meant for new Windows catalogs. Do not open a catalog
+> created by upstream on Windows with it: its existing passwords stay in that
+> table and are not migrated. Create a fresh catalog instead.
 
 Only the `SecretStore` adapter reads or writes these values. Catalog queries,
 projections, CLI/UI responses, diagnostics, and logs never select or expose the

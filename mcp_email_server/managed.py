@@ -219,7 +219,7 @@ class ManagedKeyringSecretStore:
 
 
 class ManagedSqliteSecretStore:
-    """Private SQLite secret store used by managed catalogs on Linux and Windows."""
+    """Private SQLite secret store used by managed catalogs on Linux."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -819,9 +819,12 @@ class ManagedCatalog:
         self.path = Path(os.path.abspath(path.expanduser()))
         if secret_store is not None:
             self.secret_store = secret_store
-        elif sys.platform.startswith("linux") or sys.platform == "win32":
+        elif sys.platform.startswith("linux"):
             self.secret_store = ManagedSqliteSecretStore(self.path)
         else:
+            # macOS (Keychain) and Windows (Credential Manager, encrypted with
+            # DPAPI for the signed-in user) keep passwords in the OS store, so
+            # the SQLite catalog and its backups never contain them in plaintext.
             self.secret_store = ManagedKeyringSecretStore()
 
     @classmethod
