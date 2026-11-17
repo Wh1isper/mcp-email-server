@@ -87,6 +87,7 @@ class ClassicReadProvider:
                     date=email_data["date"],
                     body=email_data["body"],
                     attachments=email_data["attachments"],
+                    links=email_data.get("links", []),
                     provider_keywords=[
                         flag
                         for flag in email_data.get("_flags", [])

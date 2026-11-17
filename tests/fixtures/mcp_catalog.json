@@ -680,6 +680,14 @@
                             "body": {
                                 "title": "Body",
                                 "type": "string"
+                            },
+                            "links": {
+                                "description": "Content links from the HTML part, in document order: the targets of buttons and anchors, which a plain-text body often drops.",
+                                "items": {
+                                    "$ref": "#/$defs/EmailLink"
+                                },
+                                "title": "Links",
+                                "type": "array"
                             }
                         },
                         "required": [
@@ -692,6 +700,22 @@
                             "body"
                         ],
                         "title": "EmailBodyResponse",
+                        "type": "object"
+                    },
+                    "EmailLink": {
+                        "description": "One content link from an email's HTML part.",
+                        "properties": {
+                            "text": {
+                                "title": "Text",
+                                "type": "string"
+                            },
+                            "url": {
+                                "title": "Url",
+                                "type": "string"
+                            }
+                        },
+                        "required": ["text", "url"],
+                        "title": "EmailLink",
                         "type": "object"
                     }
                 },
