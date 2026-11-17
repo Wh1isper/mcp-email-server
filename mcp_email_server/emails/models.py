@@ -53,12 +53,24 @@ class EmailMetadataPageResponse(BaseModel):
     )
 
 
+class EmailLink(BaseModel):
+    """One content link from an email's HTML part."""
+
+    text: str
+    url: str
+
+
 class EmailBodyResponse(EmailMetadata):
     """Single email body response with body content and reply-thread headers."""
 
     in_reply_to: str | None = None
     references: str | None = None
     body: str
+    links: list[EmailLink] = Field(
+        default_factory=list,
+        description="Content links from the HTML part, in document order: the targets of buttons and anchors, "
+        "which a plain-text body often drops.",
+    )
 
 
 class EmailContentBatchResponse(BaseModel):

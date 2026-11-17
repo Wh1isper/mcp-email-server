@@ -905,6 +905,30 @@ def _decoded_payload(message: Message) -> bytes | None:
     return payload if isinstance(payload, bytes) else None
 
 
+def _is_content_href(href: str) -> bool:
+    """Whether an anchor href is a useful content link (not empty, a fragment, mailto or script)."""
+    normalized_href_scheme = re.sub(r"[\x00-\x20]+", "", href).lower()
+    return bool(href) and not href.startswith("#") and not normalized_href_scheme.startswith(("mailto:", "javascript:"))
+
+
+def _html_links(html: str) -> list[dict[str, str]]:
+    """Return the content links of an HTML email body, in document order, one per target.
+
+    Plain-text alternatives often keep a button's label ("SIGN IN") but drop its target,
+    so the HTML part is the only place the actionable URL survives.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for link in soup.find_all("a"):
+        href = str(link.get("href") or "").strip()
+        if not _is_content_href(href) or href in seen:
+            continue
+        seen.add(href)
+        links.append({"text": link.get_text(" ", strip=True), "url": href})
+    return links
+
+
 def _html_to_text(html: str) -> str:
     """Convert an HTML email body to readable plain text."""
     soup = BeautifulSoup(html, "html.parser")
@@ -913,8 +937,7 @@ def _html_to_text(html: str) -> str:
 
     for link in soup.find_all("a"):
         href = str(link.get("href") or "").strip()
-        normalized_href_scheme = re.sub(r"[\x00-\x20]+", "", href).lower()
-        if not href or href.startswith("#") or normalized_href_scheme.startswith(("mailto:", "javascript:")):
+        if not _is_content_href(href):
             continue
 
         link_text = link.get_text(" ", strip=True)
@@ -1627,7 +1650,7 @@ class EmailClient:
 
         # Get body content
         body = ""
-        html_body = ""  # Fallback if no text/plain
+        html_body = ""  # Fallback body if no text/plain; always the source of links
         attachments = []
 
         for part, is_attachment in self._iter_content_parts(email_message):
@@ -1638,9 +1661,10 @@ class EmailClient:
                     attachments.append(filename)
             elif content_type == "text/plain":
                 body += self._decode_text_part(part)
-            elif content_type == "text/html" and not body:
+            elif content_type == "text/html":
                 html_body += self._decode_text_part(part)
 
+        links = _html_links(html_body) if html_body else []
         # Fall back to HTML if no plain text was found.
         if not body and html_body:
             body = _html_to_text(html_body)
@@ -1669,6 +1693,7 @@ class EmailClient:
             "body": body,
             "date": date,
             "attachments": attachments,
+            "links": links,
         }
 
     @staticmethod
@@ -4545,6 +4570,7 @@ class ClassicEmailHandler(EmailHandler):
                         date=email_data["date"],
                         body=email_data["body"],
                         attachments=email_data["attachments"],
+                        links=email_data.get("links", []),
                     )
                 )
             except Exception as e:
