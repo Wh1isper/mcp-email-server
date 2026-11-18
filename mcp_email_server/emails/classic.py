@@ -911,6 +911,36 @@ def _is_content_href(href: str) -> bool:
     return bool(href) and not href.startswith("#") and not normalized_href_scheme.startswith(("mailto:", "javascript:"))
 
 
+def _skip_mime_cfws(value: str, offset: int = 0) -> int:
+    """Skip folding whitespace and balanced comments at a MIME token boundary."""
+    depth = 0
+    while offset < len(value):
+        char = value[offset]
+        if depth and char == "\\":
+            offset += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif depth and char == ")":
+            depth -= 1
+        elif not depth and char not in " \t\r\n":
+            break
+        offset += 1
+    return -1 if depth else offset
+
+
+def _matches_related_start(content_id: str, start: str) -> bool:
+    """Compare a MIME Content-ID to start, ignoring surrounding comments and whitespace."""
+    if not start or not content_id:
+        return False
+    offset = _skip_mime_cfws(content_id)
+    return (
+        offset >= 0
+        and content_id.startswith(start, offset)
+        and _skip_mime_cfws(content_id, offset + len(start)) == len(content_id)
+    )
+
+
 def _html_links(html: str) -> list[dict[str, str]]:
     """Return the content links of an HTML email body, in document order, one per target.
 
@@ -1559,7 +1589,7 @@ class EmailClient:
         # ``get_filename`` and would otherwise misclassify text parts.)
         return isinstance(filename, str) and bool(filename)
 
-    def _iter_content_parts(self, part: Message) -> Iterator[tuple[Message, bool]]:
+    def _iter_content_parts(self, part: Message, *, related_root_only: bool = False) -> Iterator[tuple[Message, bool]]:
         """Yield body leaves and attachment roots without entering attachments."""
         if self._is_attachment_part(part):
             yield part, True
@@ -1567,9 +1597,21 @@ class EmailClient:
         if part.is_multipart():
             payload = part.get_payload()
             if isinstance(payload, list):
+                if related_root_only and part.get_content_type() == "multipart/related":
+                    start = part.get_param("start")
+                    if start is None:
+                        payload = payload[:1]
+                    else:
+                        payload = [
+                            child
+                            for child in payload
+                            if isinstance(child, Message)
+                            and isinstance(start, str)
+                            and _matches_related_start(str(child.get("Content-ID", "")), start)
+                        ][:1]
                 for child in payload:
                     if isinstance(child, Message):
-                        yield from self._iter_content_parts(child)
+                        yield from self._iter_content_parts(child, related_root_only=related_root_only)
             return
         yield part, False
 
@@ -1650,7 +1692,7 @@ class EmailClient:
 
         # Get body content
         body = ""
-        html_body = ""  # Fallback body if no text/plain; always the source of links
+        html_body = ""  # Fallback if no text/plain
         attachments = []
 
         for part, is_attachment in self._iter_content_parts(email_message):
@@ -1661,10 +1703,17 @@ class EmailClient:
                     attachments.append(filename)
             elif content_type == "text/plain":
                 body += self._decode_text_part(part)
-            elif content_type == "text/html":
+            elif content_type == "text/html" and not body:
                 html_body += self._decode_text_part(part)
 
-        links = _html_links(html_body) if html_body else []
+        links: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for part, is_attachment in self._iter_content_parts(email_message, related_root_only=True):
+            if not is_attachment and part.get_content_type() == "text/html":
+                for link in _html_links(self._decode_text_part(part)):
+                    if link["url"] not in seen_urls:
+                        seen_urls.add(link["url"])
+                        links.append(link)
         # Fall back to HTML if no plain text was found.
         if not body and html_body:
             body = _html_to_text(html_body)

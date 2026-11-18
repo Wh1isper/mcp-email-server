@@ -22,6 +22,36 @@ from mcp_email_server.emails.classic import (
 )
 
 
+@pytest.mark.parametrize("root_position", [0, 1])
+@pytest.mark.parametrize("plain_alternative", [False, True])
+def test_body_links_only_use_related_root(email_client, root_position, plain_alternative):
+    from email.mime.multipart import MIMEMultipart
+
+    related = MIMEMultipart("related", **({"start": "<root@example.test>"} if root_position else {}))
+    root = MIMEText('<a href="./report">Report</a>', "html")
+    root["Content-ID"] = "(Body) <root@example.test> (HTML (root))"
+    auxiliary = MIMEText('<a href="https://example.test/help">Help</a>', "html")
+    auxiliary["Content-ID"] = "<aux@example.test>"
+    for part in [auxiliary, root] if root_position else [root, auxiliary]:
+        related.attach(part)
+    message = related
+    if plain_alternative:
+        message = MIMEMultipart("alternative")
+        message.attach(MIMEText("Plain body", "plain"))
+        message.attach(related)
+
+    result = email_client._parse_email_data(message.as_bytes())
+    window = email_client._parse_email_data(message.as_bytes(), max_body_length=1)
+
+    assert result["links"] == window["links"] == [{"text": "Report", "url": "./report"}]
+    if plain_alternative:
+        assert result["body"] == "Plain body"
+    else:
+        # Link selection must not change the historical HTML-to-text fallback.
+        assert "Help (https://example.test/help)" in result["body"]
+        assert "Report (./report)" in result["body"]
+
+
 @pytest.fixture
 def email_server():
     return EmailServer(

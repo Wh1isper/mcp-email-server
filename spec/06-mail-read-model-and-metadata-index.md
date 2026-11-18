@@ -223,6 +223,14 @@ Body reads:
 - enforce a running UTF-8 body-byte budget in the provider adapter before each
   result is retained, then independently revalidate per-message and aggregate
   bytes at the application response boundary;
+- expose ordered `{text, url}` observations from HTML body anchors, even when
+  plain text supplies the body; only the root selected by `start` (first child
+  when omitted) contributes links inside `multipart/related`. Preserve the
+  trimmed href without base URL resolution, keep the first eligible anchor for
+  each exact href, and keep links independent of the body window;
+- count serialized email entries, including links, before retaining each row
+  in the provider batch; keep the final complete serialization limit at the
+  application response boundary;
 - expose nullable `In-Reply-To` and `References` observations only in the
   full-content response, not metadata listing or the SQLite projection;
 - return each parsed thread header as one decoded, unfolded string with folding

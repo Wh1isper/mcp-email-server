@@ -115,6 +115,36 @@ async def test_content_adapter_stops_at_provider_time_aggregate_body_budget(
 
 
 @pytest.mark.asyncio
+async def test_content_adapter_counts_links_before_retaining_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    mail = {
+        "email_id": "1",
+        "subject": "Report",
+        "from": "allowed@example.test",
+        "to": ["work@example.test"],
+        "date": datetime(2026, 1, 1, tzinfo=UTC),
+        "body": "R",
+        "attachments": [],
+    }
+    handler = Mock()
+    fetch = AsyncMock(return_value=mail)
+    handler.incoming_client.get_email_body_by_id = fetch
+    provider = ClassicReadProvider(handler)
+    baseline = await provider.get_content(GetEmailContentQuery("work", ("1",)), _account())
+    row_bytes = len(baseline.emails[0].model_dump_json().encode("utf-8"))
+    monkeypatch.setattr(
+        reads_adapter, "APPLICATION_LIMITS", replace(reads_adapter.APPLICATION_LIMITS, spill_file_bytes=2 * row_bytes)
+    )
+    linked = {**mail, "links": [{"text": "Report", "url": "./report"}]}
+    fetch.reset_mock(side_effect=True)
+    fetch.side_effect = [linked, {**linked, "email_id": "2"}, AssertionError("must not be fetched")]
+
+    with pytest.raises(ReadProviderError, match="spill bytes"):
+        await provider.get_content(GetEmailContentQuery("work", ("1", "2", "3"), max_body_length=1), _account())
+
+    assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_content_adapter_rejects_oversized_thread_header_before_retaining_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
