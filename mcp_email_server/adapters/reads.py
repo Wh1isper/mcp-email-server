@@ -63,6 +63,7 @@ class ClassicReadProvider:
         failed_ids: list[str] = []
         aggregate_body_bytes = 0
         aggregate_header_bytes = 0
+        aggregate_serialized_email_bytes = 0
         for email_id in query.email_ids:
             try:
                 email_data = await self._handler.incoming_client.get_email_body_by_id(
@@ -127,6 +128,12 @@ class ClassicReadProvider:
             if aggregate_header_bytes > APPLICATION_LIMITS.aggregate_header_bytes:
                 raise ReadProviderError(
                     f"limit_exceeded: email headers exceed {APPLICATION_LIMITS.aggregate_header_bytes} bytes in total"
+                )
+            # The serialized email entries are a lower bound for the full batch, including links.
+            aggregate_serialized_email_bytes += len(email.model_dump_json().encode("utf-8"))
+            if aggregate_serialized_email_bytes > APPLICATION_LIMITS.spill_file_bytes:
+                raise ReadProviderError(
+                    f"limit_exceeded: content result exceeds {APPLICATION_LIMITS.spill_file_bytes} spill bytes"
                 )
             emails.append(email)
         return EmailContentBatchResponse(

@@ -345,6 +345,17 @@ Fetches the body of one or more messages by `email_id`.
 Each returned message includes the same `provider_keywords` and `semantic_tags`
 fields as `list_emails_metadata`.
 
+Each email includes a `links` array of `{text, url}` entries from HTML body
+anchors, even when `body` uses the plain-text alternative. `text` is the anchor
+text and can be empty; `url` is the trimmed HTML `href`, with entities decoded.
+Relative references are returned without base URL resolution. Entries are in
+source order; the first entry for each exact `url` wins. Empty hrefs,
+fragment-only links, `mailto:` and `javascript:` are skipped. Attachment
+subtrees and auxiliary `multipart/related` parts are not sources. No eligible
+anchors yields `[]`. The links are independent of `body_offset` and
+`max_body_length`, count toward the batch size limit, and are not fetched or
+validated as destinations.
+
 ### `list_email_tags`
 
 Returns the semantic tag configuration for one account: `name`, `keyword`,
