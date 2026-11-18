@@ -41,6 +41,7 @@ from mcp_email_server.application.mutations import (
     SetEmailFlagsCommand,
     SetEmailTagsCommand,
     _validate_recipient_policy,
+    _validate_sender_identity,
 )
 from mcp_email_server.config import EmailSettings, Settings
 from mcp_email_server.emails.classic import ClassicEmailHandler, _validate_flags
@@ -109,6 +110,9 @@ class ClassicMutationProvider:
                 raise PermissionError("Mutation tag policy changed; retry")
             if command is not None and self._fresh_authority is not None:
                 _validate_recipient_policy(command, current)
+                # Revoking an alias must stop an effect that is already past
+                # provider construction, like a revoked recipient does.
+                _validate_sender_identity(command, current)
             if grant == "draft" and current.drafts_mailbox != account.drafts_mailbox:
                 raise PermissionError("Draft mailbox authority changed; retry")
 
@@ -168,7 +172,11 @@ class ClassicMutationProvider:
             command.in_reply_to,
             command.references,
             include_bcc_header=True,
+            from_address=command.from_address,
         )
+        if isinstance(command, DraftAppendCommand) and account.draft_identity_key is not None:
+            # Thunderbird keeps a draft's From only when it knows the creating identity.
+            message["X-Identity-Key"] = account.draft_identity_key
         flags = r"(\Draft \Seen)" if command.flags is None else _validate_flags(list(command.flags))
         return await _bounded_mutation_call(
             self._handler.incoming_client.append_to_mailbox_with_outcome(
@@ -232,6 +240,19 @@ class ClassicMutationProvider:
             raise ValueError("Configure drafts_mailbox or provide exactly one special-use Drafts mailbox")
         return drafts[0]
 
+    async def find_reply_identity(
+        self,
+        in_reply_to: str,
+        account: MutationAccountSnapshot,
+    ) -> str | None:
+        return await _bounded_mutation_call(
+            self._handler.incoming_client.find_reply_identity(
+                in_reply_to,
+                list(account.allowed_from_addresses),
+                list(account.allowed_senders),
+            )
+        )
+
     async def find_junk_mailbox(self) -> str:
         junk_mailbox = await _bounded_mutation_call(self._handler._find_junk_folder())
         if junk_mailbox is None:
@@ -274,6 +295,7 @@ class ClassicMutationProvider:
                 command.references,
                 reply_to,
                 extra_parts=extra_parts,
+                from_address=command.from_address,
             )
         )
 
@@ -424,6 +446,10 @@ class LocalMutationBackend:
                     else resolved.account.allowed_mutations
                 ),
                 drafts_mailbox=resolved.account.drafts_mailbox,
+                email_address=resolved.account.email_address,
+                allowed_from_addresses=tuple(resolved.account.allowed_from_addresses),
+                derive_reply_from=resolved.account.derive_reply_from,
+                draft_identity_key=resolved.account.draft_identity_key,
             ),
         )
 

@@ -255,7 +255,9 @@ senders means reading is unrestricted by sender.
 
 The global policy editor exposes the five mutation classes defined by spec 04.
 The account editor exposes an inheritance choice versus an explicit class list
-(including read-only), plus optional `drafts_mailbox`. Summaries distinguish
+(including read-only), plus optional `drafts_mailbox`, the account's allowed
+From addresses as individual add/edit/remove items, and the separate
+reply-derivation switch (spec 04). Summaries distinguish
 inherited from overridden grants and make effective read/write access clear.
 The fixed-five default applies to old and new configurations; no automatic
 read-only conversion or approval workflow is added. Mail operation semantics

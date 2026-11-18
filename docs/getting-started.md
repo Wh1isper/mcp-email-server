@@ -70,12 +70,12 @@ apply. Do not pass them through MCP or chat.
 
 ### Upgrading an existing managed catalog
 
-Managed v3/v4/v5/v6 catalogs migrate to v7 on the first access by the new application.
+Managed v3/v4/v5/v6/v7/v8 catalogs migrate to v9 on the first access by the new application.
 Existing configuration is preserved, and missing To-only cache fields are refreshed on demand;
 no account re-entry is required. Stop all older catalog users, keep a private
 consistent backup, and upgrade UI, CLI, and MCP together before restarting the
-clients. An older runtime cannot read v7, so a package-only downgrade is not a
-rollback. See the [managed upgrade steps](configuration.md#upgrading-a-managed-catalog-to-v7).
+clients. An older runtime cannot read v9, so a package-only downgrade is not a
+rollback. See the [managed upgrade steps](configuration.md#upgrading-a-managed-catalog-to-v9).
 Legacy TOML/environment users are not automatically switched to managed mode.
 
 ## Configure an account with the UI

@@ -288,6 +288,49 @@ setting or an explicit empty environment override. Older implementations
 incorrectly treated an empty list as unrestricted; see the
 [recipient policy upgrade note](security.md#recipient-policy-upgrade-note).
 
+## Sender identities
+
+By default every composed message uses the account address as `From`. Sender
+identities are account settings, not global policy: one account's aliases are
+never usable from another account.
+
+- `allowed_from_addresses` lists the other own addresses (or case-insensitive,
+  whole-address globs such as `*@example.com`) this account may use as `From`.
+  The account address itself is always allowed. An empty list (the default)
+  allows only the account address.
+- `derive_reply_from` (default `false`) lets replies choose one of those
+  addresses automatically. It has no effect while the list is empty.
+
+Legacy TOML sets both on the `[[emails]]` entry; the environment-created account
+uses `MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES` (comma-separated) and
+`MCP_EMAIL_SERVER_DERIVE_REPLY_FROM`. Managed accounts use `account add/update
+--allowed-from-addresses '*@example.com' --derive-reply-from` or the account
+editor in the Web UI, and a legacy import carries both over.
+
+`save_draft`, `send_email` and `forward_email` accept an optional `from_address`
+(bare address or `Name <address>`). It must be the account address or match the
+list, otherwise the call fails before any provider access; a bare address gets
+the account display name. The check is repeated against current authority right
+before APPEND or SMTP `DATA`, so revoking an alias stops an operation already in
+progress.
+
+Automatic selection applies only to `save_draft` and `send_email` replies
+(`in_reply_to` set) without `from_address`, and only with `derive_reply_from`
+enabled. The server looks the replied-to Message-ID up over IMAP (a bare ID is
+bracketed first; INBOX, then the other selectable mailboxes; read-only
+`BODY.PEEK`) and uses the first allowed address from `To`, `Cc`, then the
+original envelope recipient (the bottom-most `X-Original-To`). Later
+`X-Original-To` hops are forwarding aliases and `Delivered-To` is the final
+mailbox, so neither counts. A display name the message showed for that address
+is kept, otherwise the account display name is used. No matching message or
+address keeps the account address. A failed or timed-out lookup fails the call
+instead of silently sending from the account address. `save_to_mailbox` and
+`forward_email` never derive an identity.
+
+Only the `From` header changes. The SMTP reverse-path (`MAIL FROM`) is always the
+account address, so the SMTP provider must accept that account sending with an
+alias `From`.
+
 ## Mail mutation permissions
 
 `allowed_mutations` controls mail writes independently of recipient/sender
@@ -310,6 +353,8 @@ account_name = "work"
 # Omit allowed_mutations to inherit; [] explicitly blocks all mail writes.
 allowed_mutations = ["draft", "organize"]
 drafts_mailbox = "Drafts"
+# Optional: Thunderbird identity key for X-Identity-Key on saved drafts.
+draft_identity_key = "id4"
 ```
 
 The account editor distinguishes inherited permissions from an explicit list
@@ -328,6 +373,18 @@ not guess a name or create a mailbox. `save_draft` permits a recipientless draft
 including with an empty recipient allowlist. Every supplied To/CC/BCC address
 still requires a match. General `save_to_mailbox` continues to enforce its
 recipient policy and requires `append`, even when saving to a Drafts folder.
+
+`draft_identity_key` is optional (environment:
+`MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`). It is Thunderbird profile compatibility,
+independent of sender identities. When set, every draft from `save_draft`
+carries `X-Identity-Key: <value>`. Thunderbird opens a draft with the identity
+that header names and keeps the draft's From. Without it, Thunderbird looks for
+an identity whose address equals the From and, when none exists (an alias
+served by a catch-all identity, for example), uses the default identity and
+replaces the From. The value is the identity key from that one Thunderbird
+profile (`mail.identity.idN` in the Config Editor), so it only fits clients that
+share the profile; other clients ignore the header. It is limited to 1 to 64
+letters, digits, `_`, `.` or `-`. `save_to_mailbox` never adds the header.
 
 Endpoint ports must be between 1 and 65535, and implicit TLS cannot be combined
 with STARTTLS. `account add` checks the selected catalog and these non-secret
@@ -521,23 +578,26 @@ platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
 original and never treat the catalog as a non-secret database. Schema v3, v4,
-v5, and v6 catalogs migrate automatically to v7 on the first catalog access. The
+v5, v6, v7, and v8 catalogs migrate automatically to v9 on the first catalog access. The
 transaction preserves accounts, policy, bindings, secrets, and revisions; it adds
-a nullable To-only address field to the metadata cache. Sources before v6 also
+a nullable To-only address field to the metadata cache (sources before v7) and
+empty per-account sender identities with reply derivation off. Sources before v6 also
 receive default-disabled protocol access. Sources before v5 also receive all five global
 mutation grants, inheriting account overrides, and an unset draft mailbox. A v3
 source additionally receives empty account tag mappings and the disabled
-attachment-content policy. Exact schema and invariant checks finish before v7
+attachment-content policy. Exact schema and invariant checks finish before v9
 is recorded; failure leaves the original version intact. Other unsupported
 versions, corrupt storage, and insecure storage fail closed. Legacy TOML,
 environment, and keyring sources remain supported through explicit import. In
 legacy mode, an unavailable or unsafe operational database produces a bounded
 warning and the metadata query uses its bounded IMAP fallback instead.
 
-### Upgrading a managed catalog to v7
+### Upgrading a managed catalog to v9
 
-Managed v3/v4/v5/v6 catalogs migrate transactionally to v7. The new To-only cache
-field starts as unknown for existing rows; a local To query refetches the missing
+Managed v3/v4/v5/v6/v7/v8 catalogs migrate transactionally to v9. Accounts gain
+empty sender identities (no allowed From addresses, reply derivation off) and an
+unset Thunderbird draft identity key. The
+To-only cache field added in v7 starts as unknown for existing rows; a local To query refetches the missing
 headers automatically. Legacy operational databases at v1 or v6 receive the same
 cache-field migration. Account grants and other configuration remain intact.
 Migration never reads credential values.
@@ -551,7 +611,7 @@ Migration never reads credential values.
 3. Upgrade UI, CLI, and MCP together to the same release, then restart each MCP
    client. Do not leave an older process sharing the newly migrated catalog.
 
-Versions that only understand v3/v4/v5/v6 cannot open v7. Downgrading only the package
+Versions that only understand v3 through v8 cannot open v9. Downgrading only the package
 is therefore insufficient: stop the new processes and restore the matching
 pre-upgrade catalog and bootstrap with the older application. This restores
 local configuration to the backup point, not provider-side email effects or
@@ -837,6 +897,9 @@ after changing legacy TOML.
 | `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`          | Auto-detected             | No       | Override the Sent folder name.                                                                                                              |
 | `MCP_EMAIL_SERVER_ACCOUNT_ALLOWED_MUTATIONS` | Inherit global            | No       | CSV grants for the environment-created account; empty means read-only. Omit to inherit; `inherit` is a CLI value, not an environment value. |
 | `MCP_EMAIL_SERVER_DRAFTS_MAILBOX`            | Unique special-use Drafts | No       | Exact existing draft mailbox for the environment-created account; omit for discovery.                                                       |
+| `MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES`    | Empty                     | No       | Comma-separated own From addresses or globs for the environment-created account; the account address is always allowed.                     |
+| `MCP_EMAIL_SERVER_DERIVE_REPLY_FROM`         | `false`                   | No       | Let replies of the environment-created account take an allowed From from the replied-to message.                                            |
+| `MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`        | Unset                     | No       | Thunderbird identity key written as `X-Identity-Key` on `save_draft` drafts of the environment-created account.                             |
 
 Boolean values accept `true`, `1`, `yes`, or `on` as true, ignoring case. Other
 values are treated as false. Do not add surrounding whitespace to these values.

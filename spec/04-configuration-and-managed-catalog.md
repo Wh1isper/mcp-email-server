@@ -225,6 +225,33 @@ MCP destination parameter for this tool. Missing or ambiguous discovery fails
 with guidance to configure `drafts_mailbox`. The management UI and CLI expose
 these fields without adding a mail composer or mutation route.
 
+Sender identities are account-scoped, non-secret account configuration in
+managed and legacy mode: `allowed_from_addresses` (exact addresses or the
+recipient-policy globs, canonicalized like recipient entries, bounded by the
+policy entry limit) and `derive_reply_from` (boolean, default false). The
+account `email_address` is always a valid `From`; an empty list allows nothing
+else, so omission preserves earlier behavior. There is no global list, and one
+account's identities never authorize another account. `derive_reply_from` is a
+separate opt-in for automatic reply selection and has no effect while the list
+is empty. Managed schema v8 adds `managed_account.allowed_from_addresses_json`
+(default `[]`) and `managed_account.derive_reply_from` (default 0); v3 through v7
+catalogs migrate in place. The environment-created legacy account reads
+`MCP_EMAIL_SERVER_ALLOWED_FROM_ADDRESSES` (CSV) and
+`MCP_EMAIL_SERVER_DERIVE_REPLY_FROM`. `account add/update` accept
+`--allowed-from-addresses` and `--derive-reply-from/--no-derive-reply-from`;
+omission on update preserves both. Legacy import carries both, and they take
+part in the import equality check. The selection and enforcement rules are owned
+by spec 07.
+
+`draft_identity_key` is an optional, non-secret account field for Thunderbird
+profile compatibility, independent of sender identities: 1 to 64 letters,
+digits, `_`, `.` or `-`, because it becomes a header value verbatim. Managed
+schema v9 adds `managed_account.draft_identity_key` (nullable); v3 through v8
+catalogs migrate in place. The environment-created legacy account reads
+`MCP_EMAIL_SERVER_DRAFT_IDENTITY_KEY`, `account add/update --draft-identity-key`
+sets it (`''` clears on update, omission preserves), the Web UI account editor
+exposes it, and legacy import carries it. Header behavior is owned by spec 07.
+
 Legacy accounts may set `imap_non_ascii_search` to `literal`, `quoted`, or
 `auto`. Omission inherits `MCP_EMAIL_SERVER_IMAP_NON_ASCII_SEARCH`, whose
 default is `auto`. Managed accounts do not persist the field; they use that
