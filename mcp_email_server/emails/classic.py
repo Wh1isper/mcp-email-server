@@ -77,6 +77,7 @@ from mcp_email_server.config import (
     sender_allowed,
 )
 from mcp_email_server.emails import EmailHandler, charsets
+from mcp_email_server.emails.headers import ContentHeaderLimitError, select_content_headers
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailBodyResponse,
@@ -1664,6 +1665,7 @@ class EmailClient:
         body_offset: int = 0,
         max_body_length: int = MAX_BODY_LENGTH,
         parsed: Message | None = None,
+        include_headers: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Parse raw email data into a structured dictionary.
 
@@ -1671,6 +1673,7 @@ class EmailClient:
         ``raw_email`` share it instead of paying a second full parse.
         """
         email_message = parsed if parsed is not None else BytesParser(policy=default).parsebytes(raw_email)
+        headers = select_content_headers(email_message, include_headers)
 
         # Extract email parts
         subject = email_message.get("Subject", "")
@@ -1735,6 +1738,7 @@ class EmailClient:
             "message_id": message_id,
             "in_reply_to": in_reply_to,
             "references": references,
+            "headers": headers,
             "subject": subject,
             "from": sender,
             "to": to_addresses,
@@ -2836,6 +2840,7 @@ class EmailClient:
         allowed_senders: list[str] | None = None,
         body_offset: int = 0,
         max_body_length: int = MAX_BODY_LENGTH,
+        include_headers: tuple[str, ...] = (),
     ) -> dict[str, Any] | None:
         del mark_as_read  # Compatibility argument; the application owns the mutation.
         validate_imap_uid(email_id)
@@ -2873,9 +2878,15 @@ class EmailClient:
             # Parse the email
             try:
                 email_data = self._parse_email_data(
-                    raw_email, email_id, body_offset=body_offset, max_body_length=max_body_length
+                    raw_email,
+                    email_id,
+                    body_offset=body_offset,
+                    max_body_length=max_body_length,
+                    include_headers=include_headers,
                 )
                 email_data["_flags"] = self._extract_message_flags(data)
+            except ContentHeaderLimitError:
+                raise
             except Exception as e:
                 logger.error(f"Error parsing email: {e!s}")
                 return None

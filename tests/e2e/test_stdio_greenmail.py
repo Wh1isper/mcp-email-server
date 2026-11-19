@@ -826,6 +826,54 @@ async def test_managed_stdio_missing_database_fails_closed_without_legacy_fallba
 
 
 @pytest.mark.asyncio
+async def test_content_headers_over_stdio_against_greenmail(tmp_path: Path) -> None:
+    _wait_until_ready()
+    _ensure_empty_mailboxes(BOB, ["INBOX"])
+    message = EmailMessage()
+    message["Received"] = "by mx.example.test"
+    message["Authentication-Results"] = "mx.example.test; dmarc=pass"
+    message["Received"] = "by upstream.example.test"
+    message["From"] = ALICE[0]
+    message["To"] = BOB[0]
+    message["Reply-To"] = "billing@example.test"
+    message["Subject"] = "Synthetic content header test"
+    message.set_content("Synthetic body")
+    with _imap_session(BOB) as client:
+        status, _ = client.append("INBOX", None, None, message.as_bytes(policy=policy.SMTP))
+        assert status == "OK"
+    observed = _find_message(BOB, "INBOX", str(message["Subject"]))
+    assert observed is not None
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(CONFIG_TEMPLATE)
+    config_path.chmod(0o600)
+    server_env = {key: value for key, value in os.environ.items() if not key.startswith("MCP_EMAIL_SERVER_")}
+    server_env.update({
+        "MCP_EMAIL_SERVER_CONFIG_PATH": str(config_path),
+        "MCP_EMAIL_SERVER_CREDENTIAL_STORAGE": "plaintext",
+    })
+    server = StdioServerParameters(
+        command=str(Path(sys.executable).with_name("mcp-email-server")), args=["stdio"], env=server_env, cwd=Path.cwd()
+    )
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream, read_timeout_seconds=timedelta(seconds=15)) as session:
+            await session.initialize()
+            query = {"account_name": "bob", "email_ids": [observed.uid]}
+            default_result = await _call_tool(session, "get_emails_content", query)
+            assert default_result["emails"][0]["headers"] == [
+                {"name": "Received", "value": "by mx.example.test"},
+                {"name": "Authentication-Results", "value": "mx.example.test; dmarc=pass"},
+                {"name": "Received", "value": "by upstream.example.test"},
+                {"name": "Reply-To", "value": "billing@example.test"},
+            ]
+            custom = await _call_tool(session, "get_emails_content", {**query, "include_headers": ["subject"]})
+            assert custom["emails"][0]["headers"] == [{"name": "Subject", "value": str(message["Subject"])}]
+            disabled = await _call_tool(session, "get_emails_content", {**query, "include_headers": []})
+            assert "headers" not in disabled["emails"][0]
+    after = _find_message(BOB, "INBOX", str(message["Subject"]))
+    assert after is not None and "\\Seen" not in after.flags
+
+
+@pytest.mark.asyncio
 async def test_local_to_search_cache_restart_and_append_against_greenmail(tmp_path: Path) -> None:
     """Exercise real MCP, IMAP header parsing, SQLite reuse, and append-only sync."""
     _wait_until_ready()

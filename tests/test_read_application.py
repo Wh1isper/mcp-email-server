@@ -23,7 +23,12 @@ from mcp_email_server.application.reads import (
     ReadProviderAccess,
     ReadProviderError,
 )
-from mcp_email_server.emails.models import EmailBodyResponse, EmailContentBatchResponse, MailboxInfo
+from mcp_email_server.emails.models import (
+    EmailBodyResponse,
+    EmailContentBatchResponse,
+    EmailHeaderObservation,
+    MailboxInfo,
+)
 from mcp_email_server.imap_keywords import ImapKeywordRegistry, ImapKeywordTag
 
 
@@ -364,6 +369,10 @@ async def test_mailbox_service_maps_query_and_preserves_provider_order() -> None
         (GetEmailContentQuery("work", ("01",)), "canonical positive"),
         (GetEmailContentQuery("work", tuple(str(uid) for uid in range(1, 502))), "between 1 and 500"),
         (GetEmailContentQuery("work", ("1",), max_body_length=100_001), "between 1 and 100000"),
+        (GetEmailContentQuery("work", ("1",), include_headers=("Received\r\nSubject",)), "ASCII email field names"),
+        (GetEmailContentQuery("work", ("1",), include_headers=("Received:",)), "ASCII email field names"),
+        (GetEmailContentQuery("work", ("1",), include_headers=("x" * 129,)), "ASCII email field names"),
+        (GetEmailContentQuery("work", ("1",), include_headers=("Received",) * 33), "at most 32 names"),
     ],
 )
 def test_content_query_rejects_invalid_or_unbounded_input(query: GetEmailContentQuery, message: str) -> None:
@@ -505,6 +514,38 @@ async def test_content_thread_headers_count_toward_aggregate_header_limit(
     else:
         with pytest.raises(ReadProviderError, match="headers exceed"):
             await service.execute(GetEmailContentQuery("work", ("1",)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "valid"), [("é", True), ("éa", False)])
+async def test_selected_headers_count_toward_aggregate_limit_before_marking(
+    monkeypatch: pytest.MonkeyPatch, value: str, valid: bool
+) -> None:
+    authority, factory, provider = _ports()
+    email = _body("1")
+    base_header_bytes = sum(
+        len(item.encode("utf-8"))
+        for item in (email.email_id, email.subject, email.sender, *email.recipients, *email.attachments)
+    )
+    monkeypatch.setattr(
+        reads_module,
+        "APPLICATION_LIMITS",
+        replace(APPLICATION_LIMITS, aggregate_header_bytes=base_header_bytes + len("X-Test") + 2),
+    )
+    email.headers = [EmailHeaderObservation(name="X-Test", value=value)]
+    response = EmailContentBatchResponse(emails=[email], requested_count=1, retrieved_count=1, failed_ids=[])
+    provider.get_content = AsyncMock(return_value=response)
+    mark = Mock(execute=AsyncMock(return_value=BatchMutationOutcome(outcomes=[])))
+    service = EmailContentService(authority, factory, mark)
+    query = GetEmailContentQuery("work", ("1",), mark_as_read=True, include_headers=("X-Test",))
+
+    if valid:
+        assert await service.execute(query) == response
+        mark.execute.assert_awaited_once()
+    else:
+        with pytest.raises(ReadProviderError, match="headers exceed"):
+            await service.execute(query)
+        mark.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

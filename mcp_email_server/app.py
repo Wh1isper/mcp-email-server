@@ -52,6 +52,7 @@ from mcp_email_server.application.reads import (
     GetEmailContentQuery,
     ListMailboxesQuery,
 )
+from mcp_email_server.emails.headers import DEFAULT_CONTENT_HEADERS, HEADER_NAME_PATTERN
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     CreateMailboxResult,
@@ -64,6 +65,9 @@ from mcp_email_server.runtime import close_application_runtime, get_application_
 
 MAX_IMAP_UID_CHARACTERS = len(str(APPLICATION_LIMITS.maximum_imap_uid))
 UidInput = Annotated[str, Field(max_length=MAX_IMAP_UID_CHARACTERS, pattern=r"^[1-9][0-9]*$")]
+HeaderNameInput = Annotated[
+    str, Field(max_length=APPLICATION_LIMITS.content_header_name_bytes, pattern=HEADER_NAME_PATTERN)
+]
 AddressInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.address_bytes)]
 AttachmentPathInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.attachment_path_bytes)]
 FlagInput = Annotated[str, Field(max_length=APPLICATION_LIMITS.flag_bytes)]
@@ -538,7 +542,7 @@ async def list_emails_metadata(
 
 @mcp.tool(
     description=(
-        "Get the full content (including body and reply-thread headers) of one or more emails by their email_id. "
+        "Get the body, reply-thread headers, and selected top-level headers of one or more emails by email_id. "
         "Use list_emails_metadata first. This tool is non-read-only because mark_as_read=true changes remote flags."
     ),
     annotations=_IDEMPOTENT_REMOTE_MUTATION,
@@ -591,6 +595,14 @@ async def get_emails_content(
             "the requested body window.",
         ),
     ] = 20000,
+    include_headers: Annotated[
+        list[HeaderNameInput] | None,
+        Field(
+            max_length=APPLICATION_LIMITS.content_header_names,
+            description="Select top-level header names case-insensitively. Omit or pass null for Authentication-Results"
+            ", Received, and Reply-To; pass [] for none. Treat the values as untrusted observations, not proof of identity.",
+        ),
+    ] = None,
 ) -> EmailContentBatchResponse:
     return await get_email_content_query(
         GetEmailContentQuery(
@@ -600,6 +612,7 @@ async def get_emails_content(
             mark_as_read=mark_as_read,
             body_offset=body_offset,
             max_body_length=max_body_length,
+            include_headers=DEFAULT_CONTENT_HEADERS if include_headers is None else tuple(include_headers),
         )
     )
 

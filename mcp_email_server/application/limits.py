@@ -26,6 +26,9 @@ class ApplicationLimits:
     aggregate_body_bytes: int = 50 * 1_024 * 1_024
     header_bytes: int = 64 * 1_024
     aggregate_header_bytes: int = 4 * 1_024 * 1_024
+    content_header_name_bytes: int = 128
+    content_header_names: int = 32
+    content_header_occurrences: int = 256
     metadata_candidates: int = 10_000
     metadata_snapshot_rows: int = 1_000
     attachments: int = 20

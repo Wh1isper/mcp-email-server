@@ -26,6 +26,7 @@ from mcp_email_server.application.reads import (
 )
 from mcp_email_server.config import EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler
+from mcp_email_server.emails.headers import ContentHeaderLimitError, content_headers_size
 from mcp_email_server.emails.models import (
     EmailBodyResponse,
     EmailContentBatchResponse,
@@ -54,7 +55,7 @@ class ClassicReadProvider:
         except Exception:
             raise ReadProviderError("provider_failure: mailbox discovery failed") from None
 
-    async def get_content(
+    async def get_content(  # noqa: C901 - per-message outcomes and running response budgets
         self,
         query: GetEmailContentQuery,
         account: ReadAccountSnapshot,
@@ -73,6 +74,7 @@ class ClassicReadProvider:
                     allowed_senders=list(account.allowed_senders),
                     body_offset=query.body_offset,
                     max_body_length=query.max_body_length,
+                    include_headers=query.include_headers,
                 )
                 if not email_data:
                     failed_ids.append(email_id)
@@ -87,6 +89,7 @@ class ClassicReadProvider:
                     recipients=email_data["to"],
                     date=email_data["date"],
                     body=email_data["body"],
+                    headers=email_data.get("headers", []),
                     attachments=email_data["attachments"],
                     links=email_data.get("links", []),
                     provider_keywords=[
@@ -95,8 +98,11 @@ class ClassicReadProvider:
                         if isinstance(flag, str) and not flag.startswith("\\")
                     ],
                 )
+                selected_header_bytes = content_headers_size(email.headers, APPLICATION_LIMITS)
             except asyncio.CancelledError:
                 raise
+            except ContentHeaderLimitError as exc:
+                raise ReadProviderError(str(exc)) from None
             except Exception:
                 failed_ids.append(email_id)
                 continue
@@ -116,7 +122,8 @@ class ClassicReadProvider:
                     f"limit_exceeded: an email thread header exceeds {APPLICATION_LIMITS.header_bytes} bytes"
                 )
             aggregate_header_bytes += (
-                len(email.email_id.encode("utf-8"))
+                selected_header_bytes
+                + len(email.email_id.encode("utf-8"))
                 + len((email.message_id or "").encode("utf-8"))
                 + len((email.in_reply_to or "").encode("utf-8"))
                 + len((email.references or "").encode("utf-8"))
