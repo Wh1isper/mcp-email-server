@@ -6,7 +6,7 @@ multiple accounts, and advanced email server settings.
 
 ## Requirements
 
-- Python 3.11 or later.
+- Python 3.11 or later. This source tree is tested on Python 3.11 through 3.15.
 - IMAP credentials for the email account.
 - SMTP credentials if the account must send email.
 - An MCP-compatible client.

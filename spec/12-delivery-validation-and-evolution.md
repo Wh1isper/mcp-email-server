@@ -277,7 +277,7 @@ oversized-result spill on the runner's local NTFS workspace.
 
 Before delivery, all of the following pass from a clean checkout:
 
-1. supported Python matrix (3.11 through 3.14 unless project support changes),
+1. supported Python matrix (3.11 through 3.15),
    rerun from the exact peeled release-tag commit after the isolated release job
    deterministically stamps its canonical `X.Y.Z` value (accepting an optional
    `v` tag prefix) into only Python package metadata and the matching editable

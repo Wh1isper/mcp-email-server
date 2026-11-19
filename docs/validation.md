@@ -112,7 +112,7 @@ so one-time launch material cannot enter browser artifacts.
 ## Continuous integration
 
 The main GitHub Actions workflow runs quality checks, a strict documentation
-build, the Python version matrix, a dedicated native `windows-latest` job, the locked frontend build with staged-asset
+build, the Python version matrix, native `windows-latest` jobs on Python 3.13 and 3.15, the locked frontend build with staged-asset
 drift rejection, locked-Chromium browser E2E, and GreenMail once on
 `ubuntu-latest` for every pull request and push to `main`. A dedicated container
 job builds the restricted runtime image and checks its version, absence of source
@@ -121,13 +121,13 @@ A dedicated artifact job runs the same authoritative `make build` then
 `make verify-dist` sequence as the release workflow, so CI validates one exact
 wheel/sdist pair rather than independent temporary builds only. The GreenMail job has a 10-minute outer
 timeout in addition to the per-request MCP deadline. The regular Python
-3.11-3.14 test matrix continues to exclude the `e2e` marker, so GreenMail is not
-repeated for every interpreter version. The Windows job installs the conditional
+3.11-3.15 test matrix continues to exclude the `e2e` marker, so GreenMail is not
+repeated for every interpreter version. Each Windows job installs the conditional
 `pywin32` dependency, creates a protected-DACL test workspace, runs the full
 Python suite without coverage instrumentation and runs the type checker, then
 reruns `tests/test_windows_security.py` with explicit reporting on the runner's
 real local NTFS workspace. The portable Python matrix owns coverage reporting;
-the Windows job is an uncompromised native-behavior gate. Native cases cover
+the Windows jobs verify native runtime behavior. Native cases cover
 file/directory symlinks, a Developer-
 Mode-independent junction, hard links, owner/DACL policy, lock contention and
 killed-owner release, concurrent and crash-boundary replacement, complete-old-
@@ -142,7 +142,7 @@ The release workflow verifies the exact
 peeled tag commit, validates canonical `X.Y.Z` with an optional `v` prefix, and
 deterministically stamps the normalized value into only the isolated release jobs'
 Python package metadata and
-matching editable lock entry. It then reruns Python 3.11-3.14 against the stamped
+matching editable lock entry. It then reruns Python 3.11-3.15 against the stamped
 release tree. Plugin versions are independent and are not rewritten by an
 application release. A separate validation job repeats the frontend, static,
 default-Python, docs, browser, package, and GreenMail gates, builds `dist/` once,

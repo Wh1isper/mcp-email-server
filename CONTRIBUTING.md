@@ -200,7 +200,7 @@ The release tag is the application version authority. The workflow pins and
 verifies the peeled release-tag commit, then deterministically stamps its normalized value
 into `pyproject.toml` and the matching editable entry in `uv.lock` inside each
 isolated release job. It does not rewrite plugin metadata. The complete Python
-3.11-3.14 matrix runs against that stamped release tree. A separate unprivileged
+3.11-3.15 matrix runs against that stamped release tree. A separate unprivileged
 validation job rebuilds the locked frontend, rejects staged-asset drift, runs the
 default-Python, documentation, browser, packaging, GreenMail, and native
 container gates, builds the final wheel and sdist once, and records their
