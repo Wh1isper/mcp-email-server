@@ -147,8 +147,12 @@ jobs:
         run: make test-e2e
 
   windows-native:
-    name: Native Windows NTFS security and full runtime
+    name: ${{ matrix.python-version == '3.13' && 'Native Windows NTFS security and full runtime' || 'Native Windows NTFS security and full runtime (3.15)' }}
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.15"]
+      fail-fast: false
     timeout-minutes: 20
     permissions:
       contents: read
@@ -164,11 +168,11 @@ jobs:
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       - name: Prepare a protected Windows test workspace
         run: |
-          uv run --python 3.13 python - <<'PY'
+          uv run --python ${{ matrix.python-version }} python - <<'PY'
           import os
           from pathlib import Path
 
@@ -187,22 +191,22 @@ jobs:
 
       - name: Run the full Python suite on Windows
         run: >-
-          uv run --python 3.13 python -m pytest --no-cov
+          uv run --python ${{ matrix.python-version }} python -m pytest --no-cov
           --basetemp "$MCP_EMAIL_SERVER_WINDOWS_PYTEST_ROOT" tests
 
       - name: Re-run native NTFS security cases with explicit reporting
         run: >-
-          uv run --python 3.13 python -m pytest --no-cov -vv
+          uv run --python ${{ matrix.python-version }} python -m pytest --no-cov -vv
           --basetemp "$MCP_EMAIL_SERVER_WINDOWS_PYTEST_ROOT" tests/test_windows_security.py
 
       - name: Check typing with Windows-only dependencies installed
-        run: uv run --python 3.13 python -m pyright
+        run: uv run --python ${{ matrix.python-version }} python -m pyright
 
   tests-and-type-check:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
       fail-fast: false
     defaults:
       run:

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 from datetime import UTC, datetime
+from email.errors import NonASCIILocalPartDefect
 from email.message import EmailMessage
 from email.parser import Parser
 from email.policy import SMTP, SMTPUTF8
@@ -633,7 +634,8 @@ async def test_unicode_reply_to_requires_smtputf8_for_ascii_envelope(rfc_email_c
     reply_to = parsed["Reply-To"]
     assert reply_to is not None
     assert [address.addr_spec for address in reply_to.addresses] == ["回复@example.test"]
-    assert [type(defect).__name__ for defect in reply_to.defects] == ["NonASCIILocalPartDefect"]
+    # Older CPython versions report the valid SMTPUTF8 local part as a defect.
+    assert all(isinstance(defect, NonASCIILocalPartDefect) for defect in reply_to.defects)
 
 
 @pytest.mark.asyncio
@@ -752,7 +754,8 @@ async def test_rfc6855_append_uses_utf8_literal8_framing(rfc_email_client):
     recipient = parsed["To"]
     assert recipient is not None
     assert [address.addr_spec for address in recipient.addresses] == ["用户@example.test"]
-    assert [type(defect).__name__ for defect in recipient.defects] == ["NonASCIILocalPartDefect"]
+    # Accept the legacy diagnostic but reject any other parse defect.
+    assert all(isinstance(defect, NonASCIILocalPartDefect) for defect in recipient.defects)
 
     protocol.data_received(tag + b" OK [APPENDUID 99 7] APPEND completed\r\n")
     response = await append_task

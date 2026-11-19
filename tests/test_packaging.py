@@ -469,7 +469,15 @@ def test_ci_and_release_use_the_same_exact_artifact_verification_path() -> None:
     assert _workflow_job_runs(main, "artifacts") == ["make build", "make verify-dist"]
     assert _workflow_job_runs(main, "container") == ["make container-check CONTAINER_IMAGE=mcp-email-server:ci"]
 
-    supported = ["3.11", "3.12", "3.13", "3.14"]
+    supported = ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    classifiers = tomllib.loads((REPOSITORY / "pyproject.toml").read_text(encoding="utf-8"))["project"]["classifiers"]
+    assert {
+        item.rsplit(" :: ", 1)[-1]
+        for item in classifiers
+        if re.fullmatch(r"Programming Language :: Python :: 3\.\d+", item)
+    } == set(supported)
+    windows_matrix = _workflow_job(main, "windows-native")
+    assert windows_matrix["strategy"]["matrix"]["python-version"] == ["3.13", "3.15"]  # type: ignore[index]
     main_matrix = _workflow_job(main, "tests-and-type-check")
     release_matrix = _workflow_job(release, "release-python-matrix")
     assert main_matrix["strategy"]["matrix"]["python-version"] == supported  # type: ignore[index]
