@@ -58,6 +58,11 @@ Omission on add uses special-use Drafts discovery; omission on update preserves
 the current setting. Passing `--drafts-mailbox ''` clears the override and
 restores unique special-use discovery. It never creates or guesses a mailbox.
 
+`--allowed-from-addresses '*@example.com,info@example.org'` sets the account's
+other allowed `From` addresses; `''` on update clears them, and omission keeps
+them. `--derive-reply-from/--no-derive-reply-from` switches automatic reply
+identity selection. See [sender identities](configuration.md#sender-identities).
+
 `account add NAME` takes these options alongside its required `--email`,
 `--full-name`, and `--imap-host` setup fields; it has no `--expected-revision`
 option. `account update NAME` requires the account revision, available from

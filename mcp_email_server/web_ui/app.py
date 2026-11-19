@@ -417,6 +417,8 @@ async def _create_account(_request: Request, state: LocalUiState, payload: Creat
             drafts_mailbox=payload.drafts_mailbox,
             allow_protocol_commands=payload.allow_protocol_commands,
             tags=payload.tags,
+            allowed_from_addresses=payload.allowed_from_addresses,
+            derive_reply_from=payload.derive_reply_from,
         ),
     )
     return {

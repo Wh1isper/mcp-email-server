@@ -365,11 +365,15 @@ test('new accounts inherit read/write and draft overrides replace global grants'
   expect(screen.getByRole('checkbox', { name: 'Allow advanced protocol commands' })).not.toBeChecked()
   await user.click(screen.getByRole('checkbox', { name: 'Allow advanced protocol commands' }))
   await user.type(screen.getByLabelText('Drafts mailbox (optional)'), 'Drafts/Assistant')
+  await user.click(screen.getByRole('button', { name: 'Add From address' }))
+  await user.type(screen.getByLabelText('From address 1'), '*@alias.example.test')
+  await user.click(screen.getByRole('checkbox', { name: 'Reply from the address the original was sent to' }))
   await user.type(screen.getByLabelText('Email address'), 'draft@example.test')
   await user.type(screen.getByLabelText('Password or app password'), 'synthetic-secret')
   await user.click(screen.getByRole('button', { name: 'Add account' }))
   await waitFor(() => expect(api.createAccount).toHaveBeenCalledWith(expect.objectContaining({
     allowed_mutations: ['draft'], drafts_mailbox: 'Drafts/Assistant', allow_protocol_commands: true,
+    allowed_from_addresses: ['*@alias.example.test'], derive_reply_from: true,
   }), expect.anything(), expect.any(Number), target))
 })
 

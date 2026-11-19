@@ -107,6 +107,7 @@ their identity and coverage tokens provide projection qualification.
 | SMTP delivery                                | SMTP response evidence                   | not inferred from sent-copy state                            |
 | sent-copy placement                          | IMAP APPEND evidence                     | independent from SMTP delivery                               |
 | explicit attachment destination              | caller request plus current local policy | exact path, no implicit rewrite                              |
+| composed `From` header                       | current account sender identities        | account address or account allowlist, never global           |
 | default attachment destination               | local artifact adapter                   | resolved before provider work under validated download child |
 
 ## Provider Outcomes
