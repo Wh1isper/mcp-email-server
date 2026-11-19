@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Protocol, TypeVar
@@ -17,6 +18,12 @@ from mcp_email_server.application.metadata import RuntimeMode
 from mcp_email_server.application.mutations import (
     BatchMutationOutcome,
     MarkReadCommand,
+)
+from mcp_email_server.emails.headers import (
+    DEFAULT_CONTENT_HEADERS,
+    HEADER_NAME_PATTERN,
+    ContentHeaderLimitError,
+    content_headers_size,
 )
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
@@ -98,6 +105,7 @@ class GetEmailContentQuery:
     mark_as_read: bool = False
     body_offset: int = 0
     max_body_length: int = 20_000
+    include_headers: tuple[str, ...] = DEFAULT_CONTENT_HEADERS
 
     def validate(self) -> None:
         _validate_account_name(self.account_name)
@@ -107,6 +115,13 @@ class GetEmailContentQuery:
             raise ValueError("body_offset must not be negative")
         if not 1 <= self.max_body_length <= 100_000:
             raise ValueError("max_body_length must be between 1 and 100000")
+        if len(self.include_headers) > APPLICATION_LIMITS.content_header_names:
+            raise ValueError(f"include_headers accepts at most {APPLICATION_LIMITS.content_header_names} names")
+        if any(
+            len(name) > APPLICATION_LIMITS.content_header_name_bytes or not re.fullmatch(HEADER_NAME_PATTERN, name)
+            for name in self.include_headers
+        ):
+            raise ValueError("include_headers requires bounded ASCII email field names without whitespace or colons")
 
 
 @dataclass(frozen=True)
@@ -263,6 +278,10 @@ def _validate_content_result(response: EmailContentBatchResponse) -> bytes:
         + sum(len(value.encode("utf-8")) for value in email.semantic_tags)
         for email in response.emails
     )
+    try:
+        header_bytes += sum(content_headers_size(email.headers, APPLICATION_LIMITS) for email in response.emails)
+    except ContentHeaderLimitError as exc:
+        raise ReadProviderError(str(exc)) from None
     if header_bytes > APPLICATION_LIMITS.aggregate_header_bytes:
         raise ReadProviderError(
             f"limit_exceeded: email headers exceed {APPLICATION_LIMITS.aggregate_header_bytes} bytes in total"

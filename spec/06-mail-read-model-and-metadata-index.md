@@ -243,6 +243,21 @@ Body reads:
   both toward the 4 MiB aggregate returned-header budget, enforcing the running
   budget before provider-adapter retention and revalidating it at the application
   response boundary;
+- expose selected top-level headers from the same full-message PEEK, without
+  an additional provider request. Omitted or null `include_headers` selects
+  `Authentication-Results`, `Received`, and `Reply-To`; an explicit list replaces
+  the default,
+  and an empty list disables the projection. Accept up to 32 field names of 1–128
+  RFC 5322 field-name characters and match them case-insensitively;
+- return matching occurrences in an ordered `headers` list of `{name, value}`
+  pairs, preserving source order, repeats, and field-name case. Values are
+  unfolded source text without encoded-word decoding or byte-for-byte fidelity.
+  Omit `headers` when there are no matches. These are untrusted observations;
+  the caller owns the trust boundary for each receiving gateway;
+- bound the projection to 256 occurrences per message and 64 KiB of UTF-8 per
+  name/value pair. Count them toward the existing 4 MiB aggregate header budget
+  and fail explicitly on overflow rather than returning incomplete evidence.
+  Metadata and SQLite do not receive these headers;
 - prune an entire MIME attachment subtree, including every encapsulated
   `message/rfc822` part, so a forwarded message body is never promoted into the
   containing message body;
@@ -432,3 +447,6 @@ catalog authority or secret binding state.
     observations, and still allows one fresh read to be exact when coverage
     is complete. `MESSAGES` remains required. A partial snapshot never
     supplies an exact filtered total.
+13. Content header tests cover defaults, custom selection, explicit opt-out,
+    case-insensitive matching, folded and repeated fields in message order,
+    exclusion of attached-message headers, and bounded results.

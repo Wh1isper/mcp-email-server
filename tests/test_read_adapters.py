@@ -43,6 +43,7 @@ async def test_content_adapter_forwards_snapshot_sender_policy_and_collapses_per
                 "message_id": "<one@example.test>",
                 "in_reply_to": "<parent@example.test>",
                 "references": "<root@example.test> <parent@example.test>",
+                "headers": [{"name": "X-Notice", "value": "observed"}],
                 "subject": "One",
                 "from": "allowed@example.test",
                 "to": ["work@example.test"],
@@ -54,7 +55,9 @@ async def test_content_adapter_forwards_snapshot_sender_policy_and_collapses_per
         ]
     )
     provider = ClassicReadProvider(handler)
-    query = GetEmailContentQuery("work", ("1", "2"), mailbox="Archive", body_offset=10, max_body_length=20)
+    query = GetEmailContentQuery(
+        "work", ("1", "2"), mailbox="Archive", body_offset=10, max_body_length=20, include_headers=("X-Notice",)
+    )
 
     response = await provider.get_content(query, _account())
 
@@ -67,6 +70,8 @@ async def test_content_adapter_forwards_snapshot_sender_policy_and_collapses_per
     assert first.kwargs["allowed_senders"] == ["allowed@example.test"]
     assert first.kwargs["body_offset"] == 10
     assert first.kwargs["max_body_length"] == 20
+    assert first.kwargs["include_headers"] == ("X-Notice",)
+    assert response.emails[0].model_dump()["headers"] == [{"name": "X-Notice", "value": "observed"}]
 
 
 @pytest.mark.asyncio

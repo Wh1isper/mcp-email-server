@@ -324,6 +324,19 @@ rewrites, or reformats TOML, environment, or legacy keyring state. Provider-styl
 legacy accounts are reported unsupported and prevent automatic cutover rather
 than being silently lost.
 
+## Observed authentication headers
+
+`get_emails_content` exposes the stored `Authentication-Results`, `Received`, and
+`Reply-To` headers by default. Routing headers can contain details such as internal
+hostnames or IP addresses; pass `include_headers=[]` to omit them. The server
+returns observations only. In a workflow that uses them for sender screening,
+accept authentication results only from a receiving gateway you trust to remove
+forged results claiming its identity. A passing domain check does not verify a
+person, invoice, or payment instruction. Compare `Reply-To` with the displayed
+sender before replying; a difference can be legitimate and is a signal to review,
+not a verdict. Missing or untrusted evidence should
+not automatically pass a business rule that requires authentication.
+
 ## Temporary oversized results
 
 A large but otherwise valid `get_emails_content` result may exceed the inline
