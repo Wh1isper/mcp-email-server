@@ -1833,6 +1833,8 @@ class EmailClient:
         attachments = []
 
         # ===========================新增日历ics判断=========================
+        calendar_body = ""
+        
         for part, is_attachment in self._iter_content_parts(email_message):
             content_type = part.get_content_type()
             filename = part.get_filename() or ""
@@ -1843,7 +1845,7 @@ class EmailClient:
             if is_calendar:
                 meeting_details = _parse_ics_part(part)
                 if meeting_details:
-                    body += "\n\n" + meeting_details
+                    calendar_body += "\n\n" + meeting_details
 
             if is_attachment:
                 if isinstance(filename, str) and filename:
@@ -1867,6 +1869,7 @@ class EmailClient:
         # Fall back to HTML if no plain text was found.
         if not body and html_body:
             body = _html_to_text(html_body)
+            body += calendar_body
         if body_offset < 0:
             raise ValueError("body_offset must be >= 0")
         if max_body_length < 1:
