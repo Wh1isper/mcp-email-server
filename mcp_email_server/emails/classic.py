@@ -10,7 +10,7 @@ import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email import encoders
 from email.header import Header
 from email.headerregistry import Address, AddressHeader
@@ -112,16 +112,11 @@ FORWARD_SOURCE_BODY_WINDOW = APPLICATION_LIMITS.body_bytes + 1
 SmtpDataTransport = Literal["7bit", "8bit", "binary", "invalid"]
 _HIGH_BIT_OCTET = re.compile(rb"[\x80-\xff]")
 
+
 # ===================新增ics日历文件辅助函数=============
 def _ics_unescape(value: str) -> str:
     """Decode escaped characters used in iCalendar text values."""
-    return (
-        value.replace("\\n", "\n")
-        .replace("\\N", "\n")
-        .replace("\\,", ",")
-        .replace("\\;", ";")
-        .replace("\\\\", "\\")
-    )
+    return value.replace("\\n", "\n").replace("\\N", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")
 
 
 def _parse_ics_datetime(value: str, tzid: str = "") -> str:
@@ -134,7 +129,7 @@ def _parse_ics_datetime(value: str, tzid: str = "") -> str:
 
         if value.endswith("Z"):
             dt = datetime.strptime(value, "%Y%m%dT%H%M%SZ")
-            return dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            return dt.replace(tzinfo=UTC).strftime("%Y-%m-%d %H:%M UTC")
 
         dt = datetime.strptime(value, "%Y%m%dT%H%M%S")
         result = dt.strftime("%Y-%m-%d %H:%M")
@@ -242,13 +237,13 @@ def _parse_ics_part(part) -> str:
 
     # Include the description, but avoid duplicating long meeting URLs.
     if description:
-        description_without_urls = re.sub(
-            r"https?://[^\s<>\"']+", "", description
-        ).strip()
+        description_without_urls = re.sub(r"https?://[^\s<>\"']+", "", description).strip()
         if description_without_urls:
             lines.append(f"Description: {description_without_urls}")
 
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
 # ============================================================================
 
 
@@ -1841,25 +1836,22 @@ class EmailClient:
         for part, is_attachment in self._iter_content_parts(email_message):
             content_type = part.get_content_type()
             filename = part.get_filename() or ""
-        
+
             # Parse ICS calendar invitations (including Teams and Zoom meetings)
-            is_calendar = (
-                content_type == "text/calendar"
-                or filename.lower().endswith(".ics")
-            )
-        
+            is_calendar = content_type == "text/calendar" or filename.lower().endswith(".ics")
+
             if is_calendar:
                 meeting_details = _parse_ics_part(part)
                 if meeting_details:
                     body += "\n\n" + meeting_details
-        
+
             if is_attachment:
                 if isinstance(filename, str) and filename:
                     attachments.append(filename)
-        
+
             elif content_type == "text/plain" and not is_calendar:
                 body += self._decode_text_part(part)
-        
+
             elif content_type == "text/html" and not body:
                 html_body += self._decode_text_part(part)
         # ======================================================================
