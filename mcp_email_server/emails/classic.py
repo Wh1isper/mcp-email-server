@@ -10,7 +10,7 @@ import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from email import encoders
 from email.header import Header
 from email.headerregistry import Address, AddressHeader
@@ -111,6 +111,145 @@ MAX_RAW_EMAIL_BYTES = MAX_TOTAL_ATTACHMENT_BYTES
 FORWARD_SOURCE_BODY_WINDOW = APPLICATION_LIMITS.body_bytes + 1
 SmtpDataTransport = Literal["7bit", "8bit", "binary", "invalid"]
 _HIGH_BIT_OCTET = re.compile(rb"[\x80-\xff]")
+
+# ===================新增ics日历文件辅助函数=============
+def _ics_unescape(value: str) -> str:
+    """Decode escaped characters used in iCalendar text values."""
+    return (
+        value.replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+    )
+
+
+def _parse_ics_datetime(value: str, tzid: str = "") -> str:
+    """Format common iCalendar date/time formats."""
+    value = value.strip()
+
+    try:
+        if len(value) == 8:  # All-day event: YYYYMMDD
+            return datetime.strptime(value, "%Y%m%d").strftime("%Y-%m-%d")
+
+        if value.endswith("Z"):
+            dt = datetime.strptime(value, "%Y%m%dT%H%M%SZ")
+            return dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        dt = datetime.strptime(value, "%Y%m%dT%H%M%S")
+        result = dt.strftime("%Y-%m-%d %H:%M")
+        return f"{result} ({tzid})" if tzid else result
+
+    except ValueError:
+        return value
+
+
+def _parse_ics_part(part) -> str:
+    """Extract meeting information from an ICS MIME part."""
+    payload = part.get_payload(decode=True)
+
+    if payload is None:
+        content = part.get_payload()
+        if not isinstance(content, str):
+            return ""
+    else:
+        charset = part.get_content_charset() or "utf-8"
+        content = payload.decode(charset, errors="replace")
+
+    # RFC 5545: unfold lines that continue with a space or tab.
+    content = re.sub(r"\r?\n[ \t]", "", content)
+
+    event = {}
+    event_params = {}
+    in_event = False
+
+    for line in content.splitlines():
+        line = line.strip()
+
+        if line.upper() == "BEGIN:VEVENT":
+            in_event = True
+            continue
+
+        if line.upper() == "END:VEVENT":
+            break
+
+        if not in_event or ":" not in line:
+            continue
+
+        property_part, value = line.split(":", 1)
+        pieces = property_part.split(";")
+        name = pieces[0].upper()
+
+        params = {}
+        for item in pieces[1:]:
+            if "=" in item:
+                key, val = item.split("=", 1)
+                params[key.upper()] = val.strip('"')
+
+        if name not in event:
+            event[name] = value
+            event_params[name] = params
+
+    if not event:
+        return ""
+
+    def get_value(name):
+        return _ics_unescape(event.get(name, "")).strip()
+
+    start_tz = event_params.get("DTSTART", {}).get("TZID", "")
+    end_tz = event_params.get("DTEND", {}).get("TZID", "")
+
+    summary = get_value("SUMMARY")
+    location = get_value("LOCATION")
+    description = get_value("DESCRIPTION")
+    url = get_value("URL")
+
+    start = _parse_ics_datetime(get_value("DTSTART"), start_tz)
+    end = _parse_ics_datetime(get_value("DTEND"), end_tz)
+
+    organizer = get_value("ORGANIZER")
+    organizer_name = event_params.get("ORGANIZER", {}).get("CN", "")
+
+    if organizer.lower().startswith("mailto:"):
+        organizer = organizer[7:]
+
+    # Find Teams, Zoom, or other meeting URLs in the event fields.
+    urls = []
+    for text_value in (url, description, location):
+        found = re.findall(r"https?://[^\s<>\"']+", text_value)
+        for link in found:
+            link = link.rstrip(".,;)]}")
+            if link not in urls:
+                urls.append(link)
+
+    lines = ["[Calendar Meeting Details]"]
+
+    if summary:
+        lines.append(f"Subject: {summary}")
+    if start:
+        lines.append(f"Start: {start}")
+    if end:
+        lines.append(f"End: {end}")
+    if location:
+        lines.append(f"Location: {location}")
+    if organizer:
+        display_name = f"{organizer_name} ({organizer})" if organizer_name else organizer
+        lines.append(f"Organizer: {display_name}")
+
+    if urls:
+        lines.append("Meeting Links:")
+        lines.extend(urls)
+
+    # Include the description, but avoid duplicating long meeting URLs.
+    if description:
+        description_without_urls = re.sub(
+            r"https?://[^\s<>\"']+", "", description
+        ).strip()
+        if description_without_urls:
+            lines.append(f"Description: {description_without_urls}")
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+# ============================================================================
 
 
 def _addresses_for_header(message: Message, field_name: str) -> list[Address]:
@@ -1698,16 +1837,32 @@ class EmailClient:
         html_body = ""  # Fallback if no text/plain
         attachments = []
 
+        # ===========================新增日历ics判断=========================
         for part, is_attachment in self._iter_content_parts(email_message):
             content_type = part.get_content_type()
+            filename = part.get_filename() or ""
+        
+            # Parse ICS calendar invitations (including Teams and Zoom meetings)
+            is_calendar = (
+                content_type == "text/calendar"
+                or filename.lower().endswith(".ics")
+            )
+        
+            if is_calendar:
+                meeting_details = _parse_ics_part(part)
+                if meeting_details:
+                    body += "\n\n" + meeting_details
+        
             if is_attachment:
-                filename = part.get_filename()
                 if isinstance(filename, str) and filename:
                     attachments.append(filename)
-            elif content_type == "text/plain":
+        
+            elif content_type == "text/plain" and not is_calendar:
                 body += self._decode_text_part(part)
+        
             elif content_type == "text/html" and not body:
                 html_body += self._decode_text_part(part)
+        # ======================================================================
 
         links: list[dict[str, str]] = []
         seen_urls: set[str] = set()
