@@ -1834,7 +1834,7 @@ class EmailClient:
 
         # ===========================新增日历ics判断=========================
         calendar_body = ""
-        
+
         for part, is_attachment in self._iter_content_parts(email_message):
             content_type = part.get_content_type()
             filename = part.get_filename() or ""
