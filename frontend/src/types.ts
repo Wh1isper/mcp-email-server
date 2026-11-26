@@ -101,6 +101,7 @@ export interface ManagedPolicy {
   revision: number
   enable_attachment_download: boolean
   enable_attachment_content: boolean
+  enable_pgp_decryption: boolean
   allowed_recipients: string[]
   allowed_senders: string[]
   report_blocked_mutations: boolean
@@ -122,6 +123,7 @@ export interface LegacyAccountSource {
 export interface LegacyPolicySource {
   enable_attachment_download: boolean
   enable_attachment_content: boolean
+  enable_pgp_decryption: boolean
   allowed_recipients: string[]
   allowed_senders: string[]
   report_blocked_mutations: boolean

@@ -322,6 +322,7 @@ def test_legacy_preview_never_resolves_credentials() -> None:
         unsupported_provider_names=("calendar-provider",),
         enable_attachment_download=True,
         enable_attachment_content=True,
+        enable_pgp_decryption=True,
         allowed_recipients=("bob@example.test",),
         allowed_senders=(),
         report_blocked_mutations=False,
@@ -693,6 +694,7 @@ def test_import_with_unsupported_provider_keeps_legacy_selected() -> None:
         _legacy_source(),
         unsupported_provider_names=("unsupported-provider",),
         enable_attachment_content=True,
+        enable_pgp_decryption=True,
     )
     catalog.list_accounts.return_value = [AccountSummary("alice", "alice@example.test", True, 4, False, "ACTIVE", None)]
     catalog.show_account.return_value = _details()
@@ -713,6 +715,7 @@ def test_import_with_unsupported_provider_keeps_legacy_selected() -> None:
         expected_revision=5,
         enable_attachment_download=False,
         enable_attachment_content=True,
+        enable_pgp_decryption=True,
         allowed_recipients=(),
         allowed_senders=(),
         report_blocked_mutations=False,
@@ -876,6 +879,7 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
             revision=7,
             enable_attachment_download=True,
             enable_attachment_content=True,
+            enable_pgp_decryption=True,
             allowed_recipients=(
                 " Alice <ALICE@Example.Test> ",
                 "",
@@ -891,6 +895,7 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
     )
 
     assert result.enable_attachment_content is True
+    assert result.enable_pgp_decryption is True
     assert result.allowed_recipients == ("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test")
     assert result.allowed_senders == ("*@example.test",)
     catalog.update_policy.assert_called_once_with(
@@ -898,6 +903,7 @@ def test_managed_policy_update_uses_legacy_canonicalization() -> None:
         expected_revision=7,
         enable_attachment_download=True,
         enable_attachment_content=True,
+        enable_pgp_decryption=True,
         allowed_recipients=("alice@example.test", "*", "*@*", "*@example.test", "user[0-9]@example.test"),
         allowed_senders=("*@example.test",),
         report_blocked_mutations=True,

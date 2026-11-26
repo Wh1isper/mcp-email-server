@@ -343,6 +343,7 @@ def _policy_data(policy: ManagedPolicy) -> dict[str, object]:
         "revision": policy.revision,
         "enable_attachment_download": policy.enable_attachment_download,
         "enable_attachment_content": policy.enable_attachment_content,
+        "enable_pgp_decryption": policy.enable_pgp_decryption,
         "allowed_recipients": list(policy.allowed_recipients),
         "allowed_mutations": list(policy.allowed_mutations),
         "allowed_senders": list(policy.allowed_senders),
@@ -401,6 +402,7 @@ def _legacy_import_plan_data(plan: LegacyImportPlan) -> dict[str, object]:
             "action": plan.policy_action,
             "enable_attachment_download": plan.source_policy.enable_attachment_download,
             "enable_attachment_content": plan.source_policy.enable_attachment_content,
+            "enable_pgp_decryption": plan.source_policy.enable_pgp_decryption,
             "allowed_recipients": list(plan.source_policy.allowed_recipients),
             "allowed_senders": list(plan.source_policy.allowed_senders),
             "report_blocked_mutations": plan.source_policy.report_blocked_mutations,
@@ -588,6 +590,7 @@ def config_policy(json_output: JsonOutput = False) -> None:
     typer.echo(f"revision={policy.revision}")
     typer.echo(f"enable_attachment_download={str(policy.enable_attachment_download).lower()}")
     typer.echo(f"enable_attachment_content={str(policy.enable_attachment_content).lower()}")
+    typer.echo(f"enable_pgp_decryption={str(policy.enable_pgp_decryption).lower()}")
     typer.echo("allowed_mutations=" + (",".join(policy.allowed_mutations) or "none"))
     typer.echo("allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
     typer.echo("allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
@@ -604,6 +607,11 @@ def config_update_policy(
     enable_attachment_content: bool | None = typer.Option(
         None,
         "--enable-attachment-content/--disable-attachment-content",
+    ),
+    enable_pgp_decryption: bool | None = typer.Option(
+        None,
+        "--enable-pgp-decryption/--disable-pgp-decryption",
+        help="Allow local stdio reads to decrypt PGP/MIME using GnuPG.",
     ),
     allowed_mutations: str | None = typer.Option(
         None, "--allowed-mutations", help="Comma-separated draft,organize,delete,send,append; empty makes read-only."
@@ -641,6 +649,9 @@ def config_update_policy(
                     current.enable_attachment_content
                     if enable_attachment_content is None
                     else enable_attachment_content
+                ),
+                enable_pgp_decryption=(
+                    current.enable_pgp_decryption if enable_pgp_decryption is None else enable_pgp_decryption
                 ),
                 allowed_mutations=current.allowed_mutations
                 if allowed_mutations is None
@@ -726,6 +737,7 @@ def _echo_legacy_import_plan(plan: LegacyImportPlan) -> None:
     typer.echo(f"policy={plan.policy_action} target_revision={plan.target_policy_revision}")
     typer.echo(f"  attachment_download={str(policy.enable_attachment_download).lower()}")
     typer.echo(f"  attachment_content={str(policy.enable_attachment_content).lower()}")
+    typer.echo(f"  pgp_decryption={str(policy.enable_pgp_decryption).lower()}")
     typer.echo("  allowed_recipients=" + (",".join(policy.allowed_recipients) or "none"))
     typer.echo("  allowed_senders=" + (",".join(policy.allowed_senders) or "none"))
     typer.echo(f"  report_blocked_mutations={str(policy.report_blocked_mutations).lower()}")

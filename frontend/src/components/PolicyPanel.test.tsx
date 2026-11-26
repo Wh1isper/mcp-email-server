@@ -13,6 +13,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
     revision: 4,
     enable_attachment_download: false,
     enable_attachment_content: false,
+    enable_pgp_decryption: false,
     allowed_recipients: ['first@example.test'],
     allowed_senders: ['*@example.test'],
     report_blocked_mutations: false,
@@ -24,6 +25,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
   expect(await screen.findByLabelText('Recipient 1')).toHaveValue('first@example.test')
   expect(screen.getByLabelText('Sender pattern 1')).toHaveValue('*@example.test')
   await user.click(screen.getByRole('checkbox', { name: 'Allow attachments to be returned through MCP' }))
+  await user.click(screen.getByRole('checkbox', { name: 'Decrypt PGP/MIME emails locally using GnuPG' }))
 
   await user.click(screen.getByRole('button', { name: 'Add recipient' }))
   const secondRecipient = screen.getByLabelText('Recipient 2')
@@ -41,6 +43,7 @@ test('edits recipient and sender allowlists as individual items', async () => {
     revision: 4,
     enable_attachment_download: false,
     enable_attachment_content: true,
+    enable_pgp_decryption: true,
     allowed_recipients: ['*@example.test'],
     allowed_senders: ['*@example.test', 'alerts@example.test'],
     report_blocked_mutations: false,

@@ -184,19 +184,20 @@ sidecar itself is unparseable, repair or restore that sidecar manually; `reset`
 cannot safely infer its mode and therefore does not unlink the independent legacy
 source.
 
-Schemas v3, v4, v5, and v6 are supported managed-catalog migration sources for v7.
-The first new-version catalog access migrates transactionally, preserving account,
-policy, binding, secret rows, and revisions. All sources receive the nullable
-To-only cache field. Sources before v6 receive disabled protocol access. Sources before v5 receive full global mutation grants and inheriting
-account overrides; v3 also receives empty tag mappings and a disabled
-attachment-content policy. A failed migration leaves the source version intact.
+Managed catalogs at v3, v4, v5, v6, or v7 migrate transactionally to v8 on
+first access, preserving account, policy, binding, and secret rows and revisions.
+Local PGP/MIME decryption starts disabled. Sources before v7 also receive the
+nullable To-only cache field. Sources before v6 receive disabled protocol access.
+Sources before v5 receive full global mutation grants and inheriting account
+overrides; v3 also receives empty tag mappings and a disabled attachment-content
+policy. A failed migration leaves the source version intact.
 
 An older MCP process will reject the catalog after another new-version UI, CLI,
 or MCP process migrates it. Upgrade all catalog users together and restart every
 MCP client. If rolling back the package, restore the consistent pre-migration
 catalog backup too; do not edit the schema version manually, delete the catalog,
 or re-enter all accounts as a routine upgrade fix. Follow the
-[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v7).
+[managed upgrade and rollback steps](configuration.md#upgrading-a-managed-catalog-to-v8).
 
 Other older development schemas are still rejected. For those versions, select
 legacy mode, preserve the old file for rollback, and initialize a fresh
@@ -607,6 +608,20 @@ only for a trusted local endpoint with a known self-signed certificate.
 
 For ProtonMail Bridge, copy the host, ports, username, and password shown by the
 bridge rather than using the normal account password.
+
+## PGP/MIME mail has an empty body
+
+If `get_emails_content` reports `pgp_status: disabled`, use local MCP stdio and
+[enable local PGP/MIME decryption](configuration.md#local-pgpmime-decryption)
+only for a trusted host. `unavailable` means the original message was read but
+could not be decrypted. Check that the MCP server's PATH includes your local
+GnuPG binary and that the same local user can decrypt with an available or
+already-unlocked key. Unlock keys outside MCP; do not paste keys or passphrases
+into a tool or chat. GnuPG may also report failure for a signature embedded in
+an encrypted OpenPGP packet when the signer's public key is missing. This is
+distinct from a `multipart/signed` MIME body, which can be read without verifying
+the detached signature. Inline PGP, S/MIME, and encrypted attachments nested
+inside other messages are outside this feature.
 
 ## Attachment content is unavailable to a remote MCP client
 

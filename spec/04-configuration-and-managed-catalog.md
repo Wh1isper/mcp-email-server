@@ -197,6 +197,14 @@ least:
 - relevant request/result limits where configurable;
 - sent-copy behavior and safe fallback choices.
 
+The global `enable_pgp_decryption` boolean MUST default to `false`. Managed
+mode owns it in the catalog; the revision-checked CLI and loopback policy API/UI
+edit it. Legacy mode composes the stored TOML value with the optional
+`MCP_EMAIL_SERVER_ENABLE_PGP_DECRYPTION` environment override. Explicit reviewed
+legacy import includes the effective value in its planned policy. Managed
+runtime ignores legacy overrides. Spec 06 owns the read behavior and spec 08
+owns the catalog migration.
+
 ### Mutation grants and draft destination
 
 `allowed_mutations` is a list drawn from exactly `draft`, `organize`, `delete`,

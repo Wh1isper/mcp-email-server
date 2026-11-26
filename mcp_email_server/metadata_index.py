@@ -31,6 +31,7 @@ from mcp_email_server.managed import (
 )
 
 IndexMode = Literal["legacy", "managed"]
+_LEGACY_PROJECTION_SCHEMA_VERSION = 7
 
 
 class MetadataIndexError(RuntimeError):
@@ -209,7 +210,7 @@ def _preflight_schema_ownership(connection: sqlite3.Connection, mode: IndexMode)
             _fail("Operational database schema is missing or incompatible")
         return
     if (mode == "managed" and row["version"] != SCHEMA_VERSION) or (
-        mode == "legacy" and row["version"] not in (1, 6, SCHEMA_VERSION)
+        mode == "legacy" and row["version"] not in (1, 6, _LEGACY_PROJECTION_SCHEMA_VERSION)
     ):
         _fail("Operational database schema version is unsupported")
     try:
@@ -217,7 +218,9 @@ def _preflight_schema_ownership(connection: sqlite3.Connection, mode: IndexMode)
             _validate_managed_schema(connection, _SCHEMA)
         else:
             schema = (
-                _OPERATIONAL_DATABASE_SCHEMA if row["version"] == SCHEMA_VERSION else _OPERATIONAL_DATABASE_SCHEMA_V6
+                _OPERATIONAL_DATABASE_SCHEMA
+                if row["version"] == _LEGACY_PROJECTION_SCHEMA_VERSION
+                else _OPERATIONAL_DATABASE_SCHEMA_V6
             )
             _validate_operational_schema(connection, schema)
     except ManagedCatalogError as exc:
@@ -262,13 +265,13 @@ def _initialize(  # noqa: C901 - bounded initialization and ownership checks
                 _execute_schema(connection, _OPERATIONAL_SCHEMA)
                 connection.execute(
                     "INSERT INTO schema_metadata(singleton, version) VALUES (1, ?)",
-                    (SCHEMA_VERSION,),
+                    (_LEGACY_PROJECTION_SCHEMA_VERSION,),
                 )
                 row = _schema_version(connection)
                 if row is None:
                     _fail("Operational database initialization did not complete")
             if (mode == "managed" and row["version"] != SCHEMA_VERSION) or (
-                mode == "legacy" and row["version"] not in (1, 6, SCHEMA_VERSION)
+                mode == "legacy" and row["version"] not in (1, 6, _LEGACY_PROJECTION_SCHEMA_VERSION)
             ):
                 _fail("Operational database schema version is unsupported")
             _preflight_schema_ownership(connection, mode)
@@ -276,7 +279,7 @@ def _initialize(  # noqa: C901 - bounded initialization and ownership checks
                 _execute_schema(connection, _SCHEMA_V7_ADDITIONS)
                 connection.execute(
                     "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
-                    (SCHEMA_VERSION,),
+                    (_LEGACY_PROJECTION_SCHEMA_VERSION,),
                 )
             try:
                 if mode == "managed":

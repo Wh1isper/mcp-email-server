@@ -26,6 +26,7 @@ from mcp_email_server.application.reads import (
 )
 from mcp_email_server.config import EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler
+from mcp_email_server.emails.content_view import local_stdio_read
 from mcp_email_server.emails.headers import ContentHeaderLimitError, content_headers_size
 from mcp_email_server.emails.models import (
     EmailBodyResponse,
@@ -75,6 +76,7 @@ class ClassicReadProvider:
                     body_offset=query.body_offset,
                     max_body_length=query.max_body_length,
                     include_headers=query.include_headers,
+                    enable_pgp_decryption=account.enable_pgp_decryption and local_stdio_read.get(),
                 )
                 if not email_data:
                     failed_ids.append(email_id)
@@ -92,6 +94,7 @@ class ClassicReadProvider:
                     headers=email_data.get("headers", []),
                     attachments=email_data["attachments"],
                     links=email_data.get("links", []),
+                    pgp_status=email_data.get("pgp_status"),
                     provider_keywords=[
                         flag
                         for flag in email_data.get("_flags", [])
@@ -161,6 +164,7 @@ class ClassicReadProvider:
                 command.attachment_name,
                 command.mailbox,
                 allowed_senders=list(account.allowed_senders),
+                enable_pgp_decryption=account.enable_pgp_decryption and local_stdio_read.get(),
             )
         except asyncio.CancelledError:
             raise
@@ -176,6 +180,7 @@ class ClassicReadProvider:
             attachment_name=result["attachment_name"],
             mime_type=result["mime_type"],
             content=content,
+            decrypted=result.get("decrypted") is True,
         )
 
 
@@ -474,6 +479,7 @@ class LocalReadBackend:
                 allowed_senders=tuple(resolved.settings.allowed_senders),
                 enable_attachment_download=resolved.settings.enable_attachment_download,
                 enable_attachment_content=resolved.settings.enable_attachment_content,
+                enable_pgp_decryption=resolved.settings.enable_pgp_decryption,
                 tag_registry=ImapKeywordRegistry.from_tags(resolved.account.tags),
             ),
         )

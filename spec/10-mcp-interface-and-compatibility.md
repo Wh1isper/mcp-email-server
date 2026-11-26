@@ -220,6 +220,10 @@ catalog serialization, malformed and oversized recovery, invocation,
 cancellation, idle and in-flight EOF, runtime cleanup, and stdout purity in
 addition to direct Python tests.
 
+`EmailBodyResponse` adds an optional `pgp_status` output field with values
+`decrypted`, `disabled`, and `unavailable`; ordinary mail omits it. Spec 06 owns
+PGP/MIME result semantics. No input, tool identity, or catalog visibility changes.
+
 ## Compatibility and Evolution
 
 A public catalog change requires:

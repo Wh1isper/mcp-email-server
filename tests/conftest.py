@@ -229,3 +229,97 @@ def broken_keyring():
     finally:
         keyring.set_keyring(previous)
         keyring_store.keyring_usable.cache_clear()
+
+
+@pytest.fixture
+def pgp_encrypt(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    """Encrypt with an ephemeral key and isolate every GnuPG/agent invocation."""
+    import subprocess
+
+    from mcp_email_server.emails.pgp import _gpg_executable
+
+    gpg = _gpg_executable()
+    if gpg is None:
+        pytest.skip("GnuPG is not installed")
+    passphrase = request.param if hasattr(request, "param") else ""
+    with tempfile.TemporaryDirectory(prefix="mcp-pgp-") as home:
+        monkeypatch.setenv("GNUPGHOME", home)
+        common = (str(gpg), "--no-options", "--batch", "--no-tty")
+        identity = "pgp-fixture@example.test"
+        gpgconf = gpg.with_name("gpgconf.exe" if os.name == "nt" else "gpgconf")
+
+        def kill_agent() -> None:
+            subprocess.run(  # noqa: S603 - trusted local GnuPG with fixed arguments
+                (str(gpgconf), "--kill", "gpg-agent"), capture_output=True, check=True, timeout=10
+            )
+
+        def encrypt(payload: bytes, *, armor: bool = False) -> bytes:
+            return subprocess.run(  # noqa: S603 - trusted local GnuPG with fixed arguments
+                (
+                    *common,
+                    *(("--armor",) if armor else ()),
+                    "--trust-model",
+                    "always",
+                    "--recipient",
+                    identity,
+                    "--encrypt",
+                ),
+                input=payload,
+                capture_output=True,
+                check=True,
+                timeout=15,
+            ).stdout
+
+        try:
+            subprocess.run(  # noqa: S603 - trusted local GnuPG with fixed arguments
+                (
+                    *common,
+                    "--pinentry-mode",
+                    "loopback",
+                    "--passphrase",
+                    passphrase,
+                    "--quick-generate-key",
+                    f"PGP Fixture <{identity}>",
+                    "rsa2048",
+                    "encr",
+                    "1d",
+                ),
+                capture_output=True,
+                check=True,
+                timeout=30,
+            )
+            if passphrase:
+                kill_agent()  # remove any cache populated during key generation
+            yield encrypt
+        finally:
+            kill_agent()
+
+
+@pytest.fixture
+def pgp_envelope():
+    """Build a mail fixture with distinct outer reply, identity, and MIME headers."""
+    from email import policy
+    from email.message import EmailMessage
+
+    def envelope(
+        ciphertext: bytes, *, filename: str | None = "encrypted.asc", subject: str = "PGP fixture"
+    ) -> EmailMessage:
+        outer = EmailMessage(policy=policy.SMTP)
+        outer["From"] = "bob@example.test"
+        outer["To"] = "alice@example.test"
+        outer["Subject"] = subject
+        outer["Date"] = "Fri, 01 Jan 1999 00:00:00 +0000"
+        outer["Message-ID"] = "<outer@example.test>"
+        outer["References"] = "<thread@example.test>"
+        outer["Reply-To"] = "outer-reply@example.test"
+        outer.set_type("multipart/encrypted")
+        outer.set_param("protocol", "application/pgp-encrypted")
+        version = EmailMessage(policy=policy.SMTP)
+        version.set_content(b"Version: 1\r\n", maintype="application", subtype="pgp-encrypted", cte="7bit")
+        data = EmailMessage(policy=policy.SMTP)
+        data.set_content(ciphertext, maintype="application", subtype="octet-stream", filename=filename)
+        outer.attach(version)
+        outer.attach(data)
+        return outer
+
+    return envelope

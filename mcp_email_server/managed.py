@@ -50,8 +50,7 @@ from mcp_email_server.windows_security import (
     windows_security_supported,
 )
 
-SCHEMA_VERSION = 7
-_MIGRATION_SOURCE_VERSION = 3
+SCHEMA_VERSION = 8
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 WAL_RETRY_BUSY_TIMEOUT_MS = 100
 MANAGED_KEYRING_SERVICE = "mcp-email-server-managed"
@@ -702,7 +701,14 @@ _SCHEMA_V6 = _SCHEMA_V5 + _SCHEMA_V6_ADDITIONS
 _SCHEMA_V7_ADDITIONS = """
 ALTER TABLE message_metadata_projection ADD COLUMN to_addresses_json TEXT;
 """
-_SCHEMA = _SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
+_SCHEMA_V7 = _SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
+_SCHEMA_V8_ADDITIONS = """
+ALTER TABLE catalog
+    ADD COLUMN enable_pgp_decryption INTEGER NOT NULL DEFAULT 0
+        CHECK (enable_pgp_decryption IN (0, 1));
+"""
+_SCHEMA = _SCHEMA_V7 + _SCHEMA_V8_ADDITIONS
+_MIGRATION_SCHEMAS = {3: _SCHEMA_V3, 4: _SCHEMA_V4, 5: _SCHEMA_V5, 6: _SCHEMA_V6, 7: _SCHEMA_V7}
 _OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V6 + _SCHEMA_V7_ADDITIONS
 _OPERATIONAL_DATABASE_SCHEMA_V6 = (
     """
@@ -766,9 +772,11 @@ def _read_schema_version(connection: sqlite3.Connection) -> int:
     return row["version"]
 
 
-def _require_migration_source(version: int) -> None:
-    if version != _MIGRATION_SOURCE_VERSION:
+def _migration_schema(version: int) -> str:
+    schema = _MIGRATION_SCHEMAS.get(version)
+    if schema is None:
         raise ManagedCatalogError("Managed catalog schema version is unsupported")
+    return schema
 
 
 def _require_migration_update(cursor: sqlite3.Cursor) -> None:
@@ -785,17 +793,19 @@ def _parse_tags_json(value: object) -> tuple[ImapKeywordTag, ...]:
         raise ManagedCatalogError("Managed account tag data is invalid") from exc
 
 
-def _validate_managed_invariants(connection: sqlite3.Connection) -> None:
+def _validate_managed_invariants(connection: sqlite3.Connection) -> None:  # noqa: C901 - exact catalog invariants
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ManagedCatalogError("Managed catalog contains invalid references")
     catalogs = connection.execute(
-        """SELECT id, revision, enable_attachment_download, enable_attachment_content,
+        """SELECT id, revision, enable_pgp_decryption,
                   allowed_recipients_json, allowed_senders_json, report_blocked_mutations
              FROM catalog"""
     ).fetchall()
     if len(catalogs) != 1 or catalogs[0]["id"] != "local":
         raise ManagedCatalogError("Managed catalog authority row is invalid")
     catalog = catalogs[0]
+    if catalog["enable_pgp_decryption"] not in (0, 1):
+        raise ManagedCatalogError("Managed PGP/MIME policy is invalid")
     if not isinstance(catalog["revision"], int):
         raise ManagedCatalogError("Managed catalog authority state is invalid")
     if catalog["revision"] < 1:
@@ -862,18 +872,8 @@ class ManagedCatalog:
             version = _read_schema_version(connection)
         except sqlite3.Error as exc:
             raise ManagedCatalogError("Managed catalog is corrupt or schema is missing or incompatible") from exc
-        if version == SCHEMA_VERSION:
-            _validate_managed_schema(connection, _SCHEMA)
-        elif version == 6:
-            _validate_managed_schema(connection, _SCHEMA_V6)
-        elif version == 5:
-            _validate_managed_schema(connection, _SCHEMA_V5)
-        elif version == 4:
-            _validate_managed_schema(connection, _SCHEMA_V4)
-        elif version == _MIGRATION_SOURCE_VERSION:
-            _validate_managed_schema(connection, _SCHEMA_V3)
-        else:
-            raise ManagedCatalogError("Managed catalog schema version is unsupported")
+        schema = _SCHEMA if version == SCHEMA_VERSION else _migration_schema(version)
+        _validate_managed_schema(connection, schema)
         return version
 
     @staticmethod
@@ -886,22 +886,16 @@ class ManagedCatalog:
                 _validate_managed_invariants(connection)
                 connection.commit()
                 return
+            _validate_managed_schema(connection, _migration_schema(version))
             if version == 3:
-                _validate_managed_schema(connection, _SCHEMA_V3)
                 _execute_schema(connection, _SCHEMA_V4_ADDITIONS)
-            elif version == 4:
-                _validate_managed_schema(connection, _SCHEMA_V4)
-            elif version == 5:
-                _validate_managed_schema(connection, _SCHEMA_V5)
-            elif version == 6:
-                _validate_managed_schema(connection, _SCHEMA_V6)
-            else:
-                _require_migration_source(version)
             if version < 5:
                 _execute_schema(connection, _SCHEMA_V5_ADDITIONS)
             if version < 6:
                 _execute_schema(connection, _SCHEMA_V6_ADDITIONS)
-            _execute_schema(connection, _SCHEMA_V7_ADDITIONS)
+            if version < 7:
+                _execute_schema(connection, _SCHEMA_V7_ADDITIONS)
+            _execute_schema(connection, _SCHEMA_V8_ADDITIONS)
             _validate_managed_schema(connection, _SCHEMA)
             _validate_managed_invariants(connection)
             updated = connection.execute(
@@ -919,7 +913,7 @@ class ManagedCatalog:
         with _connect(self.path, enable_wal=False) as connection:
             version = self._preflight_schema_ownership(connection)
         with _connect(self.path) as connection:
-            if version in (3, 4, 5, 6):
+            if version in (3, 4, 5, 6, 7):
                 self._migrate_to_current_schema(connection)
             self._validate_schema(connection)
             yield connection
@@ -992,6 +986,7 @@ class ManagedCatalog:
             revision=row["revision"],
             enable_attachment_download=bool(row["enable_attachment_download"]),
             enable_attachment_content=bool(row["enable_attachment_content"]),
+            enable_pgp_decryption=bool(row["enable_pgp_decryption"]),
             allowed_recipients=tuple(allowed_recipients),
             allowed_mutations=_parse_mutations_json(row["allowed_mutations_json"]),
             allowed_senders=tuple(allowed_senders),
@@ -1014,6 +1009,7 @@ class ManagedCatalog:
         allowed_senders: tuple[str, ...],
         report_blocked_mutations: bool,
         enable_attachment_content: bool = False,
+        enable_pgp_decryption: bool = False,
         allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS,
     ) -> int:
         validate_mutations(allowed_mutations)
@@ -1032,6 +1028,7 @@ class ManagedCatalog:
                        revision = revision + 1,
                        enable_attachment_download = ?,
                        enable_attachment_content = ?,
+                       enable_pgp_decryption = ?,
                        allowed_recipients_json = ?,
                        allowed_senders_json = ?,
                        report_blocked_mutations = ?,
@@ -1040,6 +1037,7 @@ class ManagedCatalog:
                 (
                     int(enable_attachment_download),
                     int(enable_attachment_content),
+                    int(enable_pgp_decryption),
                     json.dumps(list(allowed_recipients)),
                     json.dumps(list(allowed_senders)),
                     int(report_blocked_mutations),
@@ -2191,6 +2189,7 @@ class ManagedCatalog:
             db_location=self.path.as_posix(),
             enable_attachment_download=policy.enable_attachment_download,
             enable_attachment_content=policy.enable_attachment_content,
+            enable_pgp_decryption=policy.enable_pgp_decryption,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
             allowed_mutations=list(policy.allowed_mutations),

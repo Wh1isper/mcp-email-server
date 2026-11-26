@@ -176,6 +176,7 @@ class ManagedPolicy:
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
+    enable_pgp_decryption: bool = False
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
 
 
@@ -360,6 +361,7 @@ class LegacyPolicySnapshot:
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
+    enable_pgp_decryption: bool = False
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
 
 
@@ -372,6 +374,7 @@ class LegacySourceSnapshot:
     allowed_senders: tuple[str, ...]
     report_blocked_mutations: bool
     enable_attachment_content: bool = False
+    enable_pgp_decryption: bool = False
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
 
     @property
@@ -379,6 +382,7 @@ class LegacySourceSnapshot:
         return LegacyPolicySnapshot(
             enable_attachment_download=self.enable_attachment_download,
             enable_attachment_content=self.enable_attachment_content,
+            enable_pgp_decryption=self.enable_pgp_decryption,
             allowed_recipients=self.allowed_recipients,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,
@@ -453,6 +457,7 @@ class ManagedCatalogPort(Protocol):
         expected_revision: int,
         enable_attachment_download: bool,
         enable_attachment_content: bool,
+        enable_pgp_decryption: bool,
         allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS,
         allowed_recipients: tuple[str, ...],
         allowed_senders: tuple[str, ...],
@@ -1144,6 +1149,7 @@ class LegacyImportService(_ConfiguredCatalogService):
         policy_matches = (
             policy.enable_attachment_download == source.policy.enable_attachment_download
             and policy.enable_attachment_content == source.policy.enable_attachment_content
+            and policy.enable_pgp_decryption == source.policy.enable_pgp_decryption
             and policy.allowed_mutations == source.policy.allowed_mutations
             and policy.allowed_recipients == source.policy.allowed_recipients
             and policy.allowed_senders == source.policy.allowed_senders
@@ -1486,6 +1492,7 @@ class LegacyImportService(_ConfiguredCatalogService):
                 expected_revision=expected_catalog_revision,
                 enable_attachment_download=plan.source_policy.enable_attachment_download,
                 enable_attachment_content=plan.source_policy.enable_attachment_content,
+                enable_pgp_decryption=plan.source_policy.enable_pgp_decryption,
                 allowed_recipients=plan.source_policy.allowed_recipients,
                 allowed_mutations=plan.source_policy.allowed_mutations,
                 allowed_senders=plan.source_policy.allowed_senders,
@@ -1568,6 +1575,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             expected_revision=policy.revision,
             enable_attachment_download=policy.enable_attachment_download,
             enable_attachment_content=policy.enable_attachment_content,
+            enable_pgp_decryption=policy.enable_pgp_decryption,
             allowed_recipients=recipients,
             allowed_mutations=policy.allowed_mutations,
             allowed_senders=senders,
@@ -1577,6 +1585,7 @@ class PolicyManagementService(_ConfiguredCatalogService):
             revision=revision,
             enable_attachment_download=policy.enable_attachment_download,
             enable_attachment_content=policy.enable_attachment_content,
+            enable_pgp_decryption=policy.enable_pgp_decryption,
             allowed_recipients=recipients,
             allowed_mutations=policy.allowed_mutations,
             allowed_senders=senders,

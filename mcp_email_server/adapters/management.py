@@ -445,6 +445,7 @@ class LocalManagementBackend:
         senders = raw.get("allowed_senders", [])
         attachment_download = raw.get("enable_attachment_download", False)
         attachment_content = raw.get("enable_attachment_content", False)
+        pgp_decryption = raw.get("enable_pgp_decryption", False)
         report_blocked = raw.get("report_blocked_mutations", False)
         if (
             not isinstance(recipients, list)
@@ -455,6 +456,7 @@ class LocalManagementBackend:
             or not all(isinstance(item, str) for item in senders)
             or not isinstance(attachment_download, bool)
             or not isinstance(attachment_content, bool)
+            or not isinstance(pgp_decryption, bool)
             or not isinstance(report_blocked, bool)
         ):
             raise ManagementError("Stored legacy policy is invalid")
@@ -463,12 +465,14 @@ class LocalManagementBackend:
             (
                 attachment_download,
                 attachment_content,
+                pgp_decryption,
                 normalized_recipients,
                 normalized_senders,
                 report_blocked,
             ) = compose_legacy_policy_environment(
                 enable_attachment_download=attachment_download,
                 enable_attachment_content=attachment_content,
+                enable_pgp_decryption=pgp_decryption,
                 allowed_recipients=recipients,
                 allowed_senders=senders,
                 report_blocked_mutations=report_blocked,
@@ -500,6 +504,7 @@ class LocalManagementBackend:
             unsupported_provider_names=tuple(sorted(provider_names)),
             enable_attachment_download=attachment_download,
             enable_attachment_content=attachment_content,
+            enable_pgp_decryption=pgp_decryption,
             allowed_recipients=tuple(normalized_recipients),
             allowed_mutations=parse_mutations(mutations),
             allowed_senders=tuple(normalized_senders),

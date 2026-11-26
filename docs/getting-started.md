@@ -70,13 +70,16 @@ apply. Do not pass them through MCP or chat.
 
 ### Upgrading an existing managed catalog
 
-Managed v3/v4/v5/v6 catalogs migrate to v7 on the first access by the new application.
-Existing configuration is preserved, and missing To-only cache fields are refreshed on demand;
+Managed v3/v4/v5/v6/v7 catalogs migrate to v8 on the first access by the new application.
+Existing configuration is preserved, and local PGP/MIME decryption starts disabled;
 no account re-entry is required. Stop all older catalog users, keep a private
 consistent backup, and upgrade UI, CLI, and MCP together before restarting the
-clients. An older runtime cannot read v7, so a package-only downgrade is not a
-rollback. See the [managed upgrade steps](configuration.md#upgrading-a-managed-catalog-to-v7).
+clients. An older runtime cannot read v8, so a package-only downgrade is not a
+rollback. See the [managed upgrade steps](configuration.md#upgrading-a-managed-catalog-to-v8).
 Legacy TOML/environment users are not automatically switched to managed mode.
+
+If your mailbox stores OpenPGP/MIME, see [local PGP/MIME decryption](configuration.md#local-pgpmime-decryption)
+for the optional stdio-only setting.
 
 ## Configure an account with the UI
 

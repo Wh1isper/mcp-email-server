@@ -256,6 +256,7 @@ def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tm
             "1",
             "--enable-attachment-download",
             "--enable-attachment-content",
+            "--enable-pgp-decryption",
             "--allowed-recipients",
             "BOB@EXAMPLE.TEST, Alice <ALICE@example.test>, *, *@*, *@EXAMPLE.TEST, user[0-9]@example.test",
             "--allowed-senders",
@@ -269,6 +270,7 @@ def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tm
     assert initial.exit_code == 0, initial.output
     assert "revision=1" in initial.output
     assert "enable_attachment_content=false" in initial.output
+    assert "enable_pgp_decryption=false" in initial.output
     assert "allowed_recipients=none" in initial.output
     assert updated.exit_code == 0, updated.output
     assert "revision 2" in updated.output
@@ -277,6 +279,7 @@ def test_cli_policy_update_and_index_health_use_managed_services(monkeypatch, tm
     policy = ManagedCatalog(database).policy()
     assert policy.enable_attachment_download is True
     assert policy.enable_attachment_content is True
+    assert policy.enable_pgp_decryption is True
     assert policy.allowed_recipients == (
         "bob@example.test",
         "alice@example.test",
@@ -569,6 +572,7 @@ def test_cli_legacy_import_preview_apply_and_repeat_are_deterministic(
         """credential_storage = "plaintext"
 enable_attachment_download = true
 enable_attachment_content = true
+enable_pgp_decryption = true
 allowed_recipients = ["BOB@EXAMPLE.TEST"]
 allowed_senders = ["*@example.test"]
 report_blocked_mutations = true
@@ -669,6 +673,7 @@ api_key = "provider-secret"
     policy = catalog.policy()
     assert policy.enable_attachment_download is True
     assert policy.enable_attachment_content is True
+    assert policy.enable_pgp_decryption is True
     assert policy.allowed_recipients == ("bob@example.test",)
     assert policy.allowed_senders == ("*@example.test",)
     assert policy.report_blocked_mutations is True

@@ -143,18 +143,19 @@ backups include plaintext `managed_secret.secret_value` values. Keep every copy
 under protection equivalent to the private original; do not upload, share, or
 treat it as a non-secret account database.
 
-The declared v3/v4/v5/v6-to-v7 catalog migration runs only after the existing catalog
+The declared v3/v4/v5/v6/v7-to-v8 catalog migration runs only after the existing catalog
 and sidecars pass the same private-file checks as a normal managed open. One
 bounded SQLite write transaction validates the exact source schema and adds
+default-disabled local PGP/MIME decryption. Sources before v7 also receive
 a nullable To-only projection field. Sources before v6 receive default-disabled
 protocol access. Sources before v5 also receive fixed-five global
 grants, inheriting account overrides, and an unset draft mailbox; v3 additionally
 receives default-disabled attachment content and empty tag mappings. It validates
-the resulting v7 schema and invariants and records version 7 last. It neither
+the resulting v8 schema and invariants and records version 8 last. It neither
 resolves nor copies secret values; failure rolls back without changing the
-advertised source version. Older runtimes reject v7. Stop all catalog users and
+advertised source version. Older runtimes reject v8. Stop all catalog users and
 retain a private, consistent backup before the first new-version open; see
-[managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v7).
+[managed catalog upgrades](configuration.md#upgrading-a-managed-catalog-to-v8).
 
 A create or rotation stores a new immutable value and commits it as active only
 if the reviewed account revision still matches. On Linux and Windows, inserting
@@ -699,6 +700,22 @@ the server-controlled `\Recent` flag and provider-specific keywords.
 Metadata projection invalidation is rebuildable: if
 it fails after a provider effect, the result keeps the provider evidence and
 adds a reconciliation warning instead of claiming rollback.
+
+## Decrypted mail and client trust
+
+PGP/MIME decryption is off by default. Enable it only for a trusted local stdio
+MCP host: decrypted mail and attachment bytes become visible to that host, which
+may send the data to a model service. The setting uses your existing GnuPG keys
+and agent without requesting passphrases or starting pinentry. The server checks
+the integrity of the decrypted data; it does not authenticate the sender or
+verify a detached signature. Allowlist and reply-thread evidence still comes
+from the original outer message.
+
+The server does not index, log, or automatically spill decrypted content. An
+explicit attachment download can write a plaintext file under the existing
+attachment and destination policies. Metadata queries, HTTP reads, and forwarding
+never use decrypted content. Do not quote decrypted material in an unencrypted
+reply unless you intend to disclose it.
 
 ## Attachment access
 

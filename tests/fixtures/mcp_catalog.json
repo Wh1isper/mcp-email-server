@@ -700,6 +700,24 @@
                                 "title": "Body",
                                 "type": "string"
                             },
+                            "pgp_status": {
+                                "anyOf": [
+                                    {
+                                        "enum": [
+                                            "decrypted",
+                                            "disabled",
+                                            "unavailable"
+                                        ],
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "default": null,
+                                "description": "Local decryption status for top-level OpenPGP/MIME; omitted for other messages.",
+                                "title": "Pgp Status"
+                            },
                             "links": {
                                 "description": "Content links from the HTML part, in document order: the targets of buttons and anchors, which a plain-text body often drops.",
                                 "items": {

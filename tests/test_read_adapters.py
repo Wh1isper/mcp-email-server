@@ -241,6 +241,7 @@ async def test_attachment_adapter_forwards_sender_policy_and_maps_response() -> 
         "document.pdf",
         "Archive",
         allowed_senders=["allowed@example.test"],
+        enable_pgp_decryption=False,
     )
 
 

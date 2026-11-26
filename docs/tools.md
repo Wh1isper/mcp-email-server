@@ -837,6 +837,27 @@ When a sender allowlist is active, blocked messages are never changed. See
 [Sender allowlist](security.md#sender-allowlist) for the privacy behavior of
 blocked IDs.
 
+## Reading PGP/MIME
+
+In `get_emails_content`, a top-level OpenPGP/MIME message reports `pgp_status`:
+
+- `decrypted`: `body` and `attachments` come from the decrypted MIME. Outer
+  headers remain unchanged. HTML link labels can appear as plain text; hyperlink
+  targets are not extracted into `links` or added to the body. Oversized results
+  must be read with a smaller batch or body
+  window; they are not spilled to a local JSON file.
+- `disabled`: decryption is off or this transport is not local stdio. The original
+  encrypted MIME view is returned.
+- `unavailable`: GnuPG or a usable key is unavailable, decryption failed, or the
+  envelope is malformed. The original MIME view is returned; the read still
+  counts as retrieved and an explicit `mark_as_read` is handled as usual.
+
+Other emails omit `pgp_status`. With decryption enabled, attachment tools select
+from the decrypted view. If it cannot be produced, they report
+`decryption_unavailable` instead of returning an outer part with the same name.
+The existing attachment permissions and output limits still apply. This feature
+adds no encrypted compose, reply, or forward behavior.
+
 ## Attachments
 
 Both attachment tools accept filenames returned by `get_emails_content`,

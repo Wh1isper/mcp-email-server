@@ -268,6 +268,7 @@ async def test_update_account_and_policy_requests_include_tags_and_attachment_co
         revision=8,
         enable_attachment_download=False,
         enable_attachment_content=True,
+        enable_pgp_decryption=True,
         allowed_recipients=(),
         allowed_senders=(),
         report_blocked_mutations=False,
@@ -303,6 +304,7 @@ async def test_update_account_and_policy_requests_include_tags_and_attachment_co
                 expected_revision=7,
                 enable_attachment_download=False,
                 enable_attachment_content=True,
+                enable_pgp_decryption=True,
                 allowed_recipients=[],
                 allowed_senders=[],
                 report_blocked_mutations=False,
@@ -327,6 +329,7 @@ async def test_update_account_and_policy_requests_include_tags_and_attachment_co
     policy = management.policy.update.call_args.args[0]
     assert policy.enable_attachment_download is False
     assert policy.enable_attachment_content is True
+    assert policy.enable_pgp_decryption is True
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,7 @@ def resolve_local_account(  # noqa: C901 - managed/legacy selected-role resoluti
             db_location=catalog.path.as_posix(),
             enable_attachment_download=policy.enable_attachment_download,
             enable_attachment_content=policy.enable_attachment_content,
+            enable_pgp_decryption=policy.enable_pgp_decryption,
             allowed_recipients=list(policy.allowed_recipients),
             allowed_senders=list(policy.allowed_senders),
             allowed_mutations=list(policy.allowed_mutations),

@@ -1413,3 +1413,22 @@ def test_import_cutover_guard_detects_account_only_credential_drift(tmp_path: Pa
             expected_account_revisions=(("alice", 2, True),),
         ):
             pytest.fail("stale account authority must not enter the cutover critical section")
+
+
+def test_v7_managed_migration_starts_pgp_disabled_and_preserves_catalog(tmp_path: Path) -> None:
+    store = FakeSecretStore()
+    catalog = _catalog(tmp_path, store)
+    _add_account(catalog)
+    catalog.set_secret("alice", "incoming", "migration-fixture")
+    revision = catalog.catalog_revision()
+    with closing(sqlite3.connect(catalog.path)) as connection, connection:
+        # Remove only the v8 addition, yielding the exact v7 catalog shape.
+        connection.execute("ALTER TABLE catalog DROP COLUMN enable_pgp_decryption")
+        connection.execute("UPDATE schema_metadata SET version = 7")
+
+    policy = catalog.policy()
+    assert not policy.enable_pgp_decryption
+    assert policy.revision == revision
+    assert catalog.load_account("alice").incoming.password.get_secret_value() == "migration-fixture"
+    with closing(sqlite3.connect(catalog.path)) as connection:
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (8,)
