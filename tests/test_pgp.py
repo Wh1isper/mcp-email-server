@@ -6,8 +6,8 @@ from dataclasses import replace
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
-from pathlib import Path
-from unittest.mock import AsyncMock
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -15,6 +15,7 @@ from mcp_email_server.adapters.reads import ClassicReadProvider
 from mcp_email_server.application.reads import DownloadAttachmentCommand, GetEmailContentQuery, ReadAccountSnapshot
 from mcp_email_server.emails import content_view, pgp
 from mcp_email_server.emails.classic import ClassicEmailHandler
+from tests import pgp_support
 
 
 def _inner() -> EmailMessage:
@@ -135,14 +136,38 @@ async def test_gpg_decrypts_real_unnamed_binary_or_armored_ciphertext(
     assert client._find_attachment_part(view.content, "signature.asc", signed_content_only=True) is None
 
 
+@pytest.mark.parametrize("msys", [False, True], ids=["native-windows", "msys2"])
+def test_gpg_fixture_homedir_uses_selected_binary_path_syntax(monkeypatch, msys) -> None:
+    gpgconf = PureWindowsPath(r"C:\Program Files\GnuPG\bin\gpgconf.exe")
+    home = PureWindowsPath(r"D:\Test Data\pgp-home")
+    probe_output = b"/usr/bin\n" if msys else b"C:/Program Files/GnuPG/bin\r\n"
+    converted = "/d/Test Data/pgp-home"
+    run = Mock(side_effect=[Mock(stdout=probe_output), Mock(stdout=converted + "\r\n")])
+    monkeypatch.setattr(pgp_support.subprocess, "run", run)
+
+    assert pgp_support.gnupg_home_path(gpgconf, home) == (converted if msys else str(home))
+    assert run.call_args_list[0].args[0] == (str(gpgconf), "--list-dirs", "bindir")
+    assert run.call_count == (2 if msys else 1)
+    if msys:
+        assert run.call_args.args[0] == (str(gpgconf.with_name("cygpath.exe")), "-u", str(home))
+
+
+def test_gpg_fixture_homedir_keeps_posix_path_without_probing(monkeypatch) -> None:
+    run = Mock()
+    monkeypatch.setattr(pgp_support.subprocess, "run", run)
+    home = PurePosixPath("/var/pgp-home")
+    assert pgp_support.gnupg_home_path(PurePosixPath("/usr/bin/gpgconf"), home) == str(home)
+    run.assert_not_called()
+
+
 @pytest.mark.asyncio
-async def test_gpg_rejects_corrupted_or_missing_key(pgp_encrypt, monkeypatch, tmp_path) -> None:
-    cipher = pgp_encrypt(_inner().as_bytes())
+async def test_gpg_rejects_corrupted_or_missing_key(pgp_encrypt, pgp_home) -> None:
+    plaintext = _inner().as_bytes()
+    cipher = pgp_encrypt(plaintext)
+    assert await pgp.decrypt_pgp(cipher) == plaintext
     assert await pgp.decrypt_pgp(cipher[:-1] + bytes([cipher[-1] ^ 1])) is None
-    missing_key = tmp_path / "empty-gpg"
-    missing_key.mkdir(mode=0o700)
-    monkeypatch.setenv("GNUPGHOME", str(missing_key))
-    assert await pgp.decrypt_pgp(cipher) is None
+    with pgp_home():
+        assert await pgp.decrypt_pgp(cipher) is None
 
 
 @pytest.mark.asyncio
