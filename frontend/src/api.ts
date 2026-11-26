@@ -207,6 +207,7 @@ export const createApi = (fetcher: typeof fetch = window.fetch.bind(window)): Ma
       expected_revision: policy.revision,
       enable_attachment_download: policy.enable_attachment_download,
       enable_attachment_content: policy.enable_attachment_content,
+      enable_pgp_decryption: policy.enable_pgp_decryption,
       allowed_mutations: policy.allowed_mutations,
       allowed_recipients: policy.allowed_recipients,
       allowed_senders: policy.allowed_senders,

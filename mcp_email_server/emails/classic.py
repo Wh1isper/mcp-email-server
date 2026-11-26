@@ -77,6 +77,7 @@ from mcp_email_server.config import (
     sender_allowed,
 )
 from mcp_email_server.emails import EmailHandler, charsets
+from mcp_email_server.emails.content_view import read_content_view
 from mcp_email_server.emails.headers import ContentHeaderLimitError, select_content_headers
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
@@ -960,13 +961,13 @@ def _html_links(html: str) -> list[dict[str, str]]:
     return links
 
 
-def _html_to_text(html: str) -> str:
+def _html_to_text(html: str, *, include_link_targets: bool = True) -> str:
     """Convert an HTML email body to readable plain text."""
     soup = BeautifulSoup(html, "html.parser")
     for element in soup(["script", "style"]):
         element.decompose()
 
-    for link in soup.find_all("a"):
+    for link in soup.find_all("a") if include_link_targets else ():
         href = str(link.get("href") or "").strip()
         if not _is_content_href(href):
             continue
@@ -1590,14 +1591,25 @@ class EmailClient:
         # ``get_filename`` and would otherwise misclassify text parts.)
         return isinstance(filename, str) and bool(filename)
 
-    def _iter_content_parts(self, part: Message, *, related_root_only: bool = False) -> Iterator[tuple[Message, bool]]:
+    def _iter_content_parts(
+        self,
+        part: Message,
+        *,
+        related_root_only: bool = False,
+        signed_content_only: bool = False,
+        root: bool = True,
+    ) -> Iterator[tuple[Message, bool]]:
         """Yield body leaves and attachment roots without entering attachments."""
-        if self._is_attachment_part(part):
+        signed_container = signed_content_only and part.get_content_type() == "multipart/signed" and part.is_multipart()
+        # The decrypted signed root is a content wrapper, even if it has a MIME name.
+        if not (root and signed_container) and self._is_attachment_part(part):
             yield part, True
             return
         if part.is_multipart():
             payload = part.get_payload()
             if isinstance(payload, list):
+                if signed_container:
+                    payload = payload[:1]
                 if related_root_only and part.get_content_type() == "multipart/related":
                     start = part.get_param("start")
                     if start is None:
@@ -1612,15 +1624,22 @@ class EmailClient:
                         ][:1]
                 for child in payload:
                     if isinstance(child, Message):
-                        yield from self._iter_content_parts(child, related_root_only=related_root_only)
+                        yield from self._iter_content_parts(
+                            child,
+                            related_root_only=related_root_only,
+                            signed_content_only=signed_content_only,
+                            root=False,
+                        )
             return
         yield part, False
 
-    def _find_attachment_part(self, message: Message, name: str) -> Message | None:
+    def _find_attachment_part(
+        self, message: Message, name: str, *, signed_content_only: bool = False
+    ) -> Message | None:
         """Match listed attachment roots, preferring exact names over NFC aliases."""
         normalized_name = self._normalize_attachment_name(name)
         fallback = None
-        for part, is_attachment in self._iter_content_parts(message):
+        for part, is_attachment in self._iter_content_parts(message, signed_content_only=signed_content_only):
             if not is_attachment:
                 continue
             filename = part.get_filename()
@@ -1666,11 +1685,14 @@ class EmailClient:
         max_body_length: int = MAX_BODY_LENGTH,
         parsed: Message | None = None,
         include_headers: tuple[str, ...] = (),
+        *,
+        decrypted_content: Message | None = None,
     ) -> dict[str, Any]:
         """Parse raw email data into a structured dictionary.
 
         ``parsed`` lets a caller that already holds the ``policy=default`` parse of
-        ``raw_email`` share it instead of paying a second full parse.
+        ``raw_email`` share it instead of paying a second full parse. The read
+        path can supply a different root solely for body and attachment data.
         """
         email_message = parsed if parsed is not None else BytesParser(policy=default).parsebytes(raw_email)
         headers = select_content_headers(email_message, include_headers)
@@ -1698,7 +1720,8 @@ class EmailClient:
         html_body = ""  # Fallback if no text/plain
         attachments = []
 
-        for part, is_attachment in self._iter_content_parts(email_message):
+        content = email_message if decrypted_content is None else decrypted_content
+        for part, is_attachment in self._iter_content_parts(content, signed_content_only=decrypted_content is not None):
             content_type = part.get_content_type()
             if is_attachment:
                 filename = part.get_filename()
@@ -1711,7 +1734,10 @@ class EmailClient:
 
         links: list[dict[str, str]] = []
         seen_urls: set[str] = set()
-        for part, is_attachment in self._iter_content_parts(email_message, related_root_only=True):
+        link_parts = (
+            self._iter_content_parts(email_message, related_root_only=True) if decrypted_content is None else ()
+        )
+        for part, is_attachment in link_parts:
             if not is_attachment and part.get_content_type() == "text/html":
                 for link in _html_links(self._decode_text_part(part)):
                     if link["url"] not in seen_urls:
@@ -1719,7 +1745,7 @@ class EmailClient:
                         links.append(link)
         # Fall back to HTML if no plain text was found.
         if not body and html_body:
-            body = _html_to_text(html_body)
+            body = _html_to_text(html_body, include_link_targets=decrypted_content is None)
         if body_offset < 0:
             raise ValueError("body_offset must be >= 0")
         if max_body_length < 1:
@@ -2841,6 +2867,8 @@ class EmailClient:
         body_offset: int = 0,
         max_body_length: int = MAX_BODY_LENGTH,
         include_headers: tuple[str, ...] = (),
+        *,
+        enable_pgp_decryption: bool = False,
     ) -> dict[str, Any] | None:
         del mark_as_read  # Compatibility argument; the application owns the mutation.
         validate_imap_uid(email_id)
@@ -2877,18 +2905,24 @@ class EmailClient:
 
             # Parse the email
             try:
+                outer = BytesParser(policy=default).parsebytes(raw_email)
+                view = await read_content_view(outer, enable_pgp_decryption=enable_pgp_decryption)
                 email_data = self._parse_email_data(
                     raw_email,
                     email_id,
                     body_offset=body_offset,
                     max_body_length=max_body_length,
                     include_headers=include_headers,
+                    parsed=outer,
+                    decrypted_content=view.content if view.pgp_status == "decrypted" else None,
                 )
+                if view.pgp_status is not None:
+                    email_data["pgp_status"] = view.pgp_status
                 email_data["_flags"] = self._extract_message_flags(data)
             except ContentHeaderLimitError:
                 raise
-            except Exception as e:
-                logger.error(f"Error parsing email: {e!s}")
+            except Exception:
+                logger.error("Error parsing email content")
                 return None
 
             # Marking is intentionally owned by the application mutation
@@ -2908,6 +2942,8 @@ class EmailClient:
         attachment_name: str,
         mailbox: str = "INBOX",
         allowed_senders: list[str] | None = None,
+        *,
+        enable_pgp_decryption: bool = False,
     ) -> dict[str, Any]:
         """Fetch a specific attachment without performing a filesystem write.
 
@@ -2948,14 +2984,19 @@ class EmailClient:
             if len(raw_email) > MAX_RAW_EMAIL_BYTES:
                 raise ValueError("Email exceeds the raw message size limit")
 
-            parser = BytesParser(policy=default)
-            email_message = parser.parsebytes(raw_email)
+            outer = BytesParser(policy=default).parsebytes(raw_email)
+            view = await read_content_view(outer, enable_pgp_decryption=enable_pgp_decryption)
+            if view.pgp_status == "unavailable":
+                raise ValueError("decryption_unavailable: could not decrypt the PGP/MIME attachment")
+            decrypted = view.pgp_status == "decrypted"
 
             # Use the same roots as the list, including single-part messages,
             # without allowing a nested attachment to shadow a listed filename.
-            part = self._find_attachment_part(email_message, attachment_name)
+            part = self._find_attachment_part(view.content, attachment_name, signed_content_only=decrypted)
             attachment_data = self._attachment_content(part) if part is not None else None
             if attachment_data is None:
+                if decrypted:
+                    raise ValueError("Attachment not found in decrypted email")
                 msg = f"Attachment '{attachment_name}' not found in email {email_id}"
                 logger.error(msg)
                 raise ValueError(msg)
@@ -2965,6 +3006,7 @@ class EmailClient:
                 "attachment_name": attachment_name,
                 "mime_type": part.get_content_type() if part is not None else "application/octet-stream",
                 "content": attachment_data,
+                **({"decrypted": True} if decrypted else {}),
             }
 
         finally:

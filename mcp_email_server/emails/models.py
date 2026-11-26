@@ -73,6 +73,11 @@ class EmailBodyResponse(EmailMetadata):
     in_reply_to: str | None = None
     references: str | None = None
     body: str
+    pgp_status: Literal["decrypted", "disabled", "unavailable"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Local decryption status for top-level OpenPGP/MIME; omitted for other messages.",
+    )
     links: list[EmailLink] = Field(
         default_factory=list,
         description="Content links from the HTML part, in document order: the targets of buttons and anchors, "

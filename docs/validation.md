@@ -127,7 +127,10 @@ repeated for every interpreter version. Each Windows job installs the conditiona
 Python suite without coverage instrumentation and runs the type checker, then
 reruns `tests/test_windows_security.py` with explicit reporting on the runner's
 real local NTFS workspace. The portable Python matrix owns coverage reporting;
-the Windows jobs verify native runtime behavior. Native cases cover
+the Windows jobs verify native runtime behavior. When `gpg` is present, the
+PGP/MIME integration tests use disposable keyrings. The fixture uses Win32 paths
+for native GnuPG and MSYS2 paths for the GnuPG bundled with Git for Windows.
+Native filesystem cases cover
 file/directory symlinks, a Developer-
 Mode-independent junction, hard links, owner/DACL policy, lock contention and
 killed-owner release, concurrent and crash-boundary replacement, complete-old-

@@ -6,8 +6,11 @@ _HERE = Path(__file__).resolve().parent
 
 import os
 import shutil
+import subprocess
 import tempfile
+import time
 import uuid
+from contextlib import contextmanager, suppress
 
 _WINDOWS_TEST_CONFIG_ROOT: Path | None = None
 if os.name == "nt" and "MCP_EMAIL_SERVER_CONFIG_PATH" not in os.environ:
@@ -40,6 +43,7 @@ from keyring.errors import PasswordDeleteError
 
 from mcp_email_server import keyring_store
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings, delete_settings
+from tests.pgp_support import gnupg_home_path
 
 
 def _harden_windows_test_directory(path: Path) -> None:
@@ -229,3 +233,128 @@ def broken_keyring():
     finally:
         keyring.set_keyring(previous)
         keyring_store.keyring_usable.cache_clear()
+
+
+@pytest.fixture
+def pgp_home(monkeypatch: pytest.MonkeyPatch):
+    """Open a short-lived, initially empty keyring for the selected GnuPG."""
+    from mcp_email_server.emails.pgp import _gpg_executable
+
+    gpg = _gpg_executable()
+    if gpg is None:
+        pytest.skip("GnuPG is not installed")
+    gpgconf = gpg.with_name("gpgconf.exe" if os.name == "nt" else "gpgconf")
+
+    @contextmanager
+    def open_home():
+        directory = tempfile.TemporaryDirectory(prefix="mcp-pgp-")
+        try:
+            home = gnupg_home_path(gpgconf, Path(directory.name))
+            agent_control = (str(gpgconf), "--homedir", home)
+            with monkeypatch.context() as env:
+                env.setenv("GNUPGHOME", home)
+                try:
+                    yield gpg, agent_control, home
+                finally:
+                    # Cleanup must not hide a key-generation error.
+                    with suppress(OSError, subprocess.TimeoutExpired):
+                        subprocess.run(  # noqa: S603 - sibling GnuPG utility with fixed arguments
+                            (*agent_control, "--kill", "gpg-agent"),
+                            capture_output=True,
+                            check=False,
+                            timeout=10,
+                        )
+        finally:
+            # On Windows the agent may still be releasing file handles after --kill.
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    directory.cleanup()
+                except OSError:
+                    if os.name != "nt" or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+                else:
+                    break
+
+    return open_home
+
+
+@pytest.fixture
+def pgp_encrypt(pgp_home, request: pytest.FixtureRequest):
+    """Encrypt with an ephemeral key and isolate every GnuPG/agent invocation."""
+    passphrase = request.param if hasattr(request, "param") else ""
+    with pgp_home() as (gpg, gpgconf, home):
+        common = (str(gpg), "--no-options", "--batch", "--no-tty", "--homedir", home)
+        identity = "pgp-fixture@example.test"
+
+        def encrypt(payload: bytes, *, armor: bool = False) -> bytes:
+            return subprocess.run(  # noqa: S603 - trusted local GnuPG with fixed arguments
+                (
+                    *common,
+                    *(("--armor",) if armor else ()),
+                    "--trust-model",
+                    "always",
+                    "--recipient",
+                    identity,
+                    "--encrypt",
+                ),
+                input=payload,
+                capture_output=True,
+                check=True,
+                timeout=15,
+            ).stdout
+
+        subprocess.run(  # noqa: S603 - trusted local GnuPG with fixed arguments
+            (
+                *common,
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                passphrase,
+                "--quick-generate-key",
+                f"PGP Fixture <{identity}>",
+                "rsa2048",
+                "encr",
+                "1d",
+            ),
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        if passphrase:
+            # Flush the cache without making the locked-key test race a cold start.
+            subprocess.run(  # noqa: S603 - sibling GnuPG utility with fixed arguments
+                (*gpgconf, "--reload", "gpg-agent"), capture_output=True, check=True, timeout=10
+            )
+        yield encrypt
+
+
+@pytest.fixture
+def pgp_envelope():
+    """Build a mail fixture with distinct outer reply, identity, and MIME headers."""
+    from email import policy
+    from email.message import EmailMessage
+
+    def envelope(
+        ciphertext: bytes, *, filename: str | None = "encrypted.asc", subject: str = "PGP fixture"
+    ) -> EmailMessage:
+        outer = EmailMessage(policy=policy.SMTP)
+        outer["From"] = "bob@example.test"
+        outer["To"] = "alice@example.test"
+        outer["Subject"] = subject
+        outer["Date"] = "Fri, 01 Jan 1999 00:00:00 +0000"
+        outer["Message-ID"] = "<outer@example.test>"
+        outer["References"] = "<thread@example.test>"
+        outer["Reply-To"] = "outer-reply@example.test"
+        outer.set_type("multipart/encrypted")
+        outer.set_param("protocol", "application/pgp-encrypted")
+        version = EmailMessage(policy=policy.SMTP)
+        version.set_content(b"Version: 1\r\n", maintype="application", subtype="pgp-encrypted", cte="7bit")
+        data = EmailMessage(policy=policy.SMTP)
+        data.set_content(ciphertext, maintype="application", subtype="octet-stream", filename=filename)
+        outer.attach(version)
+        outer.attach(data)
+        return outer
+
+    return envelope

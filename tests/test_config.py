@@ -1030,3 +1030,19 @@ def test_report_blocked_mutations_env_overrides_toml(tmp_path, monkeypatch):
         assert config_module.get_settings(reload=True).report_blocked_mutations is True
     finally:
         config_module._settings = None
+
+
+def test_legacy_pgp_policy_defaults_off_and_environment_overrides(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    marker = "MCP_EMAIL_SERVER_ENABLE_PGP_DECRYPTION"
+    monkeypatch.delenv(marker, raising=False)
+    try:
+        config_path.write_text("", encoding="utf-8")
+        assert not get_settings(reload=True).enable_pgp_decryption
+        config_path.write_text("enable_pgp_decryption = true\n", encoding="utf-8")
+        assert get_settings(reload=True).enable_pgp_decryption
+        monkeypatch.setenv(marker, "false")
+        assert not get_settings(reload=True).enable_pgp_decryption
+    finally:
+        config_module._settings = None

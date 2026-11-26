@@ -118,7 +118,9 @@ def test_to_projection_migration_preserves_unknown_fields_and_converges(
     assert snapshot.emails[0]["to"] == ["to@example.test", "cc@example.test"]
     assert "to_addresses" not in snapshot.emails[0]
     with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == (
+            SCHEMA_VERSION if managed else 7
+        )
         assert connection.execute("SELECT to_addresses_json FROM message_metadata_projection").fetchone()[0] is None
 
     # Empty To is known, and remains distinct from the migrated unknown value.
@@ -227,7 +229,7 @@ def test_concurrent_first_open_converges_on_one_operational_identity(tmp_path: P
     assert len(set(account_ids)) == 1
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM operational_account").fetchone()[0] == 1
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 7
 
 
 def test_partial_refresh_evicts_outside_local_window_without_claiming_complete_coverage(tmp_path: Path) -> None:
@@ -458,7 +460,7 @@ def test_legacy_version_marker_must_match_canonical_definition(tmp_path: Path) -
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("DROP TABLE schema_metadata")
         connection.execute("CREATE TABLE schema_metadata(singleton INTEGER, version INTEGER)")
-        connection.execute("INSERT INTO schema_metadata VALUES (1, ?)", (SCHEMA_VERSION,))
+        connection.execute("INSERT INTO schema_metadata VALUES (1, 7)")
         connection.commit()
 
     with pytest.raises(MetadataIndexError, match="incomplete or incompatible"):
@@ -471,14 +473,14 @@ def test_legacy_operational_database_rejects_unsupported_version_before_wal(tmp_
     index.ensure_ready()
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0].lower() == "delete"
-        connection.execute("UPDATE schema_metadata SET version = ?", (SCHEMA_VERSION + 1,))
+        connection.execute("UPDATE schema_metadata SET version = 8")
         connection.commit()
 
     with pytest.raises(MetadataIndexError, match="version is unsupported"):
         index.ensure_ready()
 
     with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == SCHEMA_VERSION + 1
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone()[0] == 8
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
     assert not Path(f"{path}-wal").exists()
     assert not Path(f"{path}-shm").exists()

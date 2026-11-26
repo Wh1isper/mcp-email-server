@@ -296,3 +296,7 @@ results for user-owned automation. The UI and nested `config`/`account`
 commands are equivalent managed management adapters; the UI can also guide an
 explicit import while legacy mode is selected. Credential behavior and migration
 caveats are covered in [Security](security.md#credential-migration).
+
+Local PGP/MIME decryption is available only over bounded stdio. SSE and
+Streamable HTTP return the original encrypted view even when the operator has
+enabled local decryption. See [local PGP/MIME decryption](configuration.md#local-pgpmime-decryption).

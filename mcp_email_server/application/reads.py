@@ -64,6 +64,7 @@ class AttachmentPayload:
     attachment_name: str
     mime_type: str
     content: bytes
+    decrypted: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class ReadAccountSnapshot:
     allowed_senders: tuple[str, ...]
     enable_attachment_download: bool
     enable_attachment_content: bool = False
+    enable_pgp_decryption: bool = False
     tag_registry: ImapKeywordRegistry = field(default_factory=ImapKeywordRegistry)
 
 
@@ -332,6 +334,8 @@ class EmailContentService:
             pass
         else:
             return response
+        if any(email.pgp_status == "decrypted" for email in response.emails):
+            raise ReadProviderError("limit_exceeded: reduce the batch or body window for decrypted content")
         if self._large_results is None:
             raise ReadProviderError("limit_exceeded: serialized content result is too large")
         reference = await self._large_results.write(prefix="email-content", content=serialized)
@@ -358,6 +362,10 @@ class EmailContentService:
         account = self._accounts.resolve(query.account_name)
         access = self._providers.open(account.account_name, expected_mode=account.mode)
         response = await _bounded_provider_call(access.provider.get_content(query, access.account))
+        if any(email.pgp_status == "decrypted" for email in response.emails):
+            current = self._accounts.resolve(query.account_name, expected_mode=access.account.mode)
+            if not current.enable_pgp_decryption:
+                raise PermissionError("PGP/MIME decryption is disabled")
         response = response.model_copy(
             update={
                 "emails": [
@@ -429,6 +437,8 @@ class AttachmentDownloadService:
             raise PermissionError(
                 "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
             )
+        if payload.decrypted and not current.enable_pgp_decryption:
+            raise PermissionError("PGP/MIME decryption is disabled")
         saved_path = await self._artifacts.write(resolved_path, payload)
         response = AttachmentDownloadResponse(
             email_id=payload.email_id,
@@ -469,6 +479,8 @@ class AttachmentContentService:
             raise PermissionError(
                 "Attachment content transfer is disabled. Set 'enable_attachment_content=true' in settings to enable this feature."
             )
+        if payload.decrypted and not current.enable_pgp_decryption:
+            raise PermissionError("PGP/MIME decryption is disabled")
         return payload
 
 

@@ -275,6 +275,35 @@ Body reads:
 
 Marking read is a separate mutation under spec 07.
 
+### Local OpenPGP/MIME reads
+
+Only the three focused content and attachment read tools MAY use an ephemeral
+decrypted content view, after sender authorization and raw message bounds, when
+spec 04 policy enables it and the request originates in the local bounded stdio
+adapter. A top-level RFC 3156 `multipart/encrypted` with OpenPGP protocol must
+have precisely the Version 1 control part and octet-stream data part; the name
+and transfer encoding are not the decryption selector. Wrapped and other
+protocols retain their original behavior. GnuPG runs locally without pinentry,
+with bounded output, diagnostic bytes and time, and is killed/reaped when work
+is interrupted. Only completed integrity-protected decryptions are usable.
+
+The decrypted MIME tree supplies the body and attachment namespace only. The
+outer headers remain the sole source for sender filtering, metadata, selected
+headers and threading; no detached signature is reported as verified. A signed
+container contributes only its signed subtree. Decrypted HTML contributes text
+without extracting link targets. `get_emails_content` reports `decrypted`,
+`disabled`, or `unavailable` as `pgp_status` for recognized PGP/MIME envelopes;
+other messages omit the field. Disabled or unavailable body reads return the
+original view and keep ordinary mark-as-read semantics. With decryption enabled,
+attachment reads that cannot decrypt fail instead of falling back by filename.
+All existing result limits and attachment authorizations still apply.
+
+Decrypted content and derived fields MUST NOT enter the metadata projection,
+logs, or automatic result spills. An oversized result with a decrypted item
+fails with a bounded limit error. Explicit authorized attachment downloads may
+materialize plaintext through the existing secure artifact workflow. Compose,
+forward, metadata/search and general protocol workflows never decrypt.
+
 ## Attachment Retrieval and Destination Selection
 
 Attachment materialization is an explicit local filesystem effect. The caller

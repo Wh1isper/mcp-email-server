@@ -197,13 +197,15 @@ def compose_legacy_policy_environment(
     *,
     enable_attachment_download: bool,
     enable_attachment_content: bool,
+    enable_pgp_decryption: bool,
     allowed_recipients: Iterable[str],
     allowed_senders: Iterable[str],
     report_blocked_mutations: bool,
-) -> tuple[bool, bool, list[str], list[str], bool]:
+) -> tuple[bool, bool, bool, list[str], list[str], bool]:
     """Apply legacy policy environment precedence without resolving credentials."""
     attachment_download_value = os.getenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD")
     attachment_content_value = os.getenv("MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT")
+    pgp_value = os.getenv("MCP_EMAIL_SERVER_ENABLE_PGP_DECRYPTION")
     report_value = os.getenv("MCP_EMAIL_SERVER_REPORT_BLOCKED_MUTATIONS")
     recipients_value = os.getenv("MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS")
     senders_value = os.getenv("MCP_EMAIL_SERVER_ALLOWED_SENDERS")
@@ -214,6 +216,7 @@ def compose_legacy_policy_environment(
         _parse_bool_env(attachment_content_value, False)
         if attachment_content_value is not None
         else enable_attachment_content,
+        _parse_bool_env(pgp_value, False) if pgp_value is not None else enable_pgp_decryption,
         normalize_recipient_patterns(recipients_value.split(","))
         if recipients_value is not None
         else normalize_recipient_patterns(allowed_recipients),
@@ -597,6 +600,7 @@ class Settings(BaseSettings):
     db_location: str = CONFIG_PATH.with_name("db.sqlite3").as_posix()
     enable_attachment_download: bool = False
     enable_attachment_content: bool = False
+    enable_pgp_decryption: bool = False
     allowed_mutations: list[MutationClass] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_MUTATIONS))
     allowed_recipients: list[str] = []
     allowed_senders: list[str] = []
@@ -666,12 +670,14 @@ class Settings(BaseSettings):
         (
             self.enable_attachment_download,
             self.enable_attachment_content,
+            self.enable_pgp_decryption,
             self.allowed_recipients,
             self.allowed_senders,
             self.report_blocked_mutations,
         ) = compose_legacy_policy_environment(
             enable_attachment_download=self.enable_attachment_download,
             enable_attachment_content=self.enable_attachment_content,
+            enable_pgp_decryption=self.enable_pgp_decryption,
             allowed_recipients=self.allowed_recipients,
             allowed_senders=self.allowed_senders,
             report_blocked_mutations=self.report_blocked_mutations,

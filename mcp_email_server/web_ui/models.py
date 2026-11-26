@@ -158,6 +158,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
     expected_revision: int = Field(ge=1)
     enable_attachment_download: bool
     enable_attachment_content: bool
+    enable_pgp_decryption: bool
     allowed_mutations: tuple[MutationClass, ...] = DEFAULT_ALLOWED_MUTATIONS
     allowed_recipients: tuple[str, ...]
     allowed_senders: tuple[str, ...]
@@ -168,6 +169,7 @@ class UpdatePolicyRequest(CatalogTargetRequest):
             revision=self.expected_revision,
             enable_attachment_download=self.enable_attachment_download,
             enable_attachment_content=self.enable_attachment_content,
+            enable_pgp_decryption=self.enable_pgp_decryption,
             allowed_recipients=self.allowed_recipients,
             allowed_mutations=self.allowed_mutations,
             allowed_senders=self.allowed_senders,

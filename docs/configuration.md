@@ -521,24 +521,25 @@ platform-selected secret binding, and the operational projection. On Linux and
 Windows, any copy, snapshot, or backup of this database includes plaintext values
 from `managed_secret`; protect every copy with private access equivalent to the
 original and never treat the catalog as a non-secret database. Schema v3, v4,
-v5, and v6 catalogs migrate automatically to v7 on the first catalog access. The
+v5, v6, and v7 catalogs migrate automatically to v8 on the first catalog access. The
 transaction preserves accounts, policy, bindings, secrets, and revisions; it adds
-a nullable To-only address field to the metadata cache. Sources before v6 also
+default-disabled local PGP/MIME decryption. Sources before v7 also receive
+a nullable To-only address field in the metadata cache. Sources before v6
 receive default-disabled protocol access. Sources before v5 also receive all five global
 mutation grants, inheriting account overrides, and an unset draft mailbox. A v3
 source additionally receives empty account tag mappings and the disabled
-attachment-content policy. Exact schema and invariant checks finish before v7
+attachment-content policy. Exact schema and invariant checks finish before v8
 is recorded; failure leaves the original version intact. Other unsupported
 versions, corrupt storage, and insecure storage fail closed. Legacy TOML,
 environment, and keyring sources remain supported through explicit import. In
 legacy mode, an unavailable or unsafe operational database produces a bounded
 warning and the metadata query uses its bounded IMAP fallback instead.
 
-### Upgrading a managed catalog to v7
+### Upgrading a managed catalog to v8
 
-Managed v3/v4/v5/v6 catalogs migrate transactionally to v7. The new To-only cache
-field starts as unknown for existing rows; a local To query refetches the missing
-headers automatically. Legacy operational databases at v1 or v6 receive the same
+Managed v3/v4/v5/v6/v7 catalogs migrate transactionally to v8. Local PGP/MIME
+decryption starts disabled. In upgrades from before v7, the To-only cache field
+starts as unknown and local To queries refetch missing headers. Legacy operational databases at v1 or v6 receive the same
 cache-field migration. Account grants and other configuration remain intact.
 Migration never reads credential values.
 
@@ -551,7 +552,7 @@ Migration never reads credential values.
 3. Upgrade UI, CLI, and MCP together to the same release, then restart each MCP
    client. Do not leave an older process sharing the newly migrated catalog.
 
-Versions that only understand v3/v4/v5/v6 cannot open v7. Downgrading only the package
+Versions that only understand v3/v4/v5/v6/v7 cannot open v8. Downgrading only the package
 is therefore insufficient: stop the new processes and restore the matching
 pre-upgrade catalog and bootstrap with the older application. This restores
 local configuration to the backup point, not provider-side email effects or
@@ -604,6 +605,7 @@ The following example contains all commonly used account fields:
 credential_storage = "auto"
 enable_attachment_download = false
 enable_attachment_content = false
+enable_pgp_decryption = false
 allowed_recipients = []
 allowed_senders = []
 report_blocked_mutations = false
@@ -780,6 +782,7 @@ identifiers are fixed and contain no account-specific information.
 | `credential_storage`         | `"auto"` | Select `auto`, `keyring`, or `plaintext` credential storage.                                         |
 | `enable_attachment_download` | `false`  | Allow `download_attachment` to write files.                                                          |
 | `enable_attachment_content`  | `false`  | Allow `get_attachment_content` to return attachment bytes through MCP.                               |
+| `enable_pgp_decryption`      | `false`  | Allow local stdio reads to decrypt top-level OpenPGP/MIME using GnuPG.                               |
 | `allowed_recipients`         | `[]`     | Exact addresses or globs; `*` explicitly allows all; empty denies sending and recipient-bound saves. |
 | `allowed_senders`            | `[]`     | Incoming `From` patterns; empty does not restrict reading.                                           |
 | `report_blocked_mutations`   | `false`  | Report blocked message IDs instead of returning privacy-preserving no-ops.                           |
@@ -789,6 +792,23 @@ In managed mode, enable attachment content transfer with
 it with `mcp-email-server config policy`. The current managed policy is applied
 when each account is resolved, independently of `enable_attachment_download`;
 legacy TOML and environment flags do not override it.
+
+### Local PGP/MIME decryption
+
+Install GnuPG so `gpg` (on Windows, `gpg.exe`) is on the absolute PATH of the
+MCP server process. Use the same local user and GnuPG home that can decrypt your
+mail. No key material or passphrase goes in the server configuration.
+
+- **Managed:** In the local UI's safety settings select **Decrypt PGP/MIME emails
+  locally using GnuPG**, or use `mcp-email-server config update-policy --expected-revision N --enable-pgp-decryption`
+  with the revision from `mcp-email-server config policy`. Use `--disable-pgp-decryption` to turn it off.
+- **Legacy:** Set `enable_pgp_decryption = true` at the top level of the TOML file
+  or set `MCP_EMAIL_SERVER_ENABLE_PGP_DECRYPTION=true` in the server environment
+  and restart. A reviewed legacy import may bring this policy into managed mode.
+
+This global setting applies to all configured accounts on local MCP stdio.
+SSE and Streamable HTTP continue returning the original encrypted view.
+See [decrypted mail and client trust](security.md#decrypted-mail-and-client-trust).
 
 See [Security](security.md) before enabling attachment downloads or applying
 allowlists.
@@ -847,6 +867,7 @@ values are treated as false. Do not add surrounding whitespace to these values.
 | --------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MCP_EMAIL_SERVER_CONFIG_PATH`                      | `~/.config/mcp-email-server/config.toml` | Use a custom TOML path.                                                                                                                                                                                           |
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD`       | `false`                                  | Override attachment file-download access.                                                                                                                                                                         |
+| `MCP_EMAIL_SERVER_ENABLE_PGP_DECRYPTION`            | `false`                                  | Override local PGP/MIME decryption for legacy stdio.                                                                                                                                                              |
 | `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_CONTENT`        | `false`                                  | Override attachment MCP-content transfer access.                                                                                                                                                                  |
 | `MCP_EMAIL_SERVER_ALLOWED_RECIPIENTS`               | Empty                                    | Comma-separated recipients; empty disables sending.                                                                                                                                                               |
 | `MCP_EMAIL_SERVER_ALLOWED_SENDERS`                  | Empty                                    | Comma-separated sender globs; empty does not restrict reading.                                                                                                                                                    |

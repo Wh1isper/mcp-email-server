@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.shared.message import SessionMessage
 
 from mcp_email_server.application.limits import APPLICATION_LIMITS
+from mcp_email_server.emails.content_view import local_stdio_read
 
 STDIO_FRAME_BYTES: Final = APPLICATION_LIMITS.mcp_stdio_frame_bytes
 _READ_CHUNK_BYTES: Final = 64 * 1_024
@@ -165,6 +166,7 @@ async def _run_server(
     write_stream: MemoryObjectSendStream[SessionMessage],
     done: anyio.Event,
 ) -> None:
+    token = local_stdio_read.set(True)
     try:
         async with read_stream, write_stream:
             await server._mcp_server.run(  # pyright: ignore[reportPrivateUsage]
@@ -173,6 +175,7 @@ async def _run_server(
                 server._mcp_server.create_initialization_options(),  # pyright: ignore[reportPrivateUsage]
             )
     finally:
+        local_stdio_read.reset(token)
         done.set()
 
 
